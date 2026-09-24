@@ -70,7 +70,7 @@ is matched to it); `saved_at` identifies the save. A file whose
 
 ```json
 {"cameras": [{"name": "cam1", "folder": "cam1",
-              "video": {"path": "D:\\shoot\\C0004.MP4", "relative_path": "C0004.MP4"},
+              "video": {"path": "D:\\shoot\\cam1.mp4", "relative_path": "cam1.mp4"},
               "n_frames": 40000, "fps": 239.76, "width": 3840, "height": 2160,
               "offset": 0.0, "rate": 1.0}],
  "active_camera": "cam1"}
