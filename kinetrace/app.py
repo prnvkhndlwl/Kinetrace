@@ -6198,7 +6198,9 @@ class MainWindow(QMainWindow):
                 return not dlg.wasCanceled()
             wrote = trackio.export_masks_png(s, folder, step)
             dlg.close()
-            return [f"{folder} ({wrote} images{'' if wrote == n else ', cancelled'})"]
+            if wrote < n:
+                self.statusBar().showMessage(f"Mask export cancelled after {wrote} of {n} images", 8000)
+            return [folder]                  # the files written: here the folder that holds them
         elif key == "kin":
             from kinetrace.kinematics import export_kinematics
             p = self.project
