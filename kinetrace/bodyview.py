@@ -948,10 +948,11 @@ class BodyRunDialog(QDialog):
             state, why = bodypose.backend_status(key)
             tag = {"ready": "", "download": "  (downloads on first use)",
                    "needs-code": "  - code not installed",
-                   "needs-weights": "  - weights not installed"}[state]
+                   "needs-weights": "  - weights not installed",
+                   "needs-gpu": "  - needs an NVIDIA GPU (not on this computer)"}[state]
             self.cmb_backend.addItem(spec.label + tag, key)
             self.cmb_backend.setItemData(self.cmb_backend.count() - 1, why, Qt.ToolTipRole)
-            if state in ("needs-code", "needs-weights"):
+            if state in ("needs-code", "needs-weights", "needs-gpu"):
                 self.cmb_backend.model().item(self.cmb_backend.count() - 1).setEnabled(False)
         want = default_backend or bodypose.preferred_backend()
         i = self.cmb_backend.findData(want)

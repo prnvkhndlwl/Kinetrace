@@ -142,6 +142,16 @@ user's computer; none of them is in this repository.
   by PyTorch under NVIDIA's CUDA EULA; nothing extra is needed to use them.
 - `certifi` and `tqdm` are MPL-2.0 (file-level copyleft); used unmodified, no
   obligation beyond keeping their notices.
+- **The private Python** the launchers fetch into `.venv/base` when the
+  computer has none of its own: on Windows the official CPython 3.12.10
+  package from NuGet (published by the Python Software Foundation), on Linux
+  and macOS a CPython 3.12 build from
+  [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
+  (Astral, the builds behind `uv`). CPython is under the **PSF License**
+  (GPL-compatible, permissive); the standalone builds statically bundle
+  OpenSSL (Apache-2.0), libffi (MIT), zlib, bzip2, xz (0BSD), SQLite (public
+  domain) and others, each listed in the `licenses/` folder inside the
+  download. Kinetrace runs the interpreter as is; nothing is modified.
 
 ## 4. Datasets and footage
 

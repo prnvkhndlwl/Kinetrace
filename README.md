@@ -50,14 +50,19 @@ to correct a point with the mouse, and export the tracks. Built for long
   explains itself, and every number comes with a plain-language verdict.
 
 **Quick start.** Get the code (*Code → Download ZIP*, or `git clone`), then
-double-click `run.bat` on Windows or run `./run.sh` on Ubuntu 22.04+ or an
-Apple Silicon Mac (macOS 14+). The first run installs everything inside the
-folder — details in **[Install & run](https://github.com/prnvkhndlwl/Kinetrace/wiki/Install-and-Run)**. New to
+double-click `run.bat` on Windows, `Kinetrace.command` on an Apple Silicon Mac
+(macOS 14+), or run `./run.sh` on Ubuntu 22.04+. Nothing needs to be installed
+first — not even Python: the first run sets up everything inside the folder
+without asking anything, and ends with a **system check** saying what your
+computer can run — details in
+**[Install & run](https://github.com/prnvkhndlwl/Kinetrace/wiki/Install-and-Run)**. New to
 tracking? Start with the **[user manual](docs/MANUAL.md)**.
 
-**Everything stays in the folder:** nothing is installed into the operating
-system, deleting the folder uninstalls Kinetrace, and it sends no usage data
-anywhere.
+**Any computer:** an NVIDIA GPU is used when present; without one (or on a Mac,
+with its Metal GPU) everything still works, only slower, and the one NVIDIA-only
+feature (SAM 3D Body) is greyed out with the reason. **Everything stays in the
+folder:** nothing is installed into the operating system, deleting the folder
+uninstalls Kinetrace, and it sends no usage data anywhere.
 
 **Licences.** Kinetrace's own code has no licence chosen yet (all rights
 reserved until a `LICENSE` file is added). CoTracker3 is **non-commercial**

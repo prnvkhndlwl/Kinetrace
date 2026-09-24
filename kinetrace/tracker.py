@@ -209,12 +209,11 @@ def _frame_decodes(path: str, idx: int) -> bool:
 
 
 def pick_device() -> tuple[str, str]:
-    """Returns (torch device string, human-readable label)."""
-    if torch.cuda.is_available():
-        return "cuda", f"cuda: {torch.cuda.get_device_name(0)}"
-    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
-        return "mps", "mps: Apple GPU"
-    return "cpu", "cpu (no GPU found — tracking will be slow)"
+    """Returns (torch device string, human-readable label). ONE rule for every
+    model (`device.pick_device`: CUDA, else Apple's GPU, else the CPU;
+    `KINETRACE_DEVICE` forces it) - kept here by name for its callers."""
+    from kinetrace.device import pick_device as _pick
+    return _pick()
 
 
 def get_model():
@@ -679,7 +678,13 @@ class TrackingWorker(QThread):
             cx0 = cy0 = 0
             cw, ch = nw, nh
         origin = np.array([cx0, cy0], np.float32)
-        scale = min(1.0, (ALLTRACKER_MAX_DIM if use_at else WORKING_MAX_DIM) / max(cw, ch))
+        if use_at:
+            # 1024 on CUDA; smaller on the CPU / an Apple GPU, where the window
+            # lives in RAM (18.4 GB at 1024 on a full 4K frame, measured)
+            from kinetrace.device import alltracker_max_dim
+            at_dim = min(ALLTRACKER_MAX_DIM, alltracker_max_dim(str(device))) if device is not None \
+                else ALLTRACKER_MAX_DIM
+        scale = min(1.0, (at_dim if use_at else WORKING_MAX_DIM) / max(cw, ch))
         ww, wh = max(2, round(cw * scale)), max(2, round(ch * scale))
         # align-corners convention, matching the model's internal rescaling
         to_native = np.array([(cw - 1) / max(ww - 1, 1), (ch - 1) / max(wh - 1, 1)], np.float32)

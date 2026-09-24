@@ -2,7 +2,9 @@
 # Windows batch files CRLF; everything else is normalised by git.
 * text=auto
 *.sh text eol=lf
+*.command text eol=lf
 *.bat text eol=crlf
+*.yml text eol=lf
 *.py text
 *.md text
 *.txt text

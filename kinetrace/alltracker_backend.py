@@ -54,7 +54,8 @@ def get_alltracker():
     if str(REPO_DIR) not in sys.path:
         sys.path.insert(0, str(REPO_DIR))
     from nets.alltracker import Net  # noqa: E402  (vendored repo)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    from kinetrace.device import pick_device
+    device = pick_device()[0]            # CUDA, else Apple's GPU, else the CPU (one rule for every model)
     torch.hub.set_dir(str(MODELS_DIR))   # nothing may be written outside the tool folder
     if not CHECKPOINT.exists():
         CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
@@ -118,7 +119,13 @@ class AllTrackerStream:
         T = imgs.shape[0]
         C = self.model.dim if self.model.no_split else self.model.dim * 2
         H8, W8 = imgs.shape[-2] // 8, imgs.shape[-1] // 8
-        return self.model.get_fmaps(imgs, 1, T, None, False).reshape(1, T, C, H8, W8)
+        # The vendored get_fmaps does `images_.cuda()` whenever is_training is
+        # False - the ONLY thing that flag changes for a window of <= 64 frames
+        # (the other branch is a chunked loop for longer inputs). On a CPU or
+        # an Apple GPU that call raises, so those devices pass True: same
+        # arithmetic, tensors stay where they are. CUDA keeps the original call.
+        not_cuda = self.device != "cuda"
+        return self.model.get_fmaps(imgs, 1, T, None, not_cuda).reshape(1, T, C, H8, W8)
 
     def _sample(self, maps):
         """maps: (S, C, H, W) at frame res -> (S, N, C) bilinear at the query points."""

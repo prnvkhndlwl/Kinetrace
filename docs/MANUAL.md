@@ -83,40 +83,51 @@ frames that exist and tells you.)
 
 **A Windows or Linux computer with an NVIDIA graphics card, or a Mac with
 Apple Silicon (M1 or later)**, is strongly recommended. It works without a
-graphics card, just much more slowly. Linux needs Ubuntu 22.04 or newer (or
-another distribution of that age); a Mac needs macOS 14 or newer — Intel Macs
-cannot run it. The program tells you what it is using in the status bar along
-the bottom of the window.
+graphics card, just much more slowly (a long 4K video becomes an overnight
+job), and one feature — the 3D human body model, SAM 3D Body — is switched off
+without an NVIDIA card, because its maker's code runs only there; the program
+greys it out and offers the 2D model instead. Linux needs Ubuntu 22.04 or newer
+(or another distribution of that age); a Mac needs macOS 14 or newer — Intel
+Macs cannot run it. 16 GB of memory is comfortable; with less, the program uses
+a smaller working picture for one of its models and says so. **Help → System
+Check…** lists what your computer has and, feature by feature, what runs on
+it, what runs slower and what is off; the status bar along the bottom of the
+window always shows which processor is in use.
 
-**Nothing else.** Everything the program needs lives inside its own folder. It
-does not install anything into your operating system. Deleting the folder
-removes it completely.
+**Nothing else — not even Python.** Everything the program needs lives inside
+its own folder; the first start fetches whatever is missing, without asking
+you anything. It does not install anything into your operating system.
+Deleting the folder removes it completely.
 
 ---
 
 ## 3. Starting the program
 
-**Windows:** double-click `run.bat` in the program folder.
+**Windows:** double-click `run.bat` in the program folder. (If Windows says
+*"Windows protected your PC"*, click *More info*, then *Run anyway*.)
 
-**Ubuntu:** once, install a few system pieces the window needs — open a
-terminal and type
-`sudo apt install python3 python3-venv libxcb-cursor0 libegl1 libxkbcommon-x11-0 libgl1`.
-Then, in the program folder, run `./run.sh`.
+**Mac:** double-click `Kinetrace.command` in the program folder. The first
+time, the Mac may say it *cannot be opened because it is from an unidentified
+developer*: right-click (or hold Control and click) the file, choose **Open**,
+and confirm once.
 
-**Mac:** open *Terminal*, go to the program folder (type `cd `, drag the folder
-onto the window, press Enter) and run `./run.sh`.
+**Ubuntu:** double-click `run.sh` in the program folder and choose *Run in
+Terminal* — or open a terminal in the folder and type `./run.sh`. If the window
+needs a few system pieces that are not installed, the program installs them
+for you; that is the one step that asks for your password.
 
 The program works out by itself which kind of computer it is on — NVIDIA
-graphics card or not, Mac or PC — and installs the matching version of its
-supporting software.
+graphics card or not, Mac or PC, Python already there or not — and fetches the
+matching version of its supporting software. Nothing is asked.
 
 **The very first launch takes a long time** — it downloads up to about 4 GB of
-supporting software into its own folder. That happens once. (Building that
-folder needs Python 3.10 or newer on the computer; if the first launch stops
-with *Python … not found*, install Python from python.org — on Ubuntu with the
-`apt` line above — and start it again.) Later launches start in a few seconds. The first time you press the **Track** button, and the first
-time you click on an animal, it downloads one more piece each. After that you
-never need an internet connection again.
+supporting software into its own folder (and, if the computer has no Python of
+its own, a private copy of that too, about 20 MB). That happens once, and it
+ends by printing a **system check**: what it found and what your computer can
+run. If the connection drops, just start it again — it carries on where it
+stopped. Later launches start in a few seconds. The first time you press the
+**Track** button, and the first time you click on an animal, it downloads one
+more piece each. After that you never need an internet connection again.
 
 If it ever fails to start, see [section 15](#15-when-something-goes-wrong).
 
@@ -347,9 +358,15 @@ more room.
 
 **The status bar along the very bottom** of the window reports what just
 happened, the frame you are on and the last frame with tracking in it
-(*frame 120 / 599   last tracked: 450*), which graphics card is in use
-(*cuda: …*; *cpu* means none was found and tracking will be slow), and, while
-tracking, the speed and an estimated finish time.
+(*frame 120 / 599   last tracked: 450*), a coloured badge saying which
+processor the models run on — green **● GPU** with the graphics card's name,
+or amber **● CPU**, which means the processor is doing the work and tracking
+will be slower. The program measures both once on the first start and uses
+whichever is faster, so the badge is amber only when there is no usable
+graphics card (or, rarely, when the card measured slower). Hover over the
+badge for the measured times and what that means, or open **Help → System
+Check…**. While tracking, the speed readout starts with GPU or CPU and ends
+with an estimated finish time.
 
 ---
 
@@ -1809,7 +1826,7 @@ page.
 
 | Model | What it gives | What it needs |
 |---|---|---|
-| **SAM 3D Body** | Joints **in space** — real 3D from a single ordinary camera, so the angles are true anatomical angles no matter which way the person is facing. 70 joints. | A licence from Meta and a one-off download (below). |
+| **SAM 3D Body** | Joints **in space** — real 3D from a single ordinary camera, so the angles are true anatomical angles no matter which way the person is facing. 70 joints. | A licence from Meta and a one-off download (below), **and an NVIDIA graphics card**: Meta's code runs only there, so on a computer without one (or on a Mac) the entry is greyed out with that reason. |
 | **ViTPose (2D)** | Joints **in the picture** — 17 of them, where they appear on screen. Angles are measured flat, in the image. | Nothing. It downloads itself the first time and needs no licence. |
 
 If the model you want says *code not installed* or *weights not installed*, the
@@ -2170,9 +2187,33 @@ stored inside the program's folder.
 
 ## 15. When something goes wrong
 
+**The first start stopped before the window opened.** Almost always the
+internet connection: start the launcher again, it carries on where it stopped.
+If it stops twice, the last lines in the black window say why — copy them into
+your question. Everything the launcher fetches goes into the `.venv` folder
+inside the program folder; deleting that folder and starting again gives a
+clean retry and loses none of your work.
+
 **The program will not start / an error mentions "encodings" or "103".**
 The folder was moved or renamed while the program was set up in it. Run
-`run.bat` once; it repairs itself.
+`run.bat` (Mac: `Kinetrace.command`, Ubuntu: `./run.sh`) once; it repairs
+itself.
+
+**The status bar says *cpu* although the computer has an NVIDIA card.** Open
+**Help → System Check…**: it says whether the card's driver is too old for the
+program's PyTorch (update the driver at nvidia.com/drivers, then restart the
+computer) or whether the CPU version was installed (delete the `.venv` folder
+and start the launcher again with the driver up to date). The same report
+prints in a terminal with `run.bat --check` / `./run.sh --check`.
+
+**A model entry is greyed out with "needs an NVIDIA GPU".** That model
+(SAM 3D Body) cannot run on this computer; use the 2D model next to it. Nothing
+is wrong.
+
+**Everything is very slow.** With no graphics card the models run on the
+processor, several times slower; **Help → System Check…** confirms it. A
+smaller video, a shorter frame range, or the *Every Nth frame* setting of the
+body dialog all help; so does a computer with an NVIDIA card.
 
 **"Could not open video".** The file uses a format the program cannot read.
 The error message gives you an exact `ffmpeg` command that converts it.

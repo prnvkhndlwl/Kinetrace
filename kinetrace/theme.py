@@ -22,7 +22,8 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPalette, QPen,
 ACCENT = "#0A84FF"          # systemBlue (dark variant): active / selected / primary
 ACCENT_HOVER = "#3395FF"
 RED = "#FF453A"             # warnings (low confidence)
-GREEN = "#30D158"           # event pending mark
+GREEN = "#30D158"           # event pending mark; the GPU badge in the status bar
+AMBER = "#FF9F0A"           # systemOrange: the CPU badge (working, but slower)
 BG_CANVAS = "#161619"       # behind the video: darkest, so frames pop
 BG_WINDOW = "#1E1E23"       # window chrome
 BG_PANEL = "#28282E"        # raised surfaces (menus, list, dialogs)

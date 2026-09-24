@@ -174,10 +174,25 @@ def hub_cached(repo: str) -> bool:
                for p in snaps.iterdir() if p.is_dir())
 
 
-def backend_status(key: str) -> tuple[str, str]:
-    """('ready' | 'download' | 'needs-code' | 'needs-weights', plain English),
-    without touching the network. Every branch says what the user must DO."""
+def backend_status(key: str, device: str | None = None) -> tuple[str, str]:
+    """('ready' | 'download' | 'needs-code' | 'needs-weights' | 'needs-gpu',
+    plain English), without touching the network or torch. Every branch says
+    what the user must DO.
+
+    `device` is the torch device the models run on ("cuda" / "mps" / "cpu");
+    None reads the app's cached hardware probe (`device.cached_device`), and
+    an unprobed machine is not gated. SAM 3D Body is 'needs-gpu' anywhere but
+    CUDA: Meta's code moves its tensors with `.cuda()`, so on a CPU-only PC or
+    a Mac the run would fail after the model had loaded."""
     spec = BACKENDS[key]
+    if spec.kind == "sam3d_body":
+        from kinetrace.device import cached_device, supports_sam3d_body
+        dev = device if device is not None else cached_device()
+        if dev is not None and not supports_sam3d_body(dev):
+            return ("needs-gpu",
+                    f"{spec.label} runs only on an NVIDIA graphics card (Meta's code is CUDA-only); "
+                    f"this computer's models run on the {'Apple GPU' if dev == 'mps' else 'CPU'}. "
+                    "Use ViTPose (2D joints) here, or a computer with an NVIDIA GPU.")
     if spec.needs_code and not code_available(key):
         return ("needs-code",
                 f"{spec.label} also needs Meta's inference code. Clone "
@@ -538,12 +553,13 @@ def make_estimator(backend: str, device=None, max_people: int = 1,
     spec = BACKENDS.get(backend)
     if spec is None:
         raise RuntimeError(f"unknown body backend {backend!r}")
-    state, why = backend_status(backend)
-    if state in ("needs-code", "needs-weights"):
-        raise RuntimeError(why)
     import torch
     if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        from kinetrace.device import pick_device
+        device = pick_device()[0]          # CUDA, else Apple's GPU, else the CPU
+    state, why = backend_status(backend, str(device))
+    if state in ("needs-code", "needs-weights", "needs-gpu"):
+        raise RuntimeError(why)
     torch.hub.set_dir(str(MODELS_DIR))
     with _lock:
         if spec.kind == "sam3d_body":

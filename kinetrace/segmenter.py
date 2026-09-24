@@ -209,10 +209,11 @@ class Segmenter:
         import torch
         self.backend = backend
         self.repo, self.family, self.label, _ = BACKENDS[backend]
-        if torch.cuda.is_available():
-            self.device, self.dtype = "cuda", torch.bfloat16
-        else:
-            self.device, self.dtype = "cpu", torch.float32
+        from kinetrace.device import pick_device, sam_dtype
+        # one rule for every model: CUDA, else Apple's GPU, else the CPU;
+        # bfloat16 only on CUDA (Metal / CPU bfloat16 kernels are partial or slow)
+        self.device = pick_device()[0]
+        self.dtype = sam_dtype(torch, self.device)
         if self.family == "sam3":
             from transformers import Sam3TrackerVideoModel as M, Sam3TrackerVideoProcessor as P
         else:

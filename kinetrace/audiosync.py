@@ -69,9 +69,11 @@ def ffmpeg_status() -> tuple[bool, str]:
     exe = find_ffmpeg()
     if exe:
         return True, f"ffmpeg found: {exe}"
+    py = ".venv\\Scripts\\python.exe" if os.name == "nt" else ".venv/bin/python"
+    exe_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
     return False, ("No ffmpeg: audio sync needs it to read the sound tracks. Install it inside the "
-                   "folder with  .venv\\Scripts\\python.exe -m pip install imageio-ffmpeg  (31 MB), "
-                   "or put an ffmpeg.exe on PATH / in the KINETRACE_FFMPEG environment variable.")
+                   f"folder with  {py} -m pip install imageio-ffmpeg  (31 MB), "
+                   f"or put an {exe_name} on PATH / in the KINETRACE_FFMPEG environment variable.")
 
 
 def has_audio(path: str) -> bool | None:

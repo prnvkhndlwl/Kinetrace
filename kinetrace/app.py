@@ -176,8 +176,12 @@ class _DeviceProbe(QThread):
 
     def run(self):
         try:
-            from kinetrace.tracker import pick_device
-            self.got.emit(pick_device()[1])
+            from kinetrace.device import probe
+            # the whole hardware probe (device, GPU, driver, RAM, what is
+            # slower / off on this computer) is computed here, off the GUI
+            # thread, and cached: the status bar, Help -> System Check and the
+            # Body dialog's gating then read it without touching torch
+            self.got.emit(probe()["label"])
         except Exception as e:  # noqa: BLE001
             self.got.emit(f"device unavailable: {e}")
 
@@ -257,8 +261,10 @@ def _model_error_hint(tb: str) -> str:
                               "max retries", "timed out", "offline")):
         return ("The model could not be downloaded. Check your internet connection and try "
                 "again — the weights are only needed once, then they live in models/.")
-    if "cuda" in low and "device" in low:
-        return "The GPU could not be used. Check the NVIDIA driver, or run on CPU (slow)."
+    if ("cuda" in low and "device" in low) or "mps" in low and "not supported" in low:
+        return ("The graphics card could not be used. Help → System Check… says what was found; "
+                "update the NVIDIA driver, or run on the CPU (slow) by starting Kinetrace with "
+                "KINETRACE_DEVICE=cpu set.")
     if "no click, box or mask" in low:
         return "Press S, click the animal on the current frame, then start tracking again."
     return ""
@@ -407,8 +413,9 @@ class MainWindow(QMainWindow):
         self._fit_to_screen()
 
         self._device_label.setText("probing GPU…")
+        self._device_kind = ""            # "GPU" / "CPU" once probed: shown in the tracking speed readout
         self._dev_probe = _DeviceProbe()
-        self._dev_probe.got.connect(self._device_label.setText)
+        self._dev_probe.got.connect(self._on_device_probed)
         self._dev_probe.start()
 
         self._render_timer = QTimer(self, interval=33, timerType=Qt.CoarseTimer)
@@ -1275,6 +1282,11 @@ class MainWindow(QMainWindow):
                                   triggered=self._show_manual)
         self.act_manual.setToolTip("The full manual, written for someone new to tracking")
         m_help.addAction(self.act_manual)
+        self.act_syscheck = QAction("System &Check… (GPU, memory, what runs here)", self,
+                                    triggered=self._show_system_check)
+        self.act_syscheck.setToolTip("What this computer has (graphics card, memory, PyTorch build) and "
+                                     "which features run on it, run slower, or are switched off")
+        m_help.addAction(self.act_syscheck)
         m_help.addAction(QAction("&Keyboard && Mouse Reference…", self,
                                  triggered=self._show_hotkeys))
         # QMenu hides action tooltips unless told otherwise: every explanation
@@ -1605,6 +1617,71 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Semi-automatic mode: F tracks one frame forward and pauses; correct "
                 "anything, then F again — B still just steps back", 8000)
+
+    def _on_device_probed(self, label: str):
+        """The background probe finished: the status bar shows a coloured badge
+        - green "GPU" or amber "CPU" - with the device, and its tooltip says
+        how the two compared and what is slower or switched off here."""
+        self._device_label.setText(label)
+        try:
+            from kinetrace.device import cached_device, probe, short_status
+            if cached_device() is None:
+                return
+            p = probe()
+            gpu = p["kind"] == "gpu"
+            self._device_kind = "GPU" if gpu else "CPU"
+            name = p["gpu"] or ("Apple GPU" if p["mps"] and gpu else "")
+            if gpu:
+                text = f"● GPU  {name}"
+            else:
+                text = "● CPU" + (f"  ({name} available)" if name else "")
+            self._device_label.setText(text)
+            colour = theme.GREEN if gpu else theme.AMBER
+            self._device_label.setStyleSheet(
+                f"padding: 0 8px; color: {colour}; font-weight: 600;")
+            b = p.get("bench") or {}
+            measured = ""
+            if b.get("gpu_ms") is not None and b.get("cpu_ms") is not None:
+                measured = (f"\nMeasured: GPU {b['gpu_ms']:.1f} ms vs CPU {b['cpu_ms']:.1f} ms per pass "
+                            f"({float(b.get('speedup') or 0):.1f}x) - the faster one is used.")
+            self._device_label.setToolTip(
+                ("The models run on the GPU: " if gpu else "The models run on the CPU: ") + label
+                + measured + "\n" + short_status(p) + "\nHelp → System Check… has the details.")
+        except Exception:       # noqa: BLE001 - a badge is never worth an error
+            pass
+        if label.startswith("cpu") or label.startswith("device unavailable"):
+            self.statusBar().showMessage(
+                label + " — Help → System Check… says what that means for each feature.", 12000)
+
+    def _show_system_check(self):
+        """Help → System Check: the hardware probe in plain words (the same
+        text `python -m kinetrace --check` prints), with a Copy button for
+        support requests. Runs the probe on the worker if it has not finished."""
+        import sys
+        from PySide6.QtGui import QFont
+        from kinetrace.device import cached_device, describe
+        probe = getattr(self, "_dev_probe", None)
+        if cached_device() is None and probe is not None and probe.isRunning():
+            probe.wait(20000)
+        text = describe() if cached_device() is not None else \
+            "The hardware check has not finished yet (PyTorch is still loading). Try again in a moment."
+        dlg = QDialog(self)
+        dlg.setWindowTitle("System check")
+        dlg.setMinimumSize(640, 420)
+        lay = QVBoxLayout(dlg)
+        view = QPlainTextEdit(text)
+        view.setReadOnly(True)
+        view.setFont(QFont("Consolas" if sys.platform.startswith("win") else "Menlo", 10)
+                     if sys.platform != "linux" else QFont("Monospace", 10))
+        lay.addWidget(view)
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        copy = btns.addButton("Copy", QDialogButtonBox.ActionRole)
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
+        btns.rejected.connect(dlg.reject)
+        btns.accepted.connect(dlg.accept)
+        lay.addWidget(btns)
+        dlg.exec()
+        dlg.deleteLater()
 
     def _show_manual(self):
         """Help → User Manual (F1). Non-modal and reused, so it can stay open
@@ -2810,7 +2887,7 @@ class MainWindow(QMainWindow):
             return
         label = BACKENDS.get(backend, BACKENDS[DEFAULT_BACKEND])[2]
         if seg_is_cached(backend):
-            text = f"Loading the segmentation model ({label}) onto the GPU…"
+            text = f"Loading the segmentation model ({label})…"
         else:
             text = (f"Downloading the segmentation model ({label}) — first use only.\n"
                     "It is stored inside the tool folder (models/hf).")
@@ -4450,7 +4527,7 @@ class MainWindow(QMainWindow):
             self._model_dialog.setMinimumDuration(200)
             self._model_dialog.setValue(0)
         else:
-            self.statusBar().showMessage("Loading models onto the GPU…", 8000)
+            self.statusBar().showMessage("Loading the models…", 8000)
 
     def _on_masks(self, summaries: list):
         if self.session is not None:
@@ -4494,7 +4571,8 @@ class MainWindow(QMainWindow):
             remaining = (self.n_frames - 1 - head) / max(self._fps_ema, 1e-6)
             mins, secs = divmod(round(remaining), 60)
             eta = f"{mins} min {secs:02d} s" if mins else f"{secs} s"
-            self._track_label.setText(f"tracking {self._fps_ema:.1f} fps · ETA {eta}")
+            kind = f"{self._device_kind} · " if getattr(self, "_device_kind", "") else ""
+            self._track_label.setText(f"{kind}tracking {self._fps_ema:.1f} fps · ETA {eta}")
 
     def _render_tick(self):
         if not self._display_queue:
@@ -6521,6 +6599,13 @@ def main():
     import sys
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")   # no telemetry (see __main__.py)
     os.environ.setdefault("DO_NOT_TRACK", "1")
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # Apple GPU: unsupported ops go to the CPU
+    if "--check" in sys.argv[1:]:
+        # `python -m kinetrace --check` (run.bat / run.sh --check): the hardware
+        # report on the console, no window - what the launchers print at the end
+        # of an install and what a support request asks for
+        from kinetrace.device import cli
+        sys.exit(cli())
     # Under pythonw.exe / GUI-mode launches there is no console and
     # sys.stdout/sys.stderr are None — but torch.hub, tqdm, and warnings all
     # write there. Give them a safe sink so a Track click can't crash.

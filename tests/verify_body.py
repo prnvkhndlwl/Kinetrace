@@ -284,10 +284,13 @@ check("not in space" in r2 and "2D (image plane)" in r2,
 # --------------------------------------------------- 7. backend registry
 print("\n[7] backend registry (no network)")
 from kinetrace import bodypose                          # noqa: E402
+# The stand-in of Meta's API below runs on the CPU; the real machine gate
+# (SAM 3D Body only on an NVIDIA GPU, 'needs-gpu') is covered by verify_portable.
+os.environ["KINETRACE_ALLOW_SAM3D_CPU"] = "1"
 states = {k: bodypose.backend_status(k)[0] for k in bodypose.BACKENDS}
 check(set(bodypose.BACKENDS) >= {"sam-3d-body-dinov3", "sam-3d-body-vith", "vitpose-base"},
       "SAM 3D Body and the 2D fallback are both registered")
-check(all(s in ("ready", "download", "needs-code", "needs-weights") for s in states.values()),
+check(all(s in ("ready", "download", "needs-code", "needs-weights", "needs-gpu") for s in states.values()),
       "every backend reports a known state", str(states))
 for k, spec in bodypose.BACKENDS.items():
     why = bodypose.backend_status(k)[1]

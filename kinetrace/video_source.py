@@ -14,7 +14,6 @@ Never loads the whole video into memory. Three cooperating pieces:
 
 from __future__ import annotations
 
-import ctypes
 import os
 import queue
 import threading
@@ -28,27 +27,10 @@ from PySide6.QtCore import QThread, Signal
 
 
 def _total_ram_bytes() -> int:
-    """Physical RAM, or 0 when it cannot be determined. No new dependency:
-    ctypes on Windows, sysconf elsewhere."""
-    try:
-        if os.name == "nt":
-            class _MS(ctypes.Structure):
-                _fields_ = [("dwLength", ctypes.c_ulong),
-                            ("dwMemoryLoad", ctypes.c_ulong),
-                            ("ullTotalPhys", ctypes.c_ulonglong),
-                            ("ullAvailPhys", ctypes.c_ulonglong),
-                            ("ullTotalPageFile", ctypes.c_ulonglong),
-                            ("ullAvailPageFile", ctypes.c_ulonglong),
-                            ("ullTotalVirtual", ctypes.c_ulonglong),
-                            ("ullAvailVirtual", ctypes.c_ulonglong),
-                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
-            ms = _MS(dwLength=ctypes.sizeof(_MS))
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms)):
-                return int(ms.ullTotalPhys)
-            return 0
-        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
-    except Exception:  # noqa: BLE001 — any failure just means "unknown"
-        return 0
+    """Physical RAM, or 0 when it cannot be determined (`device.total_ram_bytes`:
+    ctypes on Windows, sysconf on macOS and Linux)."""
+    from kinetrace.device import total_ram_bytes
+    return total_ram_bytes()
 
 
 def _default_cache_bytes() -> int:

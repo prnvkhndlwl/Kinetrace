@@ -1,8 +1,16 @@
-# Installs Kinetrace from scratch on clean Ubuntu and macOS machines, the way
-# run.sh does, and runs the test suites that need no GPU and no model download.
+# Installs Kinetrace from scratch on clean Ubuntu, macOS and Windows machines,
+# the way the launchers do, and runs the test suites that need no GPU and no
+# model download. Two flavours per OS:
+#   * "system python": a Python from setup-python, the venv made by the
+#     launcher's own logic (run.sh / run.bat, --check mode: install + report,
+#     no window);
+#   * "bootstrap": the launcher is told there is no usable Python
+#     (KINETRACE_BOOTSTRAP_PYTHON=1, the same branch a machine without one
+#     takes) and must download its private copy into .venv/base - the path a
+#     novice's computer takes.
 # Started by hand (Actions tab -> "Install check" -> Run workflow) so it costs
 # no build minutes unless asked for; macOS minutes count 10x on private repos.
-name: Install check (Ubuntu / macOS)
+name: Install check (Ubuntu / macOS / Windows)
 
 on:
   workflow_dispatch:
@@ -10,14 +18,18 @@ on:
 permissions:
   contents: read
 
+env:
+  QT_QPA_PLATFORM: offscreen
+  PYTHONIOENCODING: utf-8
+
 jobs:
   install:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, ubuntu-24.04, macos-14]
+        os: [ubuntu-22.04, ubuntu-24.04, macos-14, windows-2022]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -32,27 +44,40 @@ jobs:
           sudo apt-get install -y libxcb-cursor0 libegl1 libxkbcommon-x11-0 libgl1 \
             libxkbcommon0 libdbus-1-3 libfontconfig1
 
-      - name: Install into .venv (as run.sh does; no GPU here, so the CPU / Metal build)
+      - name: The launcher installs and reports (Linux / macOS)
+        if: runner.os != 'Windows'
         run: |
-          python -m venv .venv
-          .venv/bin/python install.py
+          chmod +x run.sh Kinetrace.command
+          ./run.sh --check
+          test -f .venv/kinetrace-install.json
+
+      - name: The launcher installs and reports (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call run.bat --check
+          if not exist .venv\kinetrace-install.json exit /b 1
+
+      - name: A second launch is instant (already-complete path)
+        if: runner.os != 'Windows'
+        run: ./run.sh --check
 
       - name: The app imports
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: .venv/bin/python -c "import kinetrace.app, kinetrace.tracker, kinetrace.segmenter, kinetrace.bodypose; print('import OK')"
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
+          "$PY" -c "import kinetrace.app, kinetrace.tracker, kinetrace.segmenter, kinetrace.bodypose, kinetrace.device; print('import OK')"
+          "$PY" -m kinetrace --check
+          "$PY" -m kinetrace.convert --help
 
       - name: Test suites without GPU or model downloads
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: >
-          .venv/bin/python tests/run_suites.py
-          verify_core verify_projectfile verify_recovery verify_interop verify_stress verify_3d
-          verify_wand verify_lens verify_body verify_onbody_rules verify_sync verify_timeline_events
-          verify_ui_focus verify_display verify_multicam verify_3d_gui verify_sweep_fixes
-
-      - name: The command-line converter runs
-        run: .venv/bin/python -m kinetrace.convert --help
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
+          "$PY" tests/run_suites.py \
+            verify_portable verify_core verify_projectfile verify_recovery verify_interop verify_stress verify_3d \
+            verify_wand verify_lens verify_body verify_onbody_rules verify_sync verify_timeline_events \
+            verify_ui_focus verify_display verify_multicam verify_3d_gui verify_sweep_fixes
 
       - name: Keep the logs of failing suites
         if: failure()
@@ -61,3 +86,48 @@ jobs:
           name: suite-logs-${{ matrix.os }}
           path: tests/out/suite_*.log
           if-no-files-found: ignore
+
+  bootstrap:
+    # No Python on PATH at all: the launcher must fetch its own.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System libraries for Qt (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-cursor0 libegl1 libxkbcommon-x11-0 libgl1 \
+            libxkbcommon0 libdbus-1-3 libfontconfig1
+
+      - name: The launcher must fetch its own Python (Linux / macOS)
+        if: runner.os != 'Windows'
+        env:
+          KINETRACE_BOOTSTRAP_PYTHON: "1"     # what a machine with no usable Python looks like
+        run: |
+          chmod +x run.sh
+          ./run.sh --check
+          test -x .venv/base/bin/python3
+          .venv/bin/python -c "import sys; assert '.venv' in sys.base_prefix, sys.base_prefix; print('private python:', sys.version)"
+
+      - name: The launcher must fetch its own Python (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          KINETRACE_BOOTSTRAP_PYTHON: "1"
+        run: |
+          call run.bat --check
+          if not exist .venv\base\python.exe exit /b 1
+          .venv\Scripts\python.exe -c "import sys; assert '.venv' in sys.base_prefix, sys.base_prefix; print('private python:', sys.version)"
+
+      - name: The app imports with the private Python
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
+          "$PY" -c "import kinetrace.app, kinetrace.device; print('import OK')"
+          "$PY" tests/run_suites.py verify_portable verify_core verify_stress
