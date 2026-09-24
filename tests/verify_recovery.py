@@ -61,7 +61,7 @@ SAVE_TO = {"path": ""}
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (SAVE_TO["path"], ""))
 QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: ("", ""))
 app = QApplication.instance() or QApplication([])
-from kinetrace.app import READY, MainWindow  # noqa: E402
+from kinetrace.app import READY, TRACKING, MainWindow  # noqa: E402
 
 fails = []
 
@@ -303,6 +303,15 @@ pump(0.3)
 check(labels_seen and "never saved" in labels_seen[0], "the list names what it is", str(labels_seen))
 check(w.project is not None and w.session.n_points == 2 and w.project.dirty and w._project_id == left_id,
       "File -> Recover Unsaved Work reopens it, still unsaved")
+labels_seen.clear()
+w.state = TRACKING                     # as during a run (the gate reads only the state)
+w._apply_state()
+w._recover_dialog()
+check(not w.act_recover.isEnabled() and not labels_seen, "recovering is not offered in the middle of a run")
+w.state = READY
+w._apply_state()
+check(w.act_recover.isEnabled() and w.act_import_calib.text().replace("&", "") == "Calibration…",
+      "... and is back after it; File -> Import names its calibration entry plainly")
 close(w, QMessageBox.Discard)
 check(recovery.find(left_id) is None, "and Discard drops it")
 

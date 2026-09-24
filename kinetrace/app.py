@@ -1233,7 +1233,10 @@ class MainWindow(QMainWindow):
         self.act_export_mesh = QAction("Export &Mesh of This Frame…", self, triggered=self._export_mesh)
         self.act_export_mesh.setToolTip("Writes the volume carved at this frame (Carve Volume, Ctrl+4) as an OBJ / PLY\n"
                                         "mesh. Carve a volume at this frame first.")
-        self._m_import.insertAction(self.act_import_xyz, self.act_calib)     # the same entry, also under File
+        # the 3D menu's entry, also under File -> Import (its own action: "Import" is the submenu's word)
+        self.act_import_calib = QAction("&Calibration…", self, triggered=self._import_calibration)
+        self.act_import_calib.setToolTip(self.act_calib.toolTip())
+        self._m_import.insertAction(self.act_import_xyz, self.act_import_calib)
         for a in (self.act_sync, None, self.act_lens, self.act_wand, self.act_calib, self.act_export_cal,
                   self.act_offsets3d, None, self.act_recon, self.act_retrack, self.act_hull, None, self.act_view3d,
                   self.act_export_mesh):
@@ -1424,6 +1427,7 @@ class MainWindow(QMainWindow):
         # a further step needs (I115)
         live3d = has_video and not tracking and p is not None
         self.act_calib.setEnabled(live3d)
+        self.act_import_calib.setEnabled(live3d)
         # the two wizards stay clickable: a first-time user must be able to open
         # them and be TOLD what to prepare, not meet a greyed-out entry
         self.act_wand.setEnabled(not tracking)
@@ -1451,7 +1455,9 @@ class MainWindow(QMainWindow):
         self.act_save_as.setEnabled(has_video and not tracking)
         self.act_open.setEnabled(not tracking)
         self.act_open_proj.setEnabled(not tracking)
-        for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks):
+        # recovering replaces the project on screen: never in the middle of a run
+        for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks,
+                  self.act_recover):
             a.setEnabled(not tracking)
         self.act_undo.setEnabled(has_video and not tracking and self._undo_snap is not None)
         self.act_mark_event.setEnabled(has_video and not tracking)
@@ -5130,6 +5136,8 @@ class MainWindow(QMainWindow):
                 "restored: <b>File → Recover Unsaved Work…</b>", "info", 12000)
 
     def _recover_dialog(self) -> None:
+        if self.state == TRACKING:
+            return
         items = [r for r in recovery.scan() if not r.get("damaged")]
         if not items:
             QMessageBox.information(self, "Recover unsaved work", "There is no unsaved work to recover.")
