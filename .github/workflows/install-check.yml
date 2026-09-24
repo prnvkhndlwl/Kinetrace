@@ -1,0 +1,60 @@
+# Installs Kinetrace from scratch on clean Ubuntu and macOS machines, the way
+# run.sh does, and runs the test suites that need no GPU and no model download.
+# Started by hand (Actions tab -> "Install check" -> Run workflow) so it costs
+# no build minutes unless asked for; macOS minutes count 10x on private repos.
+name: Install check (Ubuntu / macOS)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: System libraries for Qt (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-cursor0 libegl1 libxkbcommon-x11-0 libgl1 \
+            libxkbcommon0 libdbus-1-3 libfontconfig1
+
+      - name: Install into .venv (as run.sh does; no GPU here, so the CPU / Metal build)
+        run: |
+          python -m venv .venv
+          .venv/bin/python install.py
+
+      - name: The app imports
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv/bin/python -c "import cotracker_app.app, cotracker_app.tracker, cotracker_app.segmenter, cotracker_app.bodypose; print('import OK')"
+
+      - name: Test suites without GPU or model downloads
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >
+          .venv/bin/python tests/run_suites.py
+          verify_core verify_stress verify_3d verify_wand verify_lens verify_body
+          verify_onbody_rules verify_sync verify_timeline_events verify_ui_focus
+          verify_display verify_multicam verify_3d_gui verify_sweep_fixes
+
+      - name: Keep the logs of failing suites
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-logs-${{ matrix.os }}
+          path: tests/out/suite_*.log
+          if-no-files-found: ignore

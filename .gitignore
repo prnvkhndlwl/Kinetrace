@@ -1,0 +1,35 @@
+# Kinetrace — only the app, its installer, docs and self-contained tests are
+# published. Everything below stays on the local machine.
+
+# the self-contained environment and every model / weight file (each user
+# downloads or supplies them; see THIRD_PARTY_LICENSES.md)
+.venv/
+models/
+
+# footage, projects, autosaves, calibrations, test media and results (the
+# tests generate their synthetic videos on demand)
+test_videos/
+tests/out/
+*.mp4
+*.MP4
+*.mov
+*.avi
+*.gt.npz
+*.cotrk
+*.cotracker.npz
+*.bak.npz
+*.klens.json
+*.kcal.json
+
+# skeletons a user saves from the app
+skeletons/
+
+# editor / assistant settings
+.claude/
+.vscode/
+.idea/
+
+# generated at run time
+cotracker_app/_theme_cache/
+__pycache__/
+*.pyc

@@ -1,0 +1,35 @@
+# PyTorch (torch 2.12.1 / torchvision 0.27.1) is NOT listed here: install.py
+# installs the build that fits the machine first (CUDA 13 with an NVIDIA GPU,
+# CPU on Linux without one, Metal on Apple Silicon), then this file.
+# run.bat / run.sh call install.py; to install by hand, run
+#     <venv python> install.py
+numpy
+opencv-python
+PySide6
+scipy
+# Segmentation layer (SAM 2.1 / SAM 3 via Hugging Face transformers, pure Python —
+# no CUDA extension build). Weights download into models/hf on first use.
+transformers>=5.0
+pillow
+# Sound (clap) sync of hand-started cameras (3D -> Sync Cameras): ffmpeg decodes the
+# audio tracks. imageio-ffmpeg ships a static ffmpeg binary INSIDE the venv (31 MB,
+# BSD-2 package around a GPL gyan.dev build); OpenCV's own FFmpeg cannot decode audio.
+imageio-ffmpeg==0.6.0
+# Human body layer (Body menu). The 2D backend (ViTPose + RT-DETR person boxes)
+# needs nothing beyond transformers; its weights (425 MB + 81 MB, ungated)
+# download into models/hf on first use.
+#
+# SAM 3D Body additionally needs Meta's inference code cloned into
+# models/sam-3d-body/ and its GATED weights in models/sam-3d-body-dinov3/
+# (model.ckpt AND assets/mhr_model.pt — both, the rig asset is in a sub-folder
+# and is easy to miss). These are the only pip packages that code needs; it is
+# NOT the 25-package list in Meta's INSTALL.md, because Kinetrace supplies its
+# own detector and visualiser. None of them pull torch, so the pin above
+# survives — check with `pip install --dry-run` before adding to this block.
+omegaconf
+yacs
+roma
+braceexpand
+timm
+pytorch-lightning
+termcolor

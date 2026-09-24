@@ -1,0 +1,12 @@
+# Line endings: shell scripts must stay LF (bash on Linux / macOS rejects CRLF),
+# Windows batch files CRLF; everything else is normalised by git.
+* text=auto
+*.sh text eol=lf
+*.bat text eol=crlf
+*.py text
+*.md text
+*.txt text
+*.json text
+*.png binary
+*.mp4 binary
+*.npz binary
