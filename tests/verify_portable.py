@@ -159,9 +159,21 @@ try:
         dv._write_bench({"key": "other machine", "cpu_ms": 100.0, "gpu": gpu, "gpu_ms": 5.0, "speedup": 20.0,
                          "error": ""})
         c = dv.compare(torch)
-        assert c["key"] == key and c["cpu_ms"] and c["gpu_ms"] is not None, c
+        assert c["key"] == key and c["cpu_ms"], c
         assert dv._read_bench(key) == c, "the fresh measurement is cached"
-        ok(f"GPU used only when measured faster: real ratio here {c['speedup']:.1f}x")
+        if c["gpu_ms"] is None:
+            # a GPU torch reports but that cannot run the workload (GitHub's macOS
+            # runners are virtual machines: Metal is "available" and every kernel
+            # fails) - the CPU is used and the reason is kept, never an exception
+            assert c["error"], c
+            d, label = dv.pick_device()
+            assert d == "cpu" and "could not run" in label, (d, label)
+            p4 = dv.probe(refresh=True)
+            assert p4["kind"] == "cpu" and any("could not run the models" in n for n in p4["notes"]), p4["notes"]
+            ok(f"GPU reported but unusable here ({c['error'][:60]}...): the CPU, with the reason")
+        else:
+            assert c["speedup"] is not None and c["speedup"] > 0, c
+            ok(f"GPU used only when measured faster: real ratio here {c['speedup']:.1f}x")
     else:
         c = dv.compare(torch)
         assert c["gpu"] is None and c["cpu_ms"] and c["gpu_ms"] is None

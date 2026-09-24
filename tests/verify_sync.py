@@ -278,6 +278,28 @@ wait(lambda: dlg.results is not None, 120, "sync run")
 pump(0.2)
 row = dlg.results[0]
 print(f"dialog (motion): {dlg.status.text()[:120]}")
+# Evidence for the cross-OS CI: the first run on GitHub's macOS machine found
+# nothing here although the same core call on the cv2-written clips (above) was
+# clear - so say how OpenCV sees the ffmpeg-remuxed clips on this machine, and
+# what the core says on them directly, before asserting.
+try:
+    import imageio_ffmpeg
+    print(f"  ffmpeg {imageio_ffmpeg.get_ffmpeg_version()}")
+except Exception as _e:        # noqa: BLE001
+    print(f"  ffmpeg version unknown ({_e})")
+for _name, _path in (("A", A), ("A2", A2), ("B", B), ("B2", B2)):
+    _cap = cv2.VideoCapture(_path)
+    _n, _fps = int(_cap.get(cv2.CAP_PROP_FRAME_COUNT)), _cap.get(cv2.CAP_PROP_FPS)
+    _cap.set(cv2.CAP_PROP_POS_FRAMES, 175)
+    _ok, _fr = _cap.read()
+    _cap.release()
+    print(f"  {_name}: {_n} frames @ {_fps:.3f} fps (cv2 backend {cv2.VideoCapture(_path).getBackendName()}), "
+          f"frame 175 {'decodes, mean ' + format(float(_fr.mean()), '.1f') if _ok else 'does NOT decode'}")
+_direct = sync.estimate_offsets_from_motion([A2, B2], [1.0, 1.0], (175, 325), 100)
+print(f"  core on the remuxed clips: offset {_direct[0].offset:+.1f}, verdict {_direct[0].result.verdict}, "
+      f"score {_direct[0].result.score:.2f}: {_direct[0].result.why[:100]}")
+print(f"  dialog row: offset {row.offset:+.1f}, verdict {row.result.verdict}, score {row.result.score:.2f}, "
+      f"margin {row.result.margin:.2f}")
 assert row.result.verdict == "clear" and abs(row.offset + 37) <= 0.5
 assert "clear" in dlg.table.item(0, 3).text().lower()
 # then the sound method, with the filter

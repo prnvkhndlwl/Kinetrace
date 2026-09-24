@@ -21,6 +21,9 @@ permissions:
 env:
   QT_QPA_PLATFORM: offscreen
   PYTHONIOENCODING: utf-8
+  # the suites' speed budgets (exports, project write / read) are set for a
+  # workstation; GitHub's shared 2-4 core runners are several times slower
+  KINETRACE_PERF_SCALE: "4"
 
 jobs:
   install:

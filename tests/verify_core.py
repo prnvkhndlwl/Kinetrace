@@ -136,7 +136,12 @@ t = time.perf_counter(); big.export_tsv_sparse(os.path.join(scratch, "big.tsv"))
 t = time.perf_counter(); big.export_mat(os.path.join(scratch, "big.mat")); t_mat = time.perf_counter() - t
 t = time.perf_counter(); big.save(os.path.join(scratch, "big.kinetrace")); t_proj = time.perf_counter() - t
 print(f"40k x 10 export: csv {t_csv:.2f}s, tsv {t_tsv:.2f}s, mat {t_mat:.2f}s, project {t_proj:.2f}s")
-assert t_csv < 2 and t_mat < 2 and t_proj < 2, "export too slow"
+# KINETRACE_PERF_SCALE relaxes the budgets on slow shared machines (the CI
+# workflow sets it: GitHub's shared runners missed the 2 s export budget on
+# Ubuntu 22.04 in the first cross-OS run); 1 on a workstation
+SLOW = float(os.environ.get("KINETRACE_PERF_SCALE", "1"))
+assert t_csv < 2 * SLOW and t_mat < 2 * SLOW and t_proj < 2 * SLOW, \
+    f"export too slow: csv {t_csv:.2f} s, mat {t_mat:.2f} s, project {t_proj:.2f} s (budget 2 s x {SLOW:g})"
 
 # ---- confidence, groups, events, unique names, ui_state survive a save ----
 
