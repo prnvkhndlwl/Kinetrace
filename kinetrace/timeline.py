@@ -212,10 +212,6 @@ class TimelinePanel(QWidget):
         self.sel_seg = self._animal_h() > 0
         self.update()
 
-    def selection_targets(self) -> tuple[list[int] | None, bool]:
-        """(point rows, segment) the current selection would delete. `None` rows
-        means the gesture left the lanes unspecified."""
-        return self.sel_rows, self.sel_seg
 
     def request_delete_selection(self) -> bool:
         """Delete key / menu default: ask the app to clear exactly the lanes the

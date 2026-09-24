@@ -206,15 +206,6 @@ def backend_status(key: str) -> tuple[str, str]:
     return ("download", f"{spec.label} will download {spec.size} on first use.")
 
 
-def detector_ready() -> bool:
-    return hub_cached(DETECTOR_REPO) or (MODELS_DIR / "rtdetr").is_dir()
-
-
-def available_backends() -> list[str]:
-    """Backends that could run right now (ready, or only need a download)."""
-    return [k for k in BACKENDS if backend_status(k)[0] in ("ready", "download")]
-
-
 def preferred_backend() -> str:
     """SAM 3D Body when the user has supplied code and weights -- it is the
     only backend that gives 3D from one camera -- else the ungated 2D one."""

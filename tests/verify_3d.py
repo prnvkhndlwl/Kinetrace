@@ -20,7 +20,7 @@ from kinetrace.calib import (Calibration, CameraCalibration, LWMUndistort, NoUnd
                                  OpenCVUndistort, dlt_camera_center, dlt_from_camera, dlt_project,
                                  dlt_ray, estimate_offsets, front_sign, reconstruct, sample_track, triangulate,
                                  triangulate_batch)
-from kinetrace.hull import (bounds_from_points, carve, hull_mesh, mesh_volume, render_mesh,
+from kinetrace.hull import (bounds_from_points, carve, hull_mesh, mesh_volume,
                                 save_obj, save_ply, signed_distance, surface)
 from kinetrace.project import Project
 from kinetrace.session import TrackingSession
@@ -359,9 +359,6 @@ vm = mesh_volume(verts, faces)
 assert abs(vm - fine.volume()) / fine.volume() < 0.08, (vm, fine.volume())
 save_obj(os.path.join(OUT, "test_hull.obj"), verts, faces, "test")
 save_ply(os.path.join(OUT, "test_hull.ply"), verts, faces)
-img = render_mesh(verts, faces, (640, 480), 30, 20, pts[:50], np.array([c.center() for c in cams]))
-assert img.shape == (480, 640, 3) and img.std() > 5
-cv2.imwrite(os.path.join(OUT, "test_hull.png"), img)
 # marching tetrahedra on an analytic sphere
 n = 40
 g = np.mgrid[0:n, 0:n, 0:n]

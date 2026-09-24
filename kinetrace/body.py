@@ -354,16 +354,6 @@ def _interior(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> np.ndarray:
     return np.where((denom > 1e-12) & np.isfinite(denom), ang, np.nan)
 
 
-def _axis_angle(a: np.ndarray, b: np.ndarray, up: np.ndarray) -> np.ndarray:
-    """Angle between the segment a->b and `up`, degrees."""
-    v = b - a
-    n = np.linalg.norm(v, axis=-1)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        cosang = (v @ up) / n
-    ang = np.degrees(np.arccos(np.clip(cosang, -1.0, 1.0)))
-    return np.where((n > 1e-12) & np.isfinite(n), ang, np.nan)
-
-
 def median_axis(xyz: np.ndarray, rig: BodyRig, a: str, b: str) -> np.ndarray | None:
     """Median unit vector from joint reference `a` to `b` over every frame
     that has both. Median, not mean, so one frame with a swapped limb cannot
@@ -840,8 +830,6 @@ class BodyTrack:
             return []
         return [p for p in range(self.n_people) if np.isfinite(self.score[frame, p])]
 
-    def pose2d(self, frame: int, person: int = 0) -> np.ndarray | None:
-        return self.joints2d[frame, person] if self.has(frame, person) else None
 
     def has_mesh(self, frame: int | None = None, person: int = 0) -> bool:
         if self.faces is None or not self.mesh:

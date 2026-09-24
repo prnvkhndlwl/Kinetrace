@@ -724,8 +724,6 @@ class VideoCanvas(QGraphicsView):
             self._motion.ghost_next = None
             self._motion.update()
 
-    def trail_settings(self) -> tuple[int, bool, bool]:
-        return self._trail_len, self._trail_future, self._onion
 
     def polygon_in_progress(self) -> bool:
         return bool(self._poly_pts)

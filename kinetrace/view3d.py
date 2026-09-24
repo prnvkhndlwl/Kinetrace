@@ -419,8 +419,6 @@ class View3D(QWidget):
         self.info.setText(info)
         self.request_render()
 
-    def set_info(self, info: str) -> None:
-        self.info.setText(info)
 
     def request_render(self) -> None:
         if not self._timer.isActive():

@@ -420,16 +420,10 @@ from kinetrace.session import SCHEMA_VERSION, TrackingSession      # noqa: E402
 check(SCHEMA_VERSION >= 4, "session schema bumped for the body layer", str(SCHEMA_VERSION))
 s = TrackingSession("walker.mp4", sh.T, sh.FPS, sh.W, sh.H)
 check(not s.has_body() and s.body is None, "a fresh session has no body track")
-bt = s.ensure_body(mhr, 1, "unit test")
+bt = s.body = body.BodyTrack(s.n_frames, mhr, 1)
 for t in range(sh.T):
     bt.set_person(t, 0, joints3d=X[t], joints2d=U[t], conf=np.ones(mhr.n_joints), score=0.9)
 check(s.has_body() and len(s.body_frames()) == sh.T, "session reports its body track")
-again = s.ensure_body(mhr, 1)
-check(again is bt, "ensure_body reuses a matching track")
-swapped = s.ensure_body(coco, 1)
-check(swapped is not bt and swapped.rig.name == "coco17",
-      "a different rig replaces the track rather than mixing joint sets")
-s.body = bt
 
 snap = s.snapshot()
 s.clear_body_window(0, 49)

@@ -183,13 +183,6 @@ class Project:
             return None
         return local
 
-    def frame_for(self, i: int, frame: int | None = None) -> int | None:
-        """Frame in view `i` matching the active view's `frame` (default: the
-        active session's current frame)."""
-        if frame is None:
-            s = self.session
-            frame = s.current_frame if s is not None else 0
-        return self.map_frame(self.active, i, frame)
 
     def align_to(self, i: int, shown_frame: int, active_frame: int) -> float:
         """Set view `i`'s offset so that `shown_frame` in it lines up with
@@ -321,19 +314,6 @@ class Project:
             self.active -= 1
         self.dirty = True
 
-    def rename_view(self, i: int, name: str) -> str:
-        """Rename with collision protection — the names become export column
-        prefixes, so two views may not share one."""
-        name = (name or "").strip() or default_view_name(i)
-        taken = {n for j, n in enumerate(self.names) if j != i}
-        if name in taken:
-            k = 2
-            while f"{name} ({k})" in taken:
-                k += 1
-            name = f"{name} ({k})"
-        self.names[i] = name
-        self.sessions[i].dirty = True
-        return name
 
     def set_active(self, i: int) -> int | None:
         """Switch the working view. Returns the frame the new view should show

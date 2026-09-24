@@ -338,14 +338,6 @@ def mesh_volume(verts: np.ndarray, faces: np.ndarray) -> float:
     return float(abs(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6.0)
 
 
-def vertex_normals(verts: np.ndarray, faces: np.ndarray) -> np.ndarray:
-    n = np.zeros_like(verts)
-    fn = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
-    for k in range(3):
-        np.add.at(n, faces[:, k], fn)
-    return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
-
-
 # ---------------------------------------------------------------- file I/O
 
 
@@ -367,57 +359,6 @@ def save_ply(path, verts: np.ndarray, faces: np.ndarray) -> None:
 
 
 # ------------------------------------------------------------ quick render
-
-
-def render_mesh(verts: np.ndarray, faces: np.ndarray, size: tuple[int, int] = (900, 700),
-                azimuth: float = 35.0, elevation: float = 25.0, points: np.ndarray | None = None,
-                cameras: np.ndarray | None = None, up: int = 2, color=(120, 190, 240),
-                bg=(24, 26, 30)) -> np.ndarray:
-    """Software-rendered BGR image of the mesh (painter's algorithm, Lambert
-    shading), optionally with landmark points and camera positions. Used for
-    report figures and the in-app 3D view; no OpenGL needed."""
-    W, H = size
-    img = np.full((H, W, 3), bg, np.uint8)
-    if len(verts) == 0:
-        return img
-    R = _view_rotation(azimuth, elevation, up)
-    allpts = [verts]
-    if points is not None and len(points):
-        allpts.append(np.asarray(points, np.float64).reshape(-1, 3))
-    centre = np.concatenate(allpts).mean(axis=0) if points is None else np.asarray(verts).mean(axis=0)
-    span = np.linalg.norm(verts - centre, axis=1).max() * 2.2 + 1e-9
-    scale = min(W, H) / span
-
-    def to_screen(p):
-        q = (np.asarray(p, np.float64).reshape(-1, 3) - centre) @ R.T
-        sx = W / 2 + q[:, 0] * scale
-        sy = H / 2 - q[:, 1] * scale
-        return np.column_stack([sx, sy]), q[:, 2]
-
-    fn = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
-    fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
-    light = np.array([0.3, 0.5, 0.8])
-    light /= np.linalg.norm(light)
-    shade = np.clip(0.25 + 0.75 * np.clip((fn @ R.T) @ light, 0, 1), 0, 1)
-    scr, depth = to_screen(verts)
-    fd = depth[faces].mean(axis=1)
-    order = np.argsort(fd)                          # far first
-    col = np.array(color, np.float64)
-    for k in order:
-        tri = np.round(scr[faces[k]]).astype(np.int32)
-        c = (col[::-1] * shade[k]).astype(int).tolist()   # BGR
-        cv2.fillConvexPoly(img, tri, c, lineType=cv2.LINE_AA)
-    if cameras is not None and len(cameras):
-        cs, _ = to_screen(cameras)
-        for (x, y) in cs:
-            if 0 <= x < W and 0 <= y < H:
-                cv2.drawMarker(img, (int(x), int(y)), (80, 80, 255), cv2.MARKER_TRIANGLE_UP, 14, 2)
-    if points is not None and len(points):
-        ps, _ = to_screen(points)
-        for (x, y) in ps:
-            if np.isfinite(x) and np.isfinite(y):
-                cv2.circle(img, (int(x), int(y)), 4, (60, 230, 120), -1, cv2.LINE_AA)
-    return img
 
 
 def _view_rotation(azimuth: float, elevation: float, up: int = 2) -> np.ndarray:

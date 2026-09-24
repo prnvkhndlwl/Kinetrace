@@ -1243,14 +1243,6 @@ def reconstruct(sessions: list, calib: Calibration, rates: list[float], offsets:
                           err.astype(np.float32))
 
 
-def mean_residual(sessions: list, calib: Calibration, rates: list[float], offsets: list[float],
-                  t_range: tuple[int, int], names: list[str] | None = None,
-                  min_cams: int = 2, _prep: "_Prepared | None" = None) -> float:
-    rec = reconstruct(sessions, calib, rates, offsets, t_range, names, min_cams, _prep=_prep)
-    r = rec.residual[np.isfinite(rec.residual)]
-    return float(r.mean()) if len(r) else float("inf")
-
-
 def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], offsets: list[float],
                      t_range: tuple[int, int], names: list[str] | None = None,
                      search: float = 1.0, step: float = 0.05, refine: float = 0.005,

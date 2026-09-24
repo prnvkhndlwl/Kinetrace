@@ -22,7 +22,16 @@ import numpy as np
 from kinetrace import wand
 from kinetrace.calib import Calibration, NoUndistort, OpenCVUndistort, dlt_project, triangulate_batch
 from kinetrace.wand import (WandError, align_axes, align_gravity, calibrate_wand, export_dlt_csv,
-                                load_json, save_json, transform_result)
+                                transform_result)
+
+
+def kcal_round_trip(res, path):
+    """The one calibration file the app writes and reads (.kcal.json)."""
+    import json
+    from kinetrace.calibwizard import calibration_to_kcal, load_kcal
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(calibration_to_kcal(res.to_calibration()), fh)
+    return load_kcal(path)
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(OUT, exist_ok=True)
@@ -266,15 +275,14 @@ export_dlt_csv(res_ax, csv_path, pixel_origin_out=0.0)
 raw0 = np.genfromtxt(csv_path, delimiter=",")
 assert np.allclose(raw0[:, 2], res_ax.cameras[2].coefs, rtol=1e-9, atol=1e-9)
 json_path = os.path.join(OUT, "wand_test.kcal.json")
-save_json(res_ax, json_path)
-cal2 = load_json(json_path)
+cal2 = kcal_round_trip(res_ax, json_path)
 assert len(cal2) == 5 and cal2.unit == "m"
 for c in range(5):
     assert np.allclose(cal2.cameras[c].coefs, res_ax.cameras[c].coefs)
     assert cal2.cameras[c].width == sizes[c][0] and cal2.cameras[c].pixel_origin == 0.0
     assert isinstance(cal2.cameras[c].undistort, NoUndistort)
     assert np.abs(cal2.cameras[c].project(X) - res_ax.cameras[c].project(X)).max() < 1e-9
-print("export_dlt_csv (pixel_origin 1 and 0) and save_json/load_json round trips OK")
+print("export_dlt_csv (pixel_origin 1 and 0) and .kcal.json round trips OK")
 
 # ---- transform_result consistency ------------------------------------------------
 Rw, _ = look_at(np.array([1.0, 2.0, 0.5]), np.zeros(3))
@@ -312,7 +320,7 @@ res_dg, _ = align_gravity(res_d, drop_uv, fps)
 for c in range(5):
     pe = np.abs(res_dg.cameras[c].project(drop_xyz[:5] - drop_xyz[0]) - project(drop_xyz[:5], c, 0.0))
     assert np.nanmax(pe) < 1.5, (c, np.nanmax(pe))               # K + dist + DLT agree with the truth
-cal_d = load_json((save_json(res_d, json_path), json_path)[1])
+cal_d = kcal_round_trip(res_d, json_path)
 assert isinstance(cal_d.cameras[0].undistort, OpenCVUndistort)
 assert rd["distortion_estimated_per_camera"] == [True] * 5
 

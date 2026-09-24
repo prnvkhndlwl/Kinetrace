@@ -68,7 +68,6 @@ Conventions
 from __future__ import annotations
 
 import copy
-import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -1279,51 +1278,3 @@ def export_dlt_csv(res_or_cal, path, pixel_origin_out: float = 1.0) -> None:
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
 
 
-def save_json(res: WandResult, path) -> None:
-    """Kinetrace calibration file (`*.kcal.json`): sizes, K, R, t, distortion,
-    DLT coefficients (0-based pixels), unit and the report."""
-    d = {"format": "kinetrace-calibration", "version": 1, "unit": res.unit,
-         "pixel_origin": 0.0, "y_flip": False, "source": "wand (Kinetrace)",
-         "cameras": [{"width": int(cam.width), "height": int(cam.height),
-                      "K": res.K[c].tolist(), "R": res.R[c].tolist(), "t": res.t[c].tolist(),
-                      "dist": res.dist[c].tolist(), "coefs": np.asarray(cam.coefs).tolist(),
-                      "rmse": (float(cam.rmse) if np.isfinite(cam.rmse) else None)}
-                     for c, cam in enumerate(res.cameras)],
-         "report": _jsonable(res.report)}
-    Path(path).write_text(json.dumps(d, indent=1), encoding="utf-8")
-
-
-def load_json(path) -> Calibration:
-    """Read a `*.kcal.json` back as a `calib.Calibration` (`OpenCVUndistort`
-    when the camera carries distortion, else `NoUndistort`)."""
-    d = json.loads(Path(path).read_text(encoding="utf-8"))
-    if d.get("format") != "kinetrace-calibration":
-        raise ValueError(f"{Path(path).name}: not a Kinetrace calibration file")
-    po = float(d.get("pixel_origin", 0.0))
-    yf = bool(d.get("y_flip", False))
-    cams = []
-    for cd in d["cameras"]:
-        dist = np.asarray(cd.get("dist", []), np.float64)
-        K = np.asarray(cd["K"], np.float64)
-        und = OpenCVUndistort(K, dist) if dist.size and np.any(dist != 0) else NoUndistort()
-        rm = cd.get("rmse")
-        cams.append(CameraCalibration(np.asarray(cd["coefs"], np.float64).reshape(11), int(cd["width"]),
-                                      int(cd["height"]), und, po, yf,
-                                      float(rm) if rm is not None else float("nan")))
-    return Calibration(cams, str(d.get("unit", "")), str(d.get("source", Path(path).name)))
-
-
-def _jsonable(x):
-    if isinstance(x, dict):
-        return {str(k): _jsonable(v) for k, v in x.items()}
-    if isinstance(x, (list, tuple)):
-        return [_jsonable(v) for v in x]
-    if isinstance(x, np.ndarray):
-        return _jsonable(x.tolist())
-    if isinstance(x, (np.floating, float)):
-        return float(x) if np.isfinite(x) else None
-    if isinstance(x, (np.integer,)):
-        return int(x)
-    if isinstance(x, np.bool_):
-        return bool(x)
-    return x

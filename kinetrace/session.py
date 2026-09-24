@@ -174,9 +174,6 @@ class AnimalMeta:
         x0, y0, x1, y1 = (float(v) for v in box)
         self.boxes[int(frame)] = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
 
-    def clear_frame(self, frame: int) -> None:
-        self.prompts.pop(int(frame), None)
-        self.boxes.pop(int(frame), None)
 
     def has_prompt(self, frame: int) -> bool:
         return bool(self.prompts.get(int(frame))) or int(frame) in self.boxes
@@ -587,9 +584,6 @@ class TrackingSession:
         rows = np.nonzero(self.tracked.any(axis=1))[0]
         return int(rows[-1]) if len(rows) else None
 
-    def tracked_count_after(self, frame: int) -> int:
-        """How many already-tracked cells a run starting at `frame` could overwrite."""
-        return int(self.tracked[frame + 1:].sum())
 
     # ---------------------------------------------------------------- animal
 
@@ -604,19 +598,6 @@ class TrackingSession:
 
     # ------------------------------------------------------------------ body
 
-    def ensure_body(self, rig, n_people: int = 1, backend: str = "") -> BodyTrack:
-        """The body track, made on demand. A run with a different rig or a
-        different number of people REPLACES it: the arrays are shaped by both,
-        and quietly keeping half of an old run under a new joint set would put
-        the wrong name on every column."""
-        rig_name = getattr(rig, "name", str(rig))
-        if (self.body is None or self.body.n_frames != self.n_frames
-                or self.body.rig.name != rig_name or self.body.n_people != int(n_people)):
-            self.body = BodyTrack(self.n_frames, rig, n_people)
-        if backend:
-            self.body.backend = backend
-        self._touch()
-        return self.body
 
     def clear_body(self) -> None:
         self.body = None
