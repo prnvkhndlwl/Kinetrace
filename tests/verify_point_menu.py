@@ -25,9 +25,8 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 VID = os.path.join(ROOT, "test600.mp4")
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(VID)
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -238,7 +237,5 @@ print("canvas entries untouched OK")
 win._dev_probe.wait(30000)
 win.close()
 app.processEvents()
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+forget_recovery(VID)
 print("verify_point_menu PASSED")

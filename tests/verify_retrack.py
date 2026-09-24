@@ -25,6 +25,7 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from _clean import forget_recovery  # noqa: E402
 from kinetrace.calib import Calibration, CameraCalibration, NoUndistort, dlt_from_camera
 from kinetrace.project import Project
 from kinetrace.session import TrackingSession
@@ -94,11 +95,10 @@ for f in range(SLID[0], SLID[1] + 1):
     sc.tracks[f, SLID_PID] = truth[SLID_CAM][f, SLID_PID] + [25.0, 0.0]
 proj = Project(sessions, ["camA", "camB", "camC"], [0.0, 0.0, 0.0])
 proj.calibration = Calibration(cams)
-PROJ = os.path.join(OUT, "retrack.cotrk")
-proj.save_npz(PROJ)
+PROJ = os.path.join(OUT, "retrack.kinetrace")
+proj.save(PROJ)
 for p in paths:
-    if os.path.exists(p + ".cotracker.npz"):
-        os.remove(p + ".cotracker.npz")
+    forget_recovery(p)
 
 ANSWERS = {"question": QMessageBox.Yes}
 QMessageBox.question = staticmethod(lambda *a, **k: ANSWERS["question"])
@@ -159,7 +159,7 @@ before = retrack.cells_summary(p, plan)
 assert before["median_px"] > thr[SLID_CAM], before
 assert win.act_retrack.isEnabled()
 # nothing to do on a clean rig: the planner says so
-clean = Project.load_npz(PROJ)
+clean = Project.load(PROJ)
 clean.calibration = Calibration(cams)
 clean.sessions[SLID_CAM].tracks[SLID[0]:SLID[1] + 1, SLID_PID] = truth[SLID_CAM][SLID[0]:SLID[1] + 1, SLID_PID]
 from kinetrace.calib import reconstruct  # noqa: E402
@@ -222,6 +222,5 @@ print("Undo answer restores everything OK")
 win.close()
 pump(0.3)
 for pth in paths:
-    if os.path.exists(pth + ".cotracker.npz"):
-        os.remove(pth + ".cotracker.npz")
+    forget_recovery(pth)
 print("verify_retrack PASSED")

@@ -18,6 +18,7 @@ sys.stdout.reconfigure(errors="replace")
 import cv2
 import numpy as np
 
+from _clean import forget_recovery  # noqa: E402
 from kinetrace import sync
 
 OUT = os.path.join(ROOT, "tests", "out")
@@ -320,7 +321,5 @@ pump(0.3)
 print("the sync dialog names the silent file (I11) and centres on the instant on screen (I12) OK")
 win.close()
 pump(0.3)
-for f in (A + ".cotracker.npz", B + ".cotracker.npz", A2 + ".cotracker.npz", B2 + ".cotracker.npz"):
-    if os.path.exists(f):
-        os.remove(f)
+forget_recovery(A, B, A2, B2)
 print("verify_sync PASSED")

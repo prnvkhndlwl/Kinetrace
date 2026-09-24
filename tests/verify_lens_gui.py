@@ -25,6 +25,7 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
 
+from _clean import forget_recovery  # noqa: E402
 from kinetrace.calib import CameraCalibration, OpenCVUndistort, dlt_from_camera
 from kinetrace.project import Project
 from kinetrace.session import TrackingSession
@@ -151,11 +152,10 @@ for c, cal in enumerate(cams):
     render_board_video(bv, Ks[c], DIST, 80, seed=20 + c)
     board_videos.append(bv)
 proj = Project(sessions, [f"cam{c + 1}" for c in range(N_CAM)], [0, 0, 0])
-PROJ = os.path.join(SCRATCH, "lens_gui.cotrk")
-proj.save_npz(PROJ)
+PROJ = os.path.join(SCRATCH, "lens_gui.kinetrace")
+proj.save(PROJ)
 for p in paths:
-    if os.path.exists(p + ".cotracker.npz"):
-        os.remove(p + ".cotracker.npz")
+    forget_recovery(p)
 
 # ---- the app -----------------------------------------------------------------
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
@@ -546,8 +546,8 @@ assert rep0["reproj_rmse_all"] > 2 * rep["reproj_rmse_all"] or max(err_without) 
 p.lenses = saved_lenses
 
 # ---- project round trip of the profiles ---------------------------------------------
-p.save_npz(PROJ)
-back = Project.load_npz(PROJ)
+p.save(PROJ)
+back = Project.load(PROJ)
 assert len(back.lenses) == N_CAM and all(l is not None for l in back.lenses)
 assert np.allclose(back.lenses[2].K, p.lenses[2].K) and back.lenses[2].report["verdict"] == "good"
 print("project round trip of lens profiles OK")
@@ -556,6 +556,5 @@ win._dev_probe.wait(60000)
 win.close()
 pump(0.2)
 for pth in paths:
-    if os.path.exists(pth + ".cotracker.npz"):
-        os.remove(pth + ".cotracker.npz")
+    forget_recovery(pth)
 print("LENS GUI PASSED")

@@ -55,6 +55,7 @@ if os.path.isdir(OUT):
     shutil.rmtree(OUT, ignore_errors=True)
 os.makedirs(OUT, exist_ok=True)
 os.makedirs(MEDIA, exist_ok=True)
+os.environ["KINETRACE_RECOVERY_DIR"] = os.path.join(OUT, "recovery")
 
 import numpy as np  # noqa: E402
 from PySide6.QtCore import QPoint, QPointF, Qt, QTimer  # noqa: E402
@@ -95,15 +96,7 @@ for _a in sys.argv:
 
 
 def _clean_autosaves():
-    for p in (VID, VID_B):
-        if os.path.exists(p + ".cotracker.npz"):
-            os.remove(p + ".cotracker.npz")
-    for f in os.listdir(MEDIA):
-        if f.endswith(".cotracker.npz"):
-            try:
-                os.remove(os.path.join(MEDIA, f))
-            except OSError:
-                pass
+    shutil.rmtree(os.environ["KINETRACE_RECOVERY_DIR"], ignore_errors=True)
 
 
 _clean_autosaves()
@@ -1121,7 +1114,7 @@ try:
     # ---------------------------------------------------------------- calibrated
     if want("calibrated"):
         new_state("calibrated")
-        PROJ = os.path.join(ROOT, "tests", "out", "test3d_gui.cotrk")
+        PROJ = os.path.join(ROOT, "tests", "out", "test3d_gui.kinetrace")
         CSV = os.path.join(ROOT, "tests", "out", "test3d_gui_dltCoefs.csv")
         if not (os.path.exists(PROJ) and os.path.exists(CSV)):
             rec("skip", why="run tests/verify_3d_gui.py once to build the 3-camera project")

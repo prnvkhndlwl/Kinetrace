@@ -413,7 +413,7 @@ cap.release()
 check(ok_read and nfr >= N_POSE - 2, "the video is playable and the right length", str(nfr))
 
 print("\n[9] project round trip")
-proj = OUT / "body_gui.cotrk"
+proj = OUT / "body_gui.kinetrace"
 win.project_path = proj
 win._save_project()
 app.processEvents()
@@ -597,10 +597,8 @@ win.close()
 app.processEvents()
 check(True, "closed cleanly")
 
-for leftover in (VID.with_suffix(VID.suffix + ".cotracker.npz"),
-                 VID_B.with_suffix(VID_B.suffix + ".cotracker.npz")):
-    if leftover.exists():
-        leftover.unlink()
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(VID, VID_B)
 
 print("\n" + "=" * 62)
 if fails:

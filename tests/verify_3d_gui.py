@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
 
+from _clean import forget_recovery  # noqa: E402
 from kinetrace.calib import Calibration, CameraCalibration, NoUndistort, dlt_from_camera
 from kinetrace.project import Project
 from kinetrace.session import TrackingSession
@@ -92,13 +93,12 @@ for c, cal in enumerate(cams):
     paths.append(p)
 proj = Project(sessions, ["camA", "camB", "camC"], [round(o) for o in TRUE_OFF])
 assert proj.rates == RATES, proj.rates
-PROJ = os.path.join(SCRATCH, "test3d_gui.cotrk")
-proj.save_npz(PROJ)
+PROJ = os.path.join(SCRATCH, "test3d_gui.kinetrace")
+proj.save(PROJ)
 csv = os.path.join(SCRATCH, "test3d_gui_dltCoefs.csv")
 np.savetxt(csv, np.stack([c.coefs for c in cams], 1), delimiter=",", fmt="%.10g")
 for p in paths:
-    if os.path.exists(p + ".cotracker.npz"):
-        os.remove(p + ".cotracker.npz")
+    forget_recovery(p)
 
 # ---- the app ---------------------------------------------------------------
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
@@ -378,10 +378,10 @@ assert os.path.exists(os.path.join(SCRATCH, "test3d_gui_all_xyz.csv"))
 print("exports OK (xyz CSV + residual sidecar, OBJ mesh, Everything)")
 
 # project round trip keeps calibration, fractional offsets, rates and the 3D result
-QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (PROJ, "Kinetrace project (*.cotrk)"))
+QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (PROJ, "Kinetrace project (*.kinetrace)"))
 win._save_project_as()
 pump()
-back = Project.load_npz(PROJ)
+back = Project.load(PROJ)
 assert back.calibration is not None and len(back.calibration) == 3
 assert np.allclose(back.offsets, p.offsets) and back.rates == RATES
 assert back.reconstruction is not None and np.allclose(back.reconstruction.xyz, r1.xyz, equal_nan=True)
@@ -396,6 +396,5 @@ assert not win.view3d.isVisible() and not win.act_view3d.isChecked()
 win._dev_probe.wait(15000)
 win.close()
 for p_ in paths:
-    if os.path.exists(p_ + ".cotracker.npz"):
-        os.remove(p_ + ".cotracker.npz")
+    forget_recovery(p_)
 print("VERIFY 3D GUI PASSED")

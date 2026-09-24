@@ -20,14 +20,13 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
 
+from _clean import forget_recovery  # noqa: E402
 from kinetrace import theme
 
 VID = os.path.join(ROOT, "test600.mp4")
 if not os.path.exists(VID):
     sys.exit("test600.mp4 missing — python make_test_video.py test600.mp4 --seed 0")
-for stale in (VID + ".cotracker.npz",):
-    if os.path.exists(stale):
-        os.remove(stale)
+forget_recovery(VID)
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -353,6 +352,5 @@ print("an open menu keeps the keyboard: Escape closes it, nothing acts behind it
 
 win._dev_probe.wait(15000)
 win.close()
-if os.path.exists(VID + ".cotracker.npz"):
-    os.remove(VID + ".cotracker.npz")
+forget_recovery(VID)
 print("UI FOCUS PASSED")

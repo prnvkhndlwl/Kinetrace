@@ -18,9 +18,8 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 VID = os.path.join(ROOT, "test600.mp4")
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(VID)
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -269,7 +268,5 @@ print("bones tick OK: honoured with View -> bones off")
 win._dev_probe.wait(30000)
 win.close()
 app.processEvents()
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+forget_recovery(VID)
 print("verify_render PASSED")

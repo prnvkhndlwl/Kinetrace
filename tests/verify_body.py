@@ -416,8 +416,7 @@ check(bodyview.compose_side_by_side(frame, empty, 3, 0).shape[1] == frame.shape[
 
 # --------------------------------------------------- 10. session and undo
 print("\n[10] session integration")
-from kinetrace.session import SCHEMA_VERSION, TrackingSession      # noqa: E402
-check(SCHEMA_VERSION >= 4, "session schema bumped for the body layer", str(SCHEMA_VERSION))
+from kinetrace.session import TrackingSession                      # noqa: E402
 s = TrackingSession("walker.mp4", sh.T, sh.FPS, sh.W, sh.H)
 check(not s.has_body() and s.body is None, "a fresh session has no body track")
 bt = s.body = body.BodyTrack(s.n_frames, mhr, 1)
@@ -436,17 +435,17 @@ s.restore(snap)
 check(s.body is not None and s.body.n_posed() == sh.T,
       "undo brings back a track that had been removed entirely")
 
-p = OUT / "body_session.npz"
-s.save_npz(p)
-s2 = TrackingSession.load_npz(p)
+p = OUT / "body_session.kinetrace"
+s.save(p)
+s2 = TrackingSession.load(p)
 check(s2.body is not None and s2.body.n_posed() == sh.T
       and s2.body.rig.name == "mhr70" and s2.body.has_3d,
-      "session npz round trip keeps the body track")
+      "project file round trip keeps the body track")
 check(np.allclose(s2.body.joints3d, s.body.joints3d, equal_nan=True),
       "session round trip is bit-faithful")
 s3 = TrackingSession("other.mp4", sh.T, sh.FPS, sh.W, sh.H)
-s3.save_npz(OUT / "body_none.npz")
-check(TrackingSession.load_npz(OUT / "body_none.npz").body is None,
+s3.save(OUT / "body_none.kinetrace")
+check(TrackingSession.load(OUT / "body_none.kinetrace").body is None,
       "a session with no body track loads as None")
 s.export_body_joints_csv(OUT / "sess_joints.csv")
 s.export_body_angles_csv(OUT / "sess_angles.csv")

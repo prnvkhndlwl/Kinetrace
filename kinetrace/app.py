@@ -14,7 +14,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer, QThread, Signal
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QRect, QSettings, Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, QApplication, QDialog, QDialogButtonBox,
                                QDockWidget, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog,
@@ -33,7 +33,10 @@ from kinetrace.project import MAX_VIEWS, REFERENCE_VIEW, Project
 from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_token,
                                      model_is_cached as seg_is_cached, preferred_backend,
                                      save_token, working_size)
-from kinetrace.session import AUTOSAVE_SUFFIX, PROJECT_SUFFIX, TrackingSession
+from kinetrace import projectfile, recovery
+from kinetrace.session import TrackingSession
+
+PROJECT_SUFFIX = projectfile.SUFFIX
 from kinetrace.viewgrid import ViewGrid, caption_for
 from kinetrace.skeletons import all_templates, save_user_template
 from kinetrace.theme import apply_theme
@@ -299,6 +302,24 @@ def _retire(th) -> None:
         th.finished.connect(lambda t=th: _ORPHANS.remove(t) if t in _ORPHANS else None)
 
 
+class _SaveWorker(QThread):
+    """Writes a frozen project off the GUI thread (projectfile.write: zip,
+    temp file, os.replace). Autosave does not wait for it; Save does, while
+    the window keeps repainting."""
+    done = Signal(bool, str)
+
+    def __init__(self, frozen, path, **kw):
+        super().__init__()
+        self._frozen, self._path, self._kw = frozen, path, kw
+
+    def run(self):
+        try:
+            projectfile.write(self._frozen, self._path, **self._kw)
+            self.done.emit(True, "")
+        except Exception as e:      # noqa: BLE001 - reported to the user, never silent
+            self.done.emit(False, f"{type(e).__name__}: {e}")
+
+
 # ui_state entries that belong to the USER (tools, display), not to one camera:
 # carried across a camera switch (I50). Frame, selection and zoom stay per camera.
 GLOBAL_UI_KEYS = ("follow", "autopause", "roi", "track_mode", "marker_size", "show_mask", "mask_opacity",
@@ -341,6 +362,15 @@ class MainWindow(QMainWindow):
         self.current = 0
         self.selected: int | None = None
         self.project_path: Path | None = None
+        # who this project is on disk: the id inside the file (recovery is
+        # found by it, wherever the file moves) and the save it came from
+        self._project_id = projectfile.new_id()
+        self._saved_at: str | None = None
+        self._save_worker: _SaveWorker | None = None
+        self._saving = False
+        self._recovery_sig = None
+        self._camera_entries: list = []
+        self._project_dir: Path | None = None
         self._undo_snap = None
         self._display_queue: deque = deque()
         self._fps_ema = 0.0
@@ -384,6 +414,7 @@ class MainWindow(QMainWindow):
         self._autosave_timer = QTimer(self, interval=30_000)
         self._autosave_timer.timeout.connect(self._autosave)
         self._autosave_timer.start()
+        QTimer.singleShot(2500, self._announce_recovery)
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_tick)
 
@@ -997,13 +1028,16 @@ class MainWindow(QMainWindow):
                                 triggered=self._save_project)
         self.act_save_as = QAction("Save Project &As…", self, shortcut=QKeySequence("Ctrl+Shift+S"),
                                    triggered=self._save_project_as)
+        self.act_recover = QAction("&Recover Unsaved Work…", self, triggered=self._recover_dialog)
+        self.act_recover.setToolTip("Work that was never saved (the program closed, or you chose not to "
+                                    "save) is kept in Kinetrace's recovery folder: open it from here")
         self.act_export = QAction("&Export Tracks…", self, shortcut=QKeySequence("Ctrl+E"),
                                   triggered=self._export_dialog)
         self.act_overlay = QAction("Export Overlay &Video…", self, triggered=self._export_overlay)
         self.act_overlay.setToolTip("An MP4 with markers, names, skeleton, silhouette, trails, frame "
                                     "counter, events and notes drawn on it — for talks and for checking "
                                     "a result without the app")
-        for a in (self.act_open, self.act_open_proj, None, self.act_save, self.act_save_as,
+        for a in (self.act_open, self.act_open_proj, self.act_recover, None, self.act_save, self.act_save_as,
                   None, self.act_export, self.act_overlay):
             m_file.addSeparator() if a is None else m_file.addAction(a)
 
@@ -1528,7 +1562,6 @@ class MainWindow(QMainWindow):
         self._point_backend = key
         if self.session is not None:
             self.session.ui_state["point_backend"] = key
-            self.session.dirty = True
         self.statusBar().showMessage(
             "Point model: AllTracker — applies to the next Track run" if key == "alltracker"
             else "Point model: CoTracker3 — applies to the next Track run", 5000)
@@ -1601,7 +1634,7 @@ class MainWindow(QMainWindow):
     def _attach_video(self, info: VideoInfo, then=None):
         """Open `info` as a brand-new single-camera project (extra cameras are
         added afterwards with `_add_video_dialog`)."""
-        self._autosave()  # don't lose the previous session when switching videos
+        self._leave_project()   # unsaved work -> recovery, where the user was -> view sidecar
         self._teardown_video()
         self._wand_result = (None, None)      # a new project: no wand run belongs to it (I33)
         self.project = Project([TrackingSession(info.path, info.n_frames, info.fps,
@@ -1618,9 +1651,11 @@ class MainWindow(QMainWindow):
 
         if then is None:
             self.project_path = None
-            autosave = Path(info.path + AUTOSAVE_SUFFIX)
-            if autosave.exists():
-                self._maybe_resume(autosave)
+            self._project_id, self._saved_at, self._recovery_sig = projectfile.new_id(), None, None
+            self._camera_entries, self._project_dir = [], None
+            earlier = recovery.for_video(info.path)
+            if earlier is not None:
+                self._offer_video_recovery(earlier)
         else:
             then(info)
 
@@ -1959,61 +1994,47 @@ class MainWindow(QMainWindow):
         self.cameras.update_rows(list(p.names), list(p.offsets), p.active, statuses, note,
                                  rates=list(p.rates))
 
-    def _set_aside(self, autosave: Path, why: str, quiet: bool = False) -> None:
-        """Move an autosave the app cannot resume out of the way (it would be
-        overwritten by the next autosave) and say where it went (I113).
-        `quiet`: the user declined it -- a status-bar line, no dialog (I129)."""
-        aside = autosave.with_name(autosave.name.replace(AUTOSAVE_SUFFIX, "")
-                                   + f".cotracker.{time.strftime('%Y%m%d-%H%M%S')}.bak.npz")
-        base, k = aside, 2
-        while aside.exists():            # two set-asides in one second must not collide
-            aside = base.with_name(base.name.replace(".bak.npz", f"-{k}.bak.npz"))
-            k += 1
+    def _offer_video_recovery(self, info: dict) -> None:
+        """Unsaved work from an earlier session on this video (never saved as
+        a project): offer it. Declined work is kept aside, never deleted."""
+        pid = info["project_id"]
         try:
-            autosave.rename(aside)
-            where = f"It was kept as {aside.name} next to the video."
-        except OSError as e:
-            where = f"It could not be moved aside ({e}); copy it somewhere safe before working on."
-        if quiet:
-            self.statusBar().showMessage(f"{why} {where}", 10000)
-            return
-        QMessageBox.warning(self, "Earlier session not resumed", f"{why}\n\n{where}")
-
-    def _maybe_resume(self, autosave: Path):
-        try:
-            proj = Project.load_npz(autosave)   # also reads pre-v4 single-view files
-        except Exception as e:  # noqa: BLE001
-            self._set_aside(autosave, f"An earlier session for this video was found but could not be read ({e}).")
-            return
-        if proj.n_views == 0:
+            proj, _state, _meta = projectfile.read(recovery.paths(pid)[0])
+        except projectfile.ProjectFileError as e:
+            moved = recovery.quarantine(pid)
+            QMessageBox.warning(self, "Earlier work could not be read",
+                                f"Unsaved work for this video was found but could not be read ({e}).\n\n"
+                                f"It was kept as {moved.name if moved else 'is'} in the recovery folder.")
             return
         n_saved = proj.sessions[proj.active].n_frames
-        if n_saved != self.info.n_frames:
-            header = getattr(self.info, "header_frames", 0)
-            if not (header == n_saved and self.info.n_frames < n_saved):
-                self._set_aside(
-                    autosave, f"An earlier session for this video was found, but it was saved for a video "
-                              f"of {n_saved} frames and this one has {self.info.n_frames}, so its tracks "
-                              "would sit on the wrong frames.")
-                return
-            # saved when the header's frame count was trusted: the extra frames
-            # never had a picture, the tracks are fine (the project path says so too)
+        if n_saved != self.info.n_frames and not (getattr(self.info, "header_frames", 0) == n_saved
+                                                  and self.info.n_frames < n_saved):
+            moved = recovery.quarantine(pid)
+            QMessageBox.warning(self, "Earlier work not restored",
+                                f"Unsaved work for this video was found, but it was made on a video of "
+                                f"{n_saved} frames and this one has {self.info.n_frames}, so its tracks would "
+                                f"sit on the wrong frames. It was kept as {moved.name if moved else 'is'} in "
+                                "the recovery folder.")
+            return
         restored = proj.sessions[proj.active]
         tracked_n = int(restored.tracked.any(axis=1).sum())
         cams = (f", {proj.n_views} cameras" if proj.n_views > 1 else "")
         if QMessageBox.question(
-                self, "Resume session?",
-                f"A previous session for this video was found "
-                f"({restored.n_points} points, {tracked_n} tracked frames{cams}).\n\nResume it?",
+                self, "Restore unsaved work?",
+                f"Unsaved work on this video was found, from {info.get('written_at', 'earlier')} "
+                f"({restored.n_points} points, {tracked_n} tracked frames{cams}).\n\nRestore it?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
-            # the next autosave would overwrite it: keep it as a dated copy (I129)
-            self._set_aside(autosave, "Earlier session not resumed.", quiet=True)
+            recovery.decline(pid)
+            self.statusBar().showMessage(f"Earlier unsaved work not restored; it is kept in "
+                                         f"{recovery.folder()[0] / 'declined'}", 10000)
             return
         restored.video_path = self.info.path
+        self._project_id = pid                    # keep writing to the same recovery
         if proj.n_views == 1:
             self.session = restored
         else:
             self._adopt_project(proj, self.info)
+        self.project.dirty = True
 
     def _teardown_video(self):
         for th in (self._body_worker, self._body_video):
@@ -2874,8 +2895,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Display filter: {label} — what you see only; tracking and exports use the original "
                 "pixels", 5000)
-        if self.session is not None:
-            self.session.dirty = True
 
     def _set_trail_len(self, n: int, announce: bool = True):
         self._trail_len = int(n)
@@ -2884,8 +2903,6 @@ class MainWindow(QMainWindow):
         for cv in self.grid.canvases:
             cv.set_trails(self._trail_len, self._trail_future)
         self._refresh_overlay()
-        if announce and self.session is not None:
-            self.session.dirty = True
 
     def _on_trail_future(self, on: bool):
         self._trail_future = bool(on)
@@ -4676,6 +4693,7 @@ class MainWindow(QMainWindow):
         st["epipolar"] = self.act_epipolar.isChecked()
         st["display_filter"] = self._display_filter_key()
         st["region_shape"] = self._region_shape
+        st["timeline"] = [int(v) for v in self.timeline._view]
 
     def _apply_ui_state(self):
         """Restore the exact working state after a project/autosave load."""
@@ -4723,89 +4741,189 @@ class MainWindow(QMainWindow):
         cx, cy = float(st.get("center_x", 0.0)), float(st.get("center_y", 0.0))
         uz = bool(st.get("user_zoomed", False))
         QTimer.singleShot(0, lambda: self.canvas.set_view_state(zoom, cx, cy, uz))
+        tl = st.get("timeline")
+        if isinstance(tl, (list, tuple)) and len(tl) == 2:
+            try:
+                v0, v1 = int(tl[0]), int(tl[1])
+                if 0 <= v0 < v1 < self.session.n_frames:
+                    self.timeline._set_view(v0, v1 - v0)
+            except (TypeError, ValueError):
+                pass
 
-    def _autosave_path(self) -> Path | None:
-        if self.project_path is not None:
-            return self.project_path
-        # keyed on the ACTIVE camera's video, so reopening that video finds it
-        if self.info is not None:
-            return Path(self.info.path + AUTOSAVE_SUFFIX)
-        return None
+    def _signature(self):
+        """Changes since a save: every session's data_version (marking a
+        session dirty moves it on)."""
+        p = self.project
+        return None if p is None else tuple(x.data_version for x in p.sessions)
 
-    def _autosave(self):
-        # also fires mid-tracking (same GUI thread as write_segment — no race),
-        # so a crash never loses more than 30 s of tracking work
-        if self.project is not None and self.project.dirty:
+    def _ui_global_state(self) -> dict:
+        """state.json: the window-wide toggles and the layout."""
+        s = self.session
+        tools = {k: s.ui_state.get(k) for k in GLOBAL_UI_KEYS} if s is not None else {}
+        geo = self.normalGeometry() if self.isMaximized() else self.geometry()
+        return {"tools": tools, "layout": {
+            "window": [geo.x(), geo.y(), geo.width(), geo.height()], "maximized": self.isMaximized(),
+            "dock_visible": self.dock.isVisible(), "dock_floating": self.dock.isFloating(),
+            "splitter": [int(v) for v in self._split.sizes()], "solo": self.act_solo.isChecked(),
+            "step": int(self.step_spin.value()), "onboarding": self.act_onboarding.isChecked()}}
+
+    def _apply_layout(self, layout: dict | None) -> None:
+        """The panels and window as they were saved; a window rectangle that
+        no longer fits any screen (another computer, a detached monitor) is
+        ignored."""
+        if not layout:
+            return
+        try:
+            win = [int(v) for v in layout.get("window") or []]
+            if len(win) == 4 and QApplication.platformName() != "offscreen":
+                rect = QRect(*win)
+                if any(sc.availableGeometry().contains(rect.center()) and
+                       rect.width() <= sc.availableGeometry().width() and
+                       rect.height() <= sc.availableGeometry().height() for sc in QApplication.screens()):
+                    self.setGeometry(rect)
+                if layout.get("maximized"):
+                    self.showMaximized()
+            self.dock.setVisible(bool(layout.get("dock_visible", True)))
+            self.dock.setFloating(bool(layout.get("dock_floating", False)))
+            sp = layout.get("splitter")
+            if isinstance(sp, list) and len(sp) == len(self._split.sizes()) and all(int(v) >= 0 for v in sp):
+                self._split.setSizes([int(v) for v in sp])
+            if self.act_solo.isEnabled():
+                self.act_solo.setChecked(bool(layout.get("solo", False)))
+            self.step_spin.setValue(int(layout.get("step", self.step_spin.value())))
+            self.act_onboarding.setChecked(bool(layout.get("onboarding", True)))
+        except (TypeError, ValueError):
+            pass            # a hand-edited state.json with odd values: keep the defaults
+
+    def _start_writer(self, frozen, path, on_done=None, wait: bool = False, **kw):
+        """Run projectfile.write on a worker thread. wait=True returns (ok,
+        error) after it finished, the window repainting meanwhile."""
+        w = _SaveWorker(frozen, path, **kw)
+        result = {}
+
+        def finished(ok, err):
+            result.update(ok=ok, err=err)
+            if on_done is not None:
+                on_done(ok, err)
+        w.done.connect(finished)
+        self._save_worker = w
+        w.start()
+        if wait:
+            while w.isRunning() or "ok" not in result:
+                QApplication.processEvents(QEventLoop.AllEvents, 50)
+                w.wait(10)
+            QApplication.processEvents()
+            return result["ok"], result["err"]
+        return None, None
+
+    def _autosave(self, wait: bool = False):
+        """Unsaved work -> the recovery folder, every 30 s and after runs. The
+        project file itself changes only on Save, so the last Save is always
+        there to go back to. Binary tables: ~50 ms even for 40k frames."""
+        p = self.project
+        if p is None or not p.dirty:
+            return
+        sig = self._signature()
+        if sig == self._recovery_sig:
+            return
+        if self._save_worker is not None and self._save_worker.isRunning():
+            if not wait:
+                return                         # the next tick catches up
+            self._save_worker.wait()
+        self._sync_ui_state()
+        pid = self._project_id
+        zp = recovery.paths(pid)[0]
+        info = dict(base_saved_at=self._saved_at,
+                    last_path=str(self.project_path) if self.project_path else None,
+                    videos=[x.video_path for x in p.sessions], temporary=self._saved_at is None)
+        frozen = projectfile.freeze(p, self._ui_global_state(), pid, target=self.project_path, binary_tracks=True)
+
+        def done(ok, err):
+            if ok:
+                recovery.write_info(pid, **info)
+                self._recovery_sig = sig
+                self.statusBar().showMessage(f"Unsaved work kept safe ✓  {time.strftime('%H:%M:%S')}", 2000)
+                if recovery.folder()[1] and not getattr(self, "_recovery_fallback_said", False):
+                    self._recovery_fallback_said = True
+                    self.toast.show_message(
+                        f"Kinetrace's own folder cannot be written, so unsaved work is kept in "
+                        f"{recovery.folder()[0]} instead.", "info", 10000)
+            else:
+                self.statusBar().showMessage(f"Could not keep a recovery copy: {err}", 10000)
+        self._start_writer(frozen, zp, done, wait=wait, compresslevel=0, fsync=False, backup=False)
+
+    def _leave_project(self) -> None:
+        """Before another video or project replaces this one: unsaved work into
+        recovery; for a saved project, where the user was (frame, zoom,
+        toggles) into a small sidecar applied the next time it opens."""
+        if self.project is None:
+            return
+        self._autosave(wait=True)
+        if self._saved_at is not None and not self.project.dirty:
             self._sync_ui_state()
-            path = self._autosave_path()
-            if path is not None:
-                try:
-                    # always the project (schema v5): a one-camera project is byte-wise
-                    # a single view, and Project.load_npz still reads v3 files
-                    self.project.save_npz(path)
-                    self.statusBar().showMessage(f"Saved ✓  {time.strftime('%H:%M:%S')}", 2000)
-                except OSError as e:
-                    # a project file that cannot be written: fall back to the
-                    # video-side autosave once and say so (I104)
-                    side = Path(self.info.path + AUTOSAVE_SUFFIX) if self.info is not None else None
-                    if path == self.project_path and side is not None and side != path:
-                        try:
-                            self.project.save_npz(side)
-                            if not getattr(self, "_autosave_fallback_said", False):
-                                self._autosave_fallback_said = True
-                                self.toast.show_message(
-                                    f"Could not write {path.name} ({e}). Your work is autosaved next to the "
-                                    f"video instead ({side.name}); use File → Save Project As… to choose a "
-                                    "place you can write to.", "warn", 15000)
-                            return
-                        except OSError:
-                            pass
-                    self.statusBar().showMessage(f"Autosave failed: {e}", 10000)
+            recovery.write_view(self._project_id, {
+                "state": self._ui_global_state(),
+                "cameras": [{"current_frame": int(x.current_frame),
+                             "ui": {k: x.ui_state.get(k) for k in ("selected", "zoom", "center_x", "center_y",
+                                                                   "user_zoomed", "timeline")}}
+                            for x in self.project.sessions]}, self._saved_at)
 
     def _save_project(self) -> bool:
         if self.project_path is None:
             return self._save_project_as()
-        if self.project is None:
+        if self.project is None or self._saving:
             return False
-        self._sync_ui_state()
+        if self._save_worker is not None and self._save_worker.isRunning():
+            self._save_worker.wait()
+        self._saving = True
         try:
-            self.project.save_npz(self.project_path)
-        except Exception as e:  # noqa: BLE001 - a failed save used to be silent (I104)
+            self._sync_ui_state()
+            sig = self._signature()
+            saved_at = projectfile.timestamp()
+            frozen = projectfile.freeze(self.project, self._ui_global_state(), self._project_id,
+                                        target=self.project_path, saved_at=saved_at)
+            self.statusBar().showMessage("Saving…")
+            ok, err = self._start_writer(frozen, self.project_path, wait=True)
+        finally:
+            self._saving = False
+        if not ok:
             QMessageBox.critical(
                 self, "Could not save the project",
-                f"{self.project_path}\n\n{e}\n\nNothing was written there. Check that the folder exists, "
-                "that you may write to it and that the file is not open elsewhere, then use "
-                "File → Save Project As… to save somewhere else. Your work is still in the program.")
+                f"{self.project_path}\n\n{err}\n\nNothing was written there: the previous save is unchanged. "
+                "Check that the folder exists, that you may write to it and that the file is not open "
+                "elsewhere, then use File → Save Project As… to save somewhere else. Your work is still in "
+                "the program, and a recovery copy is kept.")
             return False
+        self._saved_at = saved_at
+        self.project.path = str(self.project_path)
+        if self._signature() == sig:          # nothing changed while it was writing
+            self.project.dirty = False
+        recovery.discard(self._project_id)
+        self._recovery_sig = None
         extra = (f" ({self.project.n_views} cameras)" if self.project.n_views > 1 else "")
-        self.statusBar().showMessage(
-            f"Project saved ✓  {self.project_path.name}{extra}", 4000)
-        # the video-side autosave written before the project had a file is now an
-        # OLDER copy of what was just saved; left in place it offered to "resume"
-        # that older state the next time the video was opened on its own (I129)
-        side = Path(self.info.path + AUTOSAVE_SUFFIX) if self.info is not None else None
-        if side is not None and side != self.project_path and side.exists():
-            try:
-                side.unlink()
-            except OSError:
-                pass
+        self.statusBar().showMessage(f"Project saved ✓  {self.project_path.name}{extra}", 4000)
         return True
 
     def _save_project_as(self) -> bool:
         if self.session is None:
             return False
-        start = str(Path(self.info.path).with_suffix(PROJECT_SUFFIX)) if self.info else ""
+        base = self.project_path or (Path(self.info.path) if self.info else None)
+        start = str(base.with_suffix(PROJECT_SUFFIX)) if base else ""
         path, _ = QFileDialog.getSaveFileName(self, "Save project", start,
                                               f"Kinetrace project (*{PROJECT_SUFFIX})")
         if not path:
             return False
         if not path.endswith(PROJECT_SUFFIX):
             path += PROJECT_SUFFIX
-        before = self.project_path
-        self.project_path = Path(path)
+        before = (self.project_path, self._project_id, self._saved_at)
+        # a new file is a new project: its own id, so the two files never share
+        # unsaved work
+        self.project_path, self._project_id = Path(path), projectfile.new_id()
+        self._project_dir = Path(path).resolve().parent
         if not self._save_project():
-            self.project_path = before     # autosave must not keep aiming at a path that failed (I104)
+            self.project_path, self._project_id, self._saved_at = before
             return False
+        recovery.discard(before[1])
         return True
 
     def _open_project_dialog(self):
@@ -4813,6 +4931,36 @@ class MainWindow(QMainWindow):
                                               f"Kinetrace project (*{PROJECT_SUFFIX})")
         if path:
             self._open_project_from_path(path)
+
+    def _announce_recovery(self) -> None:
+        """At start-up: say (without a blocking dialog) that unsaved work is
+        waiting, and where to get it back."""
+        try:
+            recovery.cleanup_stale()
+            waiting = [r for r in recovery.scan() if r.get("project_id") != self._project_id]
+        except OSError:
+            return
+        if waiting:
+            r = waiting[0]
+            what = Path(r.get("last_path") or (r.get("videos") or ["a video"])[0]).name
+            more = f" (and {len(waiting) - 1} more)" if len(waiting) > 1 else ""
+            self.toast.show_message(
+                f"Unsaved work from {r.get('written_at', 'an earlier session')} on <b>{what}</b>{more} can be "
+                "restored: <b>File → Recover Unsaved Work…</b>", "info", 12000)
+
+    def _recover_dialog(self) -> None:
+        items = [r for r in recovery.scan() if not r.get("damaged")]
+        if not items:
+            QMessageBox.information(self, "Recover unsaved work", "There is no unsaved work to recover.")
+            return
+        labels = [f"{r.get('written_at', '?')} — "
+                  f"{Path(r.get('last_path') or (r.get('videos') or ['?'])[0]).name}"
+                  f"{'' if r.get('last_path') else ' (never saved)'}" for r in items]
+        choice, ok = QInputDialog.getItem(self, "Recover unsaved work",
+                                          "Unsaved work kept by Kinetrace (newest first):", labels, 0, False)
+        if ok and choice in labels:
+            self._open_project_from_path(str(recovery.paths(items[labels.index(choice)]["project_id"])[0]),
+                                         recovered=items[labels.index(choice)])
 
     def _locate_video(self, want: Path, label: str) -> Path | None:
         """Ask the user where a project's video went (projects are portable;
@@ -4825,17 +4973,91 @@ class MainWindow(QMainWindow):
         vpath, _ = QFileDialog.getOpenFileName(self, f"Locate video for {label}", "", VIDEO_FILTER)
         return Path(vpath) if vpath else None
 
-    def _open_project_from_path(self, path: str):
+    def _find_video(self, i: int, proj: Project) -> Path | None:
+        """Camera i's video on THIS computer: the path relative to the project
+        file, its absolute path, the same file name next to the project or to
+        a camera found earlier (paths saved on another OS work) — only then
+        ask the user."""
+        entries = self._camera_entries or []
+        entry = entries[i] if i < len(entries) else {"video": {"path": proj.sessions[i].video_path}}
+        extra = [Path(x.video_path).parent for x in proj.sessions if x.video_path and Path(x.video_path).is_file()]
+        got = projectfile.locate_video(entry, self._project_dir, extra)
+        return got if got is not None else self._locate_video(Path(proj.sessions[i].video_path), proj.name(i))
+
+    def _open_project_from_path(self, path: str, recovered: dict | None = None):
+        """Open a .kinetrace file (or an unzipped folder with the same layout).
+        `recovered`: the file is a recovery copy chosen in Recover Unsaved Work."""
+        self._leave_project()
         try:
-            proj = Project.load_npz(path)
-        except Exception as e:  # noqa: BLE001
+            proj, state, meta = projectfile.read(path)
+        except projectfile.ProjectFileError as e:
             QMessageBox.critical(self, "Could not open project", f"{path}\n\n{e}")
             return
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not open project", f"{path}\n\n{type(e).__name__}: {e}")
+            return
+        pid = str(meta.get("project_id") or projectfile.new_id())
+        saved_at = meta.get("saved_at")
+        file_path: Path | None = Path(path)
+        unsaved = False
+        if recovered is not None:
+            # a recovery copy: Save goes back to the project it came from when
+            # that file is still the save the work started from
+            last = recovered.get("last_path")
+            file_path = Path(last) if last and Path(last).is_file() else None
+            saved_at = recovered.get("base_saved_at") if file_path is not None else None
+            if file_path is not None:
+                try:
+                    if projectfile.read(file_path)[2].get("saved_at") != saved_at:
+                        file_path, saved_at = None, None      # saved elsewhere since: a separate copy
+                except projectfile.ProjectFileError:
+                    file_path, saved_at = None, None
+            unsaved = True
+        else:
+            found = recovery.find(pid)
+            if found is not None and not found.get("damaged"):
+                same = found.get("base_saved_at") == saved_at
+                ask = (f"Unsaved changes to this project from {found.get('written_at', 'earlier')} were found.\n\n"
+                       "Restore them? (No opens the last saved version; the unsaved changes are kept in "
+                       f"{recovery.folder()[0] / 'declined'}.)" if same else
+                       f"Unsaved changes from another copy of this project ({found.get('written_at', 'earlier')}, "
+                       f"{found.get('last_path') or 'never saved'}) were found.\n\nOpen them as a separate, "
+                       "unsaved copy instead of this file? (No opens this file; the other changes are kept in "
+                       f"{recovery.folder()[0] / 'declined'}.)")
+                if QMessageBox.question(self, "Unsaved changes found", ask, QMessageBox.Yes | QMessageBox.No,
+                                        QMessageBox.Yes if same else QMessageBox.No) == QMessageBox.Yes:
+                    try:
+                        proj, state, meta = projectfile.read(recovery.paths(pid)[0])
+                        unsaved = True
+                        if not same:
+                            # it lives on as a new copy (its own id); the old recovery
+                            # is kept aside so this file stops offering it
+                            recovery.decline(pid)
+                            pid, file_path, saved_at = projectfile.new_id(), None, None
+                    except projectfile.ProjectFileError as e:
+                        recovery.quarantine(pid)
+                        QMessageBox.warning(self, "Unsaved changes could not be read",
+                                            f"They could not be read ({e}) and were moved aside; the last "
+                                            "saved version opens.")
+                else:
+                    recovery.decline(pid)
+            if not unsaved:
+                view = recovery.read_view(pid, saved_at)
+                if view:                        # where the user was when they last closed it
+                    state = view.get("state") or state
+                    for x, cv in zip(proj.sessions, view.get("cameras") or []):
+                        x.current_frame = int(np.clip(int(cv.get("current_frame", 0)), 0, x.n_frames - 1))
+                        x.ui_state.update({k: v for k, v in (cv.get("ui") or {}).items() if v is not None})
+                    for x in proj.sessions:
+                        x.ui_state.update((state.get("tools") or {}))
+                        x.dirty = False
         if proj.n_views == 0:
             QMessageBox.critical(self, "Could not open project", f"{path}\n\nNo camera views.")
             return
+        self._camera_entries = list(meta.get("_cameras") or [])
+        self._project_dir = Path(path).resolve().parent if Path(path).is_file() else Path(path).resolve()
         master = proj.sessions[proj.active]
-        video = self._locate_video(Path(master.video_path), proj.name(proj.active))
+        video = self._find_video(proj.active, proj)
         if video is None:
             self.statusBar().showMessage(
                 f"Project not opened: the video of {proj.name(proj.active)} was not located. Open the project "
@@ -4860,8 +5082,12 @@ class MainWindow(QMainWindow):
                         f"expects {master.n_frames}. Loading anyway — verify your tracks. If this is "
                         "a different cut of the same recording, the tracks will sit on the wrong frames.")
             master.video_path = info.path
-            self.project_path = Path(path)
+            self.project_path = file_path
+            self._project_id, self._saved_at, self._recovery_sig = pid, saved_at, None
             self._adopt_project(proj, info)
+            if unsaved:
+                self.project.dirty = True
+            QTimer.singleShot(0, lambda: self._apply_layout(state.get("layout")))
 
         # _attach_video opens the ACTIVE view; the rest are attached in adopt
         self._open_video(str(video), then=adopt)
@@ -4879,7 +5105,7 @@ class MainWindow(QMainWindow):
             if i == active:
                 continue
             s = proj.sessions[i]
-            vid = self._locate_video(Path(s.video_path), proj.name(i))
+            vid = self._find_video(i, proj)
             if vid is None:
                 drop.append(i)
                 continue
@@ -4912,8 +5138,8 @@ class MainWindow(QMainWindow):
         if lost:
             # The project FILE still holds these cameras. Autosave used to write
             # the reduced project straight back over it within 30 s, deleting
-            # their tracks and calibration for good (I14): from here on autosave
-            # goes next to the video, and Save asks for a file name.
+            # their tracks and calibration for good (I14): Save now asks for a
+            # file name (autosave only ever writes the recovery folder).
             kept = self.project_path
             self.project_path = None
             QMessageBox.warning(
@@ -5903,8 +6129,6 @@ class MainWindow(QMainWindow):
             f"Segmentation model: {BACKENDS[key][2]}. {note} "
             "It applies to the next silhouette / tracking run.",
             "warn" if status == "gated" else "info", 9000)
-        if self.session is not None:
-            self.session.dirty = True
 
     def _show_settings(self):
         statuses = {}
@@ -5967,32 +6191,33 @@ class MainWindow(QMainWindow):
                 pass
         if self._preview is not None:
             self._preview.wait(15000)
-        # Always the PROJECT, like the 30 s autosave: writing `self.session`
-        # here saved a multi-camera project as one camera (v3) on exit, and the
-        # resume prompt then offered a file missing the other cameras and the
-        # calibration.
+        # Unsaved changes: ask. Save writes the project file; Don't Save drops
+        # the unsaved work; any other answer (or a dialog closed some other
+        # way) keeps it in the recovery folder, so nothing is lost silently.
         if self.project is not None and self.project.dirty:
-            self._sync_ui_state()
-            path = self._autosave_path()
-            if path is not None:
-                try:
-                    self.project.save_npz(path)
-                except OSError as e:
-                    # never lose work silently on the way out (I104)
-                    side = Path(self.info.path + AUTOSAVE_SUFFIX) if self.info is not None else None
-                    saved = False
-                    if side is not None and side != path:
-                        try:
-                            self.project.save_npz(side)
-                            saved = True
-                        except OSError:
-                            pass
-                    if not saved and QMessageBox.question(
-                            self, "Your work could not be saved",
-                            f"{path}\n\n{e}\n\nClose anyway and lose the changes since the last save?",
-                            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-                        ev.ignore()
-                        return
+            name = self.project_path.name if self.project_path else "this project"
+            r = QMessageBox.question(
+                self, "Save changes?",
+                f"Save the changes to {name} before closing?\n\nIf you don't save, the unsaved work is "
+                "dropped. (Closing this dialog keeps it for File → Recover Unsaved Work….)",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
+            if r == QMessageBox.Cancel:
+                ev.ignore()
+                return
+            if r == QMessageBox.Save:
+                if not self._save_project():
+                    ev.ignore()
+                    return
+            elif r == QMessageBox.Discard:
+                if self._save_worker is not None and self._save_worker.isRunning():
+                    self._save_worker.wait()
+                recovery.discard(self._project_id)
+            else:
+                self._autosave(wait=True)
+        else:
+            self._leave_project()
+        if self._save_worker is not None and self._save_worker.isRunning():
+            self._save_worker.wait()
         # Every thread this window owns must be stopped before the interpreter
         # tears Qt down, or Qt aborts ("QThread: Destroyed while thread is
         # still running" = exit 0xC0000409 on Windows). Only the working
@@ -6039,7 +6264,7 @@ def main():
     win.show()
     if len(sys.argv) > 1 and Path(sys.argv[1]).exists():
         arg = sys.argv[1]
-        if arg.endswith(PROJECT_SUFFIX):
+        if arg.endswith(PROJECT_SUFFIX) or (Path(arg).is_dir() and (Path(arg) / "kinetrace.json").is_file()):
             QTimer.singleShot(0, lambda: win._open_project_from_path(arg))
         else:
             QTimer.singleShot(0, lambda: win._open_video(arg))

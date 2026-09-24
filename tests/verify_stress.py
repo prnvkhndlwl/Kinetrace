@@ -1,5 +1,6 @@
 """Stress battery: hostile edge cases for the session model, timeline math,
 and gesture/event bookkeeping. No GPU, no tracking — runs in seconds."""
+import json
 import os
 import sys
 
@@ -49,9 +50,9 @@ for i, nm in enumerate(weird):
     pid = s3.add_point(0, float(i), 1.0)
     s3.rename_point(pid, nm)
 s3.add_event("ev,\twith\nbad chars", 1, 3)
-pth = os.path.join(SCRATCH, "weird.cotrk")
-s3.save_npz(pth)
-r3 = TrackingSession.load_npz(pth)
+pth = os.path.join(SCRATCH, "weird.kinetrace")
+s3.save(pth)
+r3 = TrackingSession.load(pth)
 assert [p.name for p in r3.points] == [p.name for p in s3.points]
 r3.export_csv(os.path.join(SCRATCH, "weird.csv"))
 r3.export_tsv_sparse(os.path.join(SCRATCH, "weird.tsv"))
@@ -77,25 +78,45 @@ snap.points[0].name = "mutated"
 assert s4.points[0].name != "mutated", "snapshot must not alias live metas"
 print("remove/restore isolation OK")
 
-# ---- 5. forward-compat: schema=99 file with unknown keys still loads ----
+# ---- 5. unknown members load; a newer format and odd view state are handled ----
+import zipfile
+from kinetrace import projectfile
 s5 = TrackingSession("x.mp4", 8, 30.0, 100, 100)
 s5.add_point(0, 1.0, 1.0)
-p99 = os.path.join(SCRATCH, "future.cotrk")
-s5.save_npz(p99)
-with np.load(p99, allow_pickle=True) as z:
-    data = {k: z[k] for k in z.files}
-data["schema"] = 99
-data["mystery_field"] = np.arange(5)
-np.savez_compressed(open(p99, "wb"), **data)
-r5 = TrackingSession.load_npz(p99)
-assert r5.n_points == 1
-# corrupt ui_state variants must not break loading
-for bad in ('"just a string"', "[1,2,3]", "{invalid json"):
-    data["ui_state"] = bad
-    np.savez_compressed(open(p99, "wb"), **data)
-    r = TrackingSession.load_npz(p99)
-    assert r.n_points == 1 and isinstance(r.ui_state, dict)
-print("forward/corrupt compat OK")
+p99 = os.path.join(SCRATCH, "future.kinetrace")
+s5.save(p99)
+with zipfile.ZipFile(p99) as z:
+    members = {n: z.read(n) for n in z.namelist()}
+
+
+def rezip(changes):
+    with zipfile.ZipFile(p99, "w") as z:
+        for n, b in {**members, **changes}.items():
+            z.writestr(n, b)
+
+
+rezip({"mystery_folder/extra.csv": b"a,b\n1,2\n"})           # a member this version does not know
+assert TrackingSession.load(p99).n_points == 1
+meta = json.loads(members["kinetrace.json"])
+rezip({"kinetrace.json": json.dumps(dict(meta, format_version=99)).encode()})
+try:
+    TrackingSession.load(p99)
+    raise AssertionError("a newer format must be refused")
+except projectfile.ProjectFileError as e:
+    assert "newer" in str(e), e
+# hand-edited state / view files with odd values fall back to defaults instead of refusing
+view = next(n for n in members if n.endswith("/view.json"))
+for bad in (b'"just a string"', b"[1,2,3]", b'{"tools": "x"}', b'{"zoom": "big", "current_frame": "a"}'):
+    rezip({"state.json": bad, view: bad})
+    r = TrackingSession.load(p99)
+    assert r.n_points == 1 and isinstance(r.ui_state, dict) and r.current_frame == 0
+rezip({"state.json": b"{invalid json"})
+try:
+    TrackingSession.load(p99)
+    raise AssertionError("unreadable JSON must be refused with its file name")
+except projectfile.ProjectFileError as e:
+    assert "state.json" in str(e), e
+print("unknown members / newer format / odd view state OK")
 
 # ---- 6. tracker geometry helpers under hostile inputs (no model needed) ----
 from kinetrace.tracker import sample_members, fit_group  # noqa: E402

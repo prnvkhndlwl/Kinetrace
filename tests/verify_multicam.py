@@ -49,10 +49,9 @@ def build_pair():
 
 
 PATH_A, PATH_B = build_pair()
-PROJ = os.path.join(SCRATCH, "multicam.cotrk")
-for leftover in (PATH_A + ".cotracker.npz", PATH_B + ".cotracker.npz", PROJ):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+PROJ = os.path.join(SCRATCH, "multicam.kinetrace")
+if os.path.exists(PROJ):
+    os.remove(PROJ)
 
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -64,6 +63,8 @@ QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (_pick["file"], ""))
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (_pick["file"], ""))
 
 app = QApplication([])
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(PATH_A, PATH_B)
 from kinetrace.app import MainWindow, READY
 from kinetrace.project import Project
 
@@ -221,7 +222,7 @@ win.project_path = None
 _pick["file"] = PROJ
 win._save_project_as()
 assert os.path.exists(PROJ)
-reopened = Project.load_npz(PROJ)
+reopened = Project.load(PROJ)
 assert reopened.n_views == 2, "both cameras must be in the file"
 assert reopened.offsets == [0, -SHIFT] and reopened.active == 0
 assert [s.n_points for s in reopened.sessions] == [2, 1], "each view's points must survive"
@@ -459,7 +460,5 @@ print("camera removal OK")
 win._dev_probe.wait(180_000)
 win.close()
 app.processEvents()
-for leftover in (PATH_A + ".cotracker.npz", PATH_B + ".cotracker.npz"):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+forget_recovery(PATH_A, PATH_B)
 print("MULTICAM PASSED")

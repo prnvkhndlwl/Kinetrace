@@ -92,12 +92,12 @@ assert not s.manual[10, 0] and abs(s.tracks[10, 0, 0] - win[10, 0, 0]) < 1e-4
 s.remove_point(1)
 assert s.n_points == 2 and s.tracks.shape[1] == 2
 
-# npz round-trip
-tmp = os.path.join(ROOT, "tests", "out", "sess.cotrk")
+# project-file round-trip
+tmp = os.path.join(ROOT, "tests", "out", "sess.kinetrace")
 s.current_frame = 123
-s.save_npz(tmp)
+s.save(tmp)
 assert not s.dirty
-s2 = TrackingSession.load_npz(tmp)
+s2 = TrackingSession.load(tmp)
 assert s2.n_points == 2 and s2.current_frame == 123 and s2.n_frames == 600
 assert np.allclose(s2.tracks, s.tracks, equal_nan=True)
 assert (s2.tracked == s.tracked).all()
@@ -134,12 +134,11 @@ big.write_segment(0, np.random.rand(40000, 10, 2).astype(np.float32) * 1000,
 t = time.perf_counter(); big.export_csv(os.path.join(scratch, "big.csv")); t_csv = time.perf_counter() - t
 t = time.perf_counter(); big.export_tsv_sparse(os.path.join(scratch, "big.tsv")); t_tsv = time.perf_counter() - t
 t = time.perf_counter(); big.export_mat(os.path.join(scratch, "big.mat")); t_mat = time.perf_counter() - t
-t = time.perf_counter(); big.save_npz(os.path.join(scratch, "big.cotrk")); t_npz = time.perf_counter() - t
-print(f"40k x 10 export: csv {t_csv:.2f}s, tsv {t_tsv:.2f}s, mat {t_mat:.2f}s, npz {t_npz:.2f}s")
-assert t_csv < 2 and t_mat < 2, "export too slow"
+t = time.perf_counter(); big.save(os.path.join(scratch, "big.kinetrace")); t_proj = time.perf_counter() - t
+print(f"40k x 10 export: csv {t_csv:.2f}s, tsv {t_tsv:.2f}s, mat {t_mat:.2f}s, project {t_proj:.2f}s")
+assert t_csv < 2 and t_mat < 2 and t_proj < 2, "export too slow"
 
-# ---- schema v2: confidence, groups, events, unique names, ui_state ----
-from kinetrace.session import DEFAULT_UI_STATE
+# ---- confidence, groups, events, unique names, ui_state survive a save ----
 
 s3 = TrackingSession(VID, 600, 30.0, 640, 480)
 p = s3.add_point(0, 10.0, 10.0)
@@ -190,9 +189,9 @@ assert not s3.manual[50, p] and s3.points[g].radius == 40.0
 
 # full save/load round-trip incl. v2 fields and ui_state
 s3.ui_state.update(selected=1, zoom=2.5, follow=False)
-v2p = os.path.join(scratch, "sessv2.cotrk")
-s3.save_npz(v2p)
-r = TrackingSession.load_npz(v2p)
+v2p = os.path.join(scratch, "sessv2.kinetrace")
+s3.save(v2p)
+r = TrackingSession.load(v2p)
 assert r.points[g].kind == "group" and r.points[g].radius == 40.0
 assert len(r.events) == 2 and r.events[i].name == "swing2"
 assert r.ui_state["zoom"] == 2.5 and r.ui_state["selected"] == 1 and r.ui_state["follow"] is False
@@ -200,21 +199,6 @@ assert np.allclose(r.confidence, s3.confidence, atol=1e-6)
 # event counter continues after load (no duplicate default names)
 k = r.add_event("", 10, 20)
 assert r.events[k].name not in [e.name for e in r.events[:-1]]
-
-# v1 file (pre-confidence) loads with sensible defaults
-v1p = os.path.join(scratch, "sessv1.cotrk")
-np.savez_compressed(open(v1p, "wb"),
-                    tracks=s3.tracks, visibility=s3.visibility, manual=s3.manual,
-                    tracked=s3.tracked,
-                    names=np.array([q.name for q in s3.points], dtype=object),
-                    colors=np.array([q.color for q in s3.points], np.uint8).reshape(-1, 3),
-                    display=np.array([q.display for q in s3.points], bool),
-                    video_path=VID, meta=np.array([600, 5, 2], np.int64),
-                    fps=30.0, size=np.array([640, 480], np.int64), app_version="1.0")
-r1 = TrackingSession.load_npz(v1p)
-assert (r1.confidence == r1.tracked.astype(np.float32)).all()
-assert all(q.kind == "point" and q.radius == 0.0 and not q.anchor for q in r1.points)
-assert r1.events == [] and r1.ui_state == dict(DEFAULT_UI_STATE)
 
 # .mat carries confidence + events; sidecar CSV; empty-events .mat also valid
 s3.export_mat(os.path.join(scratch, "v2.mat"))

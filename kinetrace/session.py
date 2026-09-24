@@ -4,9 +4,10 @@ skeleton, persistence, exports.
 Arrays are (T, N, ...) where T = video frame count and N = number of points.
 NaN in `tracks` (mirrored by `tracked == False`) means "no data for this
 point at this frame". Even a 40k-frame, 50-point session is ~20 MB, so the
-whole model lives in RAM and saves atomically to a compressed .npz.
+whole model lives in RAM; it is saved as part of a `.kinetrace` project file
+(projectfile.py).
 
-Schema v2 additions (older files load with sensible defaults):
+What a session holds, beyond the tracks:
 - `confidence` (T, N): CoTracker3's per-frame track-correctness score in
   [0, 1] (1.0 for manual placements). Drives the timeline coloring and the
   auto-pause detector. Distinct from `visibility` — an occluded point keeps
@@ -19,7 +20,7 @@ Schema v2 additions (older files load with sensible defaults):
 - `ui_state`: everything needed to reopen a project exactly as it was left
   (view transform, selection, toolbar toggles).
 
-Schema v3 (2026-09-10, the segment layer):
+The segment layer:
 - ONE segment per project (`AnimalMeta`): the user's click/box prompts per
   frame, and its per-frame silhouette in a compact `MaskTrack` (outlines,
   midline, bbox, area, centroid, presence score).
@@ -35,13 +36,11 @@ Schema v3 (2026-09-10, the segment layer):
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from kinetrace import APP_VERSION
 from kinetrace.body import BodyTrack, export_angles_csv, export_joints_csv
 from kinetrace.segmenter import MIDLINE_SAMPLES, MaskTrack
 
@@ -53,9 +52,6 @@ PALETTE: list[tuple[int, int, int]] = [
 ]
 ANIMAL_COLOR: tuple[int, int, int] = (77, 227, 176)   # mint — outside the point palette
 
-PROJECT_SUFFIX = ".cotrk"
-AUTOSAVE_SUFFIX = ".cotracker.npz"
-SCHEMA_VERSION = 4        # v4 adds the body layer; v3/v2/v1 still load
 
 # Reopening a project must restore the exact working state, not just tracks.
 DEFAULT_UI_STATE: dict = {
@@ -254,14 +250,40 @@ class TrackingSession:
         self.skeleton: dict | None = None
         self.current_frame = 0  # persisted so projects reopen where the user left off
         self.ui_state: dict = dict(DEFAULT_UI_STATE)
-        self.dirty = False
         self.data_version = 0   # bumped on every mutation (timeline repaint/cache key)
+        self.dirty = False
         self._name_counter = 0
         self._event_counter = 0
 
+    @property
+    def dirty(self) -> bool:
+        return self._dirty
+
+    @dirty.setter
+    def dirty(self, value: bool) -> None:
+        # Marking a change also moves data_version on: a save compares it
+        # before and after, so an edit made while a save ran stays unsaved
+        # whichever code path marked it.
+        if value:
+            self.data_version += 1
+        self._dirty = bool(value)
+
     def _touch(self) -> None:
         self.dirty = True
-        self.data_version += 1
+
+    # ------------------------------------------------------------ persistence
+    def save(self, path) -> None:
+        """This one camera as a Kinetrace project file (see projectfile.py)."""
+        from kinetrace import projectfile
+        from kinetrace.project import Project
+        projectfile.save(Project([self]), path)
+
+    @staticmethod
+    def load(path) -> "TrackingSession":
+        """The active camera of a project file."""
+        from kinetrace import projectfile
+        p = projectfile.load(path)
+        return p.sessions[p.active]
 
     # ----------------------------------------------------------------- points
 
@@ -877,193 +899,6 @@ class TrackingSession:
         self.body = snap.body.copy() if snap.body is not None else None
         self._touch()
 
-    # ------------------------------------------------------------ persistence
-
-    def to_arrays(self, prefix: str = "", body_mesh: bool = True) -> dict:
-        """Everything this session persists, as npz keyword arrays. `prefix`
-        namespaces the keys so several sessions can share one file — that is
-        how a multi-camera project stores one view per prefix (`v0_`, `v1_`…)
-        without a second file format."""
-        p = prefix
-        extra = self.masks.to_arrays(f"{p}mask_") if self.masks is not None else {}
-        return {
-            f"{p}tracks": self.tracks, f"{p}visibility": self.visibility,
-            f"{p}manual": self.manual, f"{p}tracked": self.tracked,
-            f"{p}confidence": self.confidence,
-            f"{p}names": np.array([q.name for q in self.points], dtype=object),
-            f"{p}colors": np.array([q.color for q in self.points], np.uint8).reshape(-1, 3),
-            f"{p}display": np.array([q.display for q in self.points], bool),
-            f"{p}kinds": np.array([q.kind for q in self.points], dtype=object),
-            f"{p}radii": np.array([q.radius for q in self.points], np.float32),
-            f"{p}anchors": np.array([q.anchor for q in self.points], bool),
-            f"{p}sources": np.array([q.source for q in self.points], dtype=object),
-            f"{p}specs": np.array([q.spec for q in self.points], dtype=object),
-            f"{p}frees": np.array([q.free for q in self.points], bool),
-            f"{p}shapes": np.array([json.dumps({"shape": q.shape, "outline": q.outline})
-                                    for q in self.points], dtype=object),
-            f"{p}occluded": self.occluded,
-            f"{p}radius": self.radius,
-            f"{p}balls": json.dumps({str(i): {str(f): cs for f, cs in (q.ball_prompts or {}).items()}
-                                     for i, q in enumerate(self.points) if q.is_ball}),
-            f"{p}notes": json.dumps({str(k): v for k, v in self.notes.items()}),
-            f"{p}annotator": str(self.annotator),
-            f"{p}event_notes": np.array([e.note for e in self.events], dtype=object),
-            f"{p}event_authors": np.array([e.author for e in self.events], dtype=object),
-            f"{p}event_names": np.array([e.name for e in self.events], dtype=object),
-            f"{p}event_ranges": np.array([(e.start, e.end) for e in self.events],
-                                         np.int64).reshape(-1, 2),
-            f"{p}event_colors": np.array([e.color for e in self.events],
-                                         np.uint8).reshape(-1, 3),
-            f"{p}animal": self.animal.to_json() if self.animal is not None else "",
-            **(self.body.to_arrays(f"{p}body_", mesh=body_mesh) if self.body is not None else {}),
-            f"{p}skeleton": json.dumps(self.skeleton) if self.skeleton else "",
-            f"{p}ui_state": json.dumps(self.ui_state),
-            f"{p}video_path": str(self.video_path),
-            f"{p}meta": np.array([self.n_frames, self.current_frame, self._name_counter,
-                                  self._event_counter], np.int64),
-            f"{p}fps": float(self.fps),
-            f"{p}size": np.array([self.width, self.height], np.int64),
-            **extra,
-        }
-
-    @staticmethod
-    def from_arrays(z, prefix: str = "") -> "TrackingSession":
-        """Inverse of `to_arrays`. `z` is an open npz (or any mapping with a
-        `.files` list)."""
-        p = prefix
-        have = set(z.files)
-        meta = [int(v) for v in z[f"{p}meta"]]
-        n_frames, current_frame, name_counter = meta[:3]
-        w, h = (int(v) for v in z[f"{p}size"])
-        s = TrackingSession(str(z[f"{p}video_path"]), n_frames, float(z[f"{p}fps"]), w, h)
-        s.tracks = z[f"{p}tracks"].astype(np.float32)
-        s.visibility = z[f"{p}visibility"].astype(bool)
-        s.manual = z[f"{p}manual"].astype(bool)
-        s.tracked = z[f"{p}tracked"].astype(bool)
-        # v1 files predate confidence: treat everything tracked as fully confident
-        s.confidence = (z[f"{p}confidence"].astype(np.float32) if f"{p}confidence" in have
-                        else s.tracked.astype(np.float32))
-        names = list(z[f"{p}names"])
-        colors = z[f"{p}colors"].reshape(-1, 3)
-        display = list(z[f"{p}display"])
-        n = len(names)
-        kinds = list(z[f"{p}kinds"]) if f"{p}kinds" in have else ["point"] * n
-        radii = z[f"{p}radii"] if f"{p}radii" in have else np.zeros(n, np.float32)
-        anchors = list(z[f"{p}anchors"]) if f"{p}anchors" in have else [False] * n
-        sources = list(z[f"{p}sources"]) if f"{p}sources" in have else ["track"] * n
-        specs = list(z[f"{p}specs"]) if f"{p}specs" in have else [""] * n
-        frees = list(z[f"{p}frees"]) if f"{p}frees" in have else [False] * n
-        shapes = []
-        for k in range(n):
-            sh, ol = "circle", None
-            if f"{p}shapes" in have and k < len(z[f"{p}shapes"]):
-                try:
-                    d = json.loads(str(z[f"{p}shapes"][k]))
-                    sh = str(d.get("shape", "circle"))
-                    ol = d.get("outline")
-                    if ol is not None:
-                        ol = [[float(a), float(b)] for a, b in ol]
-                except (ValueError, TypeError):
-                    pass
-            shapes.append((sh if sh in ("circle", "rect", "polygon") else "circle", ol))
-        s.points = [PointMeta(str(nm), tuple(int(c) for c in col), bool(d),
-                              str(k), float(r), bool(a),
-                              str(src) if str(src) in SOURCES else "track", str(sp), bool(fr),
-                              sh, ol)
-                    for nm, col, d, k, r, a, src, sp, fr, (sh, ol)
-                    in zip(names, colors, display, kinds, radii, anchors, sources, specs, frees,
-                           shapes)]
-        if f"{p}occluded" in have and z[f"{p}occluded"].shape == s.tracked.shape:
-            s.occluded = z[f"{p}occluded"].astype(bool)
-        else:
-            s.occluded = np.zeros(s.tracked.shape, bool)
-        if f"{p}radius" in have and z[f"{p}radius"].shape == s.tracked.shape:
-            s.radius = z[f"{p}radius"].astype(np.float32)
-        else:
-            s.radius = np.full(s.tracked.shape, np.nan, np.float32)
-        if f"{p}balls" in have and str(z[f"{p}balls"]):
-            try:
-                raw = json.loads(str(z[f"{p}balls"]))
-                for k, per in (raw.items() if isinstance(raw, dict) else []):
-                    i = int(k)
-                    if 0 <= i < len(s.points) and s.points[i].is_ball and isinstance(per, dict):
-                        s.points[i].ball_prompts = {int(f): [[float(c[0]), float(c[1]), int(c[2])] for c in cs]
-                                                    for f, cs in per.items()}
-            except (ValueError, TypeError, IndexError):
-                pass
-        if f"{p}notes" in have:
-            try:
-                raw = json.loads(str(z[f"{p}notes"]))
-                if isinstance(raw, dict):
-                    s.notes = {int(k): v for k, v in raw.items()
-                               if isinstance(v, dict) and str(v.get("text", "")).strip()}
-            except (ValueError, TypeError):
-                pass
-        if f"{p}annotator" in have:
-            s.annotator = str(z[f"{p}annotator"])
-        if f"{p}event_names" in have:
-            ranges = z[f"{p}event_ranges"].reshape(-1, 2)
-            ecolors = z[f"{p}event_colors"].reshape(-1, 3)
-            en = list(z[f"{p}event_notes"]) if f"{p}event_notes" in have else []
-            ea = list(z[f"{p}event_authors"]) if f"{p}event_authors" in have else []
-            s.events = [Event(str(nm), int(r[0]), int(r[1]),
-                              tuple(int(c) for c in col),
-                              str(en[i]) if i < len(en) else "",
-                              str(ea[i]) if i < len(ea) else "")
-                        for i, (nm, r, col) in enumerate(zip(list(z[f"{p}event_names"]), ranges, ecolors))]
-        if f"{p}animal" in have and str(z[f"{p}animal"]):  # npz key stays "animal"
-            try:
-                s.animal = AnimalMeta.from_json(str(z[f"{p}animal"]))
-            except (ValueError, TypeError, KeyError):
-                s.animal = AnimalMeta()
-            s.masks = (MaskTrack.from_arrays(f"{p}mask_", z) if f"{p}mask_bbox" in have
-                       else MaskTrack(n_frames))
-            if s.masks.n_frames != n_frames:
-                s.masks = MaskTrack(n_frames)
-            s.masks.native_w, s.masks.native_h = w, h
-        if f"{p}body_meta" in have:
-            # A body track saved against a different video length is not
-            # salvageable frame by frame, so it is dropped rather than
-            # silently re-indexed onto the wrong frames.
-            try:
-                bt = BodyTrack.from_arrays(f"{p}body_", z)
-                s.body = bt if bt.n_frames == n_frames else None
-            except (ValueError, TypeError, KeyError):
-                s.body = None
-        if f"{p}skeleton" in have and str(z[f"{p}skeleton"]):
-            try:
-                sk = json.loads(str(z[f"{p}skeleton"]))
-                if isinstance(sk, dict) and sk.get("landmarks"):
-                    s.skeleton = sk
-            except (ValueError, TypeError):
-                pass
-        if f"{p}ui_state" in have:
-            try:
-                loaded = json.loads(str(z[f"{p}ui_state"]))
-                if isinstance(loaded, dict):
-                    s.ui_state.update({k: v for k, v in loaded.items()
-                                       if k in DEFAULT_UI_STATE})
-            except (ValueError, TypeError):
-                pass  # corrupt/foreign ui_state: keep defaults, tracks still load
-        s.current_frame = min(current_frame, n_frames - 1)
-        s._name_counter = max(name_counter, len(s.points))
-        s._event_counter = max(meta[3] if len(meta) > 3 else 0, len(s.events))
-        s.dirty = False
-        return s
-
-    def save_npz(self, path: str | Path) -> None:
-        path = Path(path)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "wb") as f:
-            np.savez_compressed(f, schema=SCHEMA_VERSION, app_version=APP_VERSION,
-                                **self.to_arrays())
-        os.replace(tmp, path)  # atomic: a crash never corrupts the previous save
-        self.dirty = False
-
-    @staticmethod
-    def load_npz(path: str | Path) -> "TrackingSession":
-        with np.load(path, allow_pickle=True) as z:
-            return TrackingSession.from_arrays(z)
 
     # ---------------------------------------------------------------- exports
 
@@ -1235,10 +1070,13 @@ class TrackingSession:
 
     def export_events_csv(self, path: str | Path) -> None:
         """Events sidecar (written next to CSV/TSV exports): name, start, end,
-        note, author — then one row per frame note (name = "note")."""
-        lines = ["name,start_frame,end_frame,note,author"]
-        lines += [f"{_sanitize(e.name)},{e.start},{e.end},{_sanitize(e.note)},{_sanitize(e.author)}"
-                  for e in self.events]
-        lines += [f"note,{f},{f},{_sanitize(self.notes[f]['text'])},"
-                  f"{_sanitize(self.notes[f].get('author', ''))}" for f in self.note_frames()]
-        Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
+        note, author — then one row per frame note (name = "note"). Standard CSV
+        quoting: a comma, quote or line break in a name or note survives (they
+        used to be replaced by '_')."""
+        import csv
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh, lineterminator="\n")
+            w.writerow(["name", "start_frame", "end_frame", "note", "author"])
+            w.writerows([e.name, e.start, e.end, e.note, e.author] for e in self.events)
+            w.writerows(["note", f, f, self.notes[f]["text"], self.notes[f].get("author", "")]
+                        for f in self.note_frames())

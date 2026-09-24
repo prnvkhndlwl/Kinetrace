@@ -29,9 +29,8 @@ from kinetrace.session import TrackingSession  # noqa: E402
 OUT = os.path.join(ROOT, "tests", "out")
 os.makedirs(OUT, exist_ok=True)
 VID = _synth.build_video(os.path.join(OUT, "synth_animals.mp4"))
-AUTOSAVE = VID + ".cotracker.npz"
-if os.path.exists(AUTOSAVE):
-    os.remove(AUTOSAVE)
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(VID)
 W, H, T = _synth.W, _synth.H, _synth.T
 GT = [_synth.gt_frame(t)[1][0] for t in range(T)]
 
@@ -181,7 +180,7 @@ assert all(os.path.exists(p) for p in written) and any(p.endswith("_segment.csv"
 print("exports OK:", len(written), "files")
 
 # ---- project round-trip restores animal + skeleton + masks ---------------------
-proj = os.path.join(OUT, "gui_animal.cotrk")
+proj = os.path.join(OUT, "gui_animal.kinetrace")
 win.project_path = __import__("pathlib").Path(proj)
 win._save_project()
 n_masked = s.masks.n_masked()
@@ -210,6 +209,5 @@ print("undo + clear OK")
 win.close()
 pump(0.2)
 win._dev_probe.wait(20000)
-if os.path.exists(AUTOSAVE):
-    os.remove(AUTOSAVE)
+forget_recovery(VID)
 print("ANIMAL GUI E2E PASSED")

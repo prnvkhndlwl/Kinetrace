@@ -23,9 +23,8 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 VID = os.path.join(ROOT, "test600.mp4")
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(VID)
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 
@@ -175,10 +174,10 @@ assert not win.btn_add.isChecked()
 # ---- timeline paints the marks; flags survive a project round trip ----
 win.timeline.repaint()
 app.processEvents()
-proj = os.path.join(SCRATCH, "annotate_rt.cotrk")
-win.project.save_npz(proj)
+proj = os.path.join(SCRATCH, "annotate_rt.kinetrace")
+win.project.save(proj)
 from kinetrace.project import Project
-back = Project.load_npz(proj)
+back = Project.load(proj)
 s2 = back.session
 assert sorted(s2.manual_frames(1).tolist()) == [50, 120, 400], s2.manual_frames(1)
 assert np.allclose(s2.tracks[50, 1], (320, 210), atol=0.6)
@@ -187,7 +186,5 @@ print("timeline paint + project round trip: OK")
 win._dev_probe.wait(30000)
 win.close()
 app.processEvents()
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+forget_recovery(VID)
 print("verify_annotate PASSED")

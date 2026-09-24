@@ -49,26 +49,20 @@ a pure re-timing that changes no mapping.
 
 Persistence
 -----------
-Schema v5 writes every view into one `.cotrk` under a `v{i}_` key prefix
-(`TrackingSession.to_arrays(prefix)`), plus the view names, float offsets,
-rates, which one was active, the calibration (`calib_*`) and the last 3D
-reconstruction (`xyz_*`). v4 (integer offsets, no rates) and v3-or-older
-(one unprefixed session) still load.
+One `.kinetrace` file (a zip of CSV / JSON / .npy, see projectfile.py and
+docs/FORMAT.md): every camera with its tracks, the offsets and rates, which
+camera was active, the calibration, lens profiles and the last 3D result.
 """
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 
 import numpy as np
 
-from kinetrace import APP_VERSION
 from kinetrace.calib import Calibration, Reconstruction
 from kinetrace.session import TrackingSession
 
-PROJECT_SCHEMA = 5
 MAX_VIEWS = 15         # a 4x4 grid; past this the tiles stop being readable at all
 REFERENCE_VIEW = 0     # the first camera loaded: the clock everything is measured against
 
@@ -327,96 +321,15 @@ class Project:
         return target
 
     # ------------------------------------------------------------ persistence
-
-    def save_npz(self, path: str | Path) -> None:
-        path = Path(path)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        arrays: dict = {}
-        for i, s in enumerate(self.sessions):
-            # a body MESH is large and barely compressible (float16 vertices):
-            # compressing it froze every 30 s autosave for seconds; it is written
-            # stored, below (I93: 1.7 s -> 0.1 s for 500 meshed frames, same file)
-            arrays.update(s.to_arrays(f"v{i}_", body_mesh=False))
-        # saved whatever its camera count: after a camera is added the 3D menu
-        # waits for a calibration of every camera, but the one made for the
-        # first cameras must not vanish from the file (I16)
-        if self.calibration is not None and len(self.calibration) > 0:
-            arrays.update(self.calibration.to_arrays("calib_"))
-        if any(l is not None for l in self.lenses):
-            arrays["lens_meta"] = json.dumps([None if l is None else l.to_json() for l in self.lenses])
-        if self.reconstruction is not None:
-            r = self.reconstruction
-            arrays.update({"xyz_t0": int(r.t0), "xyz_names": np.array(r.names, dtype=object),
-                           "xyz_pts": r.xyz.astype(np.float64), "xyz_res": r.residual.astype(np.float64),
-                           "xyz_ncams": r.n_cams.astype(np.int32), "xyz_unit": str(r.unit)})
-            if r.per_cam is not None:
-                arrays["xyz_percam"] = np.asarray(r.per_cam, np.float32)
-        with open(tmp, "wb") as f:
-            np.savez_compressed(
-                f,
-                schema=PROJECT_SCHEMA,
-                app_version=APP_VERSION,
-                n_views=len(self.sessions),
-                view_names=np.array(self.names, dtype=object),
-                view_offsets=np.array(self.offsets, np.float64),
-                view_rates=np.array(self.rates, np.float64),
-                active_view=int(self.active),
-                **arrays,
-            )
-        meshes: dict = {}
-        for i, s in enumerate(self.sessions):
-            if s.body is not None:
-                meshes.update(s.body.mesh_arrays(f"v{i}_body_"))
-        if meshes:
-            import zipfile
-            with zipfile.ZipFile(tmp, "a", zipfile.ZIP_STORED, allowZip64=True) as zf:
-                for key, arr in meshes.items():
-                    with zf.open(key + ".npy", "w", force_zip64=True) as fh:
-                        np.lib.format.write_array(fh, np.asanyarray(arr), allow_pickle=False)
-        os.replace(tmp, path)   # atomic: a crash never corrupts the previous save
-        self.dirty = False
-        self.path = str(path)
+    def save(self, path) -> None:
+        """Write the Kinetrace project file (see projectfile.py)."""
+        from kinetrace import projectfile
+        projectfile.save(self, path)
 
     @staticmethod
-    def load_npz(path: str | Path) -> "Project":
-        """Open a project. v5 files carry every view plus rates, calibration
-        and 3D; v4 has integer offsets and no rates (derived from the fps);
-        v3 and older are a single unprefixed session and load as a one-view
-        project."""
-        with np.load(path, allow_pickle=True) as z:
-            have = set(z.files)
-            if "n_views" not in have:            # v3 or older: one view, no prefix
-                p = Project([TrackingSession.from_arrays(z)])
-            else:
-                n = int(z["n_views"])
-                sessions = [TrackingSession.from_arrays(z, f"v{i}_") for i in range(n)]
-                names = [str(v) for v in z["view_names"]] if "view_names" in have else None
-                offsets = ([float(v) for v in z["view_offsets"]]
-                           if "view_offsets" in have else None)
-                rates = ([float(v) for v in z["view_rates"]] if "view_rates" in have else None)
-                active = int(z["active_view"]) if "active_view" in have else 0
-                p = Project(sessions, names, offsets, active, rates)
-                cal = Calibration.from_arrays(z, "calib_")
-                if cal is not None and 0 < len(cal) <= n:     # fewer = cameras added since (I16)
-                    p.calibration = cal
-                if "lens_meta" in have:
-                    try:
-                        from kinetrace.lens import LensProfile
-                        raw = json.loads(str(z["lens_meta"]))
-                        lenses = [None if d is None else LensProfile.from_json(d) for d in raw]
-                        if len(lenses) == n:
-                            p.lenses = lenses
-                    except (ValueError, TypeError, KeyError):
-                        pass          # a lens profile that does not parse is simply absent
-                if "xyz_pts" in have:
-                    p.reconstruction = Reconstruction(
-                        int(z["xyz_t0"]), [str(v) for v in z["xyz_names"]],
-                        np.asarray(z["xyz_pts"], np.float64), np.asarray(z["xyz_res"], np.float64),
-                        np.asarray(z["xyz_ncams"], np.int32), str(z["xyz_unit"]),
-                        np.asarray(z["xyz_percam"], np.float32) if "xyz_percam" in have else None)
-        p.dirty = False
-        p.path = str(path)
-        return p
+    def load(path) -> "Project":
+        from kinetrace import projectfile
+        return projectfile.load(path)
 
     # ---------------------------------------------------------------- exports
 

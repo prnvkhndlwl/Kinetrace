@@ -291,9 +291,9 @@ assert ev3["autopaused"] is not None and ev3["autopaused"][1] == -1 and ev3["fin
 assert 38 <= ev3["autopaused"][0] <= 70, ev3["autopaused"]
 
 # ---- 4. persistence (schema v3) and exports -----------------------------------
-p = os.path.join(OUT, "animal_session.cotrk")
-s.save_npz(p)
-r = TrackingSession.load_npz(p)
+p = os.path.join(OUT, "animal_session.kinetrace")
+s.save(p)
+r = TrackingSession.load(p)
 assert r.animal is not None and r.animal.prompts == s.animal.prompts
 assert r.masks.n_masked() == s.masks.n_masked() and r.skeleton["name"] == "Lizard / iguana"
 assert [pt.source for pt in r.points] == [pt.source for pt in s.points]

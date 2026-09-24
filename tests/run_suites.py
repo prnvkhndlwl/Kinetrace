@@ -7,11 +7,12 @@ only (Windows consoles are cp1252). Usage:
     .venv\\Scripts\\python.exe tests\\run_suites.py --cpu        (offscreen GUI + core)
     .venv/bin/python tests/run_suites.py --cpu                  (Linux / macOS)
 
-Test residue (autosave files next to test600.mp4 and in tests/out) is removed
-after every suite, so no later suite meets a resume prompt.
+Every suite keeps its unsaved-work recovery copies in tests/out/recovery
+(KINETRACE_RECOVERY_DIR), emptied before each suite, so no later suite meets a
+"restore unsaved work?" question.
 """
-import glob
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -21,13 +22,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = sys.executable                           # the venv's interpreter on any platform
 OUT = os.path.join(ROOT, "tests", "out")
 os.makedirs(OUT, exist_ok=True)
+RECOVERY = os.path.join(OUT, "recovery")
 
 GPU = ["audit_sweep", "verify_balls", "verify_animal", "verify_tracker", "verify_groups", "verify_conf_autopause",
        "verify_roi", "verify_4k", "verify_segmenter", "verify_animal_gui", "verify_gui", "verify_oob",
        "verify_keys_follow", "verify_semiauto_pan", "verify_alltracker", "verify_long", "verify_retrack"]
 # verify_pythonw is in no group on purpose: it must be launched DETACHED (Start-Process,
 # no output redirect) or the stderr guard it checks cannot fail; see CLAUDE.md
-CPU = ["verify_core", "verify_stress", "verify_3d", "verify_wand", "verify_lens", "verify_body",
+CPU = ["verify_core", "verify_projectfile", "verify_recovery", "verify_stress", "verify_3d", "verify_wand", "verify_lens", "verify_body",
        "verify_onbody_rules", "verify_sync",
        "verify_timeline_events", "verify_scrub", "verify_multicam", "verify_3d_gui", "verify_ui_focus",
        "verify_annotate", "verify_display", "verify_render", "verify_segment_panel", "verify_point_menu",
@@ -51,11 +53,7 @@ def ensure_test_videos(names):
 
 
 def clean():
-    for f in glob.glob(os.path.join(ROOT, "*.cotracker.npz")) + glob.glob(os.path.join(OUT, "*.cotracker.npz")):
-        try:
-            os.remove(f)
-        except OSError:
-            pass
+    shutil.rmtree(RECOVERY, ignore_errors=True)       # unsaved-work copies the last suite left
 
 
 def main(argv):
@@ -70,7 +68,7 @@ def main(argv):
     ensure_test_videos(names)
     log = open(os.path.join(OUT, "suite_runs.txt"), "a", encoding="utf-8")
     log.write(f"\n==== run at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8")
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8", KINETRACE_RECOVERY_DIR=RECOVERY)
     bad = 0
     for name in names:
         path = os.path.join(ROOT, "tests", name + ".py")

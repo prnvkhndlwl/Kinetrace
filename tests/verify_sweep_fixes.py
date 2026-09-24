@@ -18,6 +18,7 @@ sys.stdout.reconfigure(errors="replace")
 import cv2
 import numpy as np
 
+from _clean import forget_recovery  # noqa: E402
 from kinetrace.calib import Calibration, CameraCalibration, NoUndistort, dlt_from_camera
 from kinetrace.project import Project
 from kinetrace.session import TrackingSession
@@ -76,9 +77,9 @@ for a in (0.3, 2.0):
 p4 = Project([sess(50, name="a.mp4"), sess(50, name="b.mp4")], ["A", "B"], [0.0, 0.0])
 p4.calibration = Calibration(cams)
 p4.add_view(sess(50, name="c.mp4"), "C")
-f4 = os.path.join(OUT, "cal_kept.cotrk")
-p4.save_npz(f4)
-q4 = Project.load_npz(f4)
+f4 = os.path.join(OUT, "cal_kept.kinetrace")
+p4.save(f4)
+q4 = Project.load(f4)
 assert q4.calibration is not None and len(q4.calibration) == 2, "a camera added after calibrating erased it on save"
 print("calibration survives adding a camera, on disk too (I16) OK")
 
@@ -177,8 +178,7 @@ VA = clip(os.path.join(OUT, "camA.mp4"))
 VB = clip(os.path.join(OUT, "camB.mp4"), shift=5)
 VC = clip(os.path.join(OUT, "camC.mp4"), shift=9)
 for v in (VA, VB, VC):
-    if os.path.exists(v + ".cotracker.npz"):
-        os.remove(v + ".cotracker.npz")
+    forget_recovery(v)
 
 win = MainWindow()
 win.resize(1500, 950)
@@ -382,7 +382,7 @@ print("3D entries stay clickable and say what they need (I115) OK")
 ASK["warned"] = []
 crit = []
 QMessageBox.critical = staticmethod(lambda *a, **k: (crit.append(a[1] if len(a) > 1 else ""), QMessageBox.Ok)[1])
-bad = os.path.join(OUT, "no_such_dir", "x.cotrk")
+bad = os.path.join(OUT, "no_such_dir", "x.kinetrace")
 from PySide6.QtWidgets import QFileDialog  # noqa: E402
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (bad, ""))
 win.project_path = None
@@ -640,13 +640,13 @@ print("a ball lost inside the picture is said with auto-pause off (I127) OK")
 win.close()
 pump(0.3)
 
-# I14 / I106 / I113 on a reopen: a missing camera, a camera of another length, a bad autosave
-proj_file = os.path.join(OUT, "three_cams.cotrk")
+# I14 / I106 / I113 on a reopen: a missing camera, a camera of another length, unreadable unsaved work
+proj_file = os.path.join(OUT, "three_cams.kinetrace")
 vids = [clip(os.path.join(OUT, f"re{k}.mp4"), n=60, shift=3 * k) for k in range(3)]
 ps = [TrackingSession(v, 60, 30.0, 320, 240) for v in vids]
 ps[2] = TrackingSession(os.path.join(OUT, "gone_away.mp4"), 60, 30.0, 320, 240)
 ps[1] = TrackingSession(vids[1], 50, 30.0, 320, 240)            # remembered as 50 frames; the file has 60
-Project(ps, ["c0", "c1", "c2"], [0.0, 0.0, 0.0]).save_npz(proj_file)
+Project(ps, ["c0", "c1", "c2"], [0.0, 0.0, 0.0]).save(proj_file)
 mtime0 = os.path.getmtime(proj_file)
 ASK["warned"], ASK["info"] = [], []
 QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: ("", ""))   # "locate video": cancelled
@@ -660,7 +660,7 @@ for _ in range(200):
 pump(0.5)
 assert any("without some cameras" in t for t in ASK["warned"]), ASK["warned"]
 assert any("length differs" in t for t in ASK["warned"]), ASK["warned"]
-assert win2.project_path is None, "autosave must not aim at the project file after a camera was left out"
+assert win2.project_path is None, "Save must ask for a name after a camera was left out"
 assert win2._views[1].n_frames == 50, win2._views[1].n_frames
 win2.project.dirty = True
 win2._autosave()
@@ -669,8 +669,11 @@ print("a missing camera leaves the project file alone; a longer companion is cla
 win2.close()
 pump(0.3)
 
-av = VA + ".cotracker.npz"
-open(av, "wb").write(b"not a zip file")
+from kinetrace import projectfile, recovery  # noqa: E402
+forget_recovery(VA)
+bad_id = projectfile.new_id()
+recovery.paths(bad_id)[0].write_bytes(b"not a zip file")
+recovery.write_info(bad_id, base_saved_at=None, last_path=None, videos=[VA], temporary=True)
 ASK["warned"] = []
 win3 = MainWindow()
 win3.show()
@@ -679,10 +682,11 @@ for _ in range(200):
     pump(0.05)
     if win3.state == READY:
         break
-assert any("not resumed" in t for t in ASK["warned"]), ASK["warned"]
-assert not os.path.exists(av) and any(f.startswith("camA.mp4.cotracker.") and f.endswith(".bak.npz")
-                                      for f in os.listdir(OUT)), "the unreadable autosave was not set aside"
-print("an autosave that cannot be resumed is set aside and said (I113) OK")
+assert any("could not be read" in t for t in ASK["warned"]), ASK["warned"]
+damaged = recovery.folder()[0] / "damaged"
+assert recovery.find(bad_id) is None and any(bad_id in f.name for f in damaged.iterdir()), \
+    "unreadable unsaved work must be moved aside, not deleted"
+print("unsaved work that cannot be read is moved aside and said (I113) OK")
 win3.close()
 pump(0.3)
 
@@ -711,7 +715,12 @@ w5.close()
 pump(0.2)
 print("the lens wizard opens without a video (G9) OK")
 
-# I129: a saved project retires the video-side autosave; a declined resume is kept aside
+# I129 (recovery form): autosave goes to the recovery folder, never next to the
+# video or into the project; Save retires it; a declined restore is kept aside
+pj_path = os.path.join(OUT, "saved_once.kinetrace")
+for f in (pj_path, pj_path + ".bak"):
+    if os.path.exists(f):
+        os.remove(f)
 win6 = MainWindow()
 win6.show()
 win6._open_video(VA)
@@ -719,40 +728,48 @@ for _ in range(200):
     pump(0.05)
     if win6.state == READY:
         break
+files_before = sorted(os.listdir(OUT))
 win6.session.add_point(0, 40.0, 40.0)
 win6.project.dirty = True
-win6._autosave()
-av = VA + ".cotracker.npz"
-assert os.path.exists(av)
-pj_path = os.path.join(OUT, "saved_once.cotrk")
+win6._autosave(wait=True)
+pid6 = win6._project_id
+assert recovery.find(pid6) is not None, "autosave writes the recovery folder"
+assert sorted(os.listdir(OUT)) == files_before, "autosave must not write beside the video"
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (pj_path, ""))
 assert win6._save_project_as()
-assert os.path.exists(pj_path) and not os.path.exists(av), "the older video-side autosave must go"
+assert os.path.exists(pj_path) and recovery.find(pid6) is None, "saving retires the recovery"
+saved_id, mtime6 = win6._project_id, os.path.getmtime(pj_path)
+win6.session.add_point(0, 60.0, 60.0)
+win6._autosave(wait=True)
+assert os.path.getmtime(pj_path) == mtime6, "autosave never touches the saved project"
+assert recovery.find(saved_id) is not None
+ASK["answer"] = QMessageBox.No                   # "Save changes?" not answered Save / Discard: kept
 win6.close()
 pump(0.3)
-Project.load_npz(pj_path).save_npz(av)                          # an autosave next to the video again
+assert recovery.find(saved_id) is not None, "closing without an answer keeps the unsaved work"
 ASK["answer"], ASK["warned"] = QMessageBox.No, []
 win7 = MainWindow()
 win7.show()
-win7._open_video(VA)
+win7._open_project_from_path(pj_path)
 for _ in range(200):
     pump(0.05)
-    if win7.state == READY:
+    if win7.state == READY and win7.project is not None:
         break
-assert not ASK["warned"], "declining must not raise a dialog"
-assert not os.path.exists(av) and any(f.startswith("camA.mp4.cotracker.") and f.endswith(".bak.npz")
-                                      for f in os.listdir(OUT)), "a declined autosave must be kept aside"
+assert not ASK["warned"], "declining must not raise a warning"
+assert win7.session.n_points == 1, "No opens the last saved version"
+declined = recovery.folder()[0] / "declined"
+assert recovery.find(saved_id) is None and any(saved_id in f.name for f in declined.iterdir()), \
+    "a declined restore must be kept aside"
 win7.close()
 pump(0.3)
-os.remove(pj_path)
-print("saving retires the stale autosave; a declined one is kept aside (I129) OK")
-for f in os.listdir(OUT):
-    if f.endswith(".bak.npz") or f.endswith(".cotracker.npz"):
-        os.remove(os.path.join(OUT, f))
+for f in (pj_path, pj_path + ".bak"):
+    if os.path.exists(f):
+        os.remove(f)
+print("autosave keeps the project file as saved; Save retires it; a declined one is kept aside (I129) OK")
+forget_recovery(VA)
 
 win.close()
 pump(0.3)
 for v in (VA, VB, VC):
-    if os.path.exists(v + ".cotracker.npz"):
-        os.remove(v + ".cotracker.npz")
+    forget_recovery(v)
 print("verify_sweep_fixes PASSED")

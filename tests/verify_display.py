@@ -21,9 +21,8 @@ from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 VID = os.path.join(ROOT, "test600.mp4")
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(VID)
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -246,11 +245,11 @@ print("hand-placed + low-confidence navigation OK")
 win._set_display_filter("contrast")
 win._set_trail_len(120)
 win.act_onion.setChecked(True)
-proj = os.path.join(SCRATCH, "display_rt.cotrk")
+proj = os.path.join(SCRATCH, "display_rt.kinetrace")
 win._sync_ui_state()
-win.project.save_npz(proj)
+win.project.save(proj)
 from kinetrace.project import Project
-back = Project.load_npz(proj)
+back = Project.load(proj)
 s2 = back.session
 assert s2.points[2].shape == "rect" and len(s2.points[2].outline) == 4
 assert s2.points[3].shape == "polygon"
@@ -269,7 +268,5 @@ print("project round trip OK")
 win._dev_probe.wait(30000)
 win.close()
 app.processEvents()
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+forget_recovery(VID)
 print("verify_display PASSED")

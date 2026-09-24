@@ -15,9 +15,8 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 VID = os.path.join(ROOT, r"test600.mp4")
 GT = np.load(VID + ".gt.npz")["gt"]
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(VID)
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 

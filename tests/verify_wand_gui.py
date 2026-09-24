@@ -26,6 +26,7 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QWizard
 
+from _clean import forget_recovery  # noqa: E402
 from kinetrace.calib import CameraCalibration, NoUndistort, dlt_from_camera
 from kinetrace.project import Project
 from kinetrace.session import TrackingSession
@@ -122,11 +123,10 @@ for c, cal in enumerate(cams):
     sessions.append(s)
     paths.append(p)
 proj = Project(sessions, [f"cam{c + 1}" for c in range(N_CAM)], OFFS)
-PROJ = os.path.join(SCRATCH, "wand_gui.cotrk")
-proj.save_npz(PROJ)
+PROJ = os.path.join(SCRATCH, "wand_gui.kinetrace")
+proj.save(PROJ)
 for p in paths:
-    if os.path.exists(p + ".cotracker.npz"):
-        os.remove(p + ".cotracker.npz")
+    forget_recovery(p)
 
 # ---- the app -----------------------------------------------------------------
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
@@ -334,8 +334,8 @@ assert b[2] > 1.0, b                    # up is up
 print("three-reference-point frame OK")
 
 # project round trip keeps the calibration
-p.save_npz(PROJ)
-back = Project.load_npz(PROJ)
+p.save(PROJ)
+back = Project.load(PROJ)
 assert back.calibration is not None and np.allclose(back.calibration.cameras[3].coefs, p.calibration.cameras[3].coefs)
 
 # =============================================================================
@@ -712,6 +712,5 @@ win._dev_probe.wait(60000)
 win.close()
 pump(0.2)
 for pth in paths:
-    if os.path.exists(pth + ".cotracker.npz"):
-        os.remove(pth + ".cotracker.npz")
+    forget_recovery(pth)
 print("WAND GUI PASSED")

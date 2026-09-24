@@ -25,6 +25,7 @@ sys.stdout.reconfigure(errors="replace")
 import cv2
 import numpy as np
 
+from _clean import forget_recovery  # noqa: E402
 from kinetrace import balls
 
 OUT = os.path.join(ROOT, "tests", "out")
@@ -352,8 +353,7 @@ def wait(cond, timeout, what):
             raise TimeoutError(what)
 
 
-if os.path.exists(path + ".cotracker.npz"):
-    os.remove(path + ".cotracker.npz")            # a crashed run's autosave would offer a resume
+forget_recovery(path)
 win._open_video(path)
 wait(lambda: win.state == READY, 60, "open")
 win._goto(0)
@@ -401,19 +401,17 @@ win.point_list.clearSelection()
 win._start_tracking(stop_after=20)
 wait(lambda: win.state == TRACKING, 60, "tracking start 2")
 wait(lambda: win.state == READY, 600, "tracking end 2")
-proj = os.path.join(OUT, "balls_test.cotrk")
-win.project.save_npz(proj)
+proj = os.path.join(OUT, "balls_test.kinetrace")
+win.project.save(proj)
 pump(0.2)
 from kinetrace.project import Project                      # noqa: E402
 
-p2 = Project.load_npz(proj)
+p2 = Project.load(proj)
 t2 = p2.sessions[0]
 assert t2.points[0].is_ball and t2.points[0].ball_prompts and np.isfinite(t2.radius[10, 0])
 assert np.allclose(t2.tracks[:21, 0], s.tracks[:21, 0], equal_nan=True)
 print("project round trip keeps the ball prompts, radii and tracks OK")
 win.close()
 pump(0.3)
-for f in (path + ".cotracker.npz",):
-    if os.path.exists(f):
-        os.remove(f)
+forget_recovery(path)
 print("verify_balls PASSED")

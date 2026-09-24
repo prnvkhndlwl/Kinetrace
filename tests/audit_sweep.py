@@ -34,9 +34,8 @@ os.makedirs(SCRATCH, exist_ok=True)
 VID_B = os.path.join(SCRATCH, "audit_second_cam.mp4")
 if not os.path.exists(VID_B):
     shutil.copy(VID, VID_B)
-for leftover in (VID + ".cotracker.npz", VID_B + ".cotracker.npz"):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(VID, VID_B)
 
 # ----------------------------------------------------------------- capture
 EXC: list[tuple[str, str, str]] = []            # (state, what, traceback tail)
@@ -60,7 +59,7 @@ faulthandler.dump_traceback_later(90, repeat=True)
 
 # ------------------------------------------------------------ dialog stubs
 SAVE_TARGETS = {"csv": os.path.join(SCRATCH, "audit_out.csv"), "tsv": os.path.join(SCRATCH, "audit_out.tsv"),
-                "mat": os.path.join(SCRATCH, "audit_out.mat"), "cotrk": os.path.join(SCRATCH, "audit_out.cotrk"),
+                "mat": os.path.join(SCRATCH, "audit_out.mat"), "kinetrace": os.path.join(SCRATCH, "audit_out.kinetrace"),
                 "mp4": os.path.join(SCRATCH, "audit_out.mp4"), "json": os.path.join(SCRATCH, "audit_out.json"),
                 "obj": os.path.join(SCRATCH, "audit_out.obj"), "png": os.path.join(SCRATCH, "audit_out.png"),
                 "txt": os.path.join(SCRATCH, "audit_out.txt")}
@@ -82,8 +81,8 @@ def _open_name(*a, **k):
     filt = str(a[3]) if len(a) > 3 else str(k.get("filter", ""))
     if "*.mp4" in filt or "Video" in filt:
         return VID_B, filt
-    if "cotrk" in filt:
-        return SAVE_TARGETS["cotrk"], filt
+    if "*.kinetrace" in filt:
+        return SAVE_TARGETS["kinetrace"], filt
     return SAVE_TARGETS["txt"], filt
 
 
@@ -543,8 +542,6 @@ try:
     pump(0.3)
 except Exception:                        # noqa: BLE001
     pass
-for leftover in (VID + ".cotracker.npz", VID_B + ".cotracker.npz"):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+forget_recovery(VID, VID_B)
 print("AUDIT SWEEP " + ("CLEAN" if not EXC else f"FOUND {len(EXC)} EXCEPTIONS"))
 sys.exit(1 if EXC else 0)

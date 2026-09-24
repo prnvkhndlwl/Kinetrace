@@ -17,9 +17,8 @@ SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)
 
 # autosave from earlier runs would trigger a resume prompt; remove for determinism
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(VID)
 
 # never let a dialog block the scripted run
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
@@ -119,10 +118,10 @@ win.session.export_tsv_sparse(os.path.join(SCRATCH, "gui_tracks.tsv"))
 win.session.export_mat(os.path.join(SCRATCH, "gui_tracks.mat"))
 
 # ---- project save / load round-trip ----
-proj = os.path.join(SCRATCH, "gui_test.cotrk")
+proj = os.path.join(SCRATCH, "gui_test.kinetrace")
 win.project_path = None
 win.session.current_frame = 321
-win.session.save_npz(proj)
+win.session.save(proj)
 win._open_project_from_path(proj)
 pump(lambda: win.state == READY and win.current == 321, 30, "project reopen at saved frame")
 assert win.session.n_points == 4

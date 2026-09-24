@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication
 # QApplication (not QCoreApplication): the cache-reset section drives the real
 # MainWindow, and widgets need a GUI application object
 app = QApplication([])
+from _clean import forget_recovery  # noqa: E402
 from kinetrace.video_source import (FrameCache, PREFETCH_AHEAD, SEEK_BACK_PREFETCH,
                                         SeekService, VideoSource)
 
@@ -156,9 +157,7 @@ from PySide6.QtWidgets import QMessageBox      # noqa: E402
 
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+forget_recovery(VID)
 
 gui = app
 from kinetrace.app import MainWindow, READY  # noqa: E402
@@ -205,7 +204,6 @@ print(f"Shift+C failsafe OK: dropped {n_before} frames "
 win._dev_probe.wait(180_000)
 win.close()
 gui.processEvents()
-if os.path.exists(VID + ".cotracker.npz"):
-    os.remove(VID + ".cotracker.npz")
+forget_recovery(VID)
 
 print("SCRUB PASSED")

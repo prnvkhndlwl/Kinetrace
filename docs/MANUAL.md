@@ -363,8 +363,8 @@ Work through this once with a short, easy clip before using a clip that matters.
 
 The first frame appears. If a warning about "variable frame rate" appears, stop
 and fix the file first — see [section 2](#2-what-you-need-before-you-start).
-If you have worked on this video before, the program asks **Resume session?**:
-**Yes** carries on exactly where you stopped (see
+If you worked on this video before without saving a project, the program asks
+**Restore unsaved work?**: **Yes** carries on exactly where you stopped (see
 [section 11](#11-saving-and-coming-back-later)).
 
 ### Step 2 — Go to a good starting frame
@@ -1538,52 +1538,68 @@ positions and the bands back.
 
 ## 11. Saving and coming back later
 
-**Your work is saved automatically every 30 seconds**, including while tracking
-is running, and once more when you close the program; the status bar shows
-*Saved ✓* with the time. If the program or the computer crashes, you lose at
-most half a minute. Where it is saved depends on whether you have saved a
-project yet:
+**Your project file changes only when you save it.** Press **Ctrl+S**. The
+first time, it asks where to put the **project file** (ending in `.kinetrace`);
+**Ctrl+Shift+S** saves it under a new name. It contains everything — all
+positions, the silhouette, your landmark names, events and notes, every camera
+and its offset, the calibration and the 3D results, lens profiles, body poses —
+and exactly how you left the program: the frame you were looking at, how far you
+were zoomed in, the timeline zoom, the side panel, the camera you were working
+in and every toggle. Opening it (**File → Open Project…**, **Ctrl+Shift+O**)
+puts you back exactly where you were.
 
-* **Before your first Ctrl+S** it goes into a file beside the video, named
-  after it (`clip.mp4.cotracker.npz` for `clip.mp4`). When you next open the
-  same video, the program asks *Resume session?* and says how many points and
-  tracked frames it found. Answer No and that file is kept, renamed
-  `clip.mp4.cotracker.<date-time>.bak.npz` (the status bar says so), so your new
-  work cannot overwrite it.
-  With several cameras, it sits beside the video of the camera you were
-  working in.
-* **After your first Ctrl+S** it goes into your project file itself. Come back
-  with **File → Open Project…** (**Ctrl+Shift+O**), not by opening the video.
-  The file beside the video is removed when the project is saved — the project
-  holds everything it had — so opening the video on its own starts afresh
-  instead of offering an older, out-of-date session.
+**The save before is kept.** Every Ctrl+S keeps the previous save beside the
+project as `name.kinetrace.bak`. To go back one save, rename that file so it ends
+in `.kinetrace` and open it.
 
-**If an earlier session cannot be resumed** — the file is damaged, or it was
-saved for a video with a different number of frames, so its tracks would sit on
-the wrong frames — the program says so (*Earlier session not resumed*) and moves
-it out of the way, renamed `clip.mp4.cotracker.<date-time>.bak.npz`, so the next
-autosave cannot overwrite it. Nothing is deleted. If it holds work you need,
-rename it to end in `.cotrk` and open it with **File → Open Project…**; the
-program warns you if its frame count does not match the video.
+**Unsaved work is kept safe every 30 seconds** — also while tracking is running
+and when you close the program — in a *recovery copy*, never in your project
+file. So your last Ctrl+S is always there to go back to, and if the program or
+the computer crashes you lose at most half a minute. The status bar shows
+*Unsaved work kept safe ✓* with the time.
 
-**To save deliberately:** **Ctrl+S**. The first time, it asks where to put the
-**project file** (ending in `.cotrk`); **Ctrl+Shift+S** saves it under a new
-name. It contains everything — all positions, the silhouette, your landmark
-names, events and notes, every camera and its offset, the calibration and the 3D
-results, lens profiles, body poses, and even which frame you were looking at and
-how far you were zoomed in. Opening it (**Ctrl+Shift+O**) puts you back exactly
-where you were.
+* **Coming back after a crash:** open the project again (or, if you never saved
+  one, the video). The program finds the unsaved work and asks *Unsaved changes
+  found* (or *Restore unsaved work?*). **Yes** carries on where you stopped;
+  **No** opens the last save and keeps the unsaved work aside — nothing is
+  deleted.
+* When the program starts and unsaved work is waiting, it says so. **File →
+  Recover Unsaved Work…** lists everything waiting, newest first.
+* **Moving or renaming the project file does not matter:** its unsaved work is
+  found by the project itself, not by the file's name or folder.
+* If you open an **older copy** of a project while a newer copy has unsaved
+  work, the program offers that work as a separate, unsaved copy. It never mixes
+  two versions of a project.
+* Recovery copies live in the `recovery` folder inside the Kinetrace folder. If
+  that folder cannot be written (Kinetrace installed somewhere read-only), they
+  go into your own user folder instead, and the program says where, once. Work
+  you chose not to restore is moved into `recovery/declined`, work that could not
+  be read into `recovery/damaged`; nothing there is deleted automatically.
+
+**Closing with unsaved changes** asks *Save changes?*: **Save** writes the
+project, **Discard** drops the unsaved work, **Cancel** keeps the program open.
+Closing that question any other way keeps the unsaved work for File → Recover
+Unsaved Work…. Moving through the video, zooming and switching toggles are not
+changes that need saving: close without saving and the project still opens where
+you left it.
 
 **If a save fails** — the folder is gone or read-only, the drive is
 disconnected, or the file is open in another program — the program says so
-(*Could not save the project*) and nothing is written there. Your work is still
-in the program: use **File → Save Project As…** to save it somewhere else. If
-the 30-second autosave cannot write to your project file, it saves beside the
-video instead and tells you once, with the file name.
+(*Could not save the project*) and nothing is written there: the previous save is
+unchanged. Your work is still in the program and in its recovery copy: use
+**File → Save Project As…** to save it somewhere else.
+
+**The project file is readable without Kinetrace.** It is an ordinary zip
+archive: unzip it and you find spreadsheet-style CSV files (one row per tracked
+frame and point, pixel positions counted from 0) and small JSON text files.
+Silhouettes and body poses are stored as NumPy `.npy` arrays, which Python,
+MATLAB and R can read.
 
 A project file does **not** contain the video itself, only where the video is on
-disk. If you move or rename your videos, the program asks you to point it at
-each one again (*Locate video*). If the video you pick has a different number of
+disk. Keep the project and its videos together (the same folders relative to
+each other) and you can move them anywhere, even to another computer or
+operating system: the program finds each video again. If it cannot, it asks you
+to point it at each one (*Locate video*). If the video you pick has a different number of
 frames from the one the project remembers, it warns you: that is usually another
 cut or take, and the tracks would sit on the wrong frames.
 
@@ -2236,19 +2252,19 @@ does not help: select one ball alone in the POINTS list and press **Track ▶**,
 then do the same for each of the others. (Small balls are fine, down to about
 5 pixels across.)
 
-**You lost work.** Try **Ctrl+Z** (one step only). Otherwise: if you had saved a
-project, open it again (**Ctrl+Shift+O**) — the automatic save every 30 seconds
-goes into that project file. If you never saved one, reopen the video: the
-automatic save kept next to it offers itself (*Resume session?*). If the
-program says *Earlier session not resumed*, that save could not be read or
-belongs to a video with a different number of frames; it has been kept next
-to the video as `<video>.cotracker.<date-time>.bak.npz`, not deleted.
+**You lost work.** Try **Ctrl+Z** (one step only). Otherwise open the project
+again (**Ctrl+Shift+O**) or, if you never saved one, the video: unsaved work from
+the last 30 seconds before a crash is offered (*Unsaved changes found* /
+*Restore unsaved work?*). **File → Recover Unsaved Work…** lists everything
+waiting. Work you once declined is in the `recovery/declined` folder inside the
+Kinetrace folder, and work that could not be read in `recovery/damaged`: rename
+such a file to end in `.kinetrace` and open it with File → Open Project…. The
+save before your last Ctrl+S is beside the project as `name.kinetrace.bak`.
 
-**"Could not save the project".** Nothing was written, and your work is still
-in the program. The folder may not exist or may be read-only, or the file may
-be open elsewhere: use **File → Save Project As…** to save somewhere else. If
-the automatic save cannot write the project file either, it saves next to the
-video instead and says so.
+**"Could not save the project".** Nothing was written, the previous save is
+unchanged, and your work is still in the program (and in its recovery copy).
+The folder may not exist or may be read-only, or the file may be open elsewhere:
+use **File → Save Project As…** to save somewhere else.
 
 **"Opened without some cameras".** A camera's video was not where the project
 remembers it, and it was not located. That camera is left out of this session
@@ -2298,8 +2314,9 @@ loaded is the reference and its offset is always 0.
 
 **Point** — something being tracked. Each landmark is a point.
 
-**Project (`.cotrk`)** — a file holding all your work on a video, or on all the
-cameras of one recording. Not the videos themselves.
+**Project (`.kinetrace`)** — a file holding all your work on a video, or on all
+the cameras of one recording, and how you left the program. Not the videos
+themselves.
 
 **Region** — an outlined area (circle, rectangle or polygon) tracked as a whole
 and reported as its centre, rather than a single spot.

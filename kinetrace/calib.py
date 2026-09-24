@@ -665,7 +665,7 @@ class Calibration:
         cal.notes = notes
         return cal
 
-    # ---- npz persistence (inside the .cotrk) ------------------------------
+    # ---- arrays form (the project file stores it as calibration.json) -----
     def to_arrays(self, prefix: str = "calib_") -> dict:
         if not self.cameras:
             return {}

@@ -21,6 +21,9 @@ tests/out/
 *.klens.json
 *.kcal.json
 
+# unsaved-work recovery files (inside the install folder)
+recovery/
+
 # skeletons a user saves from the app
 skeletons/
 

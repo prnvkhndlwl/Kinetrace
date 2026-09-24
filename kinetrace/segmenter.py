@@ -509,12 +509,14 @@ class MaskTrack:
         mt.area = np.asarray(arrays[f"{prefix}area"]).astype(np.int32)
         mt.centroid = np.asarray(arrays[f"{prefix}centroid"]).astype(np.float32)
         mt.score = np.asarray(arrays[f"{prefix}score"]).astype(np.float32)
-        pts = np.asarray(arrays[f"{prefix}cpts"]); off = np.asarray(arrays[f"{prefix}coff"])
+        # one conversion, then views: a per-outline astype cost ~0.25 s on a
+        # 40k-frame silhouette. Outlines are replaced, never edited in place.
+        pts = np.asarray(arrays[f"{prefix}cpts"], np.int32); off = np.asarray(arrays[f"{prefix}coff"])
         fr = np.asarray(arrays[f"{prefix}cframe"])
-        for i, f in enumerate(fr):
-            mt.contours.setdefault(int(f), []).append(pts[off[i]:off[i + 1]].astype(np.int32))
+        for i, f in enumerate(fr.tolist()):
+            mt.contours.setdefault(f, []).append(pts[off[i]:off[i + 1]])
         if f"{prefix}mframe" in getattr(arrays, "files", arrays):
-            mf = np.asarray(arrays[f"{prefix}mframe"]); mp = np.asarray(arrays[f"{prefix}mpts"])
-            for i, f in enumerate(mf):
-                mt.midline[int(f)] = mp[i].astype(np.float32)
+            mf = np.asarray(arrays[f"{prefix}mframe"]); mp = np.asarray(arrays[f"{prefix}mpts"], np.float32)
+            for i, f in enumerate(mf.tolist()):
+                mt.midline[f] = mp[i]
         return mt

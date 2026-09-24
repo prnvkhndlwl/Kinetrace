@@ -17,9 +17,8 @@ from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 VID = os.path.join(ROOT, r"test600.mp4")
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)
-for leftover in (VID + ".cotracker.npz",):
-    if os.path.exists(leftover):
-        os.remove(leftover)
+from _clean import forget_recovery  # noqa: E402
+forget_recovery(VID)
 
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -331,10 +330,10 @@ c._user_zoomed = True
 c.centerOn(200, 150)
 app.processEvents()
 view_before = c.view_state()
-proj = os.path.join(SCRATCH, "state_restore.cotrk")
+proj = os.path.join(SCRATCH, "state_restore.kinetrace")
 win.project_path = None
 win._sync_ui_state()
-s.save_npz(proj)
+s.save(proj)
 
 old_session = s
 win._open_project_from_path(proj)
@@ -613,6 +612,5 @@ assert dt < 0.25 and dt2 < 0.005, "timeline aggregation too slow"
 win._dev_probe.wait(180_000)
 win.close()
 app.processEvents()
-if os.path.exists(VID + ".cotracker.npz"):
-    os.remove(VID + ".cotracker.npz")
+forget_recovery(VID)
 print("TIMELINE+EVENTS PASSED")

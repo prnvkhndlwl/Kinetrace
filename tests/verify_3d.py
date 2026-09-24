@@ -246,12 +246,12 @@ assert np.isnan(sample_track(s0.tracks, s0.tracked, 49.5)[0]).all()
 assert np.isfinite(sample_track(s0.tracks, s0.tracked, 48.5)[0]).all()
 s0.tracked[50, 0] = True
 
-# ---- project v5 round trip with calibration + reconstruction ----------------
+# ---- project round trip with calibration + reconstruction -------------------
 proj.offsets = list(est)
 proj.reconstruction = rec_est
-path = os.path.join(OUT, "test3d.cotrk")
-proj.save_npz(path)
-back = Project.load_npz(path)
+path = os.path.join(OUT, "test3d.kinetrace")
+proj.save(path)
+back = Project.load(path)
 assert back.rates == true_rates and np.allclose(back.offsets, est)
 assert back.calibration is not None and len(back.calibration) == 6
 assert np.allclose(back.calibration.cameras[3].coefs, cams[3].coefs) and back.calibration.unit == "m"
@@ -259,21 +259,12 @@ assert back.reconstruction is not None and np.allclose(back.reconstruction.xyz, 
 assert back.reconstruction.names == rec_est.names and back.reconstruction.t0 == 10
 # an LWM-undistorted camera survives the round trip too
 proj.calibration.cameras[0].undistort = lwm
-proj.save_npz(path)
-back = Project.load_npz(path)
+proj.save(path)
+back = Project.load(path)
 assert back.calibration.cameras[0].undistort.kind == "lwm"
 assert np.allclose(back.calibration.cameras[0].undistort.undistort(test_raw[:5]), u[:5])
 proj.calibration.cameras[0].undistort = NoUndistort()
-# v4-style file (integer offsets, no rates) still loads with rates from fps
-with np.load(path, allow_pickle=True) as z:
-    old = {k: z[k] for k in z.files if not k.startswith(("calib_", "xyz_")) and k != "view_rates"}
-old["view_offsets"] = np.array([0, -14, 4, -2, 1, 63], np.int64)
-old["schema"] = 4
-with open(os.path.join(OUT, "test3d_v4.cotrk"), "wb") as fh:
-    np.savez_compressed(fh, **old)
-v4 = Project.load_npz(os.path.join(OUT, "test3d_v4.cotrk"))
-assert v4.rates == true_rates and v4.offsets == [0.0, -14.0, 4.0, -2.0, 1.0, 63.0] and v4.calibration is None
-print("project v5 round trip OK (rates, fractional offsets, calibration incl. LWM, 3D; v4 loads)")
+print("project round trip OK (rates, fractional offsets, calibration incl. LWM, 3D)")
 
 # ---- exports -----------------------------------------------------------------
 xp = os.path.join(OUT, "test3d_xyz.csv")
