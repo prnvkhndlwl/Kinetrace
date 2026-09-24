@@ -1709,6 +1709,34 @@ left out, like in the other exports.
 
 ---
 
+### Bringing tracks in from another program
+
+**File → Import Tracks…** reads points tracked or clicked somewhere else into
+the camera you are working in: a **DeepLabCut** CSV (the one it writes when it
+analyses a video), a **SLEAP** CSV, a **DLTdv** or **Argus** xypts CSV, or the
+`tracks.csv` of another Kinetrace project. The program recognises the format from
+the file itself. If no video is open yet, it asks for the video the tracks
+belong to first.
+
+* Points are matched **by name**: a name the camera already has updates that
+  point, a new name becomes a new point. Frames the file has no position for
+  keep what they had, so you can import on top of your own work.
+* Pixel conventions are converted for you (DLTdv counts pixels from 1, older
+  DLTdv and Argus count up from the bottom edge — its `_pointnames.csv` file
+  says which). Confidence comes along (DeepLabCut's likelihood, SLEAP's scores);
+  instances you labelled by hand in SLEAP arrive as hand-placed.
+* A DLTdv / Argus file with several cameras goes into the cameras of your
+  project in the file's order (add the videos first); otherwise the program
+  asks which of the file's cameras is the one on screen.
+* The message afterwards says how many positions came in, and how many were
+  left out because they fell outside the picture or on frames the video does
+  not have — many of those usually means the wrong video. **Ctrl+Z** undoes an
+  import into one camera.
+* One animal per video: a multi-animal DeepLabCut file or a SLEAP file with
+  several tracks is refused with the reason (export one animal per file).
+
+---
+
 ## 13. Measuring a person's joints and joint angles
 
 Everything so far has been about points **you** choose. This section is

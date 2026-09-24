@@ -33,7 +33,7 @@ from kinetrace.project import MAX_VIEWS, REFERENCE_VIEW, Project
 from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_token,
                                      model_is_cached as seg_is_cached, preferred_backend,
                                      save_token, working_size)
-from kinetrace import projectfile, recovery
+from kinetrace import projectfile, recovery, trackio
 from kinetrace.session import TrackingSession
 
 PROJECT_SUFFIX = projectfile.SUFFIX
@@ -50,6 +50,7 @@ _CHECKPOINT = Path(__file__).resolve().parent.parent / "models" / "checkpoints" 
 
 IDLE, READY, TRACKING = range(3)
 VIDEO_FILTER = "Videos (*.mp4 *.avi *.mov *.mkv *.m4v *.wmv *.webm *.mpg *.mpeg);;All files (*)"
+TRACKS_FILTER = ("Tracks - DeepLabCut, SLEAP, DLTdv / Argus, Kinetrace (*.csv);;All files (*)")
 # a companion camera only ever displays ONE frame, so it needs room for a couple
 # of 4K frames and nothing more (see MainWindow._rebudget_caches)
 COMPANION_CACHE_BYTES = 96 * 1024 ** 2
@@ -371,6 +372,7 @@ class MainWindow(QMainWindow):
         self._recovery_sig = None
         self._camera_entries: list = []
         self._project_dir: Path | None = None
+        self._after_open = None          # (video path, job): runs once that video has opened
         self._undo_snap = None
         self._display_queue: deque = deque()
         self._fps_ema = 0.0
@@ -1031,6 +1033,9 @@ class MainWindow(QMainWindow):
         self.act_recover = QAction("&Recover Unsaved Work…", self, triggered=self._recover_dialog)
         self.act_recover.setToolTip("Work that was never saved (the program closed, or you chose not to "
                                     "save) is kept in Kinetrace's recovery folder: open it from here")
+        self.act_import_tracks = QAction("&Import Tracks…", self, triggered=lambda: self._import_tracks_dialog())
+        self.act_import_tracks.setToolTip("Tracks made in DeepLabCut, SLEAP, DLTdv / Argus or another Kinetrace "
+                                          "project, into the camera on screen (points matched by name)")
         self.act_export = QAction("&Export Tracks…", self, shortcut=QKeySequence("Ctrl+E"),
                                   triggered=self._export_dialog)
         self.act_overlay = QAction("Export Overlay &Video…", self, triggered=self._export_overlay)
@@ -1038,7 +1043,7 @@ class MainWindow(QMainWindow):
                                     "counter, events and notes drawn on it — for talks and for checking "
                                     "a result without the app")
         for a in (self.act_open, self.act_open_proj, self.act_recover, None, self.act_save, self.act_save_as,
-                  None, self.act_export, self.act_overlay):
+                  None, self.act_import_tracks, self.act_export, self.act_overlay):
             m_file.addSeparator() if a is None else m_file.addAction(a)
 
         m_edit = self.menuBar().addMenu("&Edit")
@@ -1428,6 +1433,7 @@ class MainWindow(QMainWindow):
         self.act_save_as.setEnabled(has_video and not tracking)
         self.act_open.setEnabled(not tracking)
         self.act_open_proj.setEnabled(not tracking)
+        self.act_import_tracks.setEnabled(not tracking)
         self.act_undo.setEnabled(has_video and not tracking and self._undo_snap is not None)
         self.act_mark_event.setEnabled(has_video and not tracking)
         self.timeline.setEnabled(has_video and not tracking)  # still paints progress live
@@ -1672,6 +1678,9 @@ class MainWindow(QMainWindow):
         self._goto(self.session.current_frame if self.session else 0, force=True)
         self._apply_ui_state()   # restored sessions reopen EXACTLY as saved
         self._apply_state()
+        job, self._after_open = self._after_open, None
+        if job is not None and Path(job[0]).resolve() == Path(info.path).resolve():
+            QTimer.singleShot(0, job[1])
         if self.session is not None and self.session.n_points > 3:
             QTimer.singleShot(0, self._fit_timeline_height)
         self.setWindowTitle(f"{APP_NAME} — {Path(info.path).name}")
@@ -4926,6 +4935,70 @@ class MainWindow(QMainWindow):
         recovery.discard(before[1])
         return True
 
+    def _import_tracks_dialog(self, path: str | None = None):
+        """File → Import Tracks: another program's 2D tracks into the camera on
+        screen (trackio.py). With no video open, the video comes first."""
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Import tracks", "", TRACKS_FILTER)
+            if not path:
+                return
+        try:
+            imp = trackio.read(path)
+        except trackio.TrackImportError as e:
+            QMessageBox.warning(self, "Cannot import these tracks", str(e))
+            return
+        if self.session is None:
+            QMessageBox.information(self, "Import tracks",
+                                    f"{Path(path).name} is a {imp.label}. Now open the video these tracks "
+                                    "belong to.")
+            vpath, _ = QFileDialog.getOpenFileName(self, "Open the video of these tracks",
+                                                   str(Path(path).parent), VIDEO_FILTER)
+            if vpath:
+                self._after_open = (vpath, lambda: self._apply_imported(imp, path))
+                self._open_video(vpath)
+            return
+        self._apply_imported(imp, path)
+
+    def _apply_imported(self, imp, path: str) -> None:
+        p = self.project
+        if p is None or self.state != READY:
+            return
+        if imp.n_cameras == 1:
+            targets = [(0, p.active)]
+        elif imp.n_cameras == p.n_views:
+            targets = [(c, c) for c in range(p.n_views)]       # the file's cameras in the project's order
+        else:
+            labels = [f"camera {c + 1} of the file" for c in range(imp.n_cameras)]
+            choice, ok = QInputDialog.getItem(
+                self, "Import tracks",
+                f"This file has {imp.n_cameras} cameras and this project {p.n_views}. Which of the file's "
+                f"cameras is {p.name(p.active)}?\n\n(To import every camera at once, first add the other "
+                "cameras' videos with + Add video, in the file's order.)", labels, 0, False)
+            if not ok or choice not in labels:
+                return
+            targets = [(labels.index(choice), p.active)]
+        if len(targets) == 1:
+            self._undo_snap = p.sessions[targets[0][1]].snapshot()   # one undo step
+            self.act_undo.setEnabled(targets[0][1] == p.active)
+        else:
+            self._undo_snap = None                                   # the undo holds one camera only
+        said = []
+        for c, view in targets:
+            f_of_row = (None if imp.rows == "frames"
+                        else (lambda r, v=view: p.map_frame(0, v, r)))
+            summ = trackio.apply(p.sessions[view], imp, camera=c, frame_of_row=f_of_row)
+            said.append((f"{p.name(view)}: " if len(targets) > 1 else "") + summ["sentence"])
+        self._refresh_point_list()
+        self._refresh_overlay()
+        self._refresh_cameras()
+        self._update_frame_label()
+        self._apply_state()
+        extra = [n for n in imp.notes]
+        if len(targets) > 1:
+            extra.append("Ctrl+Z cannot undo an import into several cameras; your last save is unchanged")
+        self.toast.show_message(" ".join(said) + ("<br>" + "<br>".join(extra) if extra else ""), "info", 12000)
+        self.statusBar().showMessage(f"Imported {Path(path).name}", 6000)
+
     def _open_project_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open project", "",
                                               f"Kinetrace project (*{PROJECT_SUFFIX})")
@@ -5919,7 +5992,9 @@ class MainWindow(QMainWindow):
         if key == "wide":
             s.export_csv(path)
         elif key == "dlc":
-            s.export_dlc_csv(path)
+            s.export_dlc_csv(path, scorer="Kinetrace_" + {"alltracker": "AllTracker",
+                                                          "cotracker3": "CoTracker3"}.get(self._point_backend,
+                                                                                          "Kinetrace"))
         elif key in ("dltdv", "dltdv_bl"):
             s.export_dltdv_csv(path, flip_y=(key == "dltdv_bl"))
             written.append(str(Path(path).with_name(Path(path).stem + "_pointnames.csv")))
@@ -6266,6 +6341,8 @@ def main():
         arg = sys.argv[1]
         if arg.endswith(PROJECT_SUFFIX) or (Path(arg).is_dir() and (Path(arg) / "kinetrace.json").is_file()):
             QTimer.singleShot(0, lambda: win._open_project_from_path(arg))
+        elif arg.lower().endswith(".csv"):
+            QTimer.singleShot(0, lambda: win._import_tracks_dialog(arg))
         else:
             QTimer.singleShot(0, lambda: win._open_video(arg))
     sys.exit(app.exec())

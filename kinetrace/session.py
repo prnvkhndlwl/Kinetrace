@@ -929,7 +929,7 @@ class TrackingSession:
             lines.append(f"{t}\t{names[j]}\t{x:.3f}\t{y:.3f}\t{int(self.visibility[t, j])}")
         Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
 
-    def export_dlc_csv(self, path: str | Path, scorer: str = "CoTracker3") -> None:
+    def export_dlc_csv(self, path: str | Path, scorer: str = "Kinetrace") -> None:
         """DeepLabCut-style CSV (3 header rows: scorer / bodyparts / coords),
         one row per frame, likelihood = tracking confidence. Readable by
         DeepLabCut, Anipose (as 2D pose) and most pose-analysis notebooks."""

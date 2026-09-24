@@ -430,35 +430,38 @@ class _Source:
         return out
 
     def table(self, name: str, required: tuple, optional: tuple = ()) -> tuple[dict, int]:
-        """A CSV as {column: list of strings}, found by header name."""
-        text = self.text(name)
-        head = text.split("\n", 1)[0]
-        if ";" in head and "," not in head:
-            raise ProjectFileError(f"{name}: separated by ';' - saved by a spreadsheet set to a "
-                                   "comma-decimal locale. Save it with ',' separators and '.' decimals.")
-        if '"' in text:
-            rows = list(csv.reader(io.StringIO(text)))
-        else:
-            rows = [ln.split(",") for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
-        while rows and (not rows[-1] or rows[-1] == [""]):          # trailing blank lines
-            rows.pop()
-        if not rows:
-            return {c: [] for c in required + optional}, 0
-        header = [h.strip().lower() for h in rows[0]]
-        missing = [c for c in required if c not in header]
-        if missing:
-            raise ProjectFileError(f"{name}: missing column(s) {', '.join(missing)}")
-        n = len(rows) - 1
-        width = len(header)
-        if set(map(len, rows[1:])) - {width}:                   # only then find the row, for the message
-            k, r = next((k, r) for k, r in enumerate(rows[1:], start=2) if len(r) != width)
-            raise ProjectFileError(f"{name}: row {k} has {len(r)} values, the header has {width}")
-        cols = list(zip(*rows[1:])) if n else [()] * width
-        out = {h: list(c) for h, c in zip(header, cols)}
-        for c in optional:
-            out.setdefault(c, None)
-        return out, n
+        return parse_table(self.text(name), name, required, optional)
 
+
+def parse_table(text: str, name: str, required: tuple, optional: tuple = ()) -> tuple[dict, int]:
+    """A CSV as {column: list of strings}, found by header name (lower case).
+    Also reads tracks files from outside a project (trackio.py)."""
+    head = text.split("\n", 1)[0]
+    if ";" in head and "," not in head:
+        raise ProjectFileError(f"{name}: separated by ';' - saved by a spreadsheet set to a "
+                               "comma-decimal locale. Save it with ',' separators and '.' decimals.")
+    if '"' in text:
+        rows = list(csv.reader(io.StringIO(text)))
+    else:
+        rows = [ln.split(",") for ln in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    while rows and (not rows[-1] or rows[-1] == [""]):          # trailing blank lines
+        rows.pop()
+    if not rows:
+        return {c: [] for c in required + optional}, 0
+    header = [h.strip().lower() for h in rows[0]]
+    missing = [c for c in required if c not in header]
+    if missing:
+        raise ProjectFileError(f"{name}: missing column(s) {', '.join(missing)}")
+    n = len(rows) - 1
+    width = len(header)
+    if set(map(len, rows[1:])) - {width}:                   # only then find the row, for the message
+        k, r = next((k, r) for k, r in enumerate(rows[1:], start=2) if len(r) != width)
+        raise ProjectFileError(f"{name}: row {k} has {len(r)} values, the header has {width}")
+    cols = list(zip(*rows[1:])) if n else [()] * width
+    out = {h: list(c) for h, c in zip(header, cols)}
+    for c in optional:
+        out.setdefault(c, None)
+    return out, n
 
 def _foreign_name(p: str) -> str:
     """The file name of a path saved on any OS (C:\\a\\b.mp4 on a Mac -> b.mp4)."""
@@ -609,45 +612,10 @@ def _read_camera(src: _Source, d: str, s) -> None:
                 raise ProjectFileError(f"{d}/{k}.npy: shape {v.shape} does not match {T} frames x "
                                        f"{len(points)} points")
     else:
-        N0 = len(points)
         cols, n = (src.table(f"{d}/tracks.csv", ("frame", "point", "x", "y"), TRACK_COLS[4:])
                    if src.has(f"{d}/tracks.csv") else ({}, 0))
-        where = f"{d}/tracks.csv"
-        if n:
-            try:
-                fr = np.fromiter(map(int, cols["frame"]), np.int64, n)
-            except ValueError:
-                raise ProjectFileError(f"{where}: a frame number is not a whole number") from None
-            bad = (fr < 0) | (fr >= T)
-            if bad.any():
-                raise ProjectFileError(f"{where}: row {int(np.flatnonzero(bad)[0]) + 2}: frame {fr[bad][0]} "
-                                       f"is outside the video (0 - {T - 1})")
-            for nm in sorted(set(cols["point"]) - set(index), key=cols["point"].index):
-                index[nm] = len(points)                   # a name only tracks.csv knows: a new point
-                points.append(PointMeta(nm, _PALETTE[len(points) % len(_PALETTE)]))
-            pi = np.fromiter(map(index.__getitem__, cols["point"]), np.int64, n)
-        N = len(points)
-        arr = dict(tracks=np.full((T, N, 2), np.nan, np.float32), confidence=np.zeros((T, N), np.float32),
-                   visibility=np.zeros((T, N), bool), manual=np.zeros((T, N), bool),
-                   tracked=np.zeros((T, N), bool), occluded=np.zeros((T, N), bool),
-                   radius=np.full((T, N), np.nan, np.float32))
-        if n:
-            dup = np.unique(fr * N + pi, return_counts=True)[1] > 1
-            if dup.any():
-                raise ProjectFileError(f"{where}: the same frame and point appear twice")
-            x, y = text_f32(cols["x"], where), text_f32(cols["y"], where)
-            arr["tracks"][fr, pi, 0], arr["tracks"][fr, pi, 1] = x, y
-            has = np.isfinite(x) & np.isfinite(y)
-            arr["tracked"][fr, pi] = has
-            arr["confidence"][fr, pi] = (text_f32(cols["confidence"], where) if cols.get("confidence") is not None
-                                         else np.where(has, 1.0, 0.0).astype(np.float32))
-            for key, col in (("visibility", "visible"), ("manual", "hand_placed"), ("occluded", "hidden")):
-                if cols.get(col) is not None:
-                    arr[key][fr, pi] = _bool_col(cols[col], where)
-                elif key == "visibility":
-                    arr[key][fr, pi] = has
-            if cols.get("radius") is not None:
-                arr["radius"][fr, pi] = text_f32(cols["radius"], where)
+        arr, points = tracks_from_table(cols, n, points, T, f"{d}/tracks.csv")
+        index = {p.name: i for i, p in enumerate(points)}
     s.points = points
     s.tracks, s.confidence, s.visibility = arr["tracks"], arr["confidence"], arr["visibility"]
     s.manual, s.tracked, s.occluded, s.radius = arr["manual"], arr["tracked"], arr["occluded"], arr["radius"]
@@ -720,6 +688,49 @@ def _read_camera(src: _Source, d: str, s) -> None:
         pass                                     # the point / event counts set above stand
     s.dirty = False
 
+
+def tracks_from_table(cols: dict, n: int, points: list, T: int, where: str):
+    """tracks.csv columns -> the T x N arrays of a session (NaN / False where a
+    cell has no row). A point name only the table knows becomes a new point,
+    appended to `points`. -> (arrays, points). Also used by trackio.py."""
+    from kinetrace.session import PointMeta
+    index = {p.name: i for i, p in enumerate(points)}
+    if n:
+        try:
+            fr = np.fromiter(map(int, cols["frame"]), np.int64, n)
+        except ValueError:
+            raise ProjectFileError(f"{where}: a frame number is not a whole number") from None
+        bad = (fr < 0) | (fr >= T)
+        if bad.any():
+            raise ProjectFileError(f"{where}: row {int(np.flatnonzero(bad)[0]) + 2}: frame {fr[bad][0]} "
+                                   f"is outside the video (0 - {T - 1})")
+        for nm in sorted(set(cols["point"]) - set(index), key=cols["point"].index):
+            index[nm] = len(points)                   # a name only tracks.csv knows: a new point
+            points.append(PointMeta(nm, _PALETTE[len(points) % len(_PALETTE)]))
+        pi = np.fromiter(map(index.__getitem__, cols["point"]), np.int64, n)
+    N = len(points)
+    arr = dict(tracks=np.full((T, N, 2), np.nan, np.float32), confidence=np.zeros((T, N), np.float32),
+               visibility=np.zeros((T, N), bool), manual=np.zeros((T, N), bool),
+               tracked=np.zeros((T, N), bool), occluded=np.zeros((T, N), bool),
+               radius=np.full((T, N), np.nan, np.float32))
+    if n:
+        dup = np.unique(fr * N + pi, return_counts=True)[1] > 1
+        if dup.any():
+            raise ProjectFileError(f"{where}: the same frame and point appear twice")
+        x, y = text_f32(cols["x"], where), text_f32(cols["y"], where)
+        arr["tracks"][fr, pi, 0], arr["tracks"][fr, pi, 1] = x, y
+        has = np.isfinite(x) & np.isfinite(y)
+        arr["tracked"][fr, pi] = has
+        arr["confidence"][fr, pi] = (text_f32(cols["confidence"], where) if cols.get("confidence") is not None
+                                     else np.where(has, 1.0, 0.0).astype(np.float32))
+        for key, col in (("visibility", "visible"), ("manual", "hand_placed"), ("occluded", "hidden")):
+            if cols.get(col) is not None:
+                arr[key][fr, pi] = _bool_col(cols[col], where)
+            elif key == "visibility":
+                arr[key][fr, pi] = has
+        if cols.get("radius") is not None:
+            arr["radius"][fr, pi] = text_f32(cols["radius"], where)
+    return arr, points
 
 _PALETTE = [(255, 77, 77), (77, 210, 255), (255, 210, 77), (140, 255, 120), (220, 120, 255),
             (255, 150, 60), (80, 160, 255), (255, 110, 190)]
