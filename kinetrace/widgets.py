@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QPushButton, QSlider, QTextBrowser, QToolButton, QVBoxLayout,
                                QWidget)
 
-from cotracker_app import theme
+from kinetrace import theme
 
 LEVEL_RANK = {"info": 0, "success": 1, "warn": 2, "error": 3}
 LEVEL_COLORS = {
@@ -198,7 +198,7 @@ class OnboardingStrip(QWidget):
         return QIcon(pm)
 
     def set_state(self, done: list[bool], hint: str = "") -> None:
-        from cotracker_app import icons
+        from kinetrace import icons
         # segmenting and the skeleton are both optional (an animal a few pixels
         # across has no silhouette to outline): after opening a video, Track
         # is the next step, whatever else has been done

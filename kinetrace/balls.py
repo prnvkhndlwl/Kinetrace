@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from cotracker_app.segmenter import Prompt, score_to_confidence
+from kinetrace.segmenter import Prompt, score_to_confidence
 
 CROP = 960              # native px, the fixed SAM window (working size = native when <= 1024)
 CROP_MARGIN = 110       # restart when an accepted ball centre comes this close to the crop edge

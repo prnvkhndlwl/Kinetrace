@@ -30,6 +30,6 @@ skeletons/
 .idea/
 
 # generated at run time
-cotracker_app/_theme_cache/
+kinetrace/_theme_cache/
 __pycache__/
 *.pyc

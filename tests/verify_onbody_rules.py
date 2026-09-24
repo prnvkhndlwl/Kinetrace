@@ -21,9 +21,9 @@ sys.path.insert(0, ROOT)
 import cv2
 import numpy as np
 
-from cotracker_app.tracker import (AnimalSpec, PointSpec, TrackingWorker, EXIT_BAND_MIN_PX,
+from kinetrace.tracker import (AnimalSpec, PointSpec, TrackingWorker, EXIT_BAND_MIN_PX,
                                    EXIT_BAND_FRAC, OFF_BODY_CONF)
-from cotracker_app.video_source import FrameCache
+from kinetrace.video_source import FrameCache
 
 SCALE = 2.0                                   # native / working
 mask = np.zeros((150, 200), bool)             # working res
@@ -129,7 +129,7 @@ for on_body in ([1, 2, 3], None):
 print("merged landmarks demoted in their own columns after a restart, skeleton or not OK")
 
 # ---- 4. group members are nudged, never an exit ---------------------------------------------
-from cotracker_app.tracker import PointSpec as _PS
+from kinetrace.tracker import PointSpec as _PS
 grp = _PS(5, native(100, 75), kind="group", radius=20.0)
 w5 = make_worker([native(100, 75)], constrain=[0, 5], group=grp)
 sl = slice(1, 4)
@@ -147,7 +147,7 @@ print("group members nudged, never an exit OK")
 # ---- the worker's spec types build the way the app builds them (I2, 2026-09-22):
 # a decorator displaced onto BallSpec left DerivedSpec without a constructor and
 # every Track with silhouette-derived landmarks raised TypeError in the app
-from cotracker_app.tracker import BallSpec, DerivedSpec  # noqa: E402
+from kinetrace.tracker import BallSpec, DerivedSpec  # noqa: E402
 d = DerivedSpec(3, "midline:0.5")
 assert (d.pid, d.spec) == (3, "midline:0.5")
 assert DerivedSpec(pid=4, spec="tip").spec == "tip"

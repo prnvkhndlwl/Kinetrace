@@ -32,9 +32,9 @@ QInputDialog.getMultiLineText = staticmethod(lambda *a, **k: (_next_text["v"], T
 QInputDialog.getText = staticmethod(lambda *a, **k: (_next_text["v"], True))
 
 app = QApplication([])
-from cotracker_app.app import MainWindow, READY
-from cotracker_app.canvas import apply_display_filter
-from cotracker_app.tracker import sample_members
+from kinetrace.app import MainWindow, READY
+from kinetrace.canvas import apply_display_filter
+from kinetrace.tracker import sample_members
 
 win = MainWindow()
 win.resize(1280, 860)
@@ -249,7 +249,7 @@ win.act_onion.setChecked(True)
 proj = os.path.join(SCRATCH, "display_rt.cotrk")
 win._sync_ui_state()
 win.project.save_npz(proj)
-from cotracker_app.project import Project
+from kinetrace.project import Project
 back = Project.load_npz(proj)
 s2 = back.session
 assert s2.points[2].shape == "rect" and len(s2.points[2].outline) == 4

@@ -270,7 +270,7 @@ class OverlayRenderer(QThread):
             pass
 
     def run(self) -> None:
-        from cotracker_app.video_source import open_capture
+        from kinetrace.video_source import open_capture
         cap = None
         vw = None
         created = False             # the writer made / truncated out_path: ours to delete
@@ -353,7 +353,7 @@ class OverlayDialog:
         from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                        QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                        QRadioButton, QSpinBox, QVBoxLayout, QWidget)
-        from cotracker_app import theme
+        from kinetrace import theme
 
         # (I41) the frames that DECODE (the view's verified count) bound every
         # range: a project saved with a header's over-count keeps the longer

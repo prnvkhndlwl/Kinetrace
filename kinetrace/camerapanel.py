@@ -26,9 +26,9 @@ from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from cotracker_app import theme
-from cotracker_app.project import REFERENCE_VIEW
-from cotracker_app.widgets import ElidedLabel
+from kinetrace import theme
+from kinetrace.project import REFERENCE_VIEW
+from kinetrace.widgets import ElidedLabel
 
 OFFSET_LIMIT = 10_000_000     # frames; far beyond any real clip
 OFFSET_DECIMALS = 3           # sub-frame sync is measured to ~0.01 frame; show a little more

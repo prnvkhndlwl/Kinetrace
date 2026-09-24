@@ -204,7 +204,7 @@ def spin_arrow_rules() -> str:
 
 def apply_theme(app) -> None:
     """Fusion base + dark palette + the stylesheet. Idempotent."""
-    if app is None or getattr(app, "_cotrk_themed", False):
+    if app is None or getattr(app, "_kinetrace_themed", False):
         return
     app.setStyle("Fusion")
     if sys.platform.startswith("win"):
@@ -225,4 +225,4 @@ def apply_theme(app) -> None:
         pal.setColor(QPalette.Disabled, role, QColor(TEXT_DISABLED))
     app.setPalette(pal)
     app.setStyleSheet(STYLESHEET + spin_arrow_rules())
-    app._cotrk_themed = True
+    app._kinetrace_themed = True

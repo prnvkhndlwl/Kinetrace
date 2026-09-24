@@ -12,7 +12,7 @@ import numpy as np
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)
 
-from cotracker_app.session import TrackingSession, PointMeta  # noqa: E402
+from kinetrace.session import TrackingSession, PointMeta  # noqa: E402
 
 # ---- 1. two-frame video session: everything clamps, nothing crashes ----
 s = TrackingSession("x.mp4", 2, 30.0, 64, 48)
@@ -98,7 +98,7 @@ for bad in ('"just a string"', "[1,2,3]", "{invalid json"):
 print("forward/corrupt compat OK")
 
 # ---- 6. tracker geometry helpers under hostile inputs (no model needed) ----
-from cotracker_app.tracker import sample_members, fit_group  # noqa: E402
+from kinetrace.tracker import sample_members, fit_group  # noqa: E402
 m = sample_members(np.array([5000.0, -50.0], np.float32), 400.0, 640, 480)
 assert (m[:, 0] >= 1).all() and (m[:, 0] <= 638).all() \
     and (m[:, 1] >= 1).all() and (m[:, 1] <= 478).all(), "hostile centers must clamp"
@@ -116,7 +116,7 @@ print("hostile geometry OK")
 # ---- 7. timeline widget with pathological sessions ----
 from PySide6.QtWidgets import QApplication  # noqa: E402
 app = QApplication([])
-from cotracker_app.timeline import TimelinePanel  # noqa: E402
+from kinetrace.timeline import TimelinePanel  # noqa: E402
 tl = TimelinePanel()
 tl.resize(600, 80)
 tl.set_session(None)

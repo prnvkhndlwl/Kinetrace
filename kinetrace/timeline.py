@@ -57,7 +57,7 @@ LOW_CONF = 0.5     # below this a tracked span gets the warning overlay
 
 # colors come from the shared design tokens so the painted panel and the
 # styled widgets read as one surface
-from cotracker_app import theme as _t  # noqa: E402
+from kinetrace import theme as _t  # noqa: E402
 
 BG = QColor(_t.BG_WINDOW)
 LANE_BG = QColor("#2C2C33")

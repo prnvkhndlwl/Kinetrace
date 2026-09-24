@@ -34,7 +34,7 @@ _typed = {"v": ""}
 QInputDialog.getText = staticmethod(lambda *a, **k: (_typed["v"], True))
 
 app = QApplication([])
-from cotracker_app.app import MainWindow, READY, TRACKING
+from kinetrace.app import MainWindow, READY, TRACKING
 
 win = MainWindow()
 win.resize(1280, 860)
@@ -180,7 +180,7 @@ assert win.animal_list.isEnabled()
 proj = os.path.join(SCRATCH, "segment_panel.cotrk")
 win._sync_ui_state()
 win.project.save_npz(proj)
-from cotracker_app.project import Project
+from kinetrace.project import Project
 back = Project.load_npz(proj)
 assert back.session.animal is not None and back.session.animal.name == "lizard"
 

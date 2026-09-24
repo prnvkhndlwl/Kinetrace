@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFileDia
                                QSizePolicy, QSpinBox, QTextBrowser, QVBoxLayout, QWidget, QWizard,
                                QWizardPage)
 
-from cotracker_app import lens, theme
-from cotracker_app.boardreview import BoardReview
+from kinetrace import lens, theme
+from kinetrace.boardreview import BoardReview
 
 VERDICT_COLORS = {"good": theme.GREEN, "ok": "#FFD60A", "poor": theme.RED}
 VERDICT_WORDS = {"good": "GOOD — attach this profile to the camera",

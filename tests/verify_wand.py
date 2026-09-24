@@ -1,4 +1,4 @@
-"""Native wand calibration (cotracker_app/wand.py) on synthetic ground truth.
+"""Native wand calibration (kinetrace/wand.py) on synthetic ground truth.
 
 Synthetic: 5 cameras (four 1920x1080 f=1400, one 1280x720 f=900) around a
    1 m^3 volume, a 0.5 m wand in 150 poses, 40 background points, 0.3 px
@@ -19,9 +19,9 @@ sys.path.insert(0, ROOT)
 
 import numpy as np
 
-from cotracker_app import wand
-from cotracker_app.calib import Calibration, NoUndistort, OpenCVUndistort, dlt_project, triangulate_batch
-from cotracker_app.wand import (WandError, align_axes, align_gravity, calibrate_wand, export_dlt_csv,
+from kinetrace import wand
+from kinetrace.calib import Calibration, NoUndistort, OpenCVUndistort, dlt_project, triangulate_batch
+from kinetrace.wand import (WandError, align_axes, align_gravity, calibrate_wand, export_dlt_csv,
                                 load_json, save_json, transform_result)
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")

@@ -56,4 +56,4 @@ fi
 
 [ -f models/alltracker/nets/alltracker.py ] || .venv/bin/python install.py --alltracker-only
 
-exec .venv/bin/python -m cotracker_app "$@"
+exec .venv/bin/python -m kinetrace "$@"

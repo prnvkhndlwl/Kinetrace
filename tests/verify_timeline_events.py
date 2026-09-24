@@ -30,8 +30,8 @@ QInputDialog.getItem = staticmethod(lambda *a, **k: (_dialog_reply["text"],
                                                      _dialog_reply["ok"]))
 
 app = QApplication([])
-from cotracker_app.app import MainWindow, READY
-from cotracker_app.timeline import EVENTS_H, GUTTER_W
+from kinetrace.app import MainWindow, READY
+from kinetrace.timeline import EVENTS_H, GUTTER_W
 
 win = MainWindow()
 win.resize(1280, 860)
@@ -93,7 +93,7 @@ assert ob.hint.text().startswith("ⓘ"), "the hint is marked as info, not a step
 # G5: a hint too long for the strip keeps its FIRST words (what to press) and ends in
 # an ellipsis, the whole text in its tooltip -- it used to lose its start instead
 from PySide6.QtWidgets import QLabel as _QL  # noqa: E402
-from cotracker_app.widgets import ElidedLabel  # noqa: E402
+from kinetrace.widgets import ElidedLabel  # noqa: E402
 _long = "Press N and click the animal, then Track -- " + "and more words " * 40
 assert isinstance(ob.hint, ElidedLabel), "the onboarding hint must elide, not clip"
 _el = ElidedLabel("ⓘ  " + _long, pad=16)
@@ -113,7 +113,7 @@ win._refresh_onboarding()
 print("onboarding hint separated from the steps OK")
 
 # ---- the manual is IN the app (Help → User Manual, F1) ----
-from cotracker_app.widgets import MANUAL_PATH
+from kinetrace.widgets import MANUAL_PATH
 
 assert MANUAL_PATH.exists(), f"the manual must ship with the app: {MANUAL_PATH}"
 win._show_manual()
@@ -482,7 +482,7 @@ print("adaptive ruler + scroll strip OK")
 
 # ---- lane marquee: Shift+drag picks frames AND lanes; Delete clears just those
 # (the segment lane is fabricated here — no GPU, no segmenter run) ----
-from cotracker_app.timeline import ANIMAL_H, LANE_H
+from kinetrace.timeline import ANIMAL_H, LANE_H
 
 s.ensure_animal()
 _m = np.zeros((480, 640), bool)
@@ -591,7 +591,7 @@ print("timeline lane marquee (segment / points / both) OK")
 
 # ---- timeline aggregation stays fast at 40k frames ----
 import time as _t
-from cotracker_app.session import TrackingSession
+from kinetrace.session import TrackingSession
 big = TrackingSession("x.mp4", 40000, 30.0, 3840, 2160)
 for i in range(10):
     big.add_point(0, 100.0 * i + 10, 100.0)

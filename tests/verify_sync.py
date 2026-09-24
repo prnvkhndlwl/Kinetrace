@@ -18,7 +18,7 @@ sys.stdout.reconfigure(errors="replace")
 import cv2
 import numpy as np
 
-from cotracker_app import sync
+from kinetrace import sync
 
 OUT = os.path.join(ROOT, "tests", "out")
 os.makedirs(OUT, exist_ok=True)
@@ -112,7 +112,7 @@ assert res[0].result.verdict == "none", res[0].result.verdict
 print("file-name clock prior OK (and a search that misses the truth says none)")
 
 # ---- audio: claps in noise, muxed onto the clips with ffmpeg, a known shift ------------
-from cotracker_app import audiosync   # noqa: E402
+from kinetrace import audiosync   # noqa: E402
 
 have_ffmpeg, note = audiosync.ffmpeg_status()
 print("ffmpeg:", note[:70])
@@ -236,8 +236,8 @@ QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 app = QApplication([])
-from cotracker_app.app import MainWindow, READY
-from cotracker_app.syncdialog import SyncDialog
+from kinetrace.app import MainWindow, READY
+from kinetrace.syncdialog import SyncDialog
 
 win = MainWindow()
 win.show()

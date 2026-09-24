@@ -64,8 +64,8 @@ QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (_pick["file"], ""))
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (_pick["file"], ""))
 
 app = QApplication([])
-from cotracker_app.app import MainWindow, READY
-from cotracker_app.project import Project
+from kinetrace.app import MainWindow, READY
+from kinetrace.project import Project
 
 win = MainWindow()
 win.resize(1280, 860)
@@ -159,7 +159,7 @@ print(f"frame offsets sync the views OK (overlap {lo}-{hi})")
 # numbers on screen would then be meaningless. Pinning view 0 at 0 makes every
 # offset readable as "this many frames later than camera 1", whichever camera is
 # being worked in.
-from cotracker_app.project import REFERENCE_VIEW
+from kinetrace.project import REFERENCE_VIEW
 
 assert REFERENCE_VIEW == 0
 assert p.offsets[0] == 0, "the reference camera's offset must be 0"
@@ -291,9 +291,9 @@ assert win.grid.visible_indices() == [0, 1]
 print("solo / show-all OK")
 
 # ---- 15 cameras: the supported maximum ---------------------------------------
-from cotracker_app.app import COMPANION_CACHE_BYTES
-from cotracker_app.project import MAX_VIEWS
-from cotracker_app.video_source import DEFAULT_CACHE_BYTES
+from kinetrace.app import COMPANION_CACHE_BYTES
+from kinetrace.project import MAX_VIEWS
+from kinetrace.video_source import DEFAULT_CACHE_BYTES
 
 assert MAX_VIEWS == 15
 extra = []

@@ -20,7 +20,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
 
-from cotracker_app import theme
+from kinetrace import theme
 
 VID = os.path.join(ROOT, "test600.mp4")
 if not os.path.exists(VID):
@@ -32,7 +32,7 @@ QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 
-from cotracker_app.app import READY, MainWindow  # noqa: E402
+from kinetrace.app import READY, MainWindow  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 win = MainWindow()
@@ -104,7 +104,7 @@ print(f"control bar: {full_w} px with labels, folds to icons below it (window mi
 # ---- defaults ------------------------------------------------------------
 assert not win.btn_follow.isChecked(), "Follow must be OFF by default"
 assert not win.canvas._follow_enabled
-from cotracker_app.session import DEFAULT_UI_STATE
+from kinetrace.session import DEFAULT_UI_STATE
 assert DEFAULT_UI_STATE["follow"] is False
 print("Follow off by default OK")
 

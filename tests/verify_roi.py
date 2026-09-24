@@ -22,8 +22,8 @@ sys.path.insert(0, ROOT)
 from PySide6.QtCore import QCoreApplication
 
 app = QCoreApplication([])
-from cotracker_app.tracker import PointSpec, TrackingWorker
-from cotracker_app.video_source import FrameCache
+from kinetrace.tracker import PointSpec, TrackingWorker
+from kinetrace.video_source import FrameCache
 
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)

@@ -20,8 +20,8 @@ sys.path.insert(0, ROOT)
 import cv2
 import numpy as np
 
-from cotracker_app import lens
-from cotracker_app.calib import OpenCVUndistort
+from kinetrace import lens
+from kinetrace.calib import OpenCVUndistort
 
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)

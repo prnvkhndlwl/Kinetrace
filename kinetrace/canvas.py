@@ -355,7 +355,7 @@ class VideoCanvas(QGraphicsView):
 
     def __init__(self):
         super().__init__()
-        from cotracker_app.theme import BG_CANVAS
+        from kinetrace.theme import BG_CANVAS
         self._scene = QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
@@ -1337,7 +1337,7 @@ class VideoCanvas(QGraphicsView):
         acts["anchor"] = act_anchor
         # where the point's data comes from: appearance tracking (default) or
         # the animal's silhouette (tail tip, midline fractions, extremities)
-        from cotracker_app.skeletons import DERIVED_CHOICES
+        from kinetrace.skeletons import DERIVED_CHOICES
         sub = menu.addMenu("Data source")
         cur_spec = getattr(meta, "spec", "") if meta is not None else ""
         derived = meta is not None and getattr(meta, "source", "track") == "silhouette"

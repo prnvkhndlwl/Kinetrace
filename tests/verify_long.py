@@ -15,8 +15,8 @@ sys.path.insert(0, ROOT)
 from PySide6.QtCore import QCoreApplication
 
 app = QCoreApplication([])
-from cotracker_app.tracker import TrackingWorker
-from cotracker_app.video_source import FrameCache, probe_video, VideoSource
+from kinetrace.tracker import TrackingWorker
+from kinetrace.video_source import FrameCache, probe_video, VideoSource
 
 
 def rss_mb() -> float:

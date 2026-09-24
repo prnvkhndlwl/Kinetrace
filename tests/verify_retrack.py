@@ -25,10 +25,10 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from cotracker_app.calib import Calibration, CameraCalibration, NoUndistort, dlt_from_camera
-from cotracker_app.project import Project
-from cotracker_app.session import TrackingSession
-from cotracker_app import retrack
+from kinetrace.calib import Calibration, CameraCalibration, NoUndistort, dlt_from_camera
+from kinetrace.project import Project
+from kinetrace.session import TrackingSession
+from kinetrace import retrack
 
 OUT = os.path.join(ROOT, "tests", "out")
 os.makedirs(OUT, exist_ok=True)
@@ -106,7 +106,7 @@ QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError(a[2] if len(a) > 2 else a)))
 
-from cotracker_app.app import READY, MainWindow  # noqa: E402
+from kinetrace.app import READY, MainWindow  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 win = MainWindow()
@@ -162,7 +162,7 @@ assert win.act_retrack.isEnabled()
 clean = Project.load_npz(PROJ)
 clean.calibration = Calibration(cams)
 clean.sessions[SLID_CAM].tracks[SLID[0]:SLID[1] + 1, SLID_PID] = truth[SLID_CAM][SLID[0]:SLID[1] + 1, SLID_PID]
-from cotracker_app.calib import reconstruct  # noqa: E402
+from kinetrace.calib import reconstruct  # noqa: E402
 clean.reconstruction = reconstruct(clean.sessions, clean.calibration, clean.rates, clean.offsets, (0, N_FR - 1))
 assert retrack.plan(clean, thr) == [], "a clean rig has no disagreeing stretch"
 print("planner OK")

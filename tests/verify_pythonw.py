@@ -29,8 +29,8 @@ try:
     app = QCoreApplication([])
 
     import numpy as np
-    from cotracker_app.tracker import TrackingWorker, get_model
-    from cotracker_app.video_source import FrameCache
+    from kinetrace.tracker import TrackingWorker, get_model
+    from kinetrace.video_source import FrameCache
 
     get_model()  # exactly the call that crashed (torch.hub 'Using cache' -> stderr)
     report("get_model OK under pythonw")

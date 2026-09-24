@@ -31,8 +31,8 @@ QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 
 app = QApplication([])
-from cotracker_app.app import MainWindow, READY, TRACKING
-from cotracker_app.timeline import GUTTER_W
+from kinetrace.app import MainWindow, READY, TRACKING
+from kinetrace.timeline import GUTTER_W
 
 win = MainWindow()
 win.resize(1280, 860)

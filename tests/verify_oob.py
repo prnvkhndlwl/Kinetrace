@@ -43,7 +43,7 @@ gtx = np.array(ax); gty = np.array(ay)
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 app = QApplication([])
-from cotracker_app.app import MainWindow, READY
+from kinetrace.app import MainWindow, READY
 
 win = MainWindow()
 win.show()

@@ -25,9 +25,9 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
 
-from cotracker_app.calib import CameraCalibration, OpenCVUndistort, dlt_from_camera
-from cotracker_app.project import Project
-from cotracker_app.session import TrackingSession
+from kinetrace.calib import CameraCalibration, OpenCVUndistort, dlt_from_camera
+from kinetrace.project import Project
+from kinetrace.session import TrackingSession
 
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)
@@ -163,11 +163,11 @@ QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError(a[2] if len(a) > 2 else a)))
 
-from cotracker_app.app import READY, MainWindow  # noqa: E402
-from cotracker_app import calibwizard as cw  # noqa: E402
-from cotracker_app import lenswizard as lw  # noqa: E402
-from cotracker_app import lens  # noqa: E402
-from cotracker_app import lens  # noqa: E402
+from kinetrace.app import READY, MainWindow  # noqa: E402
+from kinetrace import calibwizard as cw  # noqa: E402
+from kinetrace import lenswizard as lw  # noqa: E402
+from kinetrace import lens  # noqa: E402
+from kinetrace import lens  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 win = MainWindow()
@@ -277,8 +277,8 @@ def drive_lens(self):
     if c == 0:
         # (I81) the corner editor reads its frame on a worker thread and opens
         # when it arrives; a frame that cannot be read is SAID, not ignored
-        from cotracker_app import boardreview as brv
-        import cotracker_app.video_source as vsrc
+        from kinetrace import boardreview as brv
+        import kinetrace.video_source as vsrc
         import threading
         threads, opened, warned = [], [], []
         real_oc, real_exec, real_warn = vsrc.open_capture, brv.CornerEditor.exec, QMessageBox.warning

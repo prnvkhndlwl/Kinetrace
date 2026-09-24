@@ -55,6 +55,6 @@ if exist "%VENV_HOME%\python.exe" (
         >> ".venv\pyvenv.cfg" echo executable = %VENV_HOME%\python.exe
     )
 )
-".venv\Scripts\python.exe" -m cotracker_app %*
+".venv\Scripts\python.exe" -m kinetrace %*
 if errorlevel 1 pause
 endlocal

@@ -139,12 +139,12 @@ class _PickMenu(QMenu):
 
 
 app = QApplication([])
-import cotracker_app.canvas as _canvas_mod        # noqa: E402
-import cotracker_app.timeline as _timeline_mod    # noqa: E402
-import cotracker_app.app as _app_mod              # noqa: E402
+import kinetrace.canvas as _canvas_mod        # noqa: E402
+import kinetrace.timeline as _timeline_mod    # noqa: E402
+import kinetrace.app as _app_mod              # noqa: E402
 for _mod in (_canvas_mod, _timeline_mod, _app_mod):
     _mod.QMenu = _PickMenu
-from cotracker_app.app import MainWindow, READY, TRACKING, IDLE       # noqa: E402
+from kinetrace.app import MainWindow, READY, TRACKING, IDLE       # noqa: E402
 # `QAction.menu()` hands back a wrapper Python believes it owns: let it be
 # garbage-collected and shiboken deletes the C++ menu under the app's feet.
 # Keep every submenu wrapper the sweep ever touches alive.

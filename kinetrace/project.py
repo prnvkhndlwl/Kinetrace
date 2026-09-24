@@ -64,9 +64,9 @@ from pathlib import Path
 
 import numpy as np
 
-from cotracker_app import APP_VERSION
-from cotracker_app.calib import Calibration, Reconstruction
-from cotracker_app.session import TrackingSession
+from kinetrace import APP_VERSION
+from kinetrace.calib import Calibration, Reconstruction
+from kinetrace.session import TrackingSession
 
 PROJECT_SCHEMA = 5
 MAX_VIEWS = 15         # a 4x4 grid; past this the tiles stop being readable at all
@@ -421,7 +421,7 @@ class Project:
                     p.calibration = cal
                 if "lens_meta" in have:
                     try:
-                        from cotracker_app.lens import LensProfile
+                        from kinetrace.lens import LensProfile
                         raw = json.loads(str(z["lens_meta"]))
                         lenses = [None if d is None else LensProfile.from_json(d) for d in raw]
                         if len(lenses) == n:
@@ -460,7 +460,7 @@ class Project:
         like DLTdv's own files (I20: blank cells read as 0 in MATLAB's csvread).
         Writes a `*_pointnames.csv` sidecar (names, the convention, which video
         is camK, the frame basis) and returns the files written."""
-        from cotracker_app.session import dltdv_convention_text
+        from kinetrace.session import dltdv_convention_text
         path = Path(path)
         po = float(pixel_origin)
         names: list[str] = []

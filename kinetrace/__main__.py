@@ -6,7 +6,7 @@ import os
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("DO_NOT_TRACK", "1")
 
-from cotracker_app.app import main  # noqa: E402
+from kinetrace.app import main  # noqa: E402
 
 if __name__ == "__main__":
     main()

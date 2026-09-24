@@ -16,14 +16,14 @@ sys.path.insert(0, ROOT)
 import cv2
 import numpy as np
 
-from cotracker_app.calib import (Calibration, CameraCalibration, LWMUndistort, NoUndistort,
+from kinetrace.calib import (Calibration, CameraCalibration, LWMUndistort, NoUndistort,
                                  OpenCVUndistort, dlt_camera_center, dlt_from_camera, dlt_project,
                                  dlt_ray, estimate_offsets, front_sign, reconstruct, sample_track, triangulate,
                                  triangulate_batch)
-from cotracker_app.hull import (bounds_from_points, carve, hull_mesh, mesh_volume, render_mesh,
+from kinetrace.hull import (bounds_from_points, carve, hull_mesh, mesh_volume, render_mesh,
                                 save_obj, save_ply, signed_distance, surface)
-from cotracker_app.project import Project
-from cotracker_app.session import TrackingSession
+from kinetrace.project import Project
+from kinetrace.session import TrackingSession
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(OUT, exist_ok=True)
@@ -136,7 +136,7 @@ print("OpenCV undistortion round trip OK")
 # edges of a wide lens (1.8 px on a GoPro-like lens, 100+ px on a stronger one);
 # the model must round-trip over the WHOLE picture, and a sound, invertible
 # standard model must not be called a runaway by the lens border check
-from cotracker_app import lens as _lens  # noqa: E402
+from kinetrace import lens as _lens  # noqa: E402
 for _f, _k in ((1300.0, (-0.25, 0.08)), (1100.0, (-0.30, 0.10))):
     _Wl, _Hl = 2704, 1520
     _Kl = np.array([[_f, 0, _Wl / 2], [0, _f, _Hl / 2], [0, 0, 1.0]])
@@ -286,7 +286,7 @@ assert np.allclose(vals, rec_est.xyz[0, 0], atol=1e-6)
 # (I95) a comma in a landmark name ("wing tip, left" is a natural one) must not
 # add header cells and shift every later landmark's columns
 import csv as _csv  # noqa: E402
-from cotracker_app.calib import Reconstruction as _Rec  # noqa: E402
+from kinetrace.calib import Reconstruction as _Rec  # noqa: E402
 _rc = _Rec(5, ["wing tip, left", "tail"], np.arange(12, dtype=float).reshape(2, 2, 3), np.full((2, 2), 0.5),
            np.full((2, 2), 2, np.int32), per_cam=np.full((2, 2, 3), 0.25))
 _xpc = os.path.join(OUT, "test3d_xyz_comma.csv")
@@ -377,7 +377,7 @@ print(f"visual hull OK: ellipsoid hull {ratio * 100:.0f}% of the analytic volume
 
 # ---- K + R/t (OpenCV) cameras -> DLT, with camera 1 at the file's origin --------------
 # (the usual stereo convention has no DLT until the origin moves)
-from cotracker_app.calib import Calibration as _Cal, dlt_project as _proj
+from kinetrace.calib import Calibration as _Cal, dlt_project as _proj
 _K1 = np.array([[2783.0, 0, 1920.0], [0, 2784.0, 1080.0], [0, 0, 1.0]])
 _K2 = np.array([[2801.0, 0, 1920.0], [0, 2802.0, 1080.0], [0, 0, 1.0]])
 _ang = np.deg2rad(4.4)
@@ -395,7 +395,7 @@ for _c, (_K, _R, _t) in enumerate(((_K1, np.eye(3), np.zeros(3)), (_K2, _R2, _t2
     _uv_app = _cal.cameras[_c].project(_X - _cal.origin_shift)                # through the convention layer too
     assert np.abs(_uv_app - _uv_true).max() < 1e-6
 # and back: triangulating the two DLT views recovers the (shifted) points
-from cotracker_app.calib import triangulate as _tri
+from kinetrace.calib import triangulate as _tri
 for _i in range(len(_X)):
     _uv = np.stack([_proj(_cal.cameras[c].coefs, _X[_i:_i + 1] - _cal.origin_shift)[0] for c in range(2)])
     _xyz, _res, _ = _tri(np.stack([c.coefs for c in _cal.cameras]), _uv)
@@ -438,7 +438,7 @@ assert [c.undistort.kind for c in _c4.cameras] == ["none", "none"] and _c4.notes
 print("K + R/t distortion lines applied when unambiguous, named when not OK (I96)")
 
 # ---- epipolar geometry: collinear rigs, probes without a reconstruction ---------------
-from cotracker_app.calib import (closest_on_polyline, epipolar_polyline, intersect_polylines,  # noqa: E402
+from kinetrace.calib import (closest_on_polyline, epipolar_polyline, intersect_polylines,  # noqa: E402
                                  reconstruction_report, working_probe)
 Kb = np.array([[1000.0, 0, 640], [0, 1000.0, 360], [0, 0, 1]])
 # (I97) three cameras on one bar: the other two cameras' epipolar lines in the
@@ -519,7 +519,7 @@ print("two-camera caveat follows the points, not the project's camera count OK (
 # ---- DLTdv project whose lens store cannot be read / does not match (I102) ------------
 from scipy.io import savemat as _savemat  # noqa: E402
 import scipy.io as _sio  # noqa: E402
-from cotracker_app.calib import _assign_lwm_profiles  # noqa: E402
+from kinetrace.calib import _assign_lwm_profiles  # noqa: E402
 _dvp = os.path.join(OUT, "test_synth_dvProject.mat")
 _savemat(_dvp, {"udExport": {"data": {"dltcoef": np.stack([c.coefs for c in cams[:3]], 1),
                                       "movsizes": np.array([[H, W]] * 3)}}})
@@ -557,7 +557,7 @@ assert _prof3 == [_cells[2], _cells[3]] and _note3 == ""
 print("DLTdv lens store: a failure or a count mismatch is SAID, profiles follow their cameras OK (I102)")
 
 # ---- kinematics: smoothing + derivatives against a known trajectory ------------------
-from cotracker_app import kinematics as kin  # noqa: E402
+from kinetrace import kinematics as kin  # noqa: E402
 
 fps_k = 120.0
 T_k = 480
@@ -588,7 +588,7 @@ sm0, fc0, why0 = kin.smooth_xyz(xyz_k, fps_k, None)
 assert fc0 is None and np.allclose(sm0, xyz_k, equal_nan=True)
 sm5, fc5, _ = kin.smooth_xyz(xyz_k, fps_k, 5.0)
 assert fc5 == 5.0
-from cotracker_app.calib import Reconstruction  # noqa: E402
+from kinetrace.calib import Reconstruction  # noqa: E402
 rec_k = Reconstruction(100, ["pt"], xyz_k, np.zeros((T_k, 1)), np.full((T_k, 1), 2), unit="m")
 out_k = os.path.join(OUT, "kin_test.csv")
 files = kin.export_kinematics(out_k, rec_k, fps_k, "m", "auto")
@@ -709,8 +709,8 @@ print("kinematics OK")
 
 # ---- re-track planner and verdict (pure, no video, no GPU) -----------------------------
 # The verify_retrack rig without its videos: three 640x480 cameras round a landmark set.
-from cotracker_app import retrack  # noqa: E402
-from cotracker_app.calib import dlt_from_camera as _dlt_rt, reconstruct as _recon_rt  # noqa: E402
+from kinetrace import retrack  # noqa: E402
+from kinetrace.calib import dlt_from_camera as _dlt_rt, reconstruct as _recon_rt  # noqa: E402
 
 _W, _H, _NF = 640, 480, 120
 _K_rt = np.array([[700.0, 0, _W / 2], [0, 700.0, _H / 2], [0, 0, 1]])

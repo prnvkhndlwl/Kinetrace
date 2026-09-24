@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QApplication
 # QApplication (not QCoreApplication): the cache-reset section drives the real
 # MainWindow, and widgets need a GUI application object
 app = QApplication([])
-from cotracker_app.video_source import (FrameCache, PREFETCH_AHEAD, SEEK_BACK_PREFETCH,
+from kinetrace.video_source import (FrameCache, PREFETCH_AHEAD, SEEK_BACK_PREFETCH,
                                         SeekService, VideoSource)
 
 VID = os.path.join(ROOT, r"test600.mp4")
@@ -80,7 +80,7 @@ svc.stop()
 svc.stop()
 
 # ---- a failed read is not the end of the video; an exception never kills the thread (I40) ----
-from cotracker_app import video_source as _vs       # noqa: E402
+from kinetrace import video_source as _vs       # noqa: E402
 
 
 class _FaultySource(VideoSource):
@@ -161,7 +161,7 @@ for leftover in (VID + ".cotracker.npz",):
         os.remove(leftover)
 
 gui = app
-from cotracker_app.app import MainWindow, READY  # noqa: E402
+from kinetrace.app import MainWindow, READY  # noqa: E402
 
 win = MainWindow()
 win.show()

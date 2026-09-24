@@ -23,7 +23,7 @@ OUT = ROOT / "tests" / "out"
 OUT.mkdir(parents=True, exist_ok=True)
 
 import _synth_human as sh                                   # noqa: E402
-from cotracker_app import body                              # noqa: E402
+from kinetrace import body                              # noqa: E402
 
 fails: list[str] = []
 
@@ -283,7 +283,7 @@ check("not in space" in r2 and "2D (image plane)" in r2,
 
 # --------------------------------------------------- 7. backend registry
 print("\n[7] backend registry (no network)")
-from cotracker_app import bodypose                          # noqa: E402
+from kinetrace import bodypose                          # noqa: E402
 states = {k: bodypose.backend_status(k)[0] for k in bodypose.BACKENDS}
 check(set(bodypose.BACKENDS) >= {"sam-3d-body-dinov3", "sam-3d-body-vith", "vitpose-base"},
       "SAM 3D Body and the 2D fallback are both registered")
@@ -343,7 +343,7 @@ check(list(bodypose.mask_bbox(mk)) == [3, 2, 7, 4], "mask box is tight")
 # ------------------------------------------------------------ 9. drawing
 print("\n[9] side-by-side drawing")
 import cv2                                                  # noqa: E402
-from cotracker_app import bodyview                          # noqa: E402
+from kinetrace import bodyview                          # noqa: E402
 
 frame = sh.render_frame(70)
 opts = bodyview.PoseDrawOptions(angles_shown=("left knee flexion", "right knee flexion"))
@@ -416,7 +416,7 @@ check(bodyview.compose_side_by_side(frame, empty, 3, 0).shape[1] == frame.shape[
 
 # --------------------------------------------------- 10. session and undo
 print("\n[10] session integration")
-from cotracker_app.session import SCHEMA_VERSION, TrackingSession      # noqa: E402
+from kinetrace.session import SCHEMA_VERSION, TrackingSession      # noqa: E402
 check(SCHEMA_VERSION >= 4, "session schema bumped for the body layer", str(SCHEMA_VERSION))
 s = TrackingSession("walker.mp4", sh.T, sh.FPS, sh.W, sh.H)
 check(not s.has_body() and s.body is None, "a fresh session has no body track")
@@ -648,7 +648,7 @@ try:
     check(stand.SEEN["masks"] is None, "a box prompt alone sends no mask")
     # what the run dialog builds from a lens profile: principal point left for
     # the estimator to put at each frame's centre
-    from cotracker_app import bodyview as _bv                 # noqa: E402
+    from kinetrace import bodyview as _bv                 # noqa: E402
     est3 = bodypose.make_estimator("sam-3d-body-dinov3", device="cpu", use_detector=False,
                                    intrinsics=_bv.lens_intrinsics(1000.0))
     est3.step(np.zeros((480, 640, 3), np.uint8), boxes=[[1, 2, 100, 200]])
@@ -830,7 +830,7 @@ check(m5_.n_requested == 20 + 6, "the frames asked for are the union of the runs
 check(body.merge_run(None, new)[0] is new, "with nothing to merge into, the run is the track")
 
 # --- I83: a finished run knows which view it belongs to
-from cotracker_app.session import TrackingSession as _TS    # noqa: E402
+from kinetrace.session import TrackingSession as _TS    # noqa: E402
 sa_, sb_ = _TS("a.mp4", sh.T, sh.FPS, sh.W, sh.H), _TS("b.mp4", sh.T, sh.FPS, sh.W, sh.H)
 wk = bodyview.BodyPoseWorker("a.mp4", sh.T, bodyview.BodyRunOptions(), target=sa_)
 check(wk.target is sa_ and wk.result_fits(sa_) and not wk.result_fits(sb_),

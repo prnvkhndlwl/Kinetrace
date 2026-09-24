@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from cotracker_app.calib import epipolar_polyline, intersect_polylines, working_probe
+from kinetrace.calib import epipolar_polyline, intersect_polylines, working_probe
 
 MIN_RUN = 3             # frames: shorter runs are noise, not a slide
 GAP_JOIN = 2            # runs separated by <= this many clean frames are one stretch
@@ -178,7 +178,7 @@ def _blame(project, stretches: list[Stretch], threshold_px) -> list[Stretch]:
     smallest rest-residual is blamed if the rest agree (under the band and
     under half the full residual) and no other camera comes close; otherwise
     every stretch of the group is skipped with the reason."""
-    from cotracker_app.calib import _Prepared, triangulate_batch
+    from kinetrace.calib import _Prepared, triangulate_batch
     p = project
     r = p.reconstruction
     if r is None or p.calibration is None or not stretches:

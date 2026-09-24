@@ -56,8 +56,8 @@ QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 
 app = QApplication.instance() or QApplication(sys.argv)
-from cotracker_app import body, bodypose, bodyview                 # noqa: E402
-from cotracker_app.app import MainWindow, READY                    # noqa: E402
+from kinetrace import body, bodypose, bodyview                 # noqa: E402
+from kinetrace.app import MainWindow, READY                    # noqa: E402
 
 win = MainWindow()
 win.show()

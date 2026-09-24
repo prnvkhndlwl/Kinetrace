@@ -13,9 +13,9 @@ sys.path.insert(0, ROOT)
 import cv2
 import numpy as np
 
-from cotracker_app import silhouette as S
-from cotracker_app.silhouette import extremity_roles, midline
-from cotracker_app.segmenter import (FrameMasks, MaskTrack, Prompt, SegSession, get_segmenter,
+from kinetrace import silhouette as S
+from kinetrace.silhouette import extremity_roles, midline
+from kinetrace.segmenter import (FrameMasks, MaskTrack, Prompt, SegSession, get_segmenter,
                                      model_is_cached, summarize_mask, working_size, MEMORY_WINDOW)
 
 OUT = os.path.join(ROOT, "tests", "out")
@@ -258,7 +258,7 @@ print("MaskTrack round-trip OK")
 
 # the native size survives the undo snapshot, and the seed rebuilt from the stored outline
 # at WORKING size lands on the mask (I53: after Ctrl+Z it was empty or elsewhere at 4K)
-from cotracker_app.session import TrackingSession  # noqa: E402
+from kinetrace.session import TrackingSession  # noqa: E402
 NW, NH = 3840, 2160
 ww4, wh4 = working_size(NW, NH)
 s4 = TrackingSession("none.mp4", 50, 25.0, NW, NH)
@@ -305,7 +305,7 @@ import json  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from cotracker_app import skeletons as K  # noqa: E402
+from kinetrace import skeletons as K  # noqa: E402
 
 for spec in ("tip", "centroid", "midline:0", "midline:0.25", "midline:1", "ext:FL", "ext:R"):
     assert K.validate_spec(spec)[0], spec

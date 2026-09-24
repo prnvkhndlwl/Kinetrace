@@ -23,8 +23,8 @@ QMessageBox.critical = staticmethod(lambda *a, **k: print("CRITICAL:", a[2][:400
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 
-from cotracker_app.app import IDLE, READY, TRACKING, MainWindow, apply_theme  # noqa: E402
-from cotracker_app.session import TrackingSession  # noqa: E402
+from kinetrace.app import IDLE, READY, TRACKING, MainWindow, apply_theme  # noqa: E402
+from kinetrace.session import TrackingSession  # noqa: E402
 
 OUT = os.path.join(ROOT, "tests", "out")
 os.makedirs(OUT, exist_ok=True)
@@ -64,7 +64,7 @@ s = win.session
 assert s is not None and win.n_frames == T
 
 # ---- Segment ▾ model dropdown (parity with the Track ▾ point model) --------
-from cotracker_app.segmenter import BACKENDS
+from kinetrace.segmenter import BACKENDS
 
 menu = win.btn_animal.menu()
 assert menu is not None, "the Segment button must carry a model dropdown"
@@ -118,7 +118,7 @@ assert not win.btn_animal.isChecked(), "Esc must disarm the segment tool first"
 print("animal tool + preview OK")
 
 # ---- skeleton template, place the head by the click-continue rule ------------
-tpl = next(t for t in __import__("cotracker_app.skeletons", fromlist=["all_templates"]).all_templates()
+tpl = next(t for t in __import__("kinetrace.skeletons", fromlist=["all_templates"]).all_templates()
            if t["name"].startswith("Undulating"))
 win._apply_skeleton_template(tpl)
 pump(0.1)

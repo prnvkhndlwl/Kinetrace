@@ -26,9 +26,9 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QWizard
 
-from cotracker_app.calib import CameraCalibration, NoUndistort, dlt_from_camera
-from cotracker_app.project import Project
-from cotracker_app.session import TrackingSession
+from kinetrace.calib import CameraCalibration, NoUndistort, dlt_from_camera
+from kinetrace.project import Project
+from kinetrace.session import TrackingSession
 
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)
@@ -134,9 +134,9 @@ QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError(a[2] if len(a) > 2 else a)))
 
-from cotracker_app.app import READY, MainWindow  # noqa: E402
-from cotracker_app import calibwizard as cw  # noqa: E402
-from cotracker_app import view3d as v3  # noqa: E402
+from kinetrace.app import READY, MainWindow  # noqa: E402
+from kinetrace import calibwizard as cw  # noqa: E402
+from kinetrace import view3d as v3  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 win = MainWindow()
@@ -269,7 +269,7 @@ assert dlg.load(kcal) and not dlg.conv.isEnabled() and dlg.conv.currentIndex() =
 dlg._accept()
 assert dlg.result_calibration is not None and dlg.result_calibration.cameras[1].pixel_origin == 0.0
 # the MATLAB csv projects the same world point one pixel over
-from cotracker_app.calib import Calibration, dlt_project
+from kinetrace.calib import Calibration, dlt_project
 mat = Calibration.load_dlt_csv(os.path.join(SCRATCH, "wand_gui_dltCoefs.csv"), pixel_origin=1.0)
 X = np.array([[0.1, 0.2, 1.0]])
 u0 = dlt_project(p.calibration.cameras[0].coefs, X)
@@ -300,7 +300,7 @@ print("export of another calibration carries no stale wand report OK")
 
 # ---- (I32) a lens-corrected calibration's dltCoefs.csv says what it needs ----------------
 import copy as _copy  # noqa: E402
-from cotracker_app.calib import OpenCVUndistort  # noqa: E402
+from kinetrace.calib import OpenCVUndistort  # noqa: E402
 res_l = _copy.deepcopy(res)
 K0 = np.array([[FOCAL[0], 0, W / 2], [0, FOCAL[0], H / 2], [0, 0, 1.0]])
 res_l.cameras[0].undistort = OpenCVUndistort(K0, np.array([-0.25, 0.08, 0, 0, 0]))
@@ -341,9 +341,9 @@ assert back.calibration is not None and np.allclose(back.calibration.cameras[3].
 # =============================================================================
 # Release-sweep regressions on in-memory projects (same rig, no MainWindow)
 # =============================================================================
-from cotracker_app import wanddata as wd  # noqa: E402
-from cotracker_app import wand as wand_mod  # noqa: E402
-from cotracker_app import lens as lens_mod  # noqa: E402
+from kinetrace import wanddata as wd  # noqa: E402
+from kinetrace import wand as wand_mod  # noqa: E402
+from kinetrace import lens as lens_mod  # noqa: E402
 
 
 def mem_project(points, offs=None, tag="mem"):

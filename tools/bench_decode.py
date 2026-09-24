@@ -12,10 +12,10 @@ and verifies each backend agrees with the software reference on frame count
 and frame identity (a backend that shifts indices is unusable regardless of
 speed).
 
-Apply the winner with the COTRACKER_DECODE environment variable
+Apply the winner with the KINETRACE_DECODE environment variable
 (auto | msmf | hw | ffmpeg), e.g. in PowerShell:
 
-    $env:COTRACKER_DECODE = "msmf"; .\\run.bat
+    $env:KINETRACE_DECODE = "msmf"; .\\run.bat
 
 Leave it unset to keep the default (software FFmpeg).
 """
@@ -153,7 +153,7 @@ def main() -> None:
     print("  fastest random seek (scrubbing)   : "
           f"{best_seek[1]}  ({best_seek[2]['seek_ms']:.1f} ms)")
     if best_seq[0] == best_seek[0]:
-        print(f"\n  → set COTRACKER_DECODE={best_seq[0]}"
+        print(f"\n  → set KINETRACE_DECODE={best_seq[0]}"
               if best_seq[0] != "auto" else
               "\n  → the default is already the best on this file; change nothing.")
     else:

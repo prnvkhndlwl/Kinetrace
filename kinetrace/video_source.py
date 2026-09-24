@@ -58,9 +58,9 @@ def _default_cache_bytes() -> int:
     instant (pure cache hits, zero decode), so on a workstation it should be
     much larger than the old fixed 2 GB (~85 frames of 4K RGB). It fills
     lazily — this is a ceiling, not an allocation. Override with
-    COTRACKER_CACHE_GB.
+    KINETRACE_CACHE_GB.
     """
-    override = os.environ.get("COTRACKER_CACHE_GB")
+    override = os.environ.get("KINETRACE_CACHE_GB")
     if override:
         try:
             return max(1, int(float(override) * 1024**3))
@@ -283,7 +283,7 @@ def open_capture(path: str) -> cv2.VideoCapture:
 
     Default is OpenCV's own choice (FFmpeg software) — measured most
     reliable for the random seeks that dominate scrubbing. Set
-    COTRACKER_DECODE to trade that for hardware decode, which measured ~2x
+    KINETRACE_DECODE to trade that for hardware decode, which measured ~2x
     faster SEQUENTIAL decode at 4K (helps long tracking runs) but slower
     seeks:
         (unset) / auto  software FFmpeg  — the default
@@ -297,7 +297,7 @@ def open_capture(path: str) -> cv2.VideoCapture:
     different pixels than the user corrected on. Reading the choice once,
     process-wide, is what guarantees that.
     """
-    mode = os.environ.get("COTRACKER_DECODE", "").strip().lower()
+    mode = os.environ.get("KINETRACE_DECODE", "").strip().lower()
     if mode == "msmf":
         return cv2.VideoCapture(path, cv2.CAP_MSMF)
     if mode == "hw":

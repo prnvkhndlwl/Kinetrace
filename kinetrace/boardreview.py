@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFrame, QGr
                                QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
                                QSizePolicy, QVBoxLayout, QWidget)
 
-from cotracker_app import lens, theme
+from kinetrace import lens, theme
 
 TILE_W = 300                 # thumbnail width in the gallery
 GOOD_PX = 0.6                # per-view reprojection at or under this reads "good"
@@ -78,7 +78,7 @@ class _FrameReader(QThread):
                 why = (f"the video is no longer at {self.video} (moved, renamed, or on a drive that is "
                        "not connected)")
             else:
-                from cotracker_app.video_source import open_capture
+                from kinetrace.video_source import open_capture
                 cap = open_capture(self.video)
                 try:
                     if not cap.isOpened():

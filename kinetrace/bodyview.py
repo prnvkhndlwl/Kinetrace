@@ -26,9 +26,9 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
                                QRadioButton, QSizePolicy, QSpinBox, QVBoxLayout, QWidget)
 
-from cotracker_app import theme
-from cotracker_app.body import MIN_JOINT_CONF, BodyTrack, canon, is_finger
-from cotracker_app.hull import _view_rotation
+from kinetrace import theme
+from kinetrace.body import MIN_JOINT_CONF, BodyTrack, canon, is_finger
+from kinetrace.hull import _view_rotation
 
 # Left / right / centre, BGR. Colour-coding the sides is the single most
 # useful thing a skeleton drawing can do -- it is how you spot the classic
@@ -64,7 +64,7 @@ def _median_dir(stack: np.ndarray, rig, a: str, b: str) -> np.ndarray | None:
     """Median unit vector from joint `a` to joint `b` over every frame that
     has both. Median, not mean, so one frame with a swapped limb cannot tip
     the whole clip over."""
-    from cotracker_app.body import _resolve
+    from kinetrace.body import _resolve
     pa, pb = _resolve(a, stack, rig), _resolve(b, stack, rig)
     if pa is None or pb is None:
         return None
@@ -705,8 +705,8 @@ class BodyPoseWorker(QThread):
         self._cancel = True
 
     def run(self) -> None:
-        from cotracker_app import bodypose
-        from cotracker_app.video_source import open_capture
+        from kinetrace import bodypose
+        from kinetrace.video_source import open_capture
         cap = None
         try:
             est = bodypose.make_estimator(
@@ -856,8 +856,8 @@ class SideBySideRenderer(QThread):
         self._cancel = True
 
     def run(self) -> None:
-        from cotracker_app.render import open_writer
-        from cotracker_app.video_source import open_capture
+        from kinetrace.render import open_writer
+        from kinetrace.video_source import open_capture
         cap = vw = None
         try:
             cap = open_capture(self.video_path)
@@ -925,7 +925,7 @@ class BodyRunDialog(QDialog):
                  default_backend: str = "", lens_focal: float | None = None,
                  existing: BodyTrack | None = None):
         super().__init__(parent)
-        from cotracker_app import bodypose
+        from kinetrace import bodypose
         self.setWindowTitle("Find people and measure their joints")
         self.result_options: BodyRunOptions | None = None
         self._bp = bodypose

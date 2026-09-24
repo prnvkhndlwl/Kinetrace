@@ -34,7 +34,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from cotracker_app.calib import OpenCVUndistort
+from kinetrace.calib import OpenCVUndistort
 
 DEFAULT_PATTERN = (9, 6)        # inner corners (columns, rows) = 10 x 7 squares
 DEFAULT_SQUARE_MM = 24.0
@@ -533,7 +533,7 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
     """Look for the board in up to `max_candidates` frames spread over the
     video. Detection runs on a downscaled copy for speed, then the corners
     are refined at full resolution. Own VideoCapture (one per thread)."""
-    from cotracker_app.video_source import open_capture
+    from kinetrace.video_source import open_capture
     cap = open_capture(str(path))
     if not cap.isOpened():
         raise OSError(f"could not open {path}")

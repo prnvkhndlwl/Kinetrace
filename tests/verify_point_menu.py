@@ -33,7 +33,7 @@ QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 
 app = QApplication([])
-from cotracker_app.app import MainWindow, READY
+from kinetrace.app import MainWindow, READY
 
 win = MainWindow()
 win.resize(1280, 860)

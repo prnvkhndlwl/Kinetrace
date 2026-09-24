@@ -18,9 +18,9 @@ sys.stdout.reconfigure(errors="replace")
 import cv2
 import numpy as np
 
-from cotracker_app.calib import Calibration, CameraCalibration, NoUndistort, dlt_from_camera
-from cotracker_app.project import Project
-from cotracker_app.session import TrackingSession
+from kinetrace.calib import Calibration, CameraCalibration, NoUndistort, dlt_from_camera
+from kinetrace.project import Project
+from kinetrace.session import TrackingSession
 
 OUT = os.path.join(ROOT, "tests", "out", "sweep_fixes")
 os.makedirs(OUT, exist_ok=True)
@@ -55,7 +55,7 @@ pa = s_a.add_point(0, 10, 10)
 pb = s_b.add_point(0, 10, 10)
 s_a.tracked[:, pa] = True
 s_b.tracked[:, pb] = True
-from cotracker_app.app import MainWindow  # noqa: E402
+from kinetrace.app import MainWindow  # noqa: E402
 p3.active = 1                              # working in camera B (offset -50)
 lo, hi = MainWindow._t_range_3d(SimpleNamespace(project=p3))
 assert (lo, hi) == (50, 399), f"reference window from camera B's frames: {(lo, hi)}"
@@ -159,7 +159,7 @@ QMessageBox.question = staticmethod(lambda *a, **k: (ASK["asked"].append(a[1] if
 QMessageBox.warning = staticmethod(lambda *a, **k: (ASK["warned"].append(a[1] if len(a) > 1 else ""), QMessageBox.Ok)[1])
 QMessageBox.information = staticmethod(lambda *a, **k: (ASK["info"].append(a[1] if len(a) > 1 else ""), QMessageBox.Ok)[1])
 app = QApplication.instance() or QApplication([])
-from cotracker_app.app import READY  # noqa: E402
+from kinetrace.app import READY  # noqa: E402
 
 
 def clip(path, n=60, w=320, h=240, shift=0):
@@ -329,7 +329,7 @@ win._set_active_view(1) if win.project.active == 0 else None
 pump(0.2)
 mask = np.zeros((240, 320), bool)
 mask[100:140, 100:160] = True
-from cotracker_app.segmenter import summarize_mask  # noqa: E402
+from kinetrace.segmenter import summarize_mask  # noqa: E402
 summ = summarize_mask(mask, 1.0, 9.0)
 summ["frame"] = 7
 if summ is not None:
@@ -476,7 +476,7 @@ print("pausing a re-track stops the queue and goes to Keep / Undo (I107) OK")
 
 # I112: a thread still running after its wait is kept, not dropped
 from PySide6.QtCore import QThread  # noqa: E402
-from cotracker_app import app as appmod  # noqa: E402
+from kinetrace import app as appmod  # noqa: E402
 
 
 class _Slow(QThread):
@@ -503,8 +503,8 @@ if act_before != win.project.active:
 from PySide6.QtCore import QEvent  # noqa: E402
 from PySide6.QtGui import QKeyEvent  # noqa: E402
 from PySide6.QtWidgets import QDialog, QFileDialog, QWidget  # noqa: E402
-from cotracker_app.canvas import VideoCanvas  # noqa: E402
-import cotracker_app.lenswizard as lwmod  # noqa: E402
+from kinetrace.canvas import VideoCanvas  # noqa: E402
+import kinetrace.lenswizard as lwmod  # noqa: E402
 s = win.session
 
 # I123: adding a point is ONE undo step (Ctrl+Z used to restore an older snapshot)
@@ -574,7 +574,7 @@ print("toasts keep the previous notice (G10) OK")
 
 # G15: a menu built per right-click shows its entries' tooltips too
 from PySide6.QtWidgets import QMenu  # noqa: E402
-from cotracker_app import timeline as tlmod  # noqa: E402
+from kinetrace import timeline as tlmod  # noqa: E402
 
 
 class _NoExecMenu(QMenu):
@@ -602,7 +602,7 @@ bw.close()
 print("the Body window keeps the hotkeys (G11) OK")
 
 # I122: the Body run's focal length from a lens profile is a number, not a crash
-from cotracker_app.lens import LensProfile  # noqa: E402
+from kinetrace.lens import LensProfile  # noqa: E402
 K = np.array([[300.0, 0, 160], [0, 300.0, 120], [0, 0, 1]])
 prof = LensProfile(K=K, dist=np.zeros(5), fisheye=False, width=320, height=240)
 lenses_before = list(win.project.lenses)

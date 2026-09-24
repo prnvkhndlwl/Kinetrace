@@ -37,7 +37,7 @@ import cv2
 import numpy as np
 from scipy import ndimage
 
-from cotracker_app.calib import CameraCalibration, dlt_project, front_sign
+from kinetrace.calib import CameraCalibration, dlt_project, front_sign
 
 MAP_STEP = 8          # px between LWM evaluations when building undistortion maps
 

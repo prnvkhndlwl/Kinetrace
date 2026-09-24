@@ -18,11 +18,11 @@ from PySide6.QtCore import QCoreApplication
 app = QCoreApplication([])
 
 import _synth  # noqa: E402
-from cotracker_app.segmenter import working_size  # noqa: E402
-from cotracker_app.session import TrackingSession  # noqa: E402
-from cotracker_app.skeletons import template_by_name  # noqa: E402
-from cotracker_app.tracker import AnimalSpec, DerivedSpec, PointSpec, TrackingWorker  # noqa: E402
-from cotracker_app.video_source import FrameCache  # noqa: E402
+from kinetrace.segmenter import working_size  # noqa: E402
+from kinetrace.session import TrackingSession  # noqa: E402
+from kinetrace.skeletons import template_by_name  # noqa: E402
+from kinetrace.tracker import AnimalSpec, DerivedSpec, PointSpec, TrackingWorker  # noqa: E402
+from kinetrace.video_source import FrameCache  # noqa: E402
 
 OUT = os.path.join(ROOT, "tests", "out")
 os.makedirs(OUT, exist_ok=True)
@@ -168,7 +168,7 @@ s.apply_skeleton(template_by_name("Lizard / iguana"))
 assert s.n_points > n_before and s.tracked[:, pid_head].sum() == head_e[2]
 
 # ---- 1b. landmark identity + derived continuity (lessons from real footage) -----
-from cotracker_app.tracker import ANCHOR_LOST_CONF, EXT_CONF_CAP, OFF_BODY_CONF  # noqa: E402
+from kinetrace.tracker import ANCHOR_LOST_CONF, EXT_CONF_CAP, OFF_BODY_CONF  # noqa: E402
 # silhouette feet are never as certain as a tracked point
 for nm in ("foot_FR", "foot_HL", "foot_HR"):
     c = s.confidence[s.tracked[:, pid[nm]], pid[nm]]

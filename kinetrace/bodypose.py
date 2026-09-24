@@ -35,7 +35,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from cotracker_app.body import BodyRig, RIGS, canon, rig_of
+from kinetrace.body import BodyRig, RIGS, canon, rig_of
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 HF_DIR = MODELS_DIR / "hf"

@@ -762,7 +762,7 @@ class Reconstruction:
         """DLTdv-style `xyzpts` CSV (`pt1_X,pt1_Y,pt1_Z,...`) with a leading
         `frame` column (reference frames), NaN where unsolved; plus a
         `*_xyzres.csv` sidecar with the residual and camera count."""
-        from cotracker_app.session import _sanitize
+        from kinetrace.session import _sanitize
         p = Path(path)
         # (I95) header cells through the same sanitizer as the 2D exports: a
         # landmark named "wing tip, left" would otherwise add a header cell and

@@ -26,8 +26,8 @@ QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 
 app = QApplication([])
-from cotracker_app.session import TrackingSession, MaskTrack
-from cotracker_app.render import OverlayOptions, OverlayRenderer, draw_overlay, open_writer
+from kinetrace.session import TrackingSession, MaskTrack
+from kinetrace.render import OverlayOptions, OverlayRenderer, draw_overlay, open_writer
 
 # ---- pure drawing on a synthetic session --------------------------------------
 W, H, T = 640, 480, 50
@@ -82,7 +82,7 @@ assert codec in ("avc1", "mp4v"), codec
 print(f"writer codec: {codec}")
 
 # ---- renderer thread on the real clip -----------------------------------------
-from cotracker_app.app import MainWindow, READY
+from kinetrace.app import MainWindow, READY
 
 win = MainWindow()
 win.show()
@@ -214,7 +214,7 @@ pump(lambda: d5["ok"] is not None or d5["err"] is not None, 60, "phantom render"
 r5.wait(5000)
 assert d5["ok"] is None and "nothing was written" in (d5["err"] or ""), d5
 assert not os.path.exists(out5), "an empty overlay must not be left behind"
-from cotracker_app.render import OverlayDialog          # noqa: E402
+from kinetrace.render import OverlayDialog          # noqa: E402
 
 dlg = OverlayDialog(None, long_s, out4, 300, (590, 640), n_frames=600)
 assert "0–599" in dlg.r_all.text() and dlg.f1.maximum() == 599, (dlg.r_all.text(), dlg.f1.maximum())
@@ -231,7 +231,7 @@ print("short video OK: 40 of 90 frames reported, an all-phantom range refused, t
 assert win.act_overlay.isEnabled(), "Export Overlay Video should be enabled with a video open"
 
 # the dialog's "Skeleton bones" tick decides, even with bones hidden on the canvas (I44)
-import cotracker_app.render as _render                  # noqa: E402
+import kinetrace.render as _render                  # noqa: E402
 from PySide6.QtWidgets import QDialog                   # noqa: E402
 
 sess.skeleton = {"name": "t", "landmarks": [p.name for p in sess.points],

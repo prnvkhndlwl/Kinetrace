@@ -11,8 +11,8 @@ sys.path.insert(0, ROOT)
 from PySide6.QtCore import QCoreApplication
 
 app = QCoreApplication([])
-from cotracker_app.tracker import TrackingWorker
-from cotracker_app.video_source import FrameCache
+from kinetrace.tracker import TrackingWorker
+from kinetrace.video_source import FrameCache
 
 VID = os.path.join(ROOT, r"test4k.mp4")
 GT = np.load(VID + ".gt.npz")["gt"]

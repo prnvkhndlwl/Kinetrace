@@ -59,11 +59,11 @@ import torch
 import torch.nn.functional as F
 from PySide6.QtCore import QThread, Signal
 
-from cotracker_app import alltracker_backend as at_backend
-from cotracker_app.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, get_segmenter,
+from kinetrace import alltracker_backend as at_backend
+from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, get_segmenter,
                                      score_to_confidence, summarize_mask)
-from cotracker_app.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
-from cotracker_app.video_source import FrameCache, ReadAhead, VideoSource
+from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
+from kinetrace.video_source import FrameCache, ReadAhead, VideoSource
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 WORKING_MAX_DIM = 1280
@@ -194,7 +194,7 @@ def _frame_decodes(path: str, idx: int) -> bool:
     the run's source and the shared frame cache are left alone."""
     cap = None
     try:
-        from cotracker_app.video_source import open_capture   # same backend as the run
+        from kinetrace.video_source import open_capture   # same backend as the run
         cap = open_capture(path)
         if not cap.isOpened():
             return False
@@ -459,8 +459,8 @@ class TrackingWorker(QThread):
             engine = get_segmenter(self.animal.backend)
             self._seg = engine.new_session(self.start_frame, (nw, nh))
         if self.balls:
-            from cotracker_app.balls import BallTracker
-            from cotracker_app.segmenter import preferred_backend
+            from kinetrace.balls import BallTracker
+            from kinetrace.segmenter import preferred_backend
             backend = (self.balls[0].backend or (self.animal.backend if self.animal is not None else "")
                        or preferred_backend())
             self._ball_trk = BallTracker(get_segmenter(backend), (nw, nh))
@@ -1497,7 +1497,7 @@ class TrackingWorker(QThread):
         the picture edge it simply left (no data, no pause - the out-of-frame
         invariant); otherwise it was lost inside the picture and the run
         pauses there so the user can click it again."""
-        from cotracker_app.balls import BallPrompt
+        from kinetrace.balls import BallPrompt
         trk = self._ball_trk
         prompts: list[BallPrompt] = []
         for b in self.balls:

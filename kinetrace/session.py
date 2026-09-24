@@ -41,9 +41,9 @@ from pathlib import Path
 
 import numpy as np
 
-from cotracker_app import APP_VERSION
-from cotracker_app.body import BodyTrack, export_angles_csv, export_joints_csv
-from cotracker_app.segmenter import MIDLINE_SAMPLES, MaskTrack
+from kinetrace import APP_VERSION
+from kinetrace.body import BodyTrack, export_angles_csv, export_joints_csv
+from kinetrace.segmenter import MIDLINE_SAMPLES, MaskTrack
 
 # 12 visually distinct point colors (RGB), cycled by point index.
 PALETTE: list[tuple[int, int, int]] = [

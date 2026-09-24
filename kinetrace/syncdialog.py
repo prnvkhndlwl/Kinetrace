@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout
                                QProgressBar, QPushButton, QRadioButton, QSizePolicy, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
-from cotracker_app import audiosync, sync, theme
+from kinetrace import audiosync, sync, theme
 
 VERDICT_WORDS = {"clear": "CLEAR - use it", "weak": "WEAK - check by eye first",
                  "none": "NONE - do not apply"}

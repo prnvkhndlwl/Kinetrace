@@ -30,7 +30,7 @@ QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 
 app = QApplication([])
-from cotracker_app.app import MainWindow, READY
+from kinetrace.app import MainWindow, READY
 
 win = MainWindow()
 win.resize(1280, 860)
@@ -177,7 +177,7 @@ win.timeline.repaint()
 app.processEvents()
 proj = os.path.join(SCRATCH, "annotate_rt.cotrk")
 win.project.save_npz(proj)
-from cotracker_app.project import Project
+from kinetrace.project import Project
 back = Project.load_npz(proj)
 s2 = back.session
 assert sorted(s2.manual_frames(1).tolist()) == [50, 120, 400], s2.manual_frames(1)

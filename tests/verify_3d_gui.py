@@ -19,9 +19,9 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox
 
-from cotracker_app.calib import Calibration, CameraCalibration, NoUndistort, dlt_from_camera
-from cotracker_app.project import Project
-from cotracker_app.session import TrackingSession
+from kinetrace.calib import Calibration, CameraCalibration, NoUndistort, dlt_from_camera
+from kinetrace.project import Project
+from kinetrace.session import TrackingSession
 
 SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)
@@ -106,8 +106,8 @@ QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError(a[2] if len(a) > 2 else a)))
 
-from cotracker_app.app import READY, MainWindow  # noqa: E402
-from cotracker_app import view3d as v3  # noqa: E402
+from kinetrace.app import READY, MainWindow  # noqa: E402
+from kinetrace import view3d as v3  # noqa: E402
 
 app = QApplication.instance() or QApplication([])
 win = MainWindow()
@@ -241,7 +241,7 @@ assert np.nanmean(e1) < 0.4 * np.nanmean(e0) and np.nanmean(e1) < 1.5e-3, (np.na
 print(f"reconstruct + sub-frame offsets OK: {np.nanmean(e0) * 1e3:.2f} mm -> {np.nanmean(e1) * 1e3:.2f} mm, "
       f"offsets {np.round(p.offsets, 3).tolist()} vs true {TRUE_OFF}")
 # ---- epipolar guides, snap-to-rays, per-camera disagreement on the timeline ----------
-from cotracker_app.calib import closest_on_polyline as _cop
+from kinetrace.calib import closest_on_polyline as _cop
 s_act = win.session
 pid0 = s_act.pid_by_name(NAMES[0])
 mid = int(np.nonzero(s_act.tracked[:, pid0])[0][len(np.nonzero(s_act.tracked[:, pid0])[0]) // 2])
@@ -295,7 +295,7 @@ win.timeline.refresh()
 pump(0.05)
 assert win.timeline._dis_col is not None and (win.timeline._dis_col[:, pid0] > win.timeline._disagree_px).any()
 # the automatic re-track's planner (retrack.py) finds exactly this stretch in this camera
-from cotracker_app import retrack  # noqa: E402
+from kinetrace import retrack  # noqa: E402
 plan_ = retrack.plan(p, win._disagree_thresholds())
 mine = [st for st in plan_ if st.view == p.active and st.name == NAMES[0]]
 assert len(mine) == 1, [(st.view, st.name, st.local0, st.local1) for st in plan_]

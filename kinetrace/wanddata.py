@@ -15,7 +15,7 @@ import warnings
 
 import numpy as np
 
-from cotracker_app.calib import sample_tracks_at
+from kinetrace.calib import sample_tracks_at
 
 
 def raw_tracks(session) -> np.ndarray:

@@ -5,8 +5,8 @@ os.makedirs(os.path.join(ROOT, "tests", "out"), exist_ok=True)
 import numpy as np
 
 sys.path.insert(0, ROOT)
-from cotracker_app.video_source import VideoSource, FrameCache, probe_video
-from cotracker_app.session import TrackingSession
+from kinetrace.video_source import VideoSource, FrameCache, probe_video
+from kinetrace.session import TrackingSession
 
 VID = os.path.join(ROOT, r"test600.mp4")
 
@@ -139,7 +139,7 @@ print(f"40k x 10 export: csv {t_csv:.2f}s, tsv {t_tsv:.2f}s, mat {t_mat:.2f}s, n
 assert t_csv < 2 and t_mat < 2, "export too slow"
 
 # ---- schema v2: confidence, groups, events, unique names, ui_state ----
-from cotracker_app.session import DEFAULT_UI_STATE
+from kinetrace.session import DEFAULT_UI_STATE
 
 s3 = TrackingSession(VID, 600, 30.0, 640, 480)
 p = s3.add_point(0, 10.0, 10.0)
@@ -236,7 +236,7 @@ print("schema v2 OK")
 # ---- frame rate: high-speed headers believed, a timebase is not a rate (I37) ----
 import threading
 import cv2
-from cotracker_app import video_source as _vs
+from kinetrace import video_source as _vs
 
 
 def _write_clip(path, fps, n=40):
@@ -310,7 +310,7 @@ assert not _i.vfr_suspected and _i.fps == 400.0 and _i.fps_source == "header", _
 print("VFR sniff OK: 400 / 600 / 960 fps MKV not flagged, a real variable clock still is")
 
 # ---- ReadAhead: an exception is not the end of the video (I40), stop() really stops (I39) ----
-from cotracker_app.video_source import ReadAhead
+from kinetrace.video_source import ReadAhead
 
 
 class _RaisingSrc:

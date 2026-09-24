@@ -9,7 +9,7 @@ institution's technology-transfer or legal office has the final word.
 
 ## 1. Kinetrace's own code
 
-Everything in this repository — `cotracker_app/`, `tests/`, `tools/`, the
+Everything in this repository — `kinetrace/`, `tests/`, `tools/`, the
 installers and the docs — is the Kinetrace authors' own work. **No
 licence has been chosen for it yet**, so until one is added (a `LICENSE` file
 in this folder) all rights are reserved. Section 5 lists the options.

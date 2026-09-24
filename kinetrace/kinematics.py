@@ -416,7 +416,7 @@ def export_kinematics(path: str | Path, rec, fps: float, unit: str, cutoff: floa
     amag = np.linalg.norm(acc, axis=2)
     # the CSV sanitizer (as every other export, cf. I95): a comma in a landmark name
     # would split its column name and shift every column after it
-    from cotracker_app.session import _sanitize
+    from kinetrace.session import _sanitize
     safe = [_sanitize(str(nm)) for nm in rec.names]
     cols = ["frame", "time_s"]
     for nm in safe:

@@ -24,8 +24,8 @@ import math
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from cotracker_app import theme
-from cotracker_app.canvas import VideoCanvas
+from kinetrace import theme
+from kinetrace.canvas import VideoCanvas
 
 CAPTION_H = 18
 

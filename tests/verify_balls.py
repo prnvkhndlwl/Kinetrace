@@ -25,7 +25,7 @@ sys.stdout.reconfigure(errors="replace")
 import cv2
 import numpy as np
 
-from cotracker_app import balls
+from kinetrace import balls
 
 OUT = os.path.join(ROOT, "tests", "out")
 os.makedirs(OUT, exist_ok=True)
@@ -139,7 +139,7 @@ def run_mock(gt, size, n, first):
     return tk, res, mock
 
 
-from cotracker_app import segmenter          # noqa: E402
+from kinetrace import segmenter          # noqa: E402
 
 # identity-swap guard after a missed frame (I56): SAM's mask moves onto a look-alike 300 px away,
 # after one hidden frame and without one - no accepted centre may be more than 4 r off the truth
@@ -208,7 +208,7 @@ leave_frame = int(np.nonzero(truth[:, 2, 0] + R[2] >= W)[0][0]) if (truth[:, 2, 
 print(f"clip: {N} frames {W}x{H}; ball C leaves the picture at frame {leave_frame}")
 
 # ---------------------------------------------------------------- 2. BallTracker
-from cotracker_app import segmenter          # noqa: E402
+from kinetrace import segmenter          # noqa: E402
 
 backend = segmenter.preferred_backend()
 seg = segmenter.get_segmenter(backend)
@@ -262,9 +262,9 @@ print("BallTracker OK")
 from PySide6.QtWidgets import QApplication                     # noqa: E402
 
 qapp = QApplication.instance() or QApplication([])
-from cotracker_app.session import TrackingSession              # noqa: E402
-from cotracker_app.tracker import BallSpec, PointSpec, TrackingWorker   # noqa: E402
-from cotracker_app.video_source import FrameCache              # noqa: E402
+from kinetrace.session import TrackingSession              # noqa: E402
+from kinetrace.tracker import BallSpec, PointSpec, TrackingWorker   # noqa: E402
+from kinetrace.video_source import FrameCache              # noqa: E402
 
 
 def run_worker(s, start, end, specs, ball_specs, autopause=True):
@@ -331,7 +331,7 @@ QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QInputDialog.getText = staticmethod(lambda *a, **k: ("", False))
 app = QApplication.instance() or QApplication([])
-from cotracker_app.app import MainWindow, READY, TRACKING       # noqa: E402
+from kinetrace.app import MainWindow, READY, TRACKING       # noqa: E402
 
 win = MainWindow()
 win.show()
@@ -404,7 +404,7 @@ wait(lambda: win.state == READY, 600, "tracking end 2")
 proj = os.path.join(OUT, "balls_test.cotrk")
 win.project.save_npz(proj)
 pump(0.2)
-from cotracker_app.project import Project                      # noqa: E402
+from kinetrace.project import Project                      # noqa: E402
 
 p2 = Project.load_npz(proj)
 t2 = p2.sessions[0]

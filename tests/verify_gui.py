@@ -27,7 +27,7 @@ QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError(f"critical dialog: {a[2] if len(a)>2 else a}")))
 
 app = QApplication([])
-from cotracker_app.app import MainWindow, READY, TRACKING
+from kinetrace.app import MainWindow, READY, TRACKING
 
 win = MainWindow()
 win.show()

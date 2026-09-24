@@ -13,9 +13,9 @@ from PySide6.QtCore import QCoreApplication
 
 app = QCoreApplication([])
 
-from cotracker_app.alltracker_backend import available, is_cached  # noqa: E402
-from cotracker_app.tracker import PointSpec, TrackingWorker  # noqa: E402
-from cotracker_app.video_source import FrameCache  # noqa: E402
+from kinetrace.alltracker_backend import available, is_cached  # noqa: E402
+from kinetrace.tracker import PointSpec, TrackingWorker  # noqa: E402
+from kinetrace.video_source import FrameCache  # noqa: E402
 
 assert available(), "models/alltracker (vendored repo) is missing"
 print("checkpoint cached:", is_cached())

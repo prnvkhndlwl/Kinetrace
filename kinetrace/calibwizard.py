@@ -26,8 +26,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
                                QListWidgetItem, QProgressBar, QPushButton, QRadioButton, QSpinBox,
                                QTextBrowser, QVBoxLayout, QWidget, QWizard, QWizardPage)
 
-from cotracker_app import theme
-from cotracker_app import wanddata as wd
+from kinetrace import theme
+from kinetrace import wanddata as wd
 
 UNITS = [("metres (m)", "m"), ("centimetres (cm)", "cm"), ("millimetres (mm)", "mm"), ("inches (in)", "in"),
          ("wand lengths (not measured yet: enter 1)", "wand")]   # every distance then reads in wand lengths
@@ -106,7 +106,7 @@ class _CalibThread(QThread):
         self.progress.emit(float(f), str(m), self.gen)
 
     def run(self):
-        from cotracker_app import wand
+        from kinetrace import wand
         try:
             res = wand.calibrate_wand(progress=self._note, **self.kwargs)
             grav = None
@@ -462,7 +462,7 @@ class CamerasPage(QWizardPage):
             self.lens_labels[c].setText(f"<span style='color:{theme.RED}'>not attached: {why}</span>")
 
     def _calib_lens(self, c: int):
-        from cotracker_app.lenswizard import LensWizard
+        from kinetrace.lenswizard import LensWizard
         p = self.wiz.project
         lw = LensWizard(self, p, p.sessions[c].video_path, c, self.wiz.start_dir)
         if lw.exec() == QWizard.Accepted and lw.result_profile is not None and lw.result_view is not None:
@@ -477,8 +477,8 @@ class CamerasPage(QWizardPage):
         self._refresh_lens_rows()
 
     def _load_lens(self, c: int):
-        from cotracker_app import lens as _lens
-        from cotracker_app.lenswizard import LENS_FILTER
+        from kinetrace import lens as _lens
+        from kinetrace.lenswizard import LENS_FILTER
         p = self.wiz.project
         path, _ = QFileDialog.getOpenFileName(self, "Lens profile", self.wiz.start_dir, LENS_FILTER)
         if not path:
@@ -1056,7 +1056,7 @@ def calibration_to_kcal(cal, report: dict | None = None, grav: dict | None = Non
 
 def load_kcal(path):
     """`*.kcal.json` -> `calib.Calibration` (cameras in file order)."""
-    from cotracker_app.calib import Calibration, CameraCalibration, undistort_from_json
+    from kinetrace.calib import Calibration, CameraCalibration, undistort_from_json
     d = json.loads(Path(path).read_text(encoding="utf-8"))
     if "kinetrace_calibration" not in d:
         raise ValueError(f"{Path(path).name}: not a Kinetrace calibration file")

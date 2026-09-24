@@ -9,8 +9,8 @@ from PySide6.QtCore import QCoreApplication
 
 app = QCoreApplication([])
 
-from cotracker_app.tracker import TrackingWorker, get_model, pick_device
-from cotracker_app.video_source import FrameCache
+from kinetrace.tracker import TrackingWorker, get_model, pick_device
+from kinetrace.video_source import FrameCache
 
 VID = os.path.join(ROOT, r"test600.mp4")
 GT = np.load(VID + ".gt.npz")["gt"]  # (600, 4, 2)
@@ -112,7 +112,7 @@ assert np.isfinite(trP[: last + 1, :, 0]).all() and np.isnan(trP[last + 1 + 8:])
 print(f"pause OK: stopped at frame {last} after 3 emits")
 
 # ---- 5. a frame that cannot be decoded mid-video is NOT the end of the video (I40) ----
-from cotracker_app import video_source as vs  # noqa: E402
+from kinetrace import video_source as vs  # noqa: E402
 
 _read_next = vs.VideoSource.read_next
 
@@ -160,9 +160,9 @@ print("decode failure reported distinctly; a short header is still the end OK")
 
 # ---- 6. points + balls without a segment: a restart that drops every point hands the
 # balls on instead of ending the run short of the video's end (I120) ----
-import cotracker_app.balls as balls_mod  # noqa: E402
-import cotracker_app.tracker as trk  # noqa: E402
-from cotracker_app.tracker import BallSpec, PointSpec  # noqa: E402
+import kinetrace.balls as balls_mod  # noqa: E402
+import kinetrace.tracker as trk  # noqa: E402
+from kinetrace.tracker import BallSpec, PointSpec  # noqa: E402
 
 calls = {}
 saved = (trk.get_model, trk.get_segmenter, balls_mod.BallTracker)

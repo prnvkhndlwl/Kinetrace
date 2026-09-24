@@ -224,7 +224,7 @@ QFileDialog.getExistingDirectory = staticmethod(
     lambda *a, **k: (rec("filedialog", which="dir") and None) or STUB["dir"])
 
 app = QApplication.instance() or QApplication([])
-from cotracker_app.app import IDLE, READY, TRACKING, MainWindow  # noqa: E402
+from kinetrace.app import IDLE, READY, TRACKING, MainWindow  # noqa: E402
 
 win = MainWindow()
 win.resize(1600, 1000)
@@ -1136,7 +1136,7 @@ try:
 
             def _calib_handler(m):
                 from PySide6.QtWidgets import QPushButton
-                from cotracker_app import view3d as v3
+                from kinetrace import view3d as v3
                 if isinstance(m, v3.CalibrationDialog):
                     def go(d=m):
                         try:

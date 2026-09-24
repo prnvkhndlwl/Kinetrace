@@ -23,24 +23,24 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, Q
                                QPushButton, QSizePolicy, QSpinBox, QSplitter, QTextBrowser,
                                QToolButton, QVBoxLayout, QWidget)
 
-from cotracker_app import APP_NAME, APP_TAGLINE, APP_VERSION, theme
-from cotracker_app import alltracker_backend
-from cotracker_app.camerapanel import CameraPanel
-from cotracker_app.view3d import CalibrationDialog, Scene3D, View3D
-from cotracker_app.canvas import (ZOOM_STEP as CANVAS_ZOOM_STEP,
+from kinetrace import APP_NAME, APP_TAGLINE, APP_VERSION, theme
+from kinetrace import alltracker_backend
+from kinetrace.camerapanel import CameraPanel
+from kinetrace.view3d import CalibrationDialog, Scene3D, View3D
+from kinetrace.canvas import (ZOOM_STEP as CANVAS_ZOOM_STEP,
                                   TRAIL_FRAMES, DISPLAY_FILTERS, REGION_SHAPES)
-from cotracker_app.project import MAX_VIEWS, REFERENCE_VIEW, Project
-from cotracker_app.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_token,
+from kinetrace.project import MAX_VIEWS, REFERENCE_VIEW, Project
+from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_token,
                                      model_is_cached as seg_is_cached, preferred_backend,
                                      save_token, working_size)
-from cotracker_app.session import AUTOSAVE_SUFFIX, PROJECT_SUFFIX, TrackingSession
-from cotracker_app.viewgrid import ViewGrid, caption_for
-from cotracker_app.skeletons import all_templates, save_user_template
-from cotracker_app.theme import apply_theme
-from cotracker_app.timeline import TIME_ZOOM_STEP, TimelinePanel
-from cotracker_app.video_source import DEFAULT_CACHE_BYTES, FrameCache, SeekService, VideoInfo, probe_video
-from cotracker_app import icons
-from cotracker_app.widgets import ManualDialog, OnboardingStrip, SettingsDialog, Toast
+from kinetrace.session import AUTOSAVE_SUFFIX, PROJECT_SUFFIX, TrackingSession
+from kinetrace.viewgrid import ViewGrid, caption_for
+from kinetrace.skeletons import all_templates, save_user_template
+from kinetrace.theme import apply_theme
+from kinetrace.timeline import TIME_ZOOM_STEP, TimelinePanel
+from kinetrace.video_source import DEFAULT_CACHE_BYTES, FrameCache, SeekService, VideoInfo, probe_video
+from kinetrace import icons
+from kinetrace.widgets import ManualDialog, OnboardingStrip, SettingsDialog, Toast
 
 # duplicated from tracker.py so the GUI can check without importing torch
 _CHECKPOINT = Path(__file__).resolve().parent.parent / "models" / "checkpoints" / "scaled_online.pth"
@@ -172,7 +172,7 @@ class _DeviceProbe(QThread):
 
     def run(self):
         try:
-            from cotracker_app.tracker import pick_device
+            from kinetrace.tracker import pick_device
             self.got.emit(pick_device()[1])
         except Exception as e:  # noqa: BLE001
             self.got.emit(f"device unavailable: {e}")
@@ -200,14 +200,14 @@ class _MaskPreviewWorker(QThread):
 
     def run(self):
         try:
-            from cotracker_app.segmenter import (MIDLINE_SAMPLES, Prompt, get_segmenter,
+            from kinetrace.segmenter import (MIDLINE_SAMPLES, Prompt, get_segmenter,
                                                  summarize_mask)
-            from cotracker_app.silhouette import midline as silhouette_midline, resample
+            from kinetrace.silhouette import midline as silhouette_midline, resample
             self.loading.emit(self._backend)
             seg = get_segmenter(self._backend)
             rgb = self._rgb
             if rgb is None:
-                from cotracker_app.video_source import VideoSource
+                from kinetrace.video_source import VideoSource
                 src = VideoSource(self._video_path, FrameCache(64 * 1024 ** 2))
                 try:
                     rgb = src.get_frame(self._frame)
@@ -1249,7 +1249,7 @@ class MainWindow(QMainWindow):
         # eliding labels: a plain QLabel's minimum width is its whole text, so a
         # longer frame / fps / ETA text widened the WINDOW (it can be as narrow
         # as a laptop screen since G2) and refitted the video (G8)
-        from cotracker_app.widgets import ElidedLabel
+        from kinetrace.widgets import ElidedLabel
         self._frame_label = ElidedLabel("no video", pad=16)
         self._device_label = ElidedLabel("", pad=16)
         self._track_label = ElidedLabel("", pad=16)
@@ -2750,7 +2750,7 @@ class MainWindow(QMainWindow):
         w.start()
 
     def _on_seg_loading(self, backend: str):
-        from cotracker_app.segmenter import loaded_backends
+        from kinetrace.segmenter import loaded_backends
         if backend in loaded_backends() or self._loading_dialog is not None:
             return
         label = BACKENDS.get(backend, BACKENDS[DEFAULT_BACKEND])[2]
@@ -3124,7 +3124,7 @@ class MainWindow(QMainWindow):
                 act.triggered.connect(lambda _=False, tt=t: self._apply_skeleton_template(tt))
             menu.addSeparator()
             menu.addAction("Custom skeleton…", self._custom_skeleton_dialog)
-            from cotracker_app.skeletons import user_template_problems
+            from kinetrace.skeletons import user_template_problems
             probs = user_template_problems()
             if probs:           # a broken file in skeletons/ is said, not silently skipped (I62)
                 menu.addAction(f"{len(probs)} problem(s) in the skeletons/ folder…",
@@ -3210,7 +3210,7 @@ class MainWindow(QMainWindow):
                     pairs.append([a, b])
         t = {"name": name.text().strip() or "custom", "head": head.text().strip() or landmarks[0],
              "landmarks": landmarks, "bones": pairs, "derived": derived, "note": ""}
-        from cotracker_app.skeletons import validate_template
+        from kinetrace.skeletons import validate_template
         t, problems = validate_template(t)
         if problems:
             # a typo such as midline:50 used to become a landmark that never fills (I62)
@@ -3906,7 +3906,7 @@ class MainWindow(QMainWindow):
         where landmark `pid`, as each OTHER camera sees it at this instant, can
         lie in the active picture. Empty without a calibration, without a
         selection, or when no other camera has it here."""
-        from cotracker_app.calib import epipolar_polyline, working_probe
+        from kinetrace.calib import epipolar_polyline, working_probe
         p = self.project
         s = self.session
         if p is None or p.calibration is None or s is None or not (0 <= pid < s.n_points):
@@ -3959,7 +3959,7 @@ class MainWindow(QMainWindow):
         """Move landmark `pid` at this frame onto the other cameras' epipolar
         line(s): the nearest point with one camera, their crossing with two or
         more. Flagged hand-placed, one undo step; Track re-seeds from it."""
-        from cotracker_app.calib import intersect_polylines
+        from kinetrace.calib import intersect_polylines
         s = self.session
         if s is None or self.state != READY or not (0 <= pid < s.n_points) or s.points[pid].derived:
             return
@@ -3974,7 +3974,7 @@ class MainWindow(QMainWindow):
         target = intersect_polylines([g[0] for g in guides], near, info)
         if target is None or not np.isfinite(target).all():
             return
-        from cotracker_app.retrack import edge_tolerance, outside_by
+        from kinetrace.retrack import edge_tolerance, outside_by
         off = outside_by(target, s.width, s.height)
         if off > edge_tolerance(s.width):
             # the rays cross OUTSIDE this picture: clipping that onto the edge stored
@@ -4006,7 +4006,7 @@ class MainWindow(QMainWindow):
 
     def _retrack_dialog(self):
         """3D → Re-track Disagreeing Stretches: explain, list, ask, run."""
-        from cotracker_app import retrack
+        from kinetrace import retrack
         p = self.project
         if p is None or p.reconstruction is None or p.reconstruction.per_cam is None or self.state != READY:
             return
@@ -4052,7 +4052,7 @@ class MainWindow(QMainWindow):
         self._retrack_start(doable, thr)
 
     def _retrack_start(self, stretches, thr):
-        from cotracker_app import retrack
+        from kinetrace import retrack
         p = self.project
         self._retrack = {
             "jobs": list(stretches), "done": [], "thr": thr, "stretches": list(stretches),
@@ -4064,7 +4064,7 @@ class MainWindow(QMainWindow):
 
     def _retrack_next(self):
         """Run the next queued stretch, or finish."""
-        from cotracker_app import retrack
+        from kinetrace import retrack
         st = self._retrack
         if st is None:
             return
@@ -4113,7 +4113,7 @@ class MainWindow(QMainWindow):
         self._apply_state()
 
     def _retrack_finish(self):
-        from cotracker_app import retrack
+        from kinetrace import retrack
         st = self._retrack
         self._retrack = None
         p = self.project
@@ -4297,7 +4297,7 @@ class MainWindow(QMainWindow):
             self._undo_snap = s.snapshot()
         self.act_undo.setEnabled(False)  # re-enabled when the run ends
 
-        from cotracker_app.tracker import (AnimalSpec, DerivedSpec, PointSpec,  # lazy: imports torch
+        from kinetrace.tracker import (AnimalSpec, DerivedSpec, PointSpec,  # lazy: imports torch
                                            TrackingWorker)
         seeds = s.positions_at(self.current)
         def _offsets(meta):
@@ -4314,7 +4314,7 @@ class MainWindow(QMainWindow):
         # ball markers: SAM segments them, a circle is fitted, the centre is the
         # point (balls.py) - prompts from this frame on, seeded from the ball's
         # current position, the last known radius as the size hint
-        from cotracker_app.tracker import BallSpec
+        from kinetrace.tracker import BallSpec
         balls = []
         for pid in ball_pids:
             q = s.points[pid]
@@ -4379,7 +4379,7 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def _on_model_loading(self):
-        from cotracker_app.segmenter import loaded_backends
+        from kinetrace.segmenter import loaded_backends
         parts = []
         if self._track_pids and any(not self.session.points[p].derived for p in self._track_pids
                                     if p < self.session.n_points):
@@ -4539,7 +4539,7 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Stopped: the ball {name} was lost at frame {fail_frame}", 12000)
                 return
             if reason == "apart" and self.session and pid < self.session.n_points:
-                from cotracker_app.balls import CROP as _BALL_CROP
+                from kinetrace.balls import CROP as _BALL_CROP
                 self.toast.show_message(
                     f"Stopped at frame {fail_frame}: the ball <b>{name}</b> is too far from the other ball "
                     f"markers to be followed with them (the balls of one run share a {_BALL_CROP}-pixel window). "
@@ -4969,7 +4969,7 @@ class MainWindow(QMainWindow):
     def _lens_wizard(self):
         """3D → Calibrate a Lens: intrinsics + distortion of ONE camera from a
         checkerboard video, attached to that camera of this project."""
-        from cotracker_app.lenswizard import LensWizard
+        from kinetrace.lenswizard import LensWizard
         p = self.project
         if self.state == TRACKING:
             return
@@ -4997,7 +4997,7 @@ class MainWindow(QMainWindow):
         wiz = LensWizard(self, p, self.info.path if self.info else "", p.active, start)
         if wiz.exec() != QDialog.Accepted or wiz.result_profile is None or wiz.result_view is None:
             return
-        from cotracker_app.calibwizard import lens_size_mismatch
+        from kinetrace.calibwizard import lens_size_mismatch
         sv = p.sessions[wiz.result_view]
         bad = lens_size_mismatch(wiz.result_profile, sv.width, sv.height, p.name(wiz.result_view))
         if bad:                                  # a profile of another picture size (I31)
@@ -5016,7 +5016,7 @@ class MainWindow(QMainWindow):
         """3D → Calibrate Cameras with a Wand: the native easyWand replacement,
         explained for a first-time user. The result becomes this project's
         calibration (and can be exported for the animal projects)."""
-        from cotracker_app.calibwizard import WandWizard
+        from kinetrace.calibwizard import WandWizard
         p = self.project
         if self.state != READY:
             return
@@ -5051,7 +5051,7 @@ class MainWindow(QMainWindow):
             "<b>3D → Export Calibration</b> writes it for your animal projects.", "success", 9000)
 
     def _export_calibration(self):
-        from cotracker_app.calibwizard import save_calibration_files
+        from kinetrace.calibwizard import save_calibration_files
         p = self.project
         if not self._need_calibration("Export Calibration"):
             return
@@ -5068,7 +5068,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Export calibration", str(e))
             return
         names = ", ".join(Path(w).name for w in written)
-        from cotracker_app.calibwizard import dlt_csv_caveat
+        from kinetrace.calibwizard import dlt_csv_caveat
         note = dlt_csv_caveat(p.calibration, list(p.names))
         # with lens corrections the dltCoefs.csv is for lens-corrected pixels (I32)
         self.toast.show_message(f"Calibration exported: {names}" + (f"<br>{note}" if note else ""),
@@ -5104,7 +5104,7 @@ class MainWindow(QMainWindow):
 
     def _sync_dialog(self):
         """3D -> Sync Cameras (Sound / Motion): whole-frame offsets from the sound tracks or the pictures."""
-        from cotracker_app.syncdialog import SyncDialog
+        from kinetrace.syncdialog import SyncDialog
         p = self.project
         if p is None or p.n_views < 2:
             QMessageBox.information(
@@ -5132,7 +5132,7 @@ class MainWindow(QMainWindow):
                 "success", 12000)
 
     def _estimate_offsets_dialog(self):
-        from cotracker_app.calib import estimate_offsets
+        from kinetrace.calib import estimate_offsets
         p = self.project
         if not self._need_calibration("Estimate Sub-frame Offsets"):
             return
@@ -5186,7 +5186,7 @@ class MainWindow(QMainWindow):
         self._reconstruct_3d(quiet=True)
 
     def _reconstruct_3d(self, quiet: bool = False):
-        from cotracker_app.calib import reconstruct
+        from kinetrace.calib import reconstruct
         p = self.project
         if not self._need_calibration("Reconstruct 3D Landmarks"):
             return
@@ -5215,7 +5215,7 @@ class MainWindow(QMainWindow):
         # A number without a verdict is what let a real stereo test export
         # 38 px of camera disagreement as if it were data: say what the residual
         # means and what to do, every time, and keep the verdict with the result.
-        from cotracker_app.calib import reconstruction_report
+        from kinetrace.calib import reconstruction_report
         widths = [s.width for s in p.sessions if s.width] or [1920]
         rep = reconstruction_report(r, p.n_views, float(max(widths)))
         self._recon_report = rep
@@ -5240,7 +5240,7 @@ class MainWindow(QMainWindow):
                     "it. Zero would mean every camera agrees perfectly.")
             # the offer: stretches where ONE camera disagrees can be re-seeded on the
             # other cameras' rays and re-tracked automatically
-            from cotracker_app import retrack
+            from kinetrace import retrack
             n_st = len([q for q in retrack.plan(p, self._disagree_thresholds()) if q.target is not None])
             if n_st and self._retrack is None:
                 self.toast.show_message(
@@ -5261,7 +5261,7 @@ class MainWindow(QMainWindow):
         return masks
 
     def _carve_hull_here(self, quiet: bool = False):
-        from cotracker_app.hull import bounds_from_points, carve, hull_mesh, mesh_volume
+        from kinetrace.hull import bounds_from_points, carve, hull_mesh, mesh_volume
         p = self.project
         if not self._need_calibration("Carve Volume"):
             return
@@ -5402,7 +5402,7 @@ class MainWindow(QMainWindow):
     def _body_run(self):
         """Body → Find People && Measure Joints: run a pose backend over a
         frame range on a worker thread, with a cancellable progress dialog."""
-        from cotracker_app.bodyview import BodyPoseWorker, BodyRunDialog
+        from kinetrace.bodyview import BodyPoseWorker, BodyRunDialog
         s = self.session
         if s is None or self.state != READY or self._body_worker is not None:
             return
@@ -5445,7 +5445,7 @@ class MainWindow(QMainWindow):
             self._body_progress.setLabelText(f"Looking for people…  {note}")
 
     def _on_body_done(self, track):
-        from cotracker_app.body import merge_run
+        from kinetrace.body import merge_run
         w = self.sender()
         if w is None or w is not self._body_worker:
             return                      # a run torn down with its video (I83)
@@ -5493,7 +5493,7 @@ class MainWindow(QMainWindow):
         self._apply_state()
 
     def _toggle_body_view(self, on: bool):
-        from cotracker_app.bodyview import BodySideBySide
+        from kinetrace.bodyview import BodySideBySide
         if on:
             if self.body_win is None:
                 self.body_win = BodySideBySide(self)
@@ -5549,7 +5549,7 @@ class MainWindow(QMainWindow):
     def _export_body_angles(self):
         """The angles CSV plus a plain-language report beside it -- the numbers
         are useless without the convention each one uses."""
-        from cotracker_app.body import angle_report
+        from kinetrace.body import angle_report
         s = self.session
         if s is None or not s.has_body():
             return
@@ -5571,7 +5571,7 @@ class MainWindow(QMainWindow):
 
     def _export_body_video(self):
         """Write exactly what the side-by-side window shows to an mp4."""
-        from cotracker_app.bodyview import PoseDrawOptions, SideBySideRenderer
+        from kinetrace.bodyview import PoseDrawOptions, SideBySideRenderer
         s = self.session
         if s is None or not s.has_body() or self._body_video is not None:
             return
@@ -5640,7 +5640,7 @@ class MainWindow(QMainWindow):
         self._apply_state()
 
     def _export_mesh(self):
-        from cotracker_app.hull import save_obj, save_ply
+        from kinetrace.hull import save_obj, save_ply
         p = self.project
         t = self._reference_instant()          # the same key as the carve (I114)
         if p is None or t not in self._hull_cache:
@@ -5716,7 +5716,7 @@ class MainWindow(QMainWindow):
             r.export_csv(path)
             return [path, str(Path(path).with_name(Path(path).stem + "_xyzres.csv"))]
         elif key == "kin":
-            from cotracker_app.kinematics import export_kinematics
+            from kinetrace.kinematics import export_kinematics
             p = self.project
             r = p.reconstruction if p else None
             if r is None:
@@ -5823,7 +5823,7 @@ class MainWindow(QMainWindow):
         """File → Export Overlay Video: render the tracked result into an MP4
         in a background thread (its own VideoCapture), with a cancellable
         progress dialog. The app stays usable meanwhile."""
-        from cotracker_app.render import OverlayDialog, OverlayRenderer
+        from kinetrace.render import OverlayDialog, OverlayRenderer
         s = self.session
         if s is None or self.state != READY or self._overlay is not None:
             return

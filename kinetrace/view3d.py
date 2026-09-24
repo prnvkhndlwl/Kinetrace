@@ -18,9 +18,9 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPushButton,
                                QSizePolicy, QVBoxLayout, QWidget)
 
-from cotracker_app import theme
-from cotracker_app.calib import Calibration, CameraCalibration
-from cotracker_app.hull import _view_rotation
+from kinetrace import theme
+from kinetrace.calib import Calibration, CameraCalibration
+from kinetrace.hull import _view_rotation
 
 CALIB_FILTER = ("Calibration files (*.json *.csv *.mat *.txt);;Kinetrace calibration (*.kcal.json);;"
                 "DLTdv / easyWand / Argus DLT coefficients (*.csv);;"
@@ -43,7 +43,7 @@ def load_calibration_file(path: str, sizes: list[tuple[int, int]] | None = None)
     p = Path(path)
     low = p.name.lower()
     if low.endswith(".json"):
-        from cotracker_app.calibwizard import load_kcal
+        from kinetrace.calibwizard import load_kcal
         try:
             return load_kcal(p)
         except (ValueError, KeyError, TypeError):

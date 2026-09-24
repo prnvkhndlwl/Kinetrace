@@ -40,7 +40,7 @@ jobs:
       - name: The app imports
         env:
           QT_QPA_PLATFORM: offscreen
-        run: .venv/bin/python -c "import cotracker_app.app, cotracker_app.tracker, cotracker_app.segmenter, cotracker_app.bodypose; print('import OK')"
+        run: .venv/bin/python -c "import kinetrace.app, kinetrace.tracker, kinetrace.segmenter, kinetrace.bodypose; print('import OK')"
 
       - name: Test suites without GPU or model downloads
         env:
