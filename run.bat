@@ -38,6 +38,8 @@ if errorlevel 1 (
 )
 
 :launch
+rem AllTracker (the default point model) is fetched at install; retry if that was missed
+if not exist "models\alltracker\nets\alltracker.py" ".venv\Scripts\python.exe" install.py --alltracker-only
 rem The interpreter lives inside the folder (.venv\base). If the folder was
 rem moved or renamed, .venv\pyvenv.cfg still points at the old absolute path
 rem and the venv launcher exits with code 103. Detect that by trying to start

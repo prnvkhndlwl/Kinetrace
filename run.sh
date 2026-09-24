@@ -54,4 +54,6 @@ if [ "$(uname)" = "Linux" ] && command -v ldconfig >/dev/null 2>&1; then
     fi
 fi
 
+[ -f models/alltracker/nets/alltracker.py ] || .venv/bin/python install.py --alltracker-only
+
 exec .venv/bin/python -m cotracker_app "$@"

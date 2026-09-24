@@ -748,6 +748,12 @@ class MainWindow(QMainWindow):
             menu_track.addAction(act)
             act.triggered.connect(lambda _=False, k=key: self._set_point_backend(k))
         self.act_pm_alltracker.setEnabled(alltracker_backend.available())
+        if not alltracker_backend.available():
+            # the installer fetches AllTracker's code; say how to get it instead of a silent grey entry
+            self.act_pm_alltracker.setToolTip(
+                "AllTracker is not installed yet, so CoTracker3 is used. Start Kinetrace with run.bat / "
+                "run.sh while connected to the internet: the launcher fetches AllTracker's code (277 KB) "
+                "into models/alltracker, and its 63 MB checkpoint downloads on the first Track.")
         (self.act_pm_alltracker if self._point_backend == "alltracker"
          else self.act_pm_cotracker).setChecked(True)
         self.btn_track.setMenu(menu_track)
