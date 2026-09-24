@@ -1379,6 +1379,25 @@ easyWand lands in the wrong place near the picture edges. The `.kcal.json`
 keeps the correction. Calibrate again whenever a camera is moved, re-zoomed,
 or replaced.
 
+**Using the calibration in another program.** The export dialog also offers,
+tick as many as you want (**Tick everything** for all): **Anipose**
+(`…_calibration.toml`; rename it `calibration.toml` for Anipose),
+**OpenCV / Python** (`…_cameras.yml` or `.json`: each camera's K, distortion,
+R and t), **MATLAB** (`…_cameras.mat`: both MATLAB's own fields — 1-based `K`,
+`IntrinsicMatrix`, `RadialDistortion`, `RotationMatrix`, … — and OpenCV's),
+**Blender** (a script that makes the cameras: run it in Blender's Scripting
+tab), the **lens profiles** (an OpenCV `.yml` per camera that has one) and the
+**camera offsets** (`…_offsets.csv`). You never convert anything by hand: the
+program turns its calibration into each program's pixel and axis conventions,
+then checks every file by projecting points of the working volume both ways;
+the message says how close they agree (normally within a thousandth of a
+pixel). Two things it tells you about when they happen: coefficients from
+easyWand or DLTdv often describe a **mirrored** world, which those formats
+cannot hold, so the exported world is mirrored in Z (and 3D points exported
+with it are mirrored the same way); and DLTdv's own lens correction is not
+OpenCV's, so an OpenCV lens model is fitted to it and its largest error is
+named.
+
 ### From several cameras to 3D
 
 Once every camera is tracked (the same landmark names in each), the **3D** menu
@@ -1416,7 +1435,16 @@ the CAMERAS panel) to get 3D back. Four steps, in this order:
    between them, as a JSON or a plain text file — are accepted too; because
    such a file usually puts camera 1 at the origin, and a DLT cannot have a
    camera there, the program moves the origin to a point the cameras look at
-   and tells you by how much (your 3D comes out in that shifted frame).
+   and tells you by how much (your 3D comes out in that shifted frame; an
+   export of the calibration moves it back). An **Anipose** `calibration.toml`,
+   an **OpenCV** `.yml` / `.json` camera file and a **MATLAB** `.mat` with a
+   `cameras` struct are read the same way. The same entry is under
+   **File → Import → Calibration…**, beside **3D Points…** (landmarks
+   triangulated in Anipose or DLTdv, or by another Kinetrace project — for the
+   3D view and the kinematics export), **Camera Offsets…** (a CSV of each
+   camera's offset and frame rate, matched by camera name) and **Silhouettes
+   (mask images)…** (a folder of black-and-white masks from another
+   segmentation tool, named with their frame number, the size of the video).
 2. **3D → Estimate Sub-frame Offsets…** The program tries small shifts of every
    camera's timing and keeps the ones where the cameras' rays meet most
    cleanly (the *residual*, in pixels, that it shows before and after). Do
@@ -1635,6 +1663,9 @@ next camera's picture and export again for each one.
 | **MATLAB (.mat)** | to load straight into MATLAB, including confidence, the silhouette, events and notes. Pixels are counted from 0 like the Wide CSV (the file's `pixel_convention` says so; add 1 for DLTdv8-style coordinates); `NaN` where there is no data |
 | **ALL CAMERAS — DLTdv8 xypts** | **the 3D one.** Every camera in one file (`pt1_cam1_X`, `pt1_cam1_Y`, `pt1_cam2_X` …), landmarks matched across cameras **by name**, DLTdv8's pixel convention. One row per frame of the **reference camera** (the first in CAMERAS), starting at its frame 0; the other cameras are read at the same instant through their offsets. A camera that did not film that instant, or has no landmark of that name, gives `NaN`. The `_pointnames.csv` beside it names the landmarks and states the pixel convention, what the rows are, and which video is cam1, cam2 … |
 | **3D landmarks** | the reconstructed positions (after *3D → Reconstruct 3D Landmarks*, Ctrl+3), one row per frame of the reference camera, `NaN` where there is no 3D position, with a second file (`_xyzres.csv`) giving each position's residual, how many cameras saw it and each camera's own error |
+| **3D landmarks — Anipose / DLTdv xyzpts** | the same positions in the layout Anipose writes (`name_x`, `name_y`, `name_z`, `name_error`, `name_ncams`, `fnum`) or DLTdv's own xyzpts file (`pt1_X` …, one row per frame of the reference camera from 0, `NaN` where none, names in `_pointnames.csv`) |
+| **Silhouette outlines** | the segment's outline on every frame as polygons, in a JSON file (pixels counted from 0) |
+| **Silhouette masks** | one black-and-white PNG per frame with a silhouette (white = the segment), in a folder beside the name you chose — for other segmentation or measuring tools. Many thousands of frames make many thousands of files, so *Everything* leaves this one out |
 | **3D kinematics** | **speeds and accelerations.** The 3D positions smoothed, then velocity (X, Y, Z and speed) and acceleration per landmark, plus a report in words. See below |
 | **Everything** | every format above that applies, at once, sharing one base filename: the DLTdv8 file once (not the bottom-left variant), *ALL CAMERAS* only with two or more cameras, the 3D files only after a Reconstruct, and the kinematics with **Automatic** smoothing (it does not ask) |
 
@@ -1711,7 +1742,7 @@ left out, like in the other exports.
 
 ### Bringing tracks in from another program
 
-**File → Import Tracks…** reads points tracked or clicked somewhere else into
+**File → Import → Tracks…** reads points tracked or clicked somewhere else into
 the camera you are working in: a **DeepLabCut** CSV (the one it writes when it
 analyses a video), a **SLEAP** CSV, a **DLTdv** or **Argus** xypts CSV, or the
 `tracks.csv` of another Kinetrace project. The program recognises the format from

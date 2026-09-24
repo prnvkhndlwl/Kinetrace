@@ -113,6 +113,7 @@ user's computer; none of them is in this repository.
 | termcolor | 3.3.0 | MIT | SAM 3D Body logging |
 | timm | 1.0.29 | Apache-2.0 | SAM 3D Body backbone |
 | tokenizers | 0.23.2 | Apache Software License | transformers dependency |
+| tomli | ≥ 2 | MIT | reads Anipose `calibration.toml`; installed only on Python 3.10 (3.11+ has `tomllib` built in) |
 | torch | 2.12.1+cu130 | BSD-3-Clause | deep-learning runtime (CUDA build; its wheel bundles NVIDIA CUDA runtime libraries under NVIDIA's CUDA EULA) |
 | torchmetrics | 1.9.0 | Apache-2.0 | indirect dependency |
 | torchvision | 0.27.1+cu130 | BSD | image ops for the SAM image processor |

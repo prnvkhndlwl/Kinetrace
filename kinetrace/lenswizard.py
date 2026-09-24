@@ -29,7 +29,8 @@ VERDICT_COLORS = {"good": theme.GREEN, "ok": "#FFD60A", "poor": theme.RED}
 VERDICT_WORDS = {"good": "GOOD — attach this profile to the camera",
                  "ok": "USABLE — but read the notes below",
                  "poor": "NOT GOOD ENOUGH — film the board again as the notes say"}
-LENS_FILTER = "Lens profiles (*.klens.json *.txt);;Kinetrace lens (*.klens.json);;Argus / DLTdv camera profile (*.txt);;All files (*)"
+LENS_FILTER = ("Lens profiles (*.klens.json *.json *.yml *.yaml *.txt);;Kinetrace lens (*.klens.json);;"
+               "OpenCV lens (*.yml *.yaml *.json);;Argus / DLTdv camera profile (*.txt);;All files (*)")
 UNITS = [("millimetres (mm)", 0.001), ("centimetres (cm)", 0.01), ("metres (m)", 1.0), ("inches (in)", 0.0254)]
 ID_INTRO, ID_VIDEO, ID_REVIEW, ID_RESULT = range(4)
 
@@ -374,8 +375,9 @@ class VideoPage(QWizardPage):
         view = self._view()
         self.wiz.result_profile = None
         try:
-            if path.lower().endswith(".json"):
-                prof, which = lens.LensProfile.load(path), ""
+            if path.lower().endswith((".json", ".yml", ".yaml")):
+                from kinetrace import calibio
+                prof, which = calibio.read_lens(path), ""      # Kinetrace or OpenCV lens file
             else:
                 # (I80) the file's line for THIS camera, or a refusal -- never
                 # the last line reused for a camera the file does not list

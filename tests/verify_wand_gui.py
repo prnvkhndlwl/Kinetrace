@@ -257,6 +257,8 @@ assert abs(np.nanmean(wl) - WAND_L) < 0.003
 # ---- export + re-import ----------------------------------------------------------
 kcal = os.path.join(SCRATCH, "wand_gui.kcal.json")
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (kcal, ""))
+from kinetrace.view3d import ExportCalibrationDialog  # noqa: E402
+ExportCalibrationDialog.exec = lambda self: QDialog.Accepted     # the default ticks: .kcal.json + dltCoefs + report
 win._export_calibration()
 pump(0.2)
 for suf in ("wand_gui.kcal.json", "wand_gui_dltCoefs.csv", "wand_gui_report.txt"):

@@ -528,6 +528,45 @@ print(f"  floor distance reconstructed {dx:.4f} m, camera spacing error max {100
 assert abs(dx - 0.5) < 0.003, dx
 print("wand calibration with lens profiles OK")
 
+# ---- 3D -> Export Calibration in every format, lens corrections included ------------
+import glob  # noqa: E402
+
+from kinetrace import calibio  # noqa: E402
+from kinetrace.view3d import ExportCalibrationDialog  # noqa: E402
+
+ExportCalibrationDialog.exec = lambda self: ([cb.setChecked(True) for cb in self.boxes.values() if cb.isEnabled()],
+                                             QDialog.Accepted)[1]
+base = os.path.join(SCRATCH, "lens_export.kcal.json")
+QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (base, ""))
+said = []
+_toast = win.toast.show_message
+win.toast.show_message = lambda text, *a, **k: said.append(text)
+win._export_calibration()
+win.toast.show_message = _toast
+stem = base[:-len(".kcal.json")]
+for suf in (".kcal.json", "_dltCoefs.csv", "_calibration.toml", "_cameras.yml", "_cameras.json", "_cameras.mat",
+            "_blender_cameras.py", "_offsets.csv"):
+    assert os.path.exists(stem + suf), suf
+assert len(glob.glob(stem + "_lens_*.yml")) == N_CAM
+assert said and "within" in said[-1], said
+X = r.xyz[np.isfinite(r.xyz).all(axis=2)]
+worst = {}
+for suf in ("_calibration.toml", "_cameras.yml", "_cameras.json", "_cameras.mat"):
+    back = calibio.load_calibration(stem + suf)
+    ms = calibio.to_models(p.calibration)
+    Xe = ms.world_to_export(X)
+    d = 0.0
+    for a, b in zip(p.calibration.cameras, back.cameras):
+        # the re-imported calibration's world is the exported one, moved by its own origin shift
+        d = max(d, float(np.nanmax(np.abs(a.project(X) - b.project(Xe - back.origin_shift)))))
+    worst[suf] = d
+print("  exported cameras re-imported, worst pixel difference: "
+      + ", ".join(f"{k} {v:.3f}" for k, v in worst.items()))
+assert max(worst.values()) < 0.05, worst
+lp = calibio.read_lens(sorted(glob.glob(stem + "_lens_*.yml"))[0])
+assert np.allclose(lp.K, p.lenses[0].K) and np.allclose(lp.dist, p.lenses[0].dist)
+print("every calibration format out of the app, with its lens corrections, reads back to the same pixels OK")
+
 # ---- the same without the profiles: must be measurably worse ---------------------
 saved_lenses = list(p.lenses)
 p.lenses = [None] * N_CAM

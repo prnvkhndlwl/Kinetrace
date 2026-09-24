@@ -9,8 +9,16 @@
     (multi-animal, training data, several tracks, a locale-mangled file) say
     why. `apply` keeps cells the file has no data for, leaves out positions
     outside the picture or the video and says so.
-[2] File -> Import Tracks through the app (offscreen): asks for the video
-    first, Ctrl+Z, a refusal, one camera out of an all-cameras file.
+[2] Calibrations (calibio.py): an OpenCV-style rig, a left-handed 1-based
+    (easyWand / DLTdv style) one, a bottom-left one and an LWM lens become K,
+    R, t cameras that project within 1e-6 px of Kinetrace (LWM: fitted, within
+    half a pixel); Anipose / OpenCV YAML + JSON / MATLAB files round-trip
+    exactly and re-import; MATLAB's 1-based, transposed fields and Blender's
+    lens / shift / camera matrix are checked against hand values; lens
+    profiles, offsets and 3D points (Kinetrace / DLTdv / Anipose) round-trip.
+[3] File -> Import Tracks through the app (offscreen): asks for the video
+    first, Ctrl+Z, a refusal, one camera out of an all-cameras file; mask
+    images in (File -> Import -> Silhouettes), polygons / PNGs out.
 
 Run: .venv\\Scripts\\python.exe tests\\verify_interop.py
 """
@@ -236,7 +244,204 @@ check(ok, "an unknown table names the formats Kinetrace reads", msg)
 ok, msg = refused(write("semi.csv", "frame;point;x;y\n0;a;1,5;2,5\n"), ["';'", "locale"])
 check(ok, "a semicolon / decimal-comma file is explained", msg)
 
-print("\n[2] through the app: File -> Import Tracks")
+# ------------------------------------------------------------------ 2
+print("\n[2a] calibration -> K [R | t] cameras (calibio.to_models)")
+import cv2  # noqa: E402
+
+from kinetrace import calibio  # noqa: E402
+from kinetrace.calib import (Calibration, CameraCalibration, LWMUndistort, NoUndistort,  # noqa: E402
+                             OpenCVUndistort, dlt_from_camera)
+
+CW, CH = 1920, 1080
+
+
+def rig(n=3, dist=True):
+    """n cameras on an arc looking at the origin, 3 m away (x_cam = R X + t)."""
+    cams = []
+    for i in range(n):
+        a = np.radians(-30 + 30 * i)
+        C = np.array([3 * np.sin(a), -0.4 + 0.2 * i, -3 * np.cos(a)])
+        z = -C / np.linalg.norm(C)
+        x = np.cross([0.0, 1.0, 0.0], z)
+        x /= np.linalg.norm(x)
+        R = np.vstack([x, np.cross(z, x), z])
+        K = np.array([[1400.0 + 20 * i, 0, 959.5 + 3 * i], [0, 1402.0 + 20 * i, 539.5 - 2 * i], [0, 0, 1]])
+        d = np.array([-0.21, 0.08, 0.0005, -0.0003, -0.01]) if dist else np.zeros(5)
+        cams.append({"K": K, "R": R, "t": -R @ C, "dist": d, "width": CW, "height": CH})
+    return cams
+
+
+def worst_diff(cal_a, models):
+    """Largest pixel difference between Kinetrace's projection and the model's,
+    over points of the working volume."""
+    rng_ = np.random.default_rng(5)
+    X = rng_.uniform(-0.5, 0.5, (400, 3))
+    worst = 0.0
+    for cam, m in zip(cal_a.cameras, models.cameras):
+        a_ = cam.project(X)
+        b_ = m.project(models.world_to_export(X))
+        ok_ = np.isfinite(a_).all(1) & np.isfinite(b_).all(1)
+        worst = max(worst, float(np.abs(a_[ok_] - b_[ok_]).max()))
+    return worst
+
+
+truth = rig()
+cal = Calibration.from_krt(truth, unit="m", source="synthetic")
+ms = calibio.to_models(cal, names=["A", "B", "C"])
+check(not ms.mirrored and max(m.check_px for m in ms.cameras) < 1e-6,
+      "an OpenCV-style calibration: the exported cameras reproduce it", str([m.check_px for m in ms.cameras]))
+errK = max(np.abs(m.K - c["K"]).max() for m, c in zip(ms.cameras, truth))
+errR = max(np.abs(m.R - c["R"]).max() for m, c in zip(ms.cameras, truth))
+errt = max(np.abs(m.t - c["t"]).max() for m, c in zip(ms.cameras, truth))
+errd = max(np.abs(m.dist - c["dist"]).max() for m, c in zip(ms.cameras, truth))
+check(errK < 1e-6 and errR < 1e-9 and errt < 1e-9 and errd < 1e-9,
+      "... and K, distortion, R, t come back as they were, in the file's own world (origin moved back)",
+      f"K {errK:.2e} R {errR:.2e} t {errt:.2e} d {errd:.2e}")
+# a DLTdv / easyWand-style calibration: 1-based pixels, a left-handed world
+F = np.diag([1.0, 1.0, -1.0])
+lh = []
+for c in rig(dist=False):
+    K1 = c["K"].copy()
+    K1[:2, 2] += 1.0                                  # MATLAB pixels
+    L = dlt_from_camera(K1, c["R"] @ F, c["t"])       # world mirrored: X' = F X
+    lh.append(CameraCalibration(L, CW, CH, NoUndistort(), pixel_origin=1.0))
+cal_lh = Calibration(lh, "m", "left-handed")
+ms_lh = calibio.to_models(cal_lh)
+check(ms_lh.mirrored and any("mirrored" in n for n in ms_lh.notes), "a left-handed world is exported mirrored, "
+      "and said")
+check(worst_diff(cal_lh, ms_lh) < 1e-6, "... and still projects every point where Kinetrace does",
+      f"{worst_diff(cal_lh, ms_lh):.2e}")
+check(max(np.abs(m.K - c["K"]).max() for m, c in zip(ms_lh.cameras, rig())) < 1e-6,
+      "the 1-based principal point comes back 0-based")
+# y counted from the bottom edge
+yf = []
+for c in rig(dist=False):
+    A = np.array([[1, 0, 0], [0, -1, CH - 1], [0, 0, 1.0]])     # ours -> bottom-left 0-based
+    L = dlt_from_camera(A @ c["K"], c["R"], c["t"])
+    yf.append(CameraCalibration(L, CW, CH, NoUndistort(), pixel_origin=0.0, y_flip=True))
+cal_yf = Calibration(yf, "m")
+ms_yf = calibio.to_models(cal_yf)
+check(worst_diff(cal_yf, ms_yf) < 1e-6 and max(np.abs(m.K - c["K"]).max() for m, c in zip(ms_yf.cameras, rig()))
+      < 1e-6, "a bottom-left calibration gives the ordinary top-left camera")
+# DLTdv's LWM lens correction: fitted with an OpenCV model, error reported
+lw = []
+for c in rig():
+    gx, gy = np.meshgrid(np.linspace(0, CW - 1, 25), np.linspace(0, CH - 1, 15))
+    raw = np.column_stack([gx.ravel(), gy.ravel()])
+    und = cv2.undistortPoints(raw.reshape(-1, 1, 2), c["K"], c["dist"], None, None, c["K"]).reshape(-1, 2)
+    L = dlt_from_camera(c["K"], c["R"], c["t"])
+    lw.append(CameraCalibration(L, CW, CH, LWMUndistort(raw, und), pixel_origin=0.0))
+cal_lw = Calibration(lw, "m")
+ms_lw = calibio.to_models(cal_lw)
+fitpx = max(m.lens_fit_px for m in ms_lw.cameras)
+check(0 < fitpx < 0.5 and worst_diff(cal_lw, ms_lw) < 0.5, "an LWM lens is fitted with an OpenCV model within half a "
+      "pixel, and the fit's worst error is recorded", f"fit {fitpx:.3f}, projection {worst_diff(cal_lw, ms_lw):.3f}")
+check(any("Check:" in n for n in ms_lw.notes), "the export says how close it is, in pixels")
+
+print("\n[2b] calibration files: Anipose, OpenCV YAML / JSON, MATLAB, Blender")
+for label, fname, wr in (("Anipose calibration.toml", "calibration.toml", calibio.write_anipose),
+                         ("OpenCV YAML", "cameras.yml", calibio.write_opencv),
+                         ("OpenCV JSON", "cameras.json", calibio.write_opencv),
+                         ("MATLAB .mat", "cameras.mat", calibio.write_matlab)):
+    p = os.path.join(OUT, fname)
+    wr(ms, p)
+    back = calibio.read_cameras(p)
+    d = max(max(np.abs(a_.K - b_.K).max(), np.abs(a_.R - b_.R).max(), np.abs(a_.t - b_.t).max(),
+                np.abs(a_.dist - b_.dist).max()) for a_, b_ in zip(ms.cameras, back))
+    re_cal = calibio.from_models(back, unit="m")
+    X = np.random.default_rng(2).uniform(-0.5, 0.5, (200, 3))
+    worst = max(float(np.abs(m.project(X) - b_.project(X)).max()) for m, b_ in zip(ms.cameras, back))
+    check(len(back) == 3 and d < 1e-9 and [b_.name for b_ in back] == ["A", "B", "C"] and worst < 1e-6,
+          f"{label}: written and read back exactly", f"param diff {d:.2e}, px {worst:.2e}")
+    re_ms = calibio.to_models(re_cal)
+    check(worst_diff(re_cal, re_ms) < 1e-6 and max(np.abs(a_.t - b_.t).max() for a_, b_ in
+                                                     zip(ms.cameras, re_ms.cameras)) < 1e-6,
+          f"{label}: imported as a Kinetrace calibration, it exports the same cameras again")
+from scipy.io import loadmat  # noqa: E402
+mm = loadmat(os.path.join(OUT, "cameras.mat"), squeeze_me=True, struct_as_record=False)["cameras"][0]
+check(abs(mm.K[0, 2] - (truth[0]["K"][0, 2] + 1)) < 1e-9 and np.allclose(mm.IntrinsicMatrix, mm.K.T)
+      and np.allclose(mm.RotationMatrix, truth[0]["R"].T) and list(mm.ImageSize) == [CH, CW],
+      "MATLAB: 1-based principal point, IntrinsicMatrix = K', RotationMatrix = R', ImageSize = [rows cols]")
+hand = write("hand.toml", "[cam_0]\nname = \"left\"\nsize = [ 1280, 1024,]\n"
+                          "matrix = [ [ 1000.0, 0.0, 639.5,], [ 0.0, 1000.0, 511.5,], [ 0.0, 0.0, 1.0,],]\n"
+                          "distortions = [ -0.1, 0.0, 0.0, 0.0, 0.0,]\nrotation = [ 0.0, 0.0, 0.0,]\n"
+                          "translation = [ 0.0, 0.0, 2.0,]\n\n[cam_1]\nname = \"right\"\nsize = [ 1280, 1024,]\n"
+                          "matrix = [ [ 1000.0, 0.0, 639.5,], [ 0.0, 1000.0, 511.5,], [ 0.0, 0.0, 1.0,],]\n"
+                          "distortions = [ 0.0, 0.0, 0.0, 0.0, 0.0,]\nrotation = [ 0.0, 0.3, 0.0,]\n"
+                          "translation = [ -0.5, 0.0, 2.0,]\n\n[metadata]\nadjusted = false\nerror = 0.2\n")
+hm = calibio.read_cameras(hand)
+check(len(hm) == 2 and hm[0].name == "left" and hm[0].project(np.zeros((1, 3)))[0].tolist() == [639.5, 511.5],
+      "an aniposelib-style file (trailing commas): the world origin projects onto the principal point")
+blend = os.path.join(OUT, "cameras_blender.py")
+calibio.write_blender(ms, blend)
+src_b = open(blend, encoding="utf-8").read()
+compile(src_b, blend, "exec")
+ns = {}
+exec(src_b.split("scene = bpy.context.scene")[0].replace("import bpy", "").replace(
+    "from mathutils import Matrix", ""), ns)
+c0 = ns["CAMERAS"][0]
+check(abs(c0["lens"] - truth[0]["K"][0, 0] * 36.0 / CW) < 1e-9 and abs(c0["shift_x"]) < 1e-12
+      and abs(c0["shift_y"]) < 1e-12, "Blender: lens from fx, no shift for a centred principal point ((w - 1) / 2)")
+Mw = np.array(c0["matrix"])
+check(np.allclose(Mw[:3, 3], ms.cameras[0].center()) and np.allclose(Mw[:3, 2], -ms.cameras[0].R[2]),
+      "Blender: the camera sits at its centre and looks down its -Z along the optical axis")
+
+print("\n[2c] lens profiles, camera offsets, 3D points")
+from kinetrace.lens import LensProfile  # noqa: E402
+prof = LensProfile(CW, CH, truth[0]["K"], truth[0]["dist"], False, 0.31, 40, "test")
+for fname in ("lens.yml", "lens.json", "lens.txt"):
+    p = os.path.join(OUT, fname)
+    calibio.write_lens(prof, p)
+    back = calibio.read_lens(p)
+    check(np.allclose(back.K, prof.K, atol=1e-9) and np.allclose(back.dist, prof.dist, atol=1e-12)
+          and (back.width, back.height) == (CW, CH), f"lens profile as {fname}: read back exactly")
+try:
+    calibio.write_lens(LensProfile(CW, CH, truth[0]["K"], np.zeros(4), True), os.path.join(OUT, "fish.txt"))
+    check(False, "a fisheye lens cannot be written as an Argus line")
+except calibio.CalibFormatError as e:
+    check("fisheye" in str(e), "a fisheye lens cannot be written as an Argus line (said)")
+pj = Project([session(name="o1.mp4"), session(name="o2.mp4"), session(name="o3.mp4")],
+             ["cam A", "cam B", "cam C"], [0.0, -4.5, 12.25])
+p = os.path.join(OUT, "offsets.csv")
+calibio.write_offsets(pj, p)
+got_off = calibio.read_offsets(p, pj)
+check([(v, o) for v, o, _ in got_off] == [(0, 0.0), (1, -4.5), (2, 12.25)], "camera offsets: written and read by name")
+from kinetrace.calib import Reconstruction  # noqa: E402
+Tn, Nn = 30, 2
+xyz3 = np.random.default_rng(3).uniform(-1, 1, (Tn, Nn, 3))
+xyz3[5, 1] = np.nan
+rec = Reconstruction(10, ["snout", "tail base"], xyz3, np.full((Tn, Nn), 0.4), np.full((Tn, Nn), 3, np.int32), "m")
+for kind in ("kinetrace", "dltdv", "anipose"):
+    p = os.path.join(OUT, f"points_{kind}.csv")
+    calibio.write_points3d(rec, p, kind)
+    back, notes = calibio.read_points3d(p)
+    off = rec.t0 - back.t0
+    got = back.xyz[off:off + Tn] if back.t0 <= rec.t0 else None
+    check(got is not None and back.names == rec.names and np.allclose(got, xyz3, atol=1e-6, equal_nan=True),
+          f"3D points as {kind}: frames, names and positions come back")
+p = os.path.join(OUT, "points_mirrored.csv")
+calibio.write_points3d(rec, p, "kinetrace", models=ms_lh)
+back, _ = calibio.read_points3d(p)
+check(np.allclose(back.xyz[:, :, 2], -xyz3[:, :, 2], equal_nan=True, atol=1e-6),
+      "3D points written beside mirrored cameras are mirrored the same way")
+gone = os.path.join(OUT, "no_such_file")
+said_missing = []
+for label, fn in (("3D points", lambda: calibio.read_points3d(gone + ".csv")),
+                  ("offsets", lambda: calibio.read_offsets(gone + ".csv", pj)),
+                  ("Anipose", lambda: calibio.read_cameras(gone + ".toml")),
+                  ("OpenCV", lambda: calibio.read_cameras(gone + ".yml")),
+                  ("MATLAB", lambda: calibio.read_cameras(gone + ".mat"))):
+    try:
+        fn()
+        said_missing.append(f"{label}: no error")
+    except calibio.CalibFormatError as e:
+        if "no_such_file" not in str(e):
+            said_missing.append(f"{label}: {e}")
+    except Exception as e:  # noqa: BLE001
+        said_missing.append(f"{label}: {type(e).__name__}")
+check(not said_missing, "a missing file is refused with its name, in every reader (not a crash)", str(said_missing))
+
+print("\n[3] through the app: File -> Import Tracks")
 import cv2  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox  # noqa: E402
 
@@ -295,6 +500,50 @@ got = win.session
 ok = got.n_points == 2 and np.array_equal(got.tracked[5:, :2], b.exportable[:T - 5]) \
     and np.abs(got.tracks[5:, :2] - b.tracks[:T - 5])[b.exportable[:T - 5]].max() < 2e-4
 check(ok, "an all-cameras file into a one-camera project: the camera asked for is imported, row by row")
+# silhouettes: mask images in (File -> Import -> Silhouettes), polygons / PNGs out
+import json  # noqa: E402
+mdir = os.path.join(OUT, "masks_in")
+os.makedirs(mdir, exist_ok=True)
+truth_masks = {}
+for f in (5, 6, 40):
+    mk = np.zeros((H, W), np.uint8)
+    cv2.ellipse(mk, (int(xy[f, 0]), int(xy[f, 1])), (60, 35), 20, 0, 360, 255, -1)
+    truth_masks[f] = mk > 0
+    cv2.imwrite(os.path.join(mdir, f"mask_{f:06d}.png"), mk)
+cv2.imwrite(os.path.join(mdir, "notes.txt.png"), np.zeros((4, 4), np.uint8))   # no frame number: ignored
+QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: mdir)
+win._import_masks()
+m = win.session.masks
+check(m is not None and m.n_masked() == 3 and win.session.animal is not None,
+      "three mask images become the camera's segment on their frames")
+iou = min((m.rasterize(f, H, W) & t).sum() / (m.rasterize(f, H, W) | t).sum() for f, t in truth_masks.items())
+check(iou > 0.98, "the stored outlines match the images", f"IoU {iou:.3f}")
+sj = os.path.join(OUT, "sil.json")
+win._export_one("sil_json", sj)
+dj = json.load(open(sj, encoding="utf-8"))
+check(sorted(dj["frames"]) == ["40", "5", "6"] and dj["width"] == W, "silhouettes out as polygons per frame (JSON)")
+win._export_one("sil_png", os.path.join(OUT, "sil.png"))
+outs = sorted(os.listdir(os.path.join(OUT, "sil_masks")))
+back_png = cv2.imread(os.path.join(OUT, "sil_masks", outs[-1]), cv2.IMREAD_GRAYSCALE) > 0 if outs else None
+check(len(outs) == 3 and back_png is not None and (back_png & truth_masks[40]).sum() / (back_png | truth_masks[40]).sum()
+      > 0.98, "silhouettes out as one PNG per frame", str(outs))
+check(win._undo_snap is None, "a mask import that CREATES the segment is not an undo step (the message says how "
+      "to remove it)")
+more = os.path.join(OUT, "masks_more")
+os.makedirs(more, exist_ok=True)
+cv2.imwrite(os.path.join(more, "mask_000070.png"), truth_masks[40].astype(np.uint8) * 255)
+QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: more)
+win._import_masks()
+check(win.session.masks.n_masked() == 4, "a second folder adds to the segment")
+win._undo_run()
+check(win.session.masks.n_masked() == 3, "Ctrl+Z undoes an import onto an existing segment")
+bad = os.path.join(OUT, "masks_bad")
+os.makedirs(bad, exist_ok=True)
+cv2.imwrite(os.path.join(bad, "m_000001.png"), np.zeros((10, 10), np.uint8))
+QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: bad)
+said["warn"] = []
+win._import_masks()
+check(said["warn"] and "size of the video" in said["warn"][-1], "masks of another size are refused with the reason")
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Discard)
 win.close()
 pump(0.3)

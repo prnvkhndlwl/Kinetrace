@@ -1042,9 +1042,26 @@ class MainWindow(QMainWindow):
         self.act_overlay.setToolTip("An MP4 with markers, names, skeleton, silhouette, trails, frame "
                                     "counter, events and notes drawn on it — for talks and for checking "
                                     "a result without the app")
+        self.act_import_xyz = QAction("3D &Points…", self, triggered=self._import_points3d)
+        self.act_import_xyz.setToolTip("3D landmarks from Anipose, DLTdv (xyzpts) or another Kinetrace project, "
+                                       "for the 3D view and the kinematics export")
+        self.act_import_offsets = QAction("Camera &Offsets…", self, triggered=self._import_offsets)
+        self.act_import_offsets.setToolTip("Each camera's frame offset and frame rate from a CSV "
+                                           "(camera, name, offset, rate), matched by camera name")
+        self.act_import_masks = QAction("&Silhouettes (mask images)…", self, triggered=self._import_masks)
+        self.act_import_masks.setToolTip("A folder of black / white mask images named with their frame number "
+                                         "(mask_000012.png), from another segmentation tool")
         for a in (self.act_open, self.act_open_proj, self.act_recover, None, self.act_save, self.act_save_as,
-                  None, self.act_import_tracks, self.act_export, self.act_overlay):
+                  None):
             m_file.addSeparator() if a is None else m_file.addAction(a)
+        m_import = m_file.addMenu("&Import")
+        self.act_import_tracks.setText("&Tracks…")
+        # act_calib ("Import Calibration…" in the 3D menu) is created below; added in _add_import_calib
+        self._m_import = m_import
+        for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks):
+            m_import.addAction(a)
+        for a in (self.act_export, self.act_overlay):
+            m_file.addAction(a)
 
         m_edit = self.menuBar().addMenu("&Edit")
         self.act_undo = QAction("&Undo Last Run / Edit", self,
@@ -1216,6 +1233,7 @@ class MainWindow(QMainWindow):
         self.act_export_mesh = QAction("Export &Mesh of This Frame…", self, triggered=self._export_mesh)
         self.act_export_mesh.setToolTip("Writes the volume carved at this frame (Carve Volume, Ctrl+4) as an OBJ / PLY\n"
                                         "mesh. Carve a volume at this frame first.")
+        self._m_import.insertAction(self.act_import_xyz, self.act_calib)     # the same entry, also under File
         for a in (self.act_sync, None, self.act_lens, self.act_wand, self.act_calib, self.act_export_cal,
                   self.act_offsets3d, None, self.act_recon, self.act_retrack, self.act_hull, None, self.act_view3d,
                   self.act_export_mesh):
@@ -1433,7 +1451,8 @@ class MainWindow(QMainWindow):
         self.act_save_as.setEnabled(has_video and not tracking)
         self.act_open.setEnabled(not tracking)
         self.act_open_proj.setEnabled(not tracking)
-        self.act_import_tracks.setEnabled(not tracking)
+        for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks):
+            a.setEnabled(not tracking)
         self.act_undo.setEnabled(has_video and not tracking and self._undo_snap is not None)
         self.act_mark_event.setEnabled(has_video and not tracking)
         self.timeline.setEnabled(has_video and not tracking)  # still paints progress live
@@ -4959,6 +4978,94 @@ class MainWindow(QMainWindow):
             return
         self._apply_imported(imp, path)
 
+    def _import_points3d(self):
+        """File -> Import -> 3D Points: another program's 3D landmarks become
+        this project's 3D result (3D view, kinematics export)."""
+        from kinetrace import calibio
+        p = self.project
+        if p is None or self.state != READY:
+            QMessageBox.information(self, "Import 3D points", "Open the project (or its first video) first.")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Import 3D points", str(self._project_dir or ""),
+                                              "3D points - Anipose, DLTdv xyzpts, Kinetrace (*.csv);;All files (*)")
+        if not path:
+            return
+        try:
+            rec, notes = calibio.read_points3d(path, unit=p.calibration.unit if p.calibration else "")
+        except calibio.CalibFormatError as e:
+            QMessageBox.warning(self, "Cannot import these 3D points", str(e))
+            return
+        if p.reconstruction is not None and QMessageBox.question(
+                self, "Replace the 3D result?", "This project already has a 3D result. Replace it with the "
+                "imported points?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        p.reconstruction = rec
+        p.dirty = True
+        self._hull_cache.clear()
+        self._update_disagreement()
+        self._refresh_view3d(force=True)
+        self._apply_state()
+        self.toast.show_message("3D points imported: " + "; ".join(notes) + ". Frames are the reference "
+                                f"camera's ({p.name(0)}).", "info", 10000)
+
+    def _import_offsets(self):
+        """File -> Import -> Camera Offsets: offsets and rates from a CSV."""
+        from kinetrace import calibio
+        p = self.project
+        if p is None or p.n_views < 2 or self.state != READY:
+            QMessageBox.information(self, "Import camera offsets",
+                                    "Offsets line up two or more cameras: add the other cameras' videos first "
+                                    "(＋ Add video in the CAMERAS panel).")
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Import camera offsets", str(self._project_dir or ""),
+                                              "Camera offsets (*.csv);;All files (*)")
+        if not path:
+            return
+        try:
+            rows = calibio.read_offsets(path, p)
+        except calibio.CalibFormatError as e:
+            QMessageBox.warning(self, "Cannot import these offsets", str(e))
+            return
+        had_3d = p.reconstruction is not None
+        for v, off, rate in rows:
+            p.set_rate(v, rate)
+        for v, off, rate in rows:
+            p.set_offset(v, off)
+        p.dirty = True
+        self._after_retime(had_3d)
+        self._refresh_companions()
+        self._refresh_cameras()
+        self.toast.show_message(f"Offsets imported for {len(rows)} camera(s) from {Path(path).name}.", "info", 8000)
+
+    def _import_masks(self):
+        """File -> Import -> Silhouettes: mask images from another tool become
+        this camera's segment."""
+        s = self.session
+        if s is None or self.state != READY:
+            QMessageBox.information(self, "Import silhouettes", "Open the video the masks belong to first.")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Folder of mask images", str(Path(self.info.path).parent))
+        if not folder:
+            return
+        # onto an existing segment: one undo step. A NEW segment is not taken back
+        # by Ctrl+Z (the undo keeps segments made after it, like removing one, I124)
+        had_segment = s.animal is not None
+        snap = s.snapshot() if had_segment else None
+        try:
+            summ = trackio.import_masks_png(s, folder)
+        except trackio.TrackImportError as e:
+            QMessageBox.warning(self, "Cannot import these silhouettes", str(e))
+            return
+        self._undo_snap = snap
+        self.act_undo.setEnabled(snap is not None)
+        self._refresh_animal_panel()
+        self._refresh_overlay()
+        self.timeline.update()
+        self._apply_state()
+        self.toast.show_message(summ["sentence"] + (" Ctrl+Z undoes it." if had_segment else
+                                                    " To take it back, right-click the segment's row → "
+                                                    "Remove the segment."), "info", 9000)
+
     def _apply_imported(self, imp, path: str) -> None:
         p = self.project
         if p is None or self.state != READY:
@@ -5001,7 +5108,8 @@ class MainWindow(QMainWindow):
 
     def _open_project_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open project", "",
-                                              f"Kinetrace project (*{PROJECT_SUFFIX})")
+                                              f"Kinetrace project (*{PROJECT_SUFFIX});;"
+                                              "Unzipped project folder (kinetrace.json)")
         if path:
             self._open_project_from_path(path)
 
@@ -5060,6 +5168,8 @@ class MainWindow(QMainWindow):
     def _open_project_from_path(self, path: str, recovered: dict | None = None):
         """Open a .kinetrace file (or an unzipped folder with the same layout).
         `recovered`: the file is a recovery copy chosen in Recover Unsaved Work."""
+        if Path(path).name.lower() == "kinetrace.json":
+            path = str(Path(path).parent)            # an unzipped project: its folder is the project
         self._leave_project()
         try:
             proj, state, meta = projectfile.read(path)
@@ -5350,28 +5460,66 @@ class MainWindow(QMainWindow):
             "<b>3D → Export Calibration</b> writes it for your animal projects.", "success", 9000)
 
     def _export_calibration(self):
-        from kinetrace.calibwizard import save_calibration_files
+        """3D -> Export Calibration: the cameras for other programs, in the
+        formats ticked (calibio.py converts the conventions and checks them)."""
+        from kinetrace import calibio
+        from kinetrace.calibwizard import dlt_csv_caveat, save_calibration_files
+        from kinetrace.view3d import ExportCalibrationDialog
         p = self.project
         if not self._need_calibration("Export Calibration"):
             return
+        dlg = ExportCalibrationDialog(self, any(x is not None for x in (p.lenses or [])))
+        if dlg.exec() != QDialog.Accepted or not dlg.chosen():
+            return
+        keys = dlg.chosen()
         base = Path(self.project_path or self.info.path)
         start = str(base.with_suffix("")) + ".kcal.json"
-        path, _ = QFileDialog.getSaveFileName(self, "Export calibration", start,
-                                              "Kinetrace calibration (*.kcal.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export calibration — base name", start,
+                                              "Kinetrace calibration (*.kcal.json);;All files (*)")
         if not path:
             return
-        res, grav = getattr(self, "_wand_result", (None, None))
+        stem = path[:-len(".kcal.json")] if path.lower().endswith(".kcal.json") else str(Path(path).with_suffix(""))
+        written, notes = [], []
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            written = save_calibration_files(res, grav, path, cal=p.calibration)
+            if "kcal" in keys:
+                res, grav = getattr(self, "_wand_result", (None, None))
+                written += save_calibration_files(res, grav, stem + ".kcal.json", cal=p.calibration)
+                note = dlt_csv_caveat(p.calibration, list(p.names))
+                if note:
+                    notes.append(note)       # with lens corrections the dltCoefs.csv is for lens-corrected pixels (I32)
+            if set(keys) & {"anipose", "opencv_yml", "opencv_json", "matlab", "blender"}:
+                rec = p.reconstruction
+                probe = (np.nanmedian(rec.xyz.reshape(-1, 3), axis=0)
+                         if rec is not None and np.isfinite(rec.xyz).any() else None)
+                models = calibio.to_models(p.calibration, list(p.names), probe)
+                for key, suffix, fn in (("anipose", "_calibration.toml", calibio.write_anipose),
+                                        ("opencv_yml", "_cameras.yml", calibio.write_opencv),
+                                        ("opencv_json", "_cameras.json", calibio.write_opencv),
+                                        ("matlab", "_cameras.mat", calibio.write_matlab),
+                                        ("blender", "_blender_cameras.py", calibio.write_blender)):
+                    if key in keys:
+                        fn(models, stem + suffix)
+                        written.append(stem + suffix)
+                notes += models.notes
+            if "lenses" in keys:
+                for i, prof in enumerate(p.lenses or []):
+                    if prof is not None:
+                        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in p.name(i))
+                        calibio.write_lens(prof, f"{stem}_lens_{safe}.yml")
+                        written.append(f"{stem}_lens_{safe}.yml")
+            if "offsets" in keys:
+                calibio.write_offsets(p, stem + "_offsets.csv")
+                written.append(stem + "_offsets.csv")
         except Exception as e:      # noqa: BLE001
+            QApplication.restoreOverrideCursor()
             QMessageBox.critical(self, "Export calibration", str(e))
             return
+        QApplication.restoreOverrideCursor()
         names = ", ".join(Path(w).name for w in written)
-        from kinetrace.calibwizard import dlt_csv_caveat
-        note = dlt_csv_caveat(p.calibration, list(p.names))
-        # with lens corrections the dltCoefs.csv is for lens-corrected pixels (I32)
-        self.toast.show_message(f"Calibration exported: {names}" + (f"<br>{note}" if note else ""),
-                                "warn" if note else "success", 12000 if note else 8000)
+        warn = any(("off by" in n) or ("skew" in n) for n in notes)
+        self.toast.show_message(f"Calibration exported: {names}" + ("<br>" + "<br>".join(notes) if notes else ""),
+                                "warn" if warn else "success", 14000 if notes else 8000)
         self.statusBar().showMessage(f"Calibration exported: {names}", 8000)
 
     def _t_range_3d(self) -> tuple[int, int]:
@@ -5981,6 +6129,10 @@ class MainWindow(QMainWindow):
         ("ALL CAMERAS — DLTdv8 xypts for 3D reconstruction, offsets applied, top-left, first pixel = 1 (*.csv)",
          ".csv", "multi"),
         ("3D landmarks — xyz per reference frame + residual sidecar (*.csv)", ".csv", "xyz"),
+        ("3D landmarks — Anipose points_3d CSV (*.csv)", ".csv", "xyz_anipose"),
+        ("3D landmarks — DLTdv xyzpts, row = reference frame, NaN = none (*.csv)", ".csv", "xyz_dltdv"),
+        ("Silhouette outlines — polygons per frame (*.json)", ".json", "sil_json"),
+        ("Silhouette masks — one PNG per frame, into a folder (*.png)", ".png", "sil_png"),
         ("3D kinematics — smoothed positions, velocity, acceleration + report (*.csv)", ".csv", "kin"),
         ("Everything — all of the above with one base name (*.csv)", ".csv", "all"),
     ]
@@ -6016,6 +6168,37 @@ class MainWindow(QMainWindow):
                 return []
             r.export_csv(path)
             return [path, str(Path(path).with_name(Path(path).stem + "_xyzres.csv"))]
+        elif key in ("xyz_anipose", "xyz_dltdv"):
+            from kinetrace import calibio
+            r = self.project.reconstruction if self.project else None
+            if r is None:
+                self.toast.show_message("No 3D reconstruction yet: run 3D -> Reconstruct 3D "
+                                        "Landmarks (Ctrl+3) first.", "warn", 7000)
+                return []
+            calibio.write_points3d(r, path, "anipose" if key == "xyz_anipose" else "dltdv")
+            if key == "xyz_dltdv":
+                written.append(str(Path(path).with_name(Path(path).stem + "_pointnames.csv")))
+        elif key == "sil_json":
+            if not trackio.export_masks_json(s, path):
+                self.toast.show_message("No silhouette to export: segment the animal first (S).", "warn", 7000)
+                return []
+        elif key == "sil_png":
+            folder = str(Path(path).with_suffix("")) + "_masks"
+            n = s.masks.n_masked() if s.masks is not None else 0
+            if not n:
+                self.toast.show_message("No silhouette to export: segment the animal first (S).", "warn", 7000)
+                return []
+            dlg = QProgressDialog(f"Writing {n} mask images…", "Cancel", 0, n, self)
+            dlg.setWindowTitle("Export silhouette masks")
+            dlg.setMinimumDuration(400)
+
+            def step(done, total):
+                dlg.setValue(done)
+                QApplication.processEvents()
+                return not dlg.wasCanceled()
+            wrote = trackio.export_masks_png(s, folder, step)
+            dlg.close()
+            return [f"{folder} ({wrote} images{'' if wrote == n else ', cancelled'})"]
         elif key == "kin":
             from kinetrace.kinematics import export_kinematics
             p = self.project
@@ -6091,12 +6274,16 @@ class MainWindow(QMainWindow):
                 for lab, suf, k in self.EXPORT_FORMATS:
                     if k == "all" or (k == "multi" and self.project.n_views < 2):
                         continue    # the all-cameras file is meaningless for one camera
-                    if k in ("xyz", "kin") and self.project.reconstruction is None:
+                    if k in ("xyz", "kin", "xyz_anipose", "xyz_dltdv") and self.project.reconstruction is None:
                         continue    # no 3D yet: nothing to write
+                    if k == "sil_png" or (k == "sil_json" and (self.session.masks is None
+                                                               or not self.session.masks.n_masked())):
+                        continue    # a PNG per frame is its own export (it can be many thousand files)
                     if k == "dltdv_bl":
                         continue    # "Everything" writes the DLTdv8 convention once, not both
                     tag = {"wide": "", "dlc": "_dlc", "dltdv": "_dltdv", "sparse": "",
-                           "mat": "", "multi": "_allcams", "xyz": "_xyz", "kin": "_kinematics"}[k]
+                           "mat": "", "multi": "_allcams", "xyz": "_xyz", "kin": "_kinematics",
+                           "xyz_anipose": "_points3d_anipose", "xyz_dltdv": "_xyzpts", "sil_json": "_silhouette"}[k]
                     self._export_all_running = True       # kinematics: automatic smoothing, no question
                     try:
                         written += self._export_one(k, stem + tag + suf)

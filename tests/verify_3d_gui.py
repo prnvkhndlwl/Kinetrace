@@ -387,6 +387,37 @@ assert np.allclose(back.offsets, p.offsets) and back.rates == RATES
 assert back.reconstruction is not None and np.allclose(back.reconstruction.xyz, r1.xyz, equal_nan=True)
 print("project round trip with calibration + 3D OK")
 
+# 3D points for Anipose / DLTdv out, and back in through File -> Import -> 3D Points
+from kinetrace import calibio  # noqa: E402
+xa, xd = os.path.join(SCRATCH, "pts_anipose.csv"), os.path.join(SCRATCH, "pts_xyzpts.csv")
+assert win._export_one("xyz_anipose", xa) and win._export_one("xyz_dltdv", xd)
+assert os.path.exists(xd[:-4] + "_pointnames.csv")
+before = p.reconstruction
+QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (xd, ""))
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)       # replace the 3D result
+win._import_points3d()
+pump()
+got = p.reconstruction
+assert got is not before and got.names == before.names
+off = before.t0 - got.t0
+assert np.allclose(got.xyz[off:off + before.n_frames], before.xyz, atol=1e-5, equal_nan=True)
+QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (xa, ""))
+win._import_points3d()
+pump()
+assert np.allclose(p.reconstruction.xyz, before.xyz, atol=1e-5, equal_nan=True) and p.reconstruction.t0 == before.t0
+print("3D points out as Anipose / DLTdv and back in through File -> Import OK")
+
+# camera offsets out and back in (File -> Import -> Camera Offsets), matched by name
+oc = os.path.join(SCRATCH, "offsets.csv")
+calibio.write_offsets(p, oc)
+saved_off = list(p.offsets)
+p.set_offset(1, saved_off[1] + 3.0)
+QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (oc, ""))
+win._import_offsets()
+pump()
+assert np.allclose(p.offsets, saved_off) and p.rates == RATES, (p.offsets, saved_off)
+print("camera offsets out and back in OK")
+
 # no cameras -> the 3D actions are off; teardown hides the view
 win._teardown_video()
 win.project = None

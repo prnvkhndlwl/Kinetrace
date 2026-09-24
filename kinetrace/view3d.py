@@ -20,12 +20,15 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 
 from kinetrace import theme
 from kinetrace.calib import Calibration, CameraCalibration
+from kinetrace.calibio import load_calibration
 from kinetrace.hull import _view_rotation
 
-CALIB_FILTER = ("Calibration files (*.json *.csv *.mat *.txt);;Kinetrace calibration (*.kcal.json);;"
+CALIB_FILTER = ("Calibration files (*.json *.csv *.mat *.txt *.toml *.yml *.yaml);;"
+                "Kinetrace calibration (*.kcal.json);;"
                 "DLTdv / easyWand / Argus DLT coefficients (*.csv);;"
                 "easyWand data (*easyWandData.mat);;DLTdv8 project, MATLAB v7 (*dvProject.mat);;"
-                "OpenCV cameras K + R/t (*.json *.txt);;All files (*)")
+                "Anipose calibration (*.toml);;OpenCV cameras (*.yml *.yaml *.json);;"
+                "MATLAB cameras (*.mat);;OpenCV cameras K + R/t (*.json *.txt);;All files (*)")
 
 CONVENTIONS = [
     # label, pixel_origin, y_flip
@@ -35,31 +38,57 @@ CONVENTIONS = [
 ]
 
 
-def load_calibration_file(path: str, sizes: list[tuple[int, int]] | None = None) -> Calibration:
-    """Pick the importer from the file name / contents. `sizes` only labels the
-    columns of a size-less dltCoefs.csv; the import dialog does NOT pass the
-    videos' sizes, because a size the file never recorded must not be shown
-    or compared as if it were the file's (I99)."""
-    p = Path(path)
-    low = p.name.lower()
-    if low.endswith(".json"):
-        from kinetrace.calibwizard import load_kcal
-        try:
-            return load_kcal(p)
-        except (ValueError, KeyError, TypeError):
-            return Calibration.load_krt(p)          # an OpenCV-style K + R/t JSON
-    if low.endswith(".txt"):
-        return Calibration.load_krt(p)
-    if low.endswith(".mat"):
-        if "easywand" in low:
-            return Calibration.load_easywand_mat(p)
-        if "dvproject" in low:
-            return Calibration.load_dltdv_project(p)
-        try:
-            return Calibration.load_easywand_mat(p)
-        except Exception:      # noqa: BLE001
-            return Calibration.load_dltdv_project(p)
-    return Calibration.load_dlt_csv(p, sizes)
+# the importer dispatch lives in calibio (no Qt: the command-line converter uses it too)
+load_calibration_file = load_calibration
+
+EXPORT_CAL_FORMATS = [
+    # key, label, ticked by default
+    ("kcal", "Kinetrace (.kcal.json) + DLT coefficients for DLTdv / easyWand (dltCoefs.csv) + report", True),
+    ("anipose", "Anipose / aniposelib (calibration.toml)", False),
+    ("opencv_yml", "OpenCV / Python (.yml): K, distortion, R, t per camera", False),
+    ("opencv_json", "OpenCV / Python (.json)", False),
+    ("matlab", "MATLAB (.mat): K / IntrinsicMatrix, distortion, R / t per camera", False),
+    ("blender", "Blender (a Python script that makes the cameras)", False),
+    ("lenses", "Lens profiles, one OpenCV .yml per camera that has one", False),
+    ("offsets", "Camera offsets and frame rates (offsets.csv)", False),
+]
+
+
+class ExportCalibrationDialog(QDialog):
+    """3D -> Export Calibration: which formats. Every file is written with the
+    same base name; the conventions are converted (and checked) by the program."""
+
+    def __init__(self, parent, has_lenses: bool):
+        super().__init__(parent)
+        self.setWindowTitle("Export calibration")
+        lay = QVBoxLayout(self)
+        head = QLabel("Save the cameras for other programs. Pixel and axis conventions are converted for "
+                      "you, and each file is checked against this project's calibration.")
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        self.boxes: dict[str, QCheckBox] = {}
+        for key, label, on in EXPORT_CAL_FORMATS:
+            cb = QCheckBox(label)
+            cb.setChecked(on)
+            if key == "lenses" and not has_lenses:
+                cb.setEnabled(False)
+                cb.setToolTip("No camera of this project has a lens profile")
+            self.boxes[key] = cb
+            lay.addWidget(cb)
+        row = QHBoxLayout()
+        allb = QPushButton("Tick everything")
+        allb.clicked.connect(lambda: [cb.setChecked(True) for cb in self.boxes.values() if cb.isEnabled()])
+        row.addWidget(allb)
+        row.addStretch(1)
+        lay.addLayout(row)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Choose where…")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def chosen(self) -> list[str]:
+        return [k for k, cb in self.boxes.items() if cb.isChecked() and cb.isEnabled()]
 
 
 class CalibrationDialog(QDialog):
@@ -137,7 +166,9 @@ class CalibrationDialog(QDialog):
         # (I96) the .txt form used to keep the MATLAB default, and every track
         # was triangulated from (x + 1, y + 1) with a perfect-looking residual.
         low = path.lower()
-        self._self_described = low.endswith(".json") or low.endswith(".txt")
+        # K + R/t cameras (Anipose, OpenCV, MATLAB cameras) are always OpenCV pixels;
+        # from_krt is the only importer that moves the origin, so it marks them
+        self._self_described = low.endswith((".json", ".txt")) or cal.origin_shift is not None
         if self._self_described and cal.cameras:
             c0 = cal.cameras[0]
             match = [k for k, (_, o, f) in enumerate(CONVENTIONS) if o == c0.pixel_origin and f == c0.y_flip]

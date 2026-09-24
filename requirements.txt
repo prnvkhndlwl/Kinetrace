@@ -15,6 +15,10 @@ pillow
 # audio tracks. imageio-ffmpeg ships a static ffmpeg binary INSIDE the venv (31 MB,
 # BSD-2 package around a GPL gyan.dev build); OpenCV's own FFmpeg cannot decode audio.
 imageio-ffmpeg==0.6.0
+# Reading Anipose calibration.toml files (File -> Import -> Calibration): Python
+# 3.11+ has tomllib built in; Python 3.10 (Ubuntu 22.04) needs this small
+# pure-Python backport (MIT). Other systems never download it.
+tomli>=2; python_version < "3.11"
 # Human body layer (Body menu). The 2D backend (ViTPose + RT-DETR person boxes)
 # needs nothing beyond transformers; its weights (425 MB + 81 MB, ungated)
 # download into models/hf on first use.

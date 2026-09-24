@@ -484,8 +484,9 @@ class CamerasPage(QWizardPage):
         if not path:
             return
         try:
-            if path.lower().endswith(".json"):
-                prof, which = _lens.LensProfile.load(path), ""
+            if path.lower().endswith((".json", ".yml", ".yaml")):
+                from kinetrace import calibio
+                prof, which = calibio.read_lens(path), ""      # Kinetrace or OpenCV lens file
             else:
                 # the SAME line rule as the lens wizard (lens.argus_profile_for, I80):
                 # the file's camera column decides, a camera it has no line for is
@@ -1038,57 +1039,8 @@ class RunPage(QWizardPage):
         return self.wiz.result_calibration is not None
 
 
-KCAL_VERSION = 1
-
-
-def calibration_to_kcal(cal, report: dict | None = None, grav: dict | None = None) -> dict:
-    """The Kinetrace calibration file: every camera's DLT coefficients WITH the
-    pixel convention and undistortion they were fitted in, the unit, and the
-    wand report when there is one. Self-describing, unlike a bare dltCoefs.csv."""
-    return {"kinetrace_calibration": KCAL_VERSION, "unit": cal.unit, "source": cal.source,
-            "cameras": [{"width": int(c.width), "height": int(c.height),
-                         "pixel_origin": float(c.pixel_origin), "y_flip": bool(c.y_flip),
-                         "rmse": (None if not np.isfinite(c.rmse) else float(c.rmse)),
-                         "coefs": [float(v) for v in c.coefs],
-                         "undistort": c.undistort.to_json()} for c in cal.cameras],
-            "report": report or {}, "gravity": grav or {}}
-
-
-def load_kcal(path):
-    """`*.kcal.json` -> `calib.Calibration` (cameras in file order)."""
-    from kinetrace.calib import Calibration, CameraCalibration, undistort_from_json
-    d = json.loads(Path(path).read_text(encoding="utf-8"))
-    if "kinetrace_calibration" not in d:
-        raise ValueError(f"{Path(path).name}: not a Kinetrace calibration file")
-    cams = []
-    for c in d.get("cameras", []):
-        rmse = c.get("rmse")
-        cams.append(CameraCalibration(np.asarray(c["coefs"], np.float64).reshape(11),
-                                      int(c.get("width", 0)), int(c.get("height", 0)),
-                                      undistort_from_json(c.get("undistort") or {}),
-                                      float(c.get("pixel_origin", 0.0)), bool(c.get("y_flip", False)),
-                                      float("nan") if rmse is None else float(rmse)))
-    cal = Calibration(cams, str(d.get("unit", "")), str(d.get("source", "")) or Path(path).name)
-    cal.report = d.get("report") or {}
-    return cal
-
-
-def dlt_csv_matlab(cal, path) -> None:
-    """dltCoefs.csv for DLTdv / easyWand users: 11 rows, one column per camera,
-    converted to MATLAB's 1-based pixels when the calibration was fitted on
-    0-based ones (u' = u + 1: L1..L3 += L9..L11, L4 += 1; same for v)."""
-    cols = []
-    for c in cal.cameras:
-        L = np.asarray(c.coefs, np.float64).copy()
-        shift = 1.0 - float(c.pixel_origin)
-        if abs(shift) > 1e-12:
-            L[0:3] += shift * L[8:11]
-            L[3] += shift
-            L[4:7] += shift * L[8:11]
-            L[7] += shift
-        cols.append(L)
-    np.savetxt(str(path), np.stack(cols, axis=1), delimiter=",", fmt="%.12g")
-
+# the calibration file itself (no Qt) lives in calibio; these names stay here too
+from kinetrace.calibio import KCAL_VERSION, calibration_to_kcal, dlt_csv_matlab, load_kcal  # noqa: E402,F401
 
 def _lensed_cameras(cal) -> list[tuple[int, float]]:
     """(camera index, how far its lens correction moves the picture's border
