@@ -5,21 +5,21 @@
 <td valign="top" width="250">
 
 <a name="contents"></a>
-**Contents**
+**Contents** ([wiki](https://github.com/prnvkhndlwl/Kinetrace/wiki))
 
-- [Install & run](docs/guide/install.md)
-- [Workflow: track an animal](docs/guide/workflow.md)
-- [Segments, silhouettes & skeletons](docs/guide/segments.md)
-- [Several cameras & 3D](docs/guide/cameras-3d.md)
-- [Human bodies](docs/guide/bodies.md)
-- [Export formats](docs/guide/exports.md)
-- [Projects & autosave](docs/guide/projects.md)
-- [Keyboard & mouse](docs/guide/shortcuts.md)
-- [Accuracy](docs/guide/accuracy.md)
-- [Performance (4K)](docs/guide/performance.md)
-- [Limitations](docs/guide/limitations.md)
-- [Testing](docs/guide/testing.md)
-- [Folder map & design](docs/guide/folder-map.md)
+- [Install & run](https://github.com/prnvkhndlwl/Kinetrace/wiki/Install-and-Run)
+- [Workflow: track an animal](https://github.com/prnvkhndlwl/Kinetrace/wiki/Workflow)
+- [Segments, silhouettes & skeletons](https://github.com/prnvkhndlwl/Kinetrace/wiki/Segments-Silhouettes-and-Skeletons)
+- [Several cameras & 3D](https://github.com/prnvkhndlwl/Kinetrace/wiki/Cameras-and-3D)
+- [Human bodies](https://github.com/prnvkhndlwl/Kinetrace/wiki/Human-Bodies)
+- [Export formats](https://github.com/prnvkhndlwl/Kinetrace/wiki/Export-Formats)
+- [Projects & autosave](https://github.com/prnvkhndlwl/Kinetrace/wiki/Projects-and-Autosave)
+- [Keyboard & mouse](https://github.com/prnvkhndlwl/Kinetrace/wiki/Keyboard-and-Mouse)
+- [Accuracy](https://github.com/prnvkhndlwl/Kinetrace/wiki/Accuracy)
+- [Performance (4K)](https://github.com/prnvkhndlwl/Kinetrace/wiki/Performance)
+- [Limitations](https://github.com/prnvkhndlwl/Kinetrace/wiki/Limitations)
+- [Testing](https://github.com/prnvkhndlwl/Kinetrace/wiki/Testing)
+- [Folder map & design](https://github.com/prnvkhndlwl/Kinetrace/wiki/Folder-Map-and-Design)
 
 **Also**
 
@@ -51,7 +51,7 @@ to correct a point with the mouse, and export the tracks. Built for long
 **Quick start.** Get the code (*Code → Download ZIP*, or `git clone`), then
 double-click `run.bat` on Windows or run `./run.sh` on Ubuntu 22.04+ or an
 Apple Silicon Mac (macOS 14+). The first run installs everything inside the
-folder — details in **[Install & run](docs/guide/install.md)**. New to
+folder — details in **[Install & run](https://github.com/prnvkhndlwl/Kinetrace/wiki/Install-and-Run)**. New to
 tracking? Start with the **[user manual](docs/MANUAL.md)**.
 
 **Everything stays in the folder:** nothing is installed into the operating
@@ -68,5 +68,5 @@ in **[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)**.
 </tr>
 </table>
 
-<sub>On any page, GitHub's outline button (☰, top right of the file view) lists
-that page's headings.</sub>
+<sub>The full documentation is in the [wiki](https://github.com/prnvkhndlwl/Kinetrace/wiki);
+its sidebar lists every page.</sub>
