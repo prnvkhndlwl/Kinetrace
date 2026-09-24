@@ -1766,6 +1766,15 @@ belong to first.
 * One animal per video: a multi-animal DeepLabCut file or a SLEAP file with
   several tracks is refused with the reason (export one animal per file).
 
+**Without opening the program.** The same conversions run from a command
+window, which is handy for many files at once: `python -m kinetrace.convert`
+(with the Python inside the Kinetrace folder: `.venv\Scripts\python` on
+Windows, `.venv/bin/python` on Linux and macOS) followed by what to do — for
+example `tracks results.csv out.csv --to dltdv --video clip.mp4`, or
+`check myproject.kinetrace` to be told whether a file made elsewhere is sound.
+`python -m kinetrace.convert --help` lists everything; the online guide's page
+*Working with other programs* explains each command.
+
 ---
 
 ## 13. Measuring a person's joints and joint angles

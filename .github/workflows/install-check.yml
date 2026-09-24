@@ -47,9 +47,12 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: >
           .venv/bin/python tests/run_suites.py
-          verify_core verify_stress verify_3d verify_wand verify_lens verify_body
-          verify_onbody_rules verify_sync verify_timeline_events verify_ui_focus
-          verify_display verify_multicam verify_3d_gui verify_sweep_fixes
+          verify_core verify_projectfile verify_recovery verify_interop verify_stress verify_3d
+          verify_wand verify_lens verify_body verify_onbody_rules verify_sync verify_timeline_events
+          verify_ui_focus verify_display verify_multicam verify_3d_gui verify_sweep_fixes
+
+      - name: The command-line converter runs
+        run: .venv/bin/python -m kinetrace.convert --help
 
       - name: Keep the logs of failing suites
         if: failure()

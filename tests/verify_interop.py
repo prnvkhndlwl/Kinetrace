@@ -19,6 +19,8 @@
 [3] File -> Import Tracks through the app (offscreen): asks for the video
     first, Ctrl+Z, a refusal, one camera out of an all-cameras file; mask
     images in (File -> Import -> Silhouettes), polygons / PNGs out.
+[4] The command-line converter as a real subprocess: every subcommand, the
+    exit codes of `check` (0 clean, 1 warnings, 2 errors) and the refusals.
 
 Run: .venv\\Scripts\\python.exe tests\\verify_interop.py
 """
@@ -548,6 +550,135 @@ QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Discard)
 win.close()
 pump(0.3)
 forget_recovery(vid)
+
+# ------------------------------------------------------------------ 4
+print("\n[4] the command-line converter (python -m kinetrace.convert), run as a program")
+import subprocess  # noqa: E402
+
+
+def convert(*args):
+    r = subprocess.run([sys.executable, "-m", "kinetrace.convert", *map(str, args)], cwd=ROOT,
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+kc = os.path.join(OUT, "synth.kcal.json")
+import json as _json  # noqa: E402
+with open(kc, "w", encoding="utf-8") as fh:
+    _json.dump(calibio.calibration_to_kcal(cal), fh)
+code, out = convert("calibration", kc, os.path.join(OUT, "cli_calibration.toml"))
+back = calibio.read_cameras(os.path.join(OUT, "cli_calibration.toml"))
+check(code == 0 and len(back) == 3 and max(np.abs(b_.K - c["K"]).max() for b_, c in zip(back, truth)) < 1e-6,
+      "calibration: a .kcal.json into Anipose's calibration.toml", out)
+dltc = os.path.join(OUT, "cli_dltCoefs.csv")
+code, out = convert("calibration", kc, dltc)
+check(code == 0 and os.path.exists(dltc), "calibration: into a dltCoefs.csv (MATLAB pixels)", out)
+code, out = convert("calibration", dltc, os.path.join(OUT, "cli_cams.yml"))
+check(code == 2 and "--size" in out, "a dltCoefs.csv without --size is refused with what to add", out)
+code, out = convert("calibration", dltc, os.path.join(OUT, "cli_cams.yml"), "--size", f"{CW}x{CH}")
+yb = calibio.read_cameras(os.path.join(OUT, "cli_cams.yml")) if code == 0 else []
+ok_px = False
+if yb:
+    Xw = np.random.default_rng(9).uniform(-0.3, 0.3, (50, 3))
+    ref_c = calibio.load_calibration(dltc)
+    for c_ in ref_c.cameras:
+        c_.width, c_.height = CW, CH
+    ms_ = calibio.to_models(ref_c)
+    ok_px = max(float(np.abs(m_.project(Xw) - y_.project(Xw)).max()) for m_, y_ in zip(ms_.cameras, yb)) < 1e-6
+check(code == 0 and ok_px, "... and with --size it becomes OpenCV cameras (the 1-based pixels converted)", out)
+code, out = convert("tracks", os.path.join(OUT, "dlc_roundtrip.csv"), os.path.join(OUT, "cli_xypts.csv"),
+                    "--to", "dltdv", "--size", f"{W}x{H}", "--frames", T)
+s, imp, summ = imported_into(os.path.join(OUT, "cli_xypts.csv")) if code == 0 else (None, None, None)
+check(code == 0 and s is not None and np.array_equal(s.tracked[:, :3], exp), "tracks: DeepLabCut CSV into DLTdv8 xypts",
+      out)
+code, out = convert("tracks", os.path.join(OUT, "sleap14.csv"), os.path.join(OUT, "cli_sleap.kinetrace"),
+                    "--video", vid)
+check(code == 0 and projectfile.load(os.path.join(OUT, "cli_sleap.kinetrace")).sessions[0].n_points == 2,
+      "tracks: a SLEAP CSV into a Kinetrace project for its video", out)
+code, out = convert("points3d", os.path.join(OUT, "points_kinetrace.csv"), os.path.join(OUT, "cli_p3.csv"),
+                    "--to", "anipose")
+back3, _ = calibio.read_points3d(os.path.join(OUT, "cli_p3.csv")) if code == 0 else (None, None)
+check(code == 0 and back3 is not None and back3.names == rec.names, "points3d: Kinetrace CSV into Anipose's", out)
+# a project to work on: the source session, saved for the converter
+kp2 = os.path.join(OUT, "cli_project.kinetrace")
+src_copy = session(name="v.mp4")
+trackio.apply(src_copy, trackio.read(os.path.join(OUT, "dlc_roundtrip.csv")))
+trackio.import_masks_png(src_copy, mdir)
+projectfile.save(Project([src_copy], ["top"]), kp2)
+code, out = convert("check", kp2)
+check(code == 0 and out.endswith("OK"), "check: a sound project is OK (exit 0)", out)
+code, out = convert("info", kp2)
+check(code == 0 and "'top'" in out and "3 point(s)" in out, "info: says what the project holds", out)
+moved = os.path.join(OUT, "elsewhere")
+os.makedirs(moved, exist_ok=True)
+shutil.copy(kp2, os.path.join(moved, "p.kinetrace"))
+code, out = convert("check", os.path.join(moved, "p.kinetrace"))
+check(code == 0, "check: a copy in another folder still finds its video (by the recorded absolute path)", out)
+os.rename(vid, vid + ".away")
+code, out = convert("check", os.path.join(moved, "p.kinetrace"))
+os.rename(vid + ".away", vid)
+check(code == 1 and "video is not found" in out, "check: a video that cannot be found is a warning (exit 1)", out)
+bad_zip = write("broken.kinetrace", "not a zip at all")
+code, out = convert("check", bad_zip)
+check(code == 2 and out.startswith("error:"), "check: a damaged file is an error (exit 2), said in a sentence", out)
+code, out = convert("import", kp2, "--tracks", os.path.join(OUT, "sleap14.csv"), "--out",
+                    os.path.join(OUT, "cli_imported.kinetrace"))
+got_p = projectfile.load(os.path.join(OUT, "cli_imported.kinetrace")) if code == 0 else None
+check(got_p is not None and got_p.sessions[0].n_points == 5 and os.path.exists(kp2),
+      "import: SLEAP tracks into a project, written as a new file", out)
+code, out = convert("import", kp2, "--tracks", os.path.join(OUT, "sleap14.csv"))
+check(code == 0 and os.path.exists(kp2 + ".bak") and projectfile.load(kp2).sessions[0].n_points == 5,
+      "import: into the project itself, the previous version kept as .bak", out)
+folder = os.path.join(OUT, "unzipped")
+with zipfile.ZipFile(kp2) as z_:
+    z_.extractall(folder)
+code, out = convert("pack", folder, os.path.join(OUT, "cli_packed.kinetrace"))
+pk = projectfile.load(os.path.join(OUT, "cli_packed.kinetrace")) if code == 0 else None
+ref_p = projectfile.load(kp2)
+check(pk is not None and np.array_equal(pk.sessions[0].tracks, ref_p.sessions[0].tracks, equal_nan=True),
+      "pack: an unzipped (hand-edited) folder back into one file, unchanged", out)
+code, out = convert("masks", kp2, os.path.join(OUT, "cli_masks.json"))
+check(code == 0 and len(_json.load(open(os.path.join(OUT, "cli_masks.json"), encoding="utf-8"))["frames"]) == 3,
+      "masks: a project's silhouettes as polygons", out)
+pjo = os.path.join(OUT, "cli_offsets_project.kinetrace")
+projectfile.save(pj, pjo)
+code, out = convert("offsets", pjo, os.path.join(OUT, "cli_offsets.csv"))
+check(code == 0 and [(v, o_) for v, o_, _ in calibio.read_offsets(os.path.join(OUT, "cli_offsets.csv"), pj)]
+      == [(0, 0.0), (1, -4.5), (2, 12.25)], "offsets: a project's camera offsets as CSV", out)
+code, out = convert("tracks", os.path.join(OUT, "dlc_multi.csv"), os.path.join(OUT, "x.csv"), "--size", "640x480",
+                    "--frames", "10")
+check(code == 2 and "multi-animal" in out, "a refused file: exit 2 and the reason", out)
+# docs/FORMAT.md's "Writing a project for Kinetrace" example, exactly as printed there
+mine = os.path.join(OUT, "myproject")
+os.makedirs(os.path.join(mine, "cameras", "cam1"), exist_ok=True)
+write(os.path.join("myproject", "kinetrace.json"), '{"format": "kinetrace-project", "format_version": 1,\n'
+      ' "cameras": [{"folder": "cam1", "name": "cam1"}]}\n')
+write(os.path.join("myproject", "project.json"), '{"cameras": [{"name": "cam1", "folder": "cam1",\n'
+      ' "video": {"relative_path": "../v.mp4"},\n "n_frames": 120, "fps": 30, "width": 640, "height": 480}]}\n')
+write(os.path.join("myproject", "cameras", "cam1", "tracks.csv"), "frame,point,x,y\n0,snout,120.5,88.25\n"
+      "1,snout,121.0,88.0\n")
+fmt_doc = open(os.path.join(ROOT, "docs", "FORMAT.md"), encoding="utf-8").read()
+check('"video": {"relative_path": "../clip.mp4"}' in fmt_doc and "0,snout,120.5,88.25" in fmt_doc,
+      "docs/FORMAT.md still prints this example (tested here with this suite's video instead of clip.mp4)")
+code, out = convert("check", mine)
+check(code == 0, "FORMAT.md's three-file project checks clean", out)
+code, out = convert("pack", mine, os.path.join(OUT, "myproject.kinetrace"))
+mp = projectfile.load(os.path.join(OUT, "myproject.kinetrace")) if code == 0 else None
+check(mp is not None and mp.sessions[0].points[0].name == "snout"
+      and np.allclose(mp.sessions[0].tracks[0, 0], (120.5, 88.25)) and mp.sessions[0].confidence[1, 0] == 1.0,
+      "... and packs into a .kinetrace with its point and positions", out)
+w2 = MainWindow()
+w2.show()
+w2._open_project_from_path(os.path.join(mine, "kinetrace.json"))   # File -> Open Project on the folder's file
+for _ in range(300):
+    pump(0.05)
+    if w2.state == READY and w2.project is not None:
+        break
+check(w2.project is not None and w2.session.n_points == 1 and w2.session.tracked[1, 0],
+      "the unzipped folder also opens in the app (choosing its kinetrace.json)")
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Discard)
+w2.close()
+pump(0.3)
 
 print("\n" + "=" * 62)
 if fails:
