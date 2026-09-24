@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
 
@@ -349,6 +349,62 @@ assert _g6.get("open"), "the Skeleton menu did not open"
 assert _g6["f1"] == _g6["f0"] and _g6["n1"] == _g6["n0"], f"hotkeys acted behind an open menu: {_g6}"
 assert QApplication.activePopupWidget() is None, "Escape did not close the menu"
 print("an open menu keeps the keyboard: Escape closes it, nothing acts behind it OK")
+
+# ---- one canvas tool at a time: Pan / Add / Segment put each other down ----------
+for b in (win.btn_pan, win.btn_add, win.btn_animal):
+    b.setChecked(False)
+app.setActiveWindow(win)
+win.activateWindow()
+pump()
+c = win.canvas
+tools = lambda: (win.btn_pan.isChecked(), win.btn_add.isChecked(), win.btn_animal.isChecked())
+
+QTest.keyClick(win, Qt.Key_H)                      # pan, move the view ...
+pump()
+assert tools() == (True, False, False) and c._pan_mode
+QTest.mouseClick(win.btn_animal, Qt.LeftButton, pos=QPoint(8, win.btn_animal.height() // 2))
+pump()                                             # ... then click Segment (the button, not its arrow)
+assert tools() == (False, False, True), f"Segment left Pan on: pan/add/segment = {tools()}"
+assert not c._pan_mode and c._animal_mode and c.cursor().shape() == Qt.PointingHandCursor, \
+    "the canvas still pans after Segment was picked"
+
+QTest.keyClick(win, Qt.Key_H)                      # Pan puts Segment down
+pump()
+assert tools() == (True, False, False) and not c._animal_mode, f"H left Segment on: {tools()}"
+QTest.keyClick(win, Qt.Key_N)                      # Add puts Pan down
+pump()
+assert tools() == (False, True, False) and not c._pan_mode and c._place_mode \
+    and c.cursor().shape() == Qt.CrossCursor, f"N left Pan on: {tools()}"
+QTest.keyClick(win, Qt.Key_S)                      # Segment puts Add down
+pump()
+assert tools() == (False, False, True) and not c._place_mode, f"S left Add on: {tools()}"
+QTest.keyClick(win, Qt.Key_N)                      # Add puts Segment down
+pump()
+assert tools() == (False, True, False) and not c._animal_mode, f"N left Segment on: {tools()}"
+
+QTest.keyClick(win, Qt.Key_H)
+pump()
+win.act_add_ball.trigger()                         # Add > Ball marker puts Pan down too
+pump()
+assert tools() == (False, True, False) and win._place_kind == "ball" and not c._pan_mode, \
+    f"Ball marker left Pan on: {tools()}"
+QTest.keyClick(win, Qt.Key_Escape)
+pump()
+assert tools() == (False, False, False) and win._place_kind == "point"
+
+QTest.keyClick(win, Qt.Key_H)                      # Esc puts Pan down as well
+pump()
+QTest.keyClick(win, Qt.Key_Escape)
+pump()
+assert tools() == (False, False, False) and not c._pan_mode, "Esc left Pan on"
+for b in (win.btn_roi, win.btn_mask, win.btn_follow, win.btn_onbody, win.btn_autopause):
+    before = b.isChecked()
+    QTest.keyClick(win, Qt.Key_H)
+    QTest.keyClick(win, Qt.Key_S)
+    QTest.keyClick(win, Qt.Key_Escape)
+    pump(0.05)
+    assert b.isChecked() == before, f"a tool switch changed the {b.text()} setting"
+print("one canvas tool at a time (Pan / Add / Segment), Esc puts Pan down, settings untouched OK")
 
 win._dev_probe.wait(15000)
 win.close()

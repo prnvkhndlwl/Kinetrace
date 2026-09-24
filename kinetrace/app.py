@@ -100,7 +100,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>right-click</td><td>marker or list entry: rename · lock to seed appearance · data source · hidden on this frame · may leave the segment · delete</td></tr>
 <tr><td class=k>Ctrl/Shift+click (list)</td><td>select several points</td></tr>
 <tr><td class=k>Delete</td><td>delete selected point(s) — or clear the selected frame window (below)</td></tr>
-<tr><td class=k>Esc</td><td>drops a drag or polygon in progress; then, one per press: the segment tool, the armed crosshair, a half-marked event, the frame-window selection; then deselects</td></tr>
+<tr><td class=k>Esc</td><td>drops a drag or polygon in progress; then, one per press: the segment tool, the armed crosshair, the pan tool, a half-marked event, the frame-window selection; then deselects</td></tr>
 </table>
 <h3>Segment &amp; skeleton (optional)</h3><table>
 <tr><td class=k>S (or Segment)</td><td>segment tool: <b>click the animal</b> — its silhouette appears within a second. Shift+click = "not the animal", drag = box around it. Right-click a click marker to remove it. S or Esc when done. Optional: points track without a segment. The ▾ on the Segment button picks the segmentation model; its last entry is Settings (Ctrl+,)</td></tr>
@@ -142,7 +142,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>wheel</td><td>zoom the video under the cursor</td></tr>
 <tr><td class=k>&#43; / − &nbsp;(or =)</td><td>zoom the video around the pointer</td></tr>
 <tr><td class=k>R</td><td>reset view (fit the video)</td></tr>
-<tr><td class=k>H (or Pan)</td><td>pan tool: left-drag pans instead of editing (does nothing until a video is open); middle-drag always pans, any time — even while tracking</td></tr>
+<tr><td class=k>H (or Pan)</td><td>pan tool: left-drag pans instead of editing (does nothing until a video is open); H, Esc, or picking Add (N) or Segment (S) ends it — only one of Pan / Add / Segment is on at a time. Middle-drag always pans, any time — even while tracking</td></tr>
 <tr><td class=k>Follow</td><td>off by default; when on, keeps the selected point in view while zoomed in — or auto-frames all points when none is selected. R always fits the whole picture</td></tr>
 <tr><td class=k>marker px</td><td>marker size on screen (shrink it to see exact placement)</td></tr>
 <tr><td class=k>Shift+C</td><td>failsafe: clear the frame cache and re-decode this frame from the file (use if the picture ever looks stale or garbled; tracked data is untouched)</td></tr>
@@ -746,9 +746,9 @@ class MainWindow(QMainWindow):
         self.btn_pan.setCheckable(True)
         self.btn_pan.setToolTip(
             "Pan tool (H): left-drag moves the view instead of editing points.\n"
+            "H or Esc ends it, and so does picking Add or Segment (one tool at a time).\n"
             "Middle-drag always pans, in any mode — even while tracking runs.")
-        self.btn_pan.toggled.connect(
-            lambda on: [cv.set_pan_mode(on) for cv in self.grid.canvases])
+        self.btn_pan.toggled.connect(self._on_pan_mode)
 
         # Track button with a mode dropdown: automatic (run to end) or
         # semi-automatic (each F tracks exactly one frame, then pauses)
@@ -2328,6 +2328,9 @@ class MainWindow(QMainWindow):
             elif self.btn_add.isChecked():
                 self.btn_add.setChecked(False)
                 self.statusBar().showMessage("Point placement cancelled", 3000)
+            elif self.btn_pan.isChecked():
+                self.btn_pan.setChecked(False)
+                self.statusBar().showMessage("Pan tool off", 3000)
             elif self._pending_event is not None:
                 self._pending_event = None
                 self.timeline.set_pending_event(None)
@@ -2511,7 +2514,26 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- points
 
+    def _put_down_other_tools(self, keep):
+        """Pan, Add and Segment are ONE canvas tool at a time: arming one puts the
+        others down, so a click always does what the last-picked tool says (a Pan
+        left on used to swallow every Segment click until it was turned off by hand)."""
+        for btn in (self.btn_pan, self.btn_add, self.btn_animal):
+            if btn is not keep and btn.isChecked():
+                btn.setChecked(False)
+
+    def _on_pan_mode(self, on: bool):
+        if on:
+            self._put_down_other_tools(self.btn_pan)
+            self.statusBar().showMessage(
+                "Pan tool: drag to move the view. H or Esc when done "
+                "(picking Add or Segment also ends it)", 6000)
+        for cv in self.grid.canvases:
+            cv.set_pan_mode(on)
+
     def _on_add_mode(self, on: bool):
+        if on:
+            self._put_down_other_tools(self.btn_add)
         self.canvas.set_place_mode(on)
         # a ball is placed with ONE click, whatever the region shape (I48)
         self.canvas.set_click_only(on and self._place_kind == "ball")
@@ -2535,8 +2557,6 @@ class MainWindow(QMainWindow):
         if self.session is None or self.state != READY:
             return
         self._place_kind = "ball"
-        if self.btn_animal.isChecked():
-            self.btn_animal.setChecked(False)
         if self.btn_add.isChecked():
             self._on_add_mode(True)        # already armed: just re-word the hint
         else:
@@ -2625,8 +2645,8 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- animal
 
     def _on_animal_mode(self, on: bool):
-        if on and self.btn_add.isChecked():
-            self.btn_add.setChecked(False)
+        if on:
+            self._put_down_other_tools(self.btn_animal)
         self.canvas.set_animal_mode(on)
         if on:
             self.statusBar().showMessage(

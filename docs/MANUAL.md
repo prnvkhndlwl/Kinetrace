@@ -321,7 +321,8 @@ number and the time in seconds.
   the markers are drawn at;
 - the tools: **Add** (**N**; its **▾** picks the region shape or a ball
   marker), **Segment** (**S**; its **▾** picks the outlining model and ends with
-  *Settings…*) and **Pan** (**H**);
+  *Settings…*) and **Pan** (**H**). Only one of these three is on at a time:
+  picking one switches the other two off;
 - five switches, explained in [section 14](#14-choosing-the-settings-that-matter):
   **Follow** (keeps your points in view while zoomed in; off until you switch
   it on), **Mask** (shows the silhouette), **Body** (keeps body parts on the
@@ -2487,7 +2488,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | Add **▾** | region shape: circle, rectangle, polygon (click the corners, then Enter or a double-click); **Ball marker** — click a ball, SAM outlines it every frame and the fitted circle's centre is the point (balls tracked together must stay within about 740 px of each other) |
 | right-click a marker | rename, delete, lock it to its look, change how it is found (appearance or silhouette), hidden on this frame, may leave the segment |
 | **S** (the Segment button) | the outlining tool — click the animal (Shift+click = not the animal, drag = a box around it, right-click a click to remove it); **S** or **Esc** when done |
-| **Esc** | cancel whatever you just started: a drag or polygon, the segment tool, the armed crosshair, a half-marked event, a selected stretch of the timeline — and, with nothing left to cancel, deselect the point |
+| **Esc** | cancel whatever you just started: a drag or polygon, the segment tool, the armed crosshair, the pan tool, a half-marked event, a selected stretch of the timeline — and, with nothing left to cancel, deselect the point |
 
 ### Tracking
 
@@ -2504,7 +2505,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 |---|---|
 | wheel, **+** / **−** | zoom the video |
 | **R** | fit the whole picture back in the window |
-| **H** (the Pan button) | left-drag pans instead of editing; press again to stop. Does nothing until a video is open |
+| **H** (the Pan button) | left-drag pans instead of editing; press **H** again or **Esc** to stop — picking **Add** or **Segment** also stops it. Does nothing until a video is open |
 | middle-drag | pan, at any time — even while tracking |
 | **Shift + +** / **Shift + −**, or **Ctrl+wheel** over the timeline | zoom the timeline's time axis |
 | **Ctrl+1** | show / hide the right panel |
