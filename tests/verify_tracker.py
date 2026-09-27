@@ -174,8 +174,18 @@ try:
                         specs=[PointSpec(0, GT[0, 0].astype(np.float32))],
                         balls=[BallSpec(9, {}, seed=GT[0, 1], backend="stub")])
     # the first segment ends in an ROI restart at which the only point has no valid position
-    wH._run_segment = lambda src, *a: ("restart", 40, [None])
-    wH._run_animal_only = lambda src, start: (calls.__setitem__("start", start), 599)[1]
+    # (the run's loops are step generators since I141: the stubs return at once)
+    def _segment_stub(src, *a):
+        return "restart", 40, [None]
+        yield                                           # noqa: unreachable -- makes it a generator
+
+    def _animal_stub(src, start):
+        calls["start"] = start
+        return 599
+        yield                                           # noqa: unreachable -- makes it a generator
+
+    wH._segment_steps = _segment_stub
+    wH._animal_only_steps = _animal_stub
     wH.finished_ok.connect(lambda last_, paused_: calls.__setitem__("finished", (last_, paused_)))
     wH.error.connect(lambda m: calls.__setitem__("error", m))
     wH.run()

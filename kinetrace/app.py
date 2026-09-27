@@ -87,9 +87,9 @@ HOTKEYS_HTML = f"""
 </table>
 <h3>Tracking</h3><table>
 <tr><td class=k>T</td><td>start tracking / pause (semi-automatic mode: one step)</td></tr>
-<tr><td class=k>Shift+T</td><td>several cameras: this run in <b>every camera</b> that has the point(s) here, one after another (Track ▾ → <i>Every camera</i> makes T and F always do that)</td></tr>
-<tr><td class=k>X / Space</td><td>pause a running track (during 3D → Re-track Disagreeing Stretches: stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run: stops it there, the cameras after it are not tracked)</td></tr>
-<tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>Every camera</b> (several cameras: the selected points — or all — tracked in each camera that has them at this instant, ball markers included, each run shown live; the button says "· 3 cams"; X stops them all; one Ctrl+Z undoes all); <b>point model</b>: AllTracker (default, holds points on animals) or CoTracker3 (faster, sub-pixel on high-contrast markers)</td></tr>
+<tr><td class=k>Shift+T</td><td>several cameras: this run in <b>every camera</b> that has the point(s) here, all at the same time (Track ▾ → <i>Every camera</i> makes T and F always do that)</td></tr>
+<tr><td class=k>X / Space</td><td>pause a running track (during 3D → Re-track Disagreeing Stretches: stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run: stops every camera at once)</td></tr>
+<tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>Every camera</b> (several cameras: the selected points — or all — tracked in each camera that has them at this instant, ball markers included, all at the same time, each live in its own view; the button says "· 3 cams"; X stops them all; one Ctrl+Z undoes all; the menu stays open while you tick, so mode, Every camera and point model combine); <b>point model</b>: AllTracker (default, holds points on animals) or CoTracker3 (faster, sub-pixel on high-contrast markers)</td></tr>
 <tr><td class=k>Auto-pause</td><td>stop the run when the model loses a point (a brief occlusion doesn't trigger it); the point's track is <b>cut</b> at the first unreliable frame and the playhead goes there</td></tr>
 <tr><td class=k>ROI</td><td>track inside a crop around the points when it clearly helps</td></tr>
 <tr><td class=k>Ctrl+Z</td><td>undo the last tracking run, bulk edit or hand edit (a click, drag, Ctrl+click, deleted point, Shift+X) — one step</td></tr>
@@ -310,6 +310,86 @@ def _model_error_hint(tb: str) -> str:
     return ""
 
 
+class _ChoiceMenu(QMenu):
+    """A menu of settings (Track ▾): ticking an entry leaves the menu open, so the
+    run mode, Every camera and the point model -- independent choices -- can all be
+    set in one visit (owner 2026-09-27, G32). Esc or a click outside closes it."""
+
+    def _toggle(self, act) -> bool:
+        if act is None or not act.isEnabled() or not act.isCheckable():
+            return False
+        act.trigger()
+        return True
+
+    def mouseReleaseEvent(self, ev):
+        if self._toggle(self.actionAt(ev.position().toPoint())):
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def keyPressEvent(self, ev):
+        if ev.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space) and self._toggle(self.activeAction()):
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
+
+
+class _SideRun(QObject):
+    """One camera of a simultaneous every-camera run (I141). It records how the
+    camera's run ended; for a camera other than the working one (`write`) it also
+    puts the run's rows, silhouettes and ball radii into THAT camera's session
+    and keeps its frames for its tile -- the working camera keeps the full live
+    pipeline. A QObject in the GUI thread, so the worker's signals (emitted on the
+    tracking thread) arrive here queued, in order."""
+
+    def __init__(self, win, view: int, worker, start: int, write: bool):
+        super().__init__(win)
+        self.win, self.view, self.worker, self.start = win, view, worker, int(start)
+        self.pids = list(worker.point_ids)
+        self.write = write
+        self.frames: deque = deque()
+        self.last: int | None = None
+        self.paused = False
+        self.error: str | None = None
+        self.autopause: tuple[int, int] | None = None
+        worker.autopaused.connect(self.on_autopaused)
+        worker.finished_ok.connect(self.on_finished)
+        worker.error.connect(self.on_error)
+        if write:
+            worker.chunk_ready.connect(self.on_chunk)
+            worker.masks_ready.connect(self.on_masks)
+            worker.balls_ready.connect(self.on_balls)
+
+    def _session(self):
+        p = self.win.project
+        return p.sessions[self.view] if p is not None and self.view < p.n_views else None
+
+    def on_chunk(self, w0, tracks, vis, conf, members, new_frames):
+        s = self._session()
+        if s is not None:
+            s.write_segment(w0, tracks, vis, self.pids, conf)
+            self.frames.extend(new_frames)
+
+    def on_masks(self, summaries):
+        s = self._session()
+        if s is not None:
+            s.write_mask_summaries(summaries)
+
+    def on_balls(self, rows):
+        s = self._session()
+        if s is not None:
+            s.write_ball_radii(rows)
+
+    def on_autopaused(self, frame: int, pid: int):
+        self.autopause = (int(frame), int(pid))
+
+    def on_finished(self, last: int, was_paused: bool):
+        self.last, self.paused = int(last), bool(was_paused)
+
+    def on_error(self, text: str):
+        self.error = text
+
+
 class _ViewRuntime:
     """The DECODE side of one camera view: its probe result, its frame cache and
     its scrubbing thread. One per view; `MainWindow.info` / `.cache` / `.seek`
@@ -428,7 +508,8 @@ class MainWindow(QMainWindow):
         self._companions_stale = False   # "active": the others are not at the playhead yet
         self._last_goto_t = 0.0
         self._lock: dict | None = None   # a discrete step: {"want": {view}, "frames": {view: rgb}}
-        self._multi: dict | None = None  # tracking in every camera, one after another (G29)
+        self._multi: dict | None = None  # tracking in every camera, all at once (G29, I141)
+        self._side: dict | None = None   # {view: _SideRun} of the other cameras while they track (I141)
         self._display_queue: deque = deque()
         self._fps_ema = 0.0
         self._last_emit_t = 0.0
@@ -820,7 +901,7 @@ class MainWindow(QMainWindow):
         self.btn_track.setPopupMode(QToolButton.MenuButtonPopup)
         self.btn_track.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.btn_track.clicked.connect(lambda _=False: self._toggle_tracking())   # clicked(bool) is not all_cameras
-        menu_track = QMenu(self.btn_track)
+        menu_track = _ChoiceMenu(self.btn_track)     # ticking a choice keeps it open (G32)
         self._mode_group = QActionGroup(self)
         self.act_mode_auto = QAction("Automatic — track to the end of the video", self,
                                      checkable=True, checked=True)
@@ -836,9 +917,10 @@ class MainWindow(QMainWindow):
                                      self, checkable=True)
         self.act_track_all.setToolTip(
             "With several cameras: Track (T, or F in semi-automatic mode) tracks the selected points — or all — "
-            "in EVERY camera that has them at this instant, ball markers included, one camera after another, "
-            "each shown live. X stops the whole run. One Ctrl+Z undoes it in every camera. Shift+T does this "
-            "once without ticking it.")
+            "in EVERY camera that has them at this instant, ball markers included, all cameras at the same "
+            "time, each shown live in its own view. X stops them all at once. One Ctrl+Z undoes it in every "
+            "camera. Shift+T does this once without ticking it. Combines with the run mode and the point model "
+            "(the menu stays open while you tick).")
         self.act_track_all.toggled.connect(lambda _on: self._update_track_button())
         menu_track.addAction(self.act_track_all)
         menu_track.setToolTipsVisible(True)
@@ -1731,8 +1813,8 @@ class MainWindow(QMainWindow):
                 self.btn_track.setToolTip(f"Track {what} forward from frame {self.current} (T)")
             if n_cams > 1:
                 self.btn_track.setToolTip(
-                    self.btn_track.toolTip() + f" — in each of the {n_cams} cameras that have them here, one after "
-                    "another (Track ▾ → Every camera; X stops them all; one Ctrl+Z undoes all)")
+                    self.btn_track.toolTip() + f" — in each of the {n_cams} cameras that have them here, all at "
+                    "the same time (Track ▾ → Every camera; X stops them all; one Ctrl+Z undoes all)")
 
     @staticmethod
     def _preferred_point_backend() -> str:
@@ -2726,6 +2808,7 @@ class MainWindow(QMainWindow):
         self._lock = None
         self._companions_stale = False
         self._multi = None
+        self._side = None                   # (I141)
         self.btn_play.setChecked(False)
 
     def _on_seek_slow(self, view: int, idx: int):
@@ -5434,9 +5517,14 @@ class MainWindow(QMainWindow):
             self._pause_tracking()
         elif self.state == READY:
             every = self.act_track_all.isChecked() if all_cameras is None else all_cameras
-            if every and len(self._multi_jobs(step=self._track_mode == "semi")) > 1:
+            jobs = self._multi_jobs(step=self._track_mode == "semi") if every else []
+            if every and len(jobs) > 1:
                 self._start_multi_tracking(step=self._track_mode == "semi")
-            elif self._track_mode == "semi":
+                return
+            if every and self.project is not None and self.project.n_views > 1:
+                # it used to fall back to the working camera without a word (G32)
+                self._say_single_camera(jobs)
+            if self._track_mode == "semi":
                 self._track_step()
             else:
                 self._start_tracking()
@@ -5485,11 +5573,13 @@ class MainWindow(QMainWindow):
         return jobs
 
     def _start_multi_tracking(self, step: bool = False) -> None:
-        """Track in every camera that has the points: one run per camera, one after
-        another, each live on screen (X stops the whole run); one Ctrl+Z undoes it
-        in every camera. One camera at a time on purpose: the point model holds ~11
-        GB of GPU memory per 4K run and decoding is the bottleneck, and one live
-        picture you can pause and correct is the rule every run keeps."""
+        """Track in every camera that has the points, ALL AT ONCE (I141): one worker
+        per camera, advanced together on one thread (tracker.MultiTrackingWorker),
+        so the GPU holds one run's memory (~11 GB for a 4K AllTracker run) and each
+        camera's result is bit-identical to tracking it alone; each camera draws
+        live in its own view; X stops them all at once; one Ctrl+Z undoes it in every
+        camera. (Before I141 the cameras ran one after another, and a pause during
+        the first left the others untracked -- "only the active camera tracks".)"""
         p = self.project
         jobs = self._multi_jobs(step)
         if self.state != READY or len(jobs) < 2:
@@ -5499,10 +5589,149 @@ class MainWindow(QMainWindow):
                        "stopped": None}
         if p.active not in self._multi["snaps"]:
             self._multi["snaps"][p.active] = self.session.snapshot()
+        self._multi["parallel"] = True
+        self._multi["jobs"] = []            # all of them start now (I141)
+        # one worker per camera, each seeded at ITS frame of this instant: built by
+        # the ordinary start path in each camera in turn, then run together
+        from kinetrace.tracker import MultiTrackingWorker
+        orig, orig_frame = p.active, self.current
+        built = []
+        for job in jobs:
+            v = job["view"]
+            if v >= p.n_views:
+                continue
+            if p.active != v:
+                self._set_active_view(v)
+            self._goto(job["frame"], force=True)
+            pids = [q for q in job["pids"] if q < self.session.n_points]
+            w = self._start_tracking(stop_after=job["stop"], only_pids=pids, quiet=True, build_only=True)
+            if w is None:
+                self._multi["results"].append({"view": v, "last": None, "why": "nothing to start from"})
+                continue
+            built.append((v, w, int(job["frame"])))
+        main = next((b for b in built if b[0] == orig), built[0] if built else None)
+        if main is None:
+            self._multi_finish()
+            return
+        if p.active != main[0]:
+            self._set_active_view(main[0])
+        self._goto(main[2] if main[0] != orig else orig_frame, force=True)
+        order = [main] + [b for b in built if b is not main]
+        runs = [(v, _SideRun(self, v, w, f, write=v != main[0])) for v, w, f in order]
+        self._multi["runs"] = runs
+        self._side = {v: r for v, r in runs if v != main[0]}
+        drv = MultiTrackingWorker([w for _v, w, _f in order])
+        drv.finished.connect(self._multi_parallel_done)
+        self._launch_run(main[1], driver=drv)
         self.statusBar().showMessage(
-            f"Tracking in {len(jobs)} cameras, one after another: "
-            + ", ".join(p.name(j["view"]) for j in jobs) + " — X stops them all", 8000)
+            f"Tracking in {len(order)} cameras at the same time: "
+            + ", ".join(p.name(v) for v, _w, _f in order) + " — X stops them all", 8000)
+
+    def _render_side(self) -> None:
+        """Draw the newest frame of each other camera of a simultaneous run in its
+        own view, with its points (I141); never more than 16 frames behind."""
+        p = self.project
+        if p is None:
+            return
+        visible = set(self.grid.visible_indices())
+        for v, run in self._side.items():
+            if not run.frames:
+                continue
+            while len(run.frames) > 16:
+                run.frames.popleft()
+            idx, rgb = run.frames.popleft()
+            cv = self.grid.canvas(v)
+            if v >= p.n_views or v not in visible or cv is None:
+                continue
+            s = p.sessions[v]
+            if not (0 <= idx < s.n_frames):
+                continue
+            cv.set_stale(False)
+            cv.set_frame(rgb)
+            if s.animal is not None and s.masks is not None and self.btn_mask.isChecked():
+                cv.set_mask(s.masks.contours.get(idx), s.animal.color, self._mask_opacity)
+            cv.set_points(s.positions_at(idx), s.visibility[idx], s.points, None,
+                          occluded=s.occluded[idx], radii=s.radius[idx])
+            self.grid.set_caption(v, f"{p.name(v)}  ·  frame {idx} · tracking")
+
+    def _multi_parallel_done(self) -> None:
+        """Every camera of a simultaneous run has stopped (I141). Their data is in;
+        now each camera's end goes through the ordinary end-of-run handling in
+        turn (a lost point's cut, messages; `_multi_replay_next`), then the one
+        Ctrl+Z and the summary (`_multi_finish`)."""
+        st = self._multi
+        side, self._side = self._side, None
+        if side:
+            for run in side.values():           # the last pictures up
+                while len(run.frames) > 1:
+                    run.frames.popleft()
+            self._side = side
+            self._render_side()
+            self._side = None
+        if st is None or not st.get("parallel"):
+            # closing or torn down: the cameras' rows are written; just end the run
+            _retire(self.worker)
+            self.worker = None
+            self.state = READY
+            return
+        _retire(self.worker)
+        self.worker = None
+        st["replay"] = list(st.get("runs", []))
+        st["user_paused"] = bool(getattr(self, "_user_paused", False))
+        self._user_paused = False
+        self.state = READY
         self._multi_next()
+
+    def _multi_replay_next(self) -> None:
+        """The next camera of a finished simultaneous run: switch to it and hand
+        its end to `_on_track_finished` / `_on_track_error`, exactly as if it had
+        just run there (they come back through `_multi_next`)."""
+        st = self._multi
+        p = self.project
+        while st["replay"]:
+            v, run = st["replay"].pop(0)
+            if v >= p.n_views:
+                continue
+            if p.active != v:
+                self._set_active_view(v)
+            st["current"] = v
+            self.worker = run.worker            # its _autopause_reason, _ball_ended, decode_failed_at
+            self._autopause_info = run.autopause
+            self._track_pids = run.pids
+            self._run_start = run.start
+            self._step_run = bool(st["step"])
+            self._user_paused = bool(st["user_paused"] and run.paused)
+            self.state = TRACKING
+            if run.error is not None:
+                self._on_track_error(run.error)
+            else:
+                self._on_track_finished(run.last if run.last is not None else run.start - 1, run.paused)
+            return
+        self._multi_finish()
+
+    def _say_single_camera(self, jobs: list) -> None:
+        """Track ▾ → Every camera is ticked but only one camera can start here:
+        say which camera lacks what, so it does not look like a broken option (G32)."""
+        p = self.project
+        scope, _n = self._run_scope()
+        names = sorted({self.session.points[i].name for i in (scope if scope is not None else
+                        range(self.session.n_points)) if i < self.session.n_points
+                        and not self.session.points[i].derived})
+        have = {j["view"] for j in jobs}
+        if p.active not in have:
+            return                  # nothing starts here at all: the ordinary message says so
+        miss = []
+        for v in p.others():
+            if v in have:
+                continue
+            fv = p.map_frame(p.active, v, self.current)
+            miss.append(f"{p.name(v)} has no position for {', '.join(names) or 'them'} on its frame {fv}"
+                        if fv is not None else f"{p.name(v)} has no frame at this instant")
+        if miss:
+            self.toast.show_message(
+                "Every camera: only this camera can start from here — " + "; ".join(miss)
+                + ". Place the point there (select it and click it in that camera), or go to a frame where "
+                "every camera has it, then press Track again.", "warn", 12000)
 
     def _multi_next(self) -> None:
         st = self._multi
@@ -5510,6 +5739,9 @@ class MainWindow(QMainWindow):
             return
         if self.state != READY:
             QTimer.singleShot(100, self._multi_next)
+            return
+        if st.get("parallel"):
+            self._multi_replay_next()
             return
         p = self.project
         while st["jobs"]:
@@ -5544,7 +5776,9 @@ class MainWindow(QMainWindow):
             return
         user_stop = st["stopped"] in ("user", "error")
         problem = next((r for r in st["results"] if r.get("fail") is not None), None)
-        if not user_stop:
+        if st.get("parallel") and user_stop:
+            problem = None      # X stopped every camera at once: back to the one watched (I141)
+        if not user_stop or st.get("parallel"):
             if problem is not None:
                 if p.active != problem["view"]:
                     self._set_active_view(problem["view"])
@@ -5596,9 +5830,12 @@ class MainWindow(QMainWindow):
             self.btn_track.setEnabled(False)
             self.worker.request_pause()
 
-    def _start_tracking(self, stop_after: int | None = None, only_pids=None, quiet: bool = False):
+    def _start_tracking(self, stop_after: int | None = None, only_pids=None, quiet: bool = False,
+                        build_only: bool = False):
         """`only_pids` overrides the panel selection (automatic runs); `quiet`
-        skips the overwrite guard and keeps the caller's undo snapshot."""
+        skips the overwrite guard and keeps the caller's undo snapshot;
+        `build_only` returns the worker, unstarted (None when nothing can start),
+        for a simultaneous every-camera run (I141)."""
         s = self.session
         scope, _n_sel = self._run_scope()   # panel selection limits the run
         if only_pids is not None:
@@ -5700,24 +5937,35 @@ class MainWindow(QMainWindow):
                 "with Add ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
             return
         end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
-        self.worker = TrackingWorker(self.info.path, self.current, None, None,
-                                     self.cache, end, refine=True,
-                                     specs=specs,
-                                     roi=self.btn_roi.isChecked(),
-                                     autopause=self.btn_autopause.isChecked(),
-                                     animal=animal, derived=derived, head_pid=head_pid,
-                                     on_body_pids=on_body, constrain_pids=constrain,
-                                     point_backend=self._point_backend, balls=balls)
-        self.worker.balls_ready.connect(self._on_ball_radii)
-        self.worker.model_loading.connect(self._on_model_loading)
-        self.worker.started_ok.connect(self._on_track_started)
-        self.worker.masks_ready.connect(self._on_masks)
-        self.worker.chunk_ready.connect(self._on_chunk)
-        self.worker.autopaused.connect(self._on_autopaused)
-        self.worker.finished_ok.connect(self._on_track_finished)
-        self.worker.error.connect(self._on_track_error)
-        self._track_pids = list(self.worker.point_ids)
-        self._run_had_animal = animal is not None
+        w = TrackingWorker(self.info.path, self.current, None, None,
+                           self.cache, end, refine=True,
+                           specs=specs,
+                           roi=self.btn_roi.isChecked(),
+                           autopause=self.btn_autopause.isChecked(),
+                           animal=animal, derived=derived, head_pid=head_pid,
+                           on_body_pids=on_body, constrain_pids=constrain,
+                           point_backend=self._point_backend, balls=balls)
+        if build_only:
+            return w                    # one camera of a simultaneous run (I141)
+        self._launch_run(w)
+
+    def _launch_run(self, w, driver=None) -> None:
+        """Wire a built worker to the working camera's live display and start it.
+        With `driver` (a MultiTrackingWorker, I141) the driver is started instead,
+        and the worker's end goes to the every-camera coordinator, not straight to
+        the end-of-run handling."""
+        self.worker = driver if driver is not None else w
+        w.balls_ready.connect(self._on_ball_radii)
+        w.model_loading.connect(self._on_model_loading)
+        w.started_ok.connect(self._on_track_started)
+        w.masks_ready.connect(self._on_masks)
+        w.chunk_ready.connect(self._on_chunk)
+        if driver is None:
+            w.autopaused.connect(self._on_autopaused)
+            w.finished_ok.connect(self._on_track_finished)
+            w.error.connect(self._on_track_error)
+        self._track_pids = list(w.point_ids)
+        self._run_had_animal = w.animal is not None
         self._autopause_info = None
         self._member_frames.clear()
         self._run_start = self.current
@@ -5729,6 +5977,8 @@ class MainWindow(QMainWindow):
         self.progress.setValue(self.current)
         self._track_label.setText("starting…")
         self.worker.start()
+        if driver is not None:
+            self._render_timer.start()          # the other cameras draw from the start
 
     def _on_model_loading(self):
         from kinetrace.segmenter import loaded_backends
@@ -5799,6 +6049,8 @@ class MainWindow(QMainWindow):
             self._track_label.setText(f"{kind}tracking {self._fps_ema:.1f} fps · ETA {eta}")
 
     def _render_tick(self):
+        if self._side:
+            self._render_side()                 # the other cameras of a simultaneous run (I141)
         if not self._display_queue:
             if self.state != TRACKING:
                 self._render_timer.stop()
@@ -5853,7 +6105,9 @@ class MainWindow(QMainWindow):
                 # X / Space stops the WHOLE run where it is (the camera and frame on
                 # screen), as it does an automatic re-track (I107)
                 st["stopped"] = "user"
-                QTimer.singleShot(0, self._multi_finish)
+                # a simultaneous run (I141) stopped every camera at once: each one's
+                # end is still handled (cut, messages); the sequential queue stops here
+                QTimer.singleShot(0, self._multi_next if st.get("parallel") else self._multi_finish)
             else:
                 QTimer.singleShot(0, self._multi_next)
         if self._retrack is not None:
@@ -5985,8 +6239,12 @@ class MainWindow(QMainWindow):
             # the run stops where the error happened
             self._multi["results"].append({"view": self._multi.get("current"), "last": None,
                                            "why": "an error stopped it"})
-            self._multi["stopped"] = "error"
-            QTimer.singleShot(0, self._multi_finish)
+            if self._multi.get("parallel"):
+                # the other cameras of a simultaneous run went on (I141): handle theirs
+                QTimer.singleShot(0, self._multi_next)
+            else:
+                self._multi["stopped"] = "error"
+                QTimer.singleShot(0, self._multi_finish)
         if self._retrack is not None:
             st = self._retrack
             self._retrack = None

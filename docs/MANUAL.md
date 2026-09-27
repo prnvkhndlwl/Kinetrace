@@ -1138,17 +1138,20 @@ marker) is placed in several cameras, you do not have to track it camera by
 camera: tick **Track ▾ → Every camera** and the Track button says how many
 cameras a run will cover ("Track ▶ · 3 cams"). Press Track (**T**) and the
 selected points — or all of them, as usual — are tracked in each camera that has
-them at this instant, one camera after another, each run on screen as it
-happens; a camera where a point was not placed is simply skipped for that
-point. In semi-automatic mode **F** steps one frame in every camera. **Shift+T**
-does one such run without ticking anything. **X** stops it there: the cameras
-after the one being tracked are left for later (the notice names them). One
-**Ctrl+Z** undoes the whole run in every camera. If a point is lost in one of
-the cameras, the others are still tracked, and at the end the playhead goes to
-the camera and frame where it was lost, as after any auto-pause. (The cameras
-run one after another rather than side by side because each 4K run needs most
-of the graphics card's memory and the whole disk, and so that you can always see
-and stop what is being tracked.)
+them at this instant, **all cameras at the same time**, each one moving on live
+in its own view; a camera where a point was not placed is simply skipped for
+that point. The Track ▾ menu stays open while you tick, so the run mode
+(Automatic / Semi-automatic), **Every camera** and the point model (AllTracker /
+CoTracker3) can all be chosen in one visit; they combine. If only the camera you
+are working in has the point at this instant, Track says which camera lacks it
+(and on which frame) and tracks this camera alone. In semi-automatic mode **F**
+steps one frame in every camera. **Shift+T** does one such run without ticking
+anything. **X** stops every camera at once. One **Ctrl+Z** undoes the whole run
+in every camera. If a point is lost in one of the cameras, the others are still
+tracked, and at the end the playhead goes to the camera and frame where it was
+lost, as after any auto-pause. (The cameras take turns on the graphics card a
+frame at a time, so a run needs the memory of one camera, not of all of them,
+and each camera's result is exactly what tracking it alone gives.)
 
 ### Calibrating the cameras yourself: the wand
 
@@ -2607,8 +2610,8 @@ view keys work. Hover over any button or menu entry to see what it does.
 | Key | Does |
 |---|---|
 | **Track ▶** or **T** | start tracking from this frame (with Track ▾ → **Every camera**: in each camera that has the points) |
-| **Shift+T** | several cameras: this run in every camera that has the points here, one after another |
-| **X** or **Space** | stop (during **3D → Re-track Disagreeing Stretches** it stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run the cameras after this one are left for later) |
+| **Shift+T** | several cameras: this run in every camera that has the points here, all at the same time |
+| **X** or **Space** | stop (during **3D → Re-track Disagreeing Stretches** it stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run it stops every camera at once) |
 | **F** (semi-automatic mode) | track exactly one frame (in every camera with Track ▾ → Every camera) |
 | **Ctrl+Z** | undo the last run, bulk edit or hand edit — a click, drag, Ctrl+click, deleted point or Shift+X (one step only) |
 

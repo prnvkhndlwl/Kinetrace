@@ -326,6 +326,50 @@ def fit_group(seed_pts: np.ndarray, seed_center: np.ndarray, cur_pts: np.ndarray
     return center, visible, min(conf, 1.0)
 
 
+def _drain(gen):
+    """Run a step generator to its end and return its return value (I141)."""
+    while True:
+        try:
+            next(gen)
+        except StopIteration as e:
+            return e.value
+
+
+class MultiTrackingWorker(QThread):
+    """Several cameras' TrackingWorkers tracked AT THE SAME TIME (I141, owner
+    2026-09-27: "only the current active camera tracks"). They are advanced in
+    turn on this ONE thread, a frame each (`TrackingWorker.steps`): every camera
+    moves on together and draws live, each worker decodes on its own read-ahead
+    thread, one model step runs on the GPU at a time (so the memory of ONE run,
+    whatever the camera count), and each worker emits its own signals exactly
+    as if it ran alone -- its output is bit-identical to a run of its own.
+    `request_pause` stops every camera at once. The workers are never started as
+    threads themselves; this thread ends when the last of them has."""
+
+    def __init__(self, workers: list):
+        super().__init__()
+        self.workers = list(workers)
+        for w in self.workers[1:]:
+            w.private_model = True
+
+    def request_pause(self) -> None:
+        for w in self.workers:
+            w.request_pause()
+
+    def run(self) -> None:
+        live = [(w, w.steps()) for w in self.workers]
+        try:
+            while live:
+                for item in list(live):
+                    try:
+                        next(item[1])
+                    except StopIteration:
+                        live.remove(item)
+        finally:
+            for _w, g in live:          # only on an unexpected exit: each closes its reader / video
+                g.close()
+
+
 class TrackingWorker(QThread):
     """Tracks all seeded points forward from start_frame until EOF or pause."""
 
@@ -428,12 +472,26 @@ class TrackingWorker(QThread):
     def request_pause(self) -> None:
         self._pause = True
 
+    # set by MultiTrackingWorker for every camera after the first: its own copy of
+    # the CoTracker3 model (the online wrapper keeps a run's state on the model)
+    private_model = False
+
     # ------------------------------------------------------------------ run
 
     def run(self) -> None:
+        for _ in self.steps():          # the whole run on this worker's own thread
+            pass
+
+    def steps(self):
+        """The run as a generator that yields after every frame it reads (I141).
+        `run()` drains it on this worker's thread; `MultiTrackingWorker` advances
+        several workers' generators in turn on ONE thread, so every camera tracks
+        at the same time. Only the pauses between frames differ -- the same frames,
+        model calls and signals -- so the output is bit-identical either way."""
         src = None
         try:
-            self._run(src := self._open_source())
+            src = self._open_source()
+            yield from self._run_steps(src)
         except VideoDecodeError as e:
             self.error.emit(str(e))     # a sentence for the user, not a traceback
         except Exception:
@@ -448,6 +506,9 @@ class TrackingWorker(QThread):
         return src
 
     def _run(self, src: VideoSource) -> None:
+        _drain(self._run_steps(src))
+
+    def _run_steps(self, src: VideoSource):
         self.model_loading.emit()
         model = device = None
         if self.specs:
@@ -455,6 +516,12 @@ class TrackingWorker(QThread):
                 model, device = at_backend.get_alltracker()
             else:
                 model, device = get_model()
+                if self.private_model:
+                    # CoTracker3's online wrapper keeps the run's queries and window
+                    # state on the model object: runs interleaved on one thread each
+                    # need their own copy (same weights, so the same numbers; I141)
+                    import copy
+                    model = copy.deepcopy(model)
 
         probe = src.get_frame(self.start_frame)
         if probe is None:
@@ -473,7 +540,7 @@ class TrackingWorker(QThread):
         if not self.specs:
             # animal / balls only: no point tracker — segment every frame, derive landmarks
             self.started_ok.emit()
-            last = self._run_animal_only(src, self.start_frame)
+            last = yield from self._animal_only_steps(src, self.start_frame)
             if self._autopause_hit is not None:
                 self.autopaused.emit(*self._autopause_hit)
             elif self.decode_failed_at is not None:
@@ -512,7 +579,7 @@ class TrackingWorker(QThread):
         first_seg = True
         last_emitted = self.start_frame - 1
         while True:
-            reason, last_emitted, next_seeds = self._run_segment(
+            reason, last_emitted, next_seeds = yield from self._segment_steps(
                 src, model, device, seg_start, specs, col_idx, first_seg, last_emitted)
             if reason != "restart":
                 break
@@ -531,7 +598,7 @@ class TrackingWorker(QThread):
                     # ball markers go on: continue with masks + derived
                     # landmarks + balls only (balls without a segment used to
                     # stop here, short of the video's end -- I120)
-                    last_emitted = self._run_animal_only(src, last_emitted + 1)
+                    last_emitted = yield from self._animal_only_steps(src, last_emitted + 1)
                 break
             if last_emitted - seg_start < ROI_GROW_SEGMENT:
                 self._crop_growth *= ROI_GROW_FACTOR  # crop too tight for the motion
@@ -643,7 +710,13 @@ class TrackingWorker(QThread):
     def _run_segment(self, src: VideoSource, model, device: str, seg_start: int,
                      specs: list[PointSpec], col_idx: list[int], first_seg: bool,
                      last_emitted: int):
-        """One online-model segment (fixed queries, fixed crop). Returns
+        return _drain(self._segment_steps(src, model, device, seg_start, specs, col_idx,
+                                          first_seg, last_emitted))
+
+    def _segment_steps(self, src: VideoSource, model, device: str, seg_start: int,
+                       specs: list[PointSpec], col_idx: list[int], first_seg: bool,
+                       last_emitted: int):
+        """(A generator: yields after every frame, I141.) One online-model segment (fixed queries, fixed crop). Returns
         (reason, last_emitted, restart_seeds) with reason in
         {"eof", "pause", "autopause", "restart"}. Emitted arrays keep the
         run's original column count; specs[a] fills column col_idx[a]."""
@@ -883,6 +956,7 @@ class TrackingWorker(QThread):
                     else:
                         out = self._model_step(model, list(window), device, False, None)
                         emit_rows(out, n)
+                yield                           # a frame done: another camera's turn (I141)
 
         finally:
             reader.stop()   # hand src back before any seek / reuse / close
@@ -1440,9 +1514,13 @@ class TrackingWorker(QThread):
             self.masks_ready.emit(summaries)
 
     def _run_animal_only(self, src: VideoSource, start: int) -> int:
+        return _drain(self._animal_only_steps(src, start))
+
+    def _animal_only_steps(self, src: VideoSource, start: int):
         """Segment every frame from `start` (no point tracker): masks, midline
         and derived landmarks, emitted in 8-frame chunks. Returns the last
-        emitted frame (start - 1 if none)."""
+        emitted frame (start - 1 if none). A generator: yields after every
+        frame (I141)."""
         step = 8
         nw, nh = self._frame_wh
         disp_scale = min(1.0, WORKING_MAX_DIM / max(nw, nh))
@@ -1492,6 +1570,7 @@ class TrackingWorker(QThread):
                 buf.append(abs_idx)
                 if len(buf) >= step:
                     flush()
+                yield                           # (I141)
         finally:
             reader.stop()
         if read_end is not None:

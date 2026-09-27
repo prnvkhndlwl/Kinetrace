@@ -1,14 +1,18 @@
-"""Offscreen GUI: one Track press tracks the points in EVERY camera (G29, GPU group).
+"""Offscreen GUI: one Track press tracks the points in EVERY camera (G29, I141, GPU group).
 
 Three synthetic cameras, each with a white dot (a tracked point) and an orange
 ball (a ball marker, SAM + circle fit). The dot is placed in two cameras, the
 ball in all three. With Track > Every camera ticked:
   the Track button says how many cameras a run covers; T tracks camA, camB and
-  camC one after another (the dot where it was placed, the ball everywhere),
-  each within a few px of the truth, and ends back in camA;
+  camC AT THE SAME TIME (I141: all three under way before any is done, the
+  working camera never switches mid-run, the others drawn live), the dot where
+  it was placed, the ball everywhere, each within a few px of the truth, and
+  ends in camA;
+  each camera tracked ALONE gives exactly the same numbers (bit-identical);
   one Ctrl+Z undoes the run in every camera;
   semi-automatic F steps ONE frame in every camera;
-  X during the run stops the whole queue (the cameras after it are left alone).
+  X during the run stops every camera at once, at about the same frame;
+  with only one camera able to start, Track says which camera lacks what (G32).
 
 Run: .venv\\Scripts\\python.exe tests\\verify_track_all.py
 """
@@ -129,19 +133,34 @@ assert "cams" not in win.btn_track.text(), "off by default"
 win.act_track_all.setChecked(True)
 pump(0.05)
 assert win.btn_track.text().endswith("· 3 cams"), win.btn_track.text()
+def progress(v):
+    s = p.sessions[v]
+    fr = np.nonzero(s.tracked[:, s.pid_by_name(name_ball)])[0]
+    return int(fr.max()) if len(fr) else -1
+
+
+side_draws = [0]
+_real_side = win._render_side
+win._render_side = lambda: (side_draws.__setitem__(0, side_draws[0] + 1), _real_side())[1]
 t0 = time.time()
 QTest.keyClick(win, Qt.Key_T)
-wait(lambda: win._multi is not None or win.state == TRACKING, 30, "the queue starts")
-seen = set()
+wait(lambda: win._multi is not None or win.state == TRACKING, 30, "the run starts")
+seen, together = set(), False
 while win._multi is not None or win.state != READY:
     if win.state == TRACKING:
         seen.add(p.active)
+        prog = [progress(v) for v in range(3)]
+        if min(prog) > F0 + 4 and max(prog) < N - 1:
+            together = True             # every camera under way, none finished yet
     pump(0.05)
     if time.time() - t0 > 900:
         raise TimeoutError("the multi-camera run")
 pump(0.3)
-assert seen == {0, 1, 2}, f"every camera was tracked, one after another: {seen}"
-assert p.active == 0, "back in the working camera"
+assert together, "the cameras were not tracked at the same time (I141)"
+assert seen == {0}, f"the working camera stays the working camera during the run: {seen}"
+assert side_draws[0] > 3, "the other cameras are drawn live in their own views"
+assert p.active == 0, "ends in the working camera"
+del win._render_side
 
 
 def err(s, v, nm, truth, frames):
@@ -168,8 +187,10 @@ for v, s in enumerate(p.sessions):
         assert not s.tracked[:, s.pid_by_name(name_dot)].any(), "camC never had the dot: nothing to track"
     print(f"  cam{v}: ball {nb} frames median {eb:.2f} px" + (f", dot {nd} frames median {ed:.2f} px" if v < 2 else ""))
 assert "Tracked in every camera" in win.toast.text(), win.toast.text()
-print(f"G29: one T tracked the point in the 2 cameras that have it and the ball in all 3, one camera after "
-      f"another, back in camA ({time.time() - t0:.0f} s) OK")
+print(f"I141: one T tracked the point in the 2 cameras that have it and the ball in all 3, all at the same "
+      f"time, drawn live, ending in camA ({time.time() - t0:.0f} s) OK")
+TOGETHER = {v: {k: getattr(p.sessions[v], k).copy() for k in ("tracks", "confidence", "radius", "visibility",
+                                                               "tracked", "manual")} for v in range(3)}
 
 # ---- 2. one Ctrl+Z, every camera -------------------------------------------------------
 win._undo_run()
@@ -179,6 +200,31 @@ for v, s in enumerate(p.sessions):
     assert int(s.tracked[:, jb].sum()) == 1 and s.tracked[F0, jb], f"cam{v}: the ball is back to its one click"
     assert int(s.tracked[:, jd].sum()) == (1 if v < 2 else 0), f"cam{v}: the dot is back to its click"
 print("G29: one Ctrl+Z undoes the run in every camera OK")
+
+# ---- 2b. each camera ALONE: exactly the numbers of the simultaneous run (I141) ----------
+win.act_track_all.setChecked(False)
+for v in range(3):
+    win._set_active_view(v)
+    pump(0.2)
+    win._goto(F0)
+    win._deselect()
+    win.point_list.clearSelection()
+    pump(0.1)
+    win._toggle_tracking()
+    wait(lambda: win.state == READY and win.worker is None, 300, f"cam{v} alone")
+    pump(0.2)
+for v in range(3):
+    s = p.sessions[v]
+    for k, a in TOGETHER[v].items():
+        b = getattr(s, k)
+        same = np.array_equal(a, b, equal_nan=True) if a.dtype.kind == "f" else np.array_equal(a, b)
+        assert same, f"cam{v} {k}: tracked alone differs from tracked together"
+win._set_active_view(0)
+pump(0.2)
+for s in p.sessions:                    # back to the clicks for the next part
+    s.clear_window(list(range(s.n_points)), F0 + 1, N - 1)
+win.act_track_all.setChecked(True)
+print("I141: each camera tracked alone gives exactly the same tracks, confidence, radii and flags OK")
 
 # ---- 3. semi-automatic: F steps one frame in every camera -------------------------------
 win._goto(F0)                       # the run ended on its last frame; after the undo only F0 has data
@@ -196,18 +242,71 @@ for v, s in enumerate(p.sessions):
 assert p.active == 0 and win.current == F0 + 1, (p.active, win.current)
 print("G29: semi-automatic F steps one frame in every camera and stays in camA OK")
 
-# ---- 4. X stops the whole run ---------------------------------------------------------
+# ---- 4. X stops every camera at once (I141) ------------------------------------------
 win.act_mode_auto.trigger()
 QTest.keyClick(win, Qt.Key_T)
-wait(lambda: win.state == TRACKING and p.active == 0, 120, "camA tracking")
-pump(0.5)
+wait(lambda: win.state == TRACKING and p.active == 0, 120, "the run")
+wait(lambda: min(progress(v) for v in range(3)) > F0 + 4, 120, "every camera under way")
 win._pause_tracking()
 wait(lambda: win._multi is None and win.state == READY, 120, "the stop")
 pump(0.2)
-jb = sb.pid_by_name(name_ball)
-assert not sb.tracked[F0 + 2:, jb].any(), "camB was never started after X"
-assert "Stopped" in win.toast.text() and "Not tracked yet" in win.toast.text(), win.toast.text()
-print("G29: X during the run stops every camera after the current one OK")
+lasts = [progress(v) for v in range(3)]
+assert all(x > F0 + 4 for x in lasts) and max(lasts) < N - 1, f"every camera tracked until the stop: {lasts}"
+assert max(lasts) - min(lasts) <= 16, f"they stop at about the same frame: {lasts}"
+assert "Stopped" in win.toast.text() and "Not tracked yet" not in win.toast.text(), win.toast.text()
+assert p.active == 0, "back in the camera being watched"
+print(f"I141: X stops every camera at once (last frames {lasts}) OK")
+
+# ---- 5. Every camera ticked, only this camera can start: said, not silent (G32) ------------
+jd_a, jd_b = sa.pid_by_name(name_dot), sb.pid_by_name(name_dot)
+f_a = int(np.nonzero(sa.tracked[:, jd_a])[0].max())
+win._goto(f_a)
+pump(0.2)
+fb = p.map_frame(0, 1, f_a)
+kept = bool(sb.tracked[fb, jd_b])
+sb.tracked[fb, jd_b] = False            # camB lacks the dot on its frame of this instant
+win.point_list.clearSelection()
+win.point_list.setCurrentRow(jd_a)
+win.point_list.item(jd_a).setSelected(True)
+called = []
+win._start_tracking = lambda *a, **k: called.append(k)
+win._toggle_tracking()
+del win._start_tracking
+sb.tracked[fb, jd_b] = kept
+txt = win.toast.text()
+assert called == [{}], f"the working camera still tracks, alone: {called}"
+assert "only this camera can start" in txt and "camB has no position for " + name_dot in txt \
+    and "camC has no position" in txt, txt
+print("G32: Every camera with one camera able to start says which cameras lack the point OK")
+
+# ---- 6. the driver itself: CoTracker3 (a private model per camera) and a broken camera ------
+from kinetrace.tracker import MultiTrackingWorker, TrackingWorker  # noqa: E402
+from kinetrace.video_source import FrameCache  # noqa: E402
+
+
+def worker(c, path=None):
+    w = TrackingWorker(path or paths[c], F0, dot_r[c, F0].astype(np.float32)[None], [0], FrameCache(256 << 20),
+                       N, autopause=False, point_backend="cotracker3")
+    out = {"tr": np.full((N, 1, 2), np.nan, np.float32), "cf": np.zeros((N, 1), np.float32), "err": None}
+    w.chunk_ready.connect(lambda w0, tr, vi, cf, mem, fr, o=out: (o["tr"].__setitem__(slice(w0, w0 + len(tr)), tr),
+                                                                   o["cf"].__setitem__(slice(w0, w0 + len(cf)), cf)))
+    w.error.connect(lambda m, o=out: o.__setitem__("err", m))
+    return w, out
+
+
+solo = []
+for c in (0, 1):
+    w, o = worker(c)
+    w.run()                                   # on this thread: the signals arrive directly
+    solo.append(o)
+ws = [worker(0), worker(1), worker(2, os.path.join(OUT, "no_such_video.mp4"))]
+MultiTrackingWorker([w for w, _o in ws]).run()
+for c in (0, 1):
+    a, b = solo[c], ws[c][1]
+    assert b["err"] is None and np.array_equal(a["tr"], b["tr"], equal_nan=True) and np.array_equal(a["cf"], b["cf"]), \
+        f"cam{c}: CoTracker3 together differs from alone"
+assert ws[2][1]["err"] and np.isnan(ws[2][1]["tr"]).all(), "the broken camera reports its error and writes nothing"
+print("I141: the driver runs CoTracker3 cameras bit-identically to alone, and a broken camera stops only itself OK")
 
 win._dev_probe.wait(15000)
 win.close()

@@ -350,6 +350,66 @@ assert _g6["f1"] == _g6["f0"] and _g6["n1"] == _g6["n0"], f"hotkeys acted behind
 assert QApplication.activePopupWidget() is None, "Escape did not close the menu"
 print("an open menu keeps the keyboard: Escape closes it, nothing acts behind it OK")
 
+# ---- G32: the Track menu takes several choices in one visit --------------------------
+# The offscreen screen is 800 px wide and the Track menu's labels are wider; a menu
+# wider than the screen loses Qt's own hit testing there (a real screen is wider).
+# So the labels are shortened for this test only, and real QTest clicks and keys
+# go to the menu; a watchdog closes it if anything fails (an assert, not a hang).
+from kinetrace.app import _ChoiceMenu  # noqa: E402
+_g32 = {}
+_backend0 = win._point_backend
+_texts = {a: a.text() for a in win.btn_track.menu().actions() if a.text()}
+for _a in _texts:
+    _a.setText(_a.text()[:28])
+
+
+def _choices_in_menu():
+    pop = QApplication.activePopupWidget()
+    _g32["open"] = isinstance(pop, _ChoiceMenu)
+    if not _g32["open"]:
+        return
+    for key, act in (("all", win.act_track_all), ("cot", win.act_pm_cotracker), ("semi", win.act_mode_semi)):
+        QTest.mouseClick(pop, Qt.LeftButton, Qt.NoModifier, pop.actionGeometry(act).center())
+        _g32[key] = (pop.isVisible(), act.isChecked())
+    pop.setActiveAction(win.act_mode_auto)
+    QTest.keyClick(pop, Qt.Key_Return)              # the keyboard ticks too, and it stays open
+    _g32["auto"] = (pop.isVisible(), win.act_mode_auto.isChecked())
+    _g32["together"] = (win.act_track_all.isChecked(), win._point_backend, win._track_mode)
+    QTest.keyClick(pop, Qt.Key_Escape)
+    _g32["esc"] = not pop.isVisible()
+
+
+def _watchdog():
+    m = win.btn_track.menu()
+    if m.isVisible():
+        _g32["watchdog"] = True
+        m.hide()
+
+
+QTimer.singleShot(300, _choices_in_menu)
+QTimer.singleShot(3000, _watchdog)
+# a disabled Track button disables its menu too: give this frame something to track
+_pid = win.session.add_point(win.current, 60.0, 60.0)
+win._refresh_point_list()
+win._update_track_button()
+assert win.btn_track.isEnabled(), "Track is enabled with a point on this frame"
+win.btn_track.showMenu()                        # blocks until the menu closes
+pump()
+win.session.remove_point(_pid)
+win._refresh_point_list()
+win._update_track_button()
+for _a, _t in _texts.items():
+    _a.setText(_t)
+assert _g32.get("open"), "the Track menu did not open"
+for key in ("all", "cot", "semi", "auto"):
+    assert _g32.get(key) == (True, True), f"ticking '{key}' closed the menu or did not tick: {_g32}"
+assert _g32["together"] == (True, "cotracker3", "auto"), f"the choices combine: {_g32['together']}"
+assert _g32.get("esc") and not _g32.get("watchdog"), f"Escape closes the Track menu: {_g32}"
+win.act_track_all.setChecked(False)
+(win.act_pm_alltracker if _backend0 == "alltracker" else win.act_pm_cotracker).trigger()
+win.act_mode_auto.trigger()
+print("the Track menu stays open while you tick: mode, Every camera and point model combine (G32) OK")
+
 # ---- one canvas tool at a time: Pan / Add / Segment put each other down ----------
 for b in (win.btn_pan, win.btn_add, win.btn_animal):
     b.setChecked(False)
