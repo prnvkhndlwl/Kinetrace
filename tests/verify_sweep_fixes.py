@@ -336,7 +336,7 @@ print("editing an offset in the panel clears the stale 3D result (I23) OK")
 
 sA = win.project.sessions[0]
 sA.ensure_animal()
-win._preview = SimpleNamespace(target_session=sA, wait=lambda ms: None)
+win._preview = SimpleNamespace(target_session=sA, wait=lambda ms: None, isRunning=lambda: False)
 win._set_active_view(1) if win.project.active == 0 else None
 pump(0.2)
 mask = np.zeros((240, 320), bool)
@@ -639,7 +639,8 @@ print("selecting a derived landmark explains it (M2) OK")
 bp = win.session.add_ball(0, 200.0, 100.0)
 win._refresh_point_list()
 win.state = appmod.TRACKING
-win.worker = SimpleNamespace(wait=lambda t: True, _autopause_reason="", _ball_ended={bp: (12, "lost")})
+win.worker = SimpleNamespace(wait=lambda t: True, isRunning=lambda: False, _autopause_reason="",
+                             _ball_ended={bp: (12, "lost")})
 win._autopause_info = None
 win._run_start = 0
 win._on_track_finished_impl(20, False)
@@ -779,6 +780,87 @@ for f in (pj_path, pj_path + ".bak"):
         os.remove(f)
 print("autosave keeps the project file as saved; Save retires it; a declined one is kept aside (I129) OK")
 forget_recovery(VA)
+
+# ---------------------------------------------------------------- I133
+# A run's result signal arrives while its thread is still cleaning up (a capture
+# release that stalls on a network share): the handler's 2 s wait times out and
+# the app used to drop its last reference to the RUNNING thread -- Qt then aborts
+# the whole process (0xC0000409). Each case runs in its own process, in parallel.
+I133_CHILD = r'''
+import os, sys, time
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+sys.path.insert(0, sys.argv[1])
+import numpy as np
+from PySide6.QtWidgets import QApplication, QMessageBox
+for _n in ("question", "warning", "information", "critical"):
+    setattr(QMessageBox, _n, staticmethod(lambda *a, **k: QMessageBox.No))
+app = QApplication([])
+from kinetrace import app as appmod, tracker
+from kinetrace.app import MainWindow, READY, TRACKING
+from kinetrace.segmenter import summarize_mask
+mode, video = sys.argv[2], sys.argv[3]
+OUTLIVE = 2.6            # longer than the handlers' 2 s wait
+
+def slow_track(self):
+    self.started_ok.emit()
+    if mode == "track-error":
+        self.error.emit("a plain sentence")
+    else:
+        self.finished_ok.emit(self.start_frame, False)
+    time.sleep(OUTLIVE)
+
+def slow_preview(self):
+    if mode == "preview-error":
+        self.error.emit("a traceback")
+    else:
+        summ = summarize_mask(np.zeros((240, 320), bool), (1.0, 1.0), 0.0)
+        summ["frame"] = self._frame
+        self.done.emit(summ)
+    time.sleep(OUTLIVE)
+
+tracker.TrackingWorker.run = slow_track
+appmod._MaskPreviewWorker.run = slow_preview
+win = MainWindow()
+win.show()
+
+def pump(cond, sec):
+    t = time.time()
+    while time.time() - t < sec and not cond():
+        app.processEvents()
+        time.sleep(0.005)
+    return cond()
+
+win._open_video(video)
+assert pump(lambda: win.state == READY, 20), "video did not open"
+if mode.startswith("track"):
+    win.session.add_point(0, 100.0, 100.0)
+    win._refresh_point_list()
+    win._apply_state()
+    win._toggle_tracking()
+    assert pump(lambda: win.state == TRACKING, 10), "no run started"
+    assert pump(lambda: win.state == READY and win.worker is None, 10), "the handler did not run"
+else:
+    win.session.ensure_animal()
+    win.session.animal.add_click(win.current, 100.0, 100.0, True)
+    win._preview_mask()
+    assert win._preview is not None, "no preview started"
+    assert pump(lambda: win._preview is None, 10), "the handler did not run"
+pump(lambda: False, OUTLIVE + 0.8)       # the thread ends here: it must still be referenced
+win.close()                              # the normal shutdown: every thread stopped / waited for
+pump(lambda: False, 0.3)
+print("survived", mode, flush=True)
+'''
+import subprocess  # noqa: E402
+
+kids = {m: subprocess.Popen([sys.executable, "-c", I133_CHILD, ROOT, m, VA], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, errors="replace",
+                            env=dict(os.environ, KINETRACE_RECOVERY_DIR=os.path.join(OUT, f"i133_{m}")))
+        for m in ("track-finished", "track-error", "preview-done", "preview-error")}
+for m, k in kids.items():
+    out, _ = k.communicate(timeout=180)
+    assert k.returncode == 0 and f"survived {m}" in out, \
+        f"I133 {m}: exit {k.returncode & 0xFFFFFFFF:#x} -- a thread was dropped while running\n{out[-800:]}"
+print("a thread still running after its result is kept alive, not destroyed (I133) OK")
 
 win.close()
 pump(0.3)

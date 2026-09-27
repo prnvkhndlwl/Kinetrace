@@ -3545,6 +3545,7 @@ class MainWindow(QMainWindow):
         target = getattr(self._preview, "target_session", None) if self._preview is not None else None
         if self._preview is not None:
             self._preview.wait(2000)
+            _retire(self._preview)      # still cleaning up: kept until it ends, never destroyed running (I133)
         self._preview = None
         s = target if target is not None else self.session
         if s is None or s.animal is None:
@@ -3575,6 +3576,7 @@ class MainWindow(QMainWindow):
         self._close_loading_dialog()
         if self._preview is not None:
             self._preview.wait(2000)
+            _retire(self._preview)      # (I133)
         self._preview = None
         hint = _model_error_hint(tb)
         self.toast.show_message("Segmentation failed. " + (hint or "See the details dialog."),
@@ -5781,6 +5783,10 @@ class MainWindow(QMainWindow):
         self.worker.wait(2000)
         reason = getattr(self.worker, "_autopause_reason", "")
         ball_ended = dict(getattr(self.worker, "_ball_ended", {}) or {})
+        # the result can arrive while the thread still releases its capture (a
+        # network share can stall that past the wait): keep it until it ends --
+        # dropping the last reference to a running QThread aborts the app (I133)
+        _retire(self.worker)
         self.worker = None
         self.state = READY
         step_run = self._step_run
@@ -5906,6 +5912,7 @@ class MainWindow(QMainWindow):
             self._model_dialog = None
         if self.worker is not None:
             self.worker.wait(2000)
+            _retire(self.worker)        # (I133)
         self.worker = None
         self.state = READY
         self._step_run = False
