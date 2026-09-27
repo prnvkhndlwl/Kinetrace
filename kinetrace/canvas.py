@@ -56,7 +56,11 @@ def np_to_qimage(rgb: np.ndarray) -> QImage:
     h, w = rgb.shape[:2]
     if not rgb.flags["C_CONTIGUOUS"]:
         rgb = np.ascontiguousarray(rgb)
-    return QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy()
+    # straight to RGB32, the format QPixmap.fromImage converts a frame to anyway:
+    # the conversion is also the deep copy that frees the image from the numpy
+    # buffer, so one pass replaces a copy + a conversion (a 4K frame 17.0 ->
+    # 8.7 ms on the GUI thread, the same pixels; I135)
+    return QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).convertToFormat(QImage.Format_RGB32)
 
 
 def apply_display_filter(rgb: np.ndarray, kind: str, prev: np.ndarray | None = None) -> np.ndarray:

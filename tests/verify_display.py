@@ -71,7 +71,34 @@ for kind in ("none", "contrast", "bright", "diff"):
     out = apply_display_filter(rgb, kind, prev)
     assert out.shape == rgb.shape and out.dtype == np.uint8, kind
 assert apply_display_filter(rgb, "diff", None) is rgb, "no previous frame: unfiltered"
-sq = np.array([[-20, -10], [20, -10], [20, 10], [-20, 10]], np.float32)
+# the filters' pixels are exactly the original formulas (I136 made them faster)
+import cv2  # noqa: E402
+_lut = (255.0 * (np.arange(256) / 255.0) ** 0.5).astype(np.uint8)
+assert np.array_equal(apply_display_filter(rgb, "bright", prev), _lut[rgb]), "bright filter pixels"
+_g = cv2.cvtColor(cv2.absdiff(rgb, prev), cv2.COLOR_RGB2GRAY)
+_ref = cv2.cvtColor(np.clip(_g.astype(np.int32) * 4, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2RGB)
+assert np.array_equal(apply_display_filter(rgb, "diff", prev), _ref), "difference filter pixels"
+# the picture on screen holds exactly the frame's pixels, detached from its buffer (I135)
+from PySide6.QtGui import QImage, QPixmap  # noqa: E402
+from kinetrace.canvas import np_to_qimage  # noqa: E402
+
+
+def _shown(a):
+    im = QPixmap.fromImage(np_to_qimage(a)).toImage().convertToFormat(QImage.Format_RGB888)
+    return np.array(im.constBits(), np.uint8).reshape(im.height(), im.bytesPerLine())[:, :im.width() * 3] \
+        .reshape(im.height(), im.width(), 3)
+
+
+_big = np.random.default_rng(1).integers(0, 256, size=(123, 321, 3), dtype=np.uint8)
+for _a in (_big, _big[7:99, 11:250], _big[:, ::-1]):      # contiguous, a crop, a flipped view
+    assert np.array_equal(_shown(_a), _a), "displayed pixels differ from the frame"
+_c = _big.copy()
+_im = np_to_qimage(_c)
+_c[:] = 0                                                   # the frame buffer is reused / freed
+_back = _im.convertToFormat(QImage.Format_RGB888)
+assert np.array_equal(np.array(_back.constBits(), np.uint8).reshape(123, _back.bytesPerLine())[:, :963]
+                      .reshape(123, 321, 3), _big), "the image must not share the numpy buffer"
+sq =np.array([[-20, -10], [20, -10], [20, 10], [-20, 10]], np.float32)
 mem = sample_members(np.array([100.0, 100.0], np.float32), 22.4, 640, 480, sq)
 assert 6 <= len(mem) <= 17 and np.allclose(mem[0], (100, 100)), mem.shape
 assert (np.abs(mem[:, 0] - 100) <= 16.1).all() and (np.abs(mem[:, 1] - 100) <= 8.1).all(), "members inside"
