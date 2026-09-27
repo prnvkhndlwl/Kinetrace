@@ -817,6 +817,20 @@ for f in (pj_path, pj_path + ".bak"):
 print("autosave keeps the project file as saved; Save retires it; a declined one is kept aside (I129) OK")
 forget_recovery(VA)
 
+# ---------------------------------------------------------------- I139
+# the tracking mode IS Track ▾'s checked action: the menu and the mode cannot disagree
+win.act_mode_auto.trigger()
+assert win._track_mode == "auto" and win.act_mode_auto.isChecked()
+win.act_mode_semi.trigger()
+assert win._track_mode == "semi" and not win.act_mode_auto.isChecked()
+win._track_mode = "auto"                        # code setting the mode ticks the menu too
+assert win.act_mode_auto.isChecked() and not win.act_mode_semi.isChecked() and win._track_mode == "auto"
+win._track_mode = "semi"
+assert win.act_mode_semi.isChecked() and win._track_mode == "semi"
+win._track_mode = "bogus"                       # anything else is automatic (as a restored project does)
+assert win._track_mode == "auto" and win.act_mode_auto.isChecked()
+print("the tracking mode is read from the Track menu, never mirrored (I139) OK")
+
 # ---------------------------------------------------------------- I133
 # A run's result signal arrives while its thread is still cleaning up (a capture
 # release that stalls on a network share): the handler's 2 s wait times out and

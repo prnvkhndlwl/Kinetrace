@@ -437,7 +437,7 @@ class MainWindow(QMainWindow):
         self._pending_event: int | None = None      # E pressed once: start frame
         self._autopause_info: tuple[int, int] | None = None  # (frame, pid)
         self._member_frames: dict[int, dict] = {}   # frame -> {pid: (M,2)} overlay
-        self._track_mode = "auto"                   # "auto" | "semi" (F = one tracked step)
+        # _track_mode ("auto" | "semi") is a property over the Track menu's actions (I139)
         self._step_run = False                      # current run is a semi-auto step
         self._seg_backend = preferred_backend()     # segmentation model (Settings)
         self._point_backend = self._preferred_point_backend()   # Track dropdown
@@ -1740,6 +1740,22 @@ class MainWindow(QMainWindow):
             "Point model: AllTracker — applies to the next Track run" if key == "alltracker"
             else "Point model: CoTracker3 — applies to the next Track run", 5000)
         self._update_track_button()
+
+    @property
+    def _track_mode(self) -> str:
+        """"auto" | "semi" (F = one tracked step), READ from Track ▾'s checked
+        mode action: the mode and the menu can never disagree (it used to be a
+        separate variable mirroring the QActionGroup; I139)."""
+        act = getattr(self, "act_mode_semi", None)
+        return "semi" if act is not None and act.isChecked() else "auto"
+
+    @_track_mode.setter
+    def _track_mode(self, mode: str) -> None:
+        # ticks the matching action (anything but "semi" is automatic); before
+        # the menu exists there is nothing to tick -- Automatic starts ticked
+        act = getattr(self, "act_mode_semi" if mode == "semi" else "act_mode_auto", None)
+        if act is not None and not act.isChecked():
+            act.setChecked(True)
 
     def _set_track_mode(self, mode: str):
         self._track_mode = mode
