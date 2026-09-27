@@ -108,6 +108,14 @@ ROI_GROW_FACTOR = 1.5
 ANCHOR_TEMPLATE = 25             # native-px template side (odd)
 ANCHOR_MIN_CORR = 0.75           # NCC peak needed before a snap is trusted
 
+# decode read-ahead of the point-tracking loop, in frames (I134): one model step's
+# worth, so the decoder keeps going through each model / LK burst instead of
+# stopping after 2 and making the worker wait for it afterwards. Only WHEN a frame
+# is decoded changes (same frames, same order: coordinates bit-identical, measured);
+# at most this many decoded frames wait in the queue (~200 MB at 4K). Real 4K clip:
+# CoTracker3 27.5 -> 32.2 fps, AllTracker 13.0 -> 14.2 fps; 16 gains nothing more.
+READ_AHEAD_FRAMES = 8
+
 _model_lock = threading.Lock()
 _model = None
 _device: str | None = None
@@ -834,7 +842,7 @@ class TrackingWorker(QThread):
         # with the segment + model steps below. Same frames in the same order
         # (bit-identical output) — only the timing changes. It OWNS src until
         # stopped, which is why every exit path below goes through the finally.
-        reader = ReadAhead(src)
+        reader = ReadAhead(src, depth=READ_AHEAD_FRAMES)
         read_end = None     # the frame the decoder did not deliver, if the loop ended on one
         try:
             while True:
