@@ -140,7 +140,7 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
         if j is None:
             continue
         fc = p.map_frame(view, c, int(local_frame))
-        if fc is None or not (0 <= fc < sc.n_frames) or not sc.exportable[fc, j]:
+        if fc is None or not (0 <= fc < sc.n_frames) or not sc.exportable_at(fc, j):
             continue
         uv = sc.tracks[fc, j]
         if not np.isfinite(uv).all():
@@ -261,7 +261,7 @@ def _n_other_views(project, view: int, name: str, local_frame: int) -> int:
         sc = p.sessions[c]
         j = sc.pid_by_name(name)
         fc = p.map_frame(view, c, int(local_frame)) if j is not None else None
-        if fc is not None and 0 <= fc < sc.n_frames and sc.exportable[fc, j] and np.isfinite(sc.tracks[fc, j]).all():
+        if fc is not None and 0 <= fc < sc.n_frames and sc.exportable_at(fc, j) and np.isfinite(sc.tracks[fc, j]).all():
             n += 1
     return n
 
@@ -361,7 +361,7 @@ def cells_summary(project, stretches: list[Stretch]) -> dict:
         h = np.zeros(len(t), bool)
         if pid is not None:
             inb = (lf >= 0) & (lf < s.n_frames)
-            h[inb] = s.exportable[lf[inb], pid] & np.isfinite(s.tracks[lf[inb], pid]).all(axis=1)
+            h[inb] = s.exportable_at(lf[inb], pid) & np.isfinite(s.tracks[lf[inb], pid]).all(axis=1)
         if st.name not in names:
             names.append(st.name)
         cells.append(v)

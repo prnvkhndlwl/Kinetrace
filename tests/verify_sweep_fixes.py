@@ -31,6 +31,23 @@ def sess(n, w=320, h=240, fps=60.0, name="v.mp4"):
     return TrackingSession(os.path.join(OUT, name), n, fps, w, h)
 
 
+# ---------------------------------------------------------------- I137
+# exportable_at = exportable[frames, pid] (one cell or a column), without the (T, N) array
+_s = sess(300, name="x.mp4")
+for _ in range(4):
+    _s.add_point(0, 10.0, 10.0)
+_r = np.random.default_rng(7)
+_s.tracked[:] = _r.random(_s.tracked.shape) < 0.7
+_s.occluded[:] = _r.random(_s.occluded.shape) < 0.2
+_full = _s.exportable
+for _f in (0, 17, 299, np.int64(150)):
+    for _j in range(4):
+        assert bool(_s.exportable_at(_f, _j)) == bool(_full[_f, _j]), (_f, _j)
+_idx = _r.integers(0, 300, 64)
+for _j in range(4):
+    assert np.array_equal(_s.exportable_at(_idx, _j), _full[_idx, _j]), _j
+print("exportable_at matches exportable, one cell and a column (I137) OK")
+
 # ---------------------------------------------------------------- I19
 p = Project([sess(200, name="a.mp4"), sess(200, name="b.mp4")], ["A", "B"], [0.0, -36.5])
 seq = [p.map_frame(0, 1, f) for f in range(40, 48)]

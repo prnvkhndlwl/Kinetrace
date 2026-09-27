@@ -612,6 +612,13 @@ class TrackingSession:
         """(T, N) bool: cells that leave the app — tracked AND not hand-marked hidden."""
         return self.tracked & ~self.occluded
 
+    def exportable_at(self, frames, pid: int):
+        """`exportable[frames, pid]` -- one cell, or a column for an index array --
+        without building the whole (T, N) array first: the epipolar guides ask
+        for one cell per camera, several times per camera, on every playhead
+        move (0.4 ms per array at 40k frames x 20 points; I137)."""
+        return self.tracked[frames, pid] & ~self.occluded[frames, pid]
+
     # ---- notes --------------------------------------------------------------
 
     def set_note(self, frame: int, text: str, author: str = "") -> None:

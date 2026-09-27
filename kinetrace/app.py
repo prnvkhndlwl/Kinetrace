@@ -4812,7 +4812,7 @@ class MainWindow(QMainWindow):
             sc = p.sessions[c]
             j = sc.pid_by_name(name)
             fc = p.map_frame(p.active, c, f) if j is not None else None
-            if fc is None or not (0 <= fc < sc.n_frames) or not sc.exportable[fc, j]:
+            if fc is None or not (0 <= fc < sc.n_frames) or not sc.exportable_at(fc, j):
                 continue
             uv = sc.tracks[fc, j]
             if np.isfinite(uv).all():
@@ -4991,7 +4991,7 @@ class MainWindow(QMainWindow):
                         j = st.pid_by_name(name)
                         ft = p.map_frame(p.active, t, self.current)
                         placed = (st.tracks[ft, j] if j is not None and ft is not None and 0 <= ft < st.n_frames
-                                  and st.exportable[ft, j] and np.isfinite(st.tracks[ft, j]).all() else None)
+                                  and st.exportable_at(ft, j) and np.isfinite(st.tracks[ft, j]).all() else None)
                         col = tuple(st.points[j].color) if j is not None else (255, 255, 255)
                         x, y = float(pr["xy"][0]), float(pr["xy"][1])
                         n = len(pr["views"])
