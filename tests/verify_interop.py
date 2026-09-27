@@ -642,6 +642,13 @@ check(code == 0 and len(_json.load(open(os.path.join(OUT, "cli_masks.json"), enc
       "masks: a project's silhouettes as polygons", out)
 pjo = os.path.join(OUT, "cli_offsets_project.kinetrace")
 projectfile.save(pj, pjo)
+code, out = convert("import", pjo, "--tracks", os.path.join(OUT, "sleap14.csv"), "--camera", "cam B", "--out",
+                    os.path.join(OUT, "cli_shared.kinetrace"))
+shp = projectfile.load(os.path.join(OUT, "cli_shared.kinetrace")) if code == 0 else None
+check(shp is not None and all([q.name for q in s_.points] == ["head", "tail"] for s_ in shp.sessions)
+      and shp.sessions[1].tracked.any() and not shp.sessions[0].tracked.any(),
+      "import into one camera of three: every camera gets the landmarks (one list, G19), data only where imported",
+      out)
 code, out = convert("offsets", pjo, os.path.join(OUT, "cli_offsets.csv"))
 check(code == 0 and [(v, o_) for v, o_, _ in calibio.read_offsets(os.path.join(OUT, "cli_offsets.csv"), pj)]
       == [(0, 0.0), (1, -4.5), (2, 12.25)], "offsets: a project's camera offsets as CSV", out)

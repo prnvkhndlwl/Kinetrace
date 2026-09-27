@@ -375,6 +375,18 @@ class TrackingSession:
         self._touch()
         return pid
 
+    def add_placeholder(self, meta: PointMeta) -> int:
+        """Another camera's landmark `meta`, with no data here: same name, colour,
+        kind and data source, so selecting it and clicking the video places it in
+        THIS camera (project.sync_landmarks). A rectangle / polygon outline is that
+        camera's own geometry, so the region arrives here as a circle of the same
+        radius; ball clicks and the appearance lock are per camera too."""
+        m = PointMeta(meta.name, meta.color, True, meta.kind, meta.radius, False, meta.source,
+                      meta.spec, meta.free, meta.shape if meta.outline is None else "circle")
+        pid = self._append_point(m)
+        self._touch()
+        return pid
+
     def remove_point(self, pid: int) -> None:
         keep = [i for i in range(self.n_points) if i != pid]
         self.tracks = self.tracks[:, keep]

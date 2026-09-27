@@ -1069,9 +1069,11 @@ It also puts down any tool you had picked up: an armed **N** or **S**, and an
 event whose start you had marked with **E**, are cancelled, so a click meant for
 one camera can never land in another. The toggles in the bottom bar (Auto-pause,
 ROI, Body, Follow, Mask, the point model, semi-automatic mode) and the *View*
-settings stay as you set them: they belong to you, not to a camera. The one
-thing a switch forgets is the undo step — **Ctrl+Z** only reaches back to what
-you did since you last switched.
+settings stay as you set them: they belong to you, not to a camera. The
+selected body part comes along too: select *snout* in one camera, click another
+camera, and *snout* is selected there, ready to be clicked. The one thing a
+switch forgets is the undo step — **Ctrl+Z** only reaches back to what you did
+since you last switched.
 
 Each camera's row in the CAMERAS panel shows its name with **Align here** and
 **×** on the first line, and the offset box with **◂ ▸** (and ×2 for a camera
@@ -1084,9 +1086,14 @@ never land in the wrong camera. Your settings — auto-pause, ROI zoom, the
 tracking model, Follow, marker size, trails, the display filter and the like —
 travel with you from camera to camera.
 
-**Use the same landmark names in every camera.** That is what allows the cameras
-to be combined later. Applying the same skeleton to each is the easy way — when
-you add a camera it copies the current one's skeleton automatically.
+**Every camera has the same list of body parts.** A point you add in one camera
+appears in the POINTS list of every other camera straight away, greyed until you
+place it there: select it in that camera, click it on the video, and track it.
+Renaming or deleting a point does the same in every camera (the delete question
+says which other cameras lose their tracks, and **Ctrl+Z** brings them all back).
+A skeleton chosen in one camera is given to the others, and a camera added later
+receives the whole list. That shared list is what lets the cameras be combined in
+3D: the program matches them by name.
 
 **Ctrl+2** shows only the camera you are working on, and gives the whole window
 to it.
@@ -1532,13 +1539,18 @@ you so when you add it. Calibrate again with all the cameras, import a
 calibration that includes the new one, or remove the new camera again with its
 **×** in the CAMERAS panel to get 3D back.
 
-**Two helpers appear once a calibration is in place.**
+**Two helpers appear once a calibration is in place.** Loading or making a
+calibration switches the first one on.
 
-- **Dashed guides while you place a landmark.** Select a body part and the
-  program draws, in the camera you are working in, a dashed line for every
+- **Dashed guides while you place a landmark.** Select a body part (or place one)
+  and the program draws, in **every** camera on screen, a dashed line for each
   *other* camera that has that body part at this instant: the line is
-  everywhere the part *can* be, given where that camera sees it. Put it on the
-  line. Where two lines cross is the only place consistent with both cameras.
+  everywhere the part *can* be, given where that camera sees it. So: click the
+  snout in camera 1, and camera 2 shows at once where the snout must be; click
+  camera 2 — the snout stays selected — and click it on the line. Where two
+  lines cross is the only place consistent with both cameras. With nothing
+  selected, a click on the video edits nothing: it only draws where that spot
+  can be in the other cameras (a small cross marks the spot; **Esc** clears it).
   Right-click the part → **Snap to the other cameras' rays here** moves it
   there for you (the nearest point on one line, the crossing of two or more),
   marks the frame hand-placed, and Track re-seeds from it — that is how a
@@ -1768,7 +1780,8 @@ the file itself. If no video is open yet, it asks for the video the tracks
 belong to first.
 
 * Points are matched **by name**: a name the camera already has updates that
-  point, a new name becomes a new point. Frames the file has no position for
+  point, a new name becomes a new point (and, with several cameras, appears in
+  every camera's list). Frames the file has no position for
   keep what they had, so you can import on top of your own work.
 * Pixel conventions are converted for you (DLTdv counts pixels from 1, older
   DLTdv and Argus count up from the bottom edge — its `_pointnames.csv` file
@@ -2488,7 +2501,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | Add **▾** | region shape: circle, rectangle, polygon (click the corners, then Enter or a double-click); **Ball marker** — click a ball, SAM outlines it every frame and the fitted circle's centre is the point (balls tracked together must stay within about 740 px of each other) |
 | right-click a marker | rename, delete, lock it to its look, change how it is found (appearance or silhouette), hidden on this frame, may leave the segment |
 | **S** (the Segment button) | the outlining tool — click the animal (Shift+click = not the animal, drag = a box around it, right-click a click to remove it); **S** or **Esc** when done |
-| **Esc** | cancel whatever you just started: a drag or polygon, the segment tool, the armed crosshair, the pan tool, a half-marked event, a selected stretch of the timeline — and, with nothing left to cancel, deselect the point |
+| **Esc** | cancel whatever you just started: a drag or polygon, the segment tool, the armed crosshair, the pan tool, a half-marked event, a selected stretch of the timeline, the dashed line of a click made with nothing selected — and, with nothing left to cancel, deselect the point |
 
 ### Tracking
 

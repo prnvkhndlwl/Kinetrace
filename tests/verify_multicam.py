@@ -190,13 +190,15 @@ win._align_view_here(1)
 assert p.offsets[1] == -SHIFT, f"Align here must recover the offset, got {p.offsets[1]}"
 print("align-here OK")
 
-# ---- each camera keeps its OWN points ---------------------------------------
+# ---- each camera keeps its OWN data; the list of points is shared (G19) -----
 win._goto(40, force=True)
 win._on_add(100.0, 100.0)
 win._on_add(140.0, 60.0)
 app.processEvents()
-assert p.sessions[0].n_points == 2 and p.sessions[1].n_points == 0, \
-    "points must land in the working camera only"
+assert p.sessions[0].n_points == 2 and p.sessions[1].n_points == 2, \
+    "a point made in one camera is in every camera's list"
+assert p.sessions[0].tracked.any(axis=0).all() and not p.sessions[1].tracked.any(), \
+    "its data lands in the working camera only"
 tl_before = win.timeline.session
 win._set_active_view(1)
 settle()
@@ -206,10 +208,15 @@ assert win.timeline.session is p.sessions[1] and win.timeline.session is not tl_
 assert win.canvas is win.grid.canvas(1), "win.canvas must follow the active view"
 assert win.current == 40 - SHIFT, \
     f"the playhead must land on the same instant, got frame {win.current}"
-assert win.point_list.count() == 0, "the panel must show the new camera's points"
+assert win.point_list.count() == 2, "the panel shows the shared list in the new camera"
+assert win.selected == p.sessions[1].pid_by_name(p.sessions[0].points[1].name), \
+    "the selected landmark follows the switch"
+win._deselect()                     # nothing selected: N + click makes a NEW point
 win._on_add(50.0, 50.0)
 app.processEvents()
-assert p.sessions[0].n_points == 2 and p.sessions[1].n_points == 1
+assert p.sessions[0].n_points == 3 and p.sessions[1].n_points == 3
+assert int(p.sessions[0].tracked.any(axis=0).sum()) == 2 and int(p.sessions[1].tracked.any(axis=0).sum()) == 1, \
+    "each camera's data stays its own"
 assert not win.grid.canvas(0)._interactive and win.grid.canvas(1)._interactive, \
     "interactivity must move with the active view"
 win._set_active_view(0)
@@ -225,7 +232,8 @@ assert os.path.exists(PROJ)
 reopened = Project.load(PROJ)
 assert reopened.n_views == 2, "both cameras must be in the file"
 assert reopened.offsets == [0, -SHIFT] and reopened.active == 0
-assert [s.n_points for s in reopened.sessions] == [2, 1], "each view's points must survive"
+assert [s.n_points for s in reopened.sessions] == [3, 3], "each view's points must survive"
+assert [int(s.tracked.any(axis=0).sum()) for s in reopened.sessions] == [2, 1], "with each view's data"
 assert reopened.names == p.names
 assert os.path.basename(reopened.sessions[1].video_path) == "camB.mp4"
 print("project round-trip (2 cameras) OK")
@@ -239,7 +247,7 @@ settle()
 p = win.project
 assert p.n_views == 2 and len(win._views) == 2, "both cameras must reopen"
 assert p.offsets == [0, -SHIFT]
-assert [s.n_points for s in p.sessions] == [2, 1]
+assert [s.n_points for s in p.sessions] == [3, 3]
 assert len(win.grid.canvases) == 2
 print("reopen through the app OK")
 
@@ -453,7 +461,8 @@ print("removing the reference re-zeroes without changing relative timing OK")
 win._remove_view(1)
 settle()
 assert win.project.n_views == 1 and len(win._views) == 1 and len(win.grid.canvases) == 1
-assert win.project.sessions[0].n_points == 2, "the surviving camera keeps its data"
+assert win.project.sessions[0].n_points == 3 and int(win.project.sessions[0].tracked.any(axis=0).sum()) == 2, \
+    "the surviving camera keeps its data"
 assert win.session is win.project.sessions[0]
 print("camera removal OK")
 

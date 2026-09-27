@@ -193,6 +193,7 @@ def cmd_import(a) -> int:
             raise Failure(f"{Path(a.tracks).name} has {imp.n_cameras} cameras, the project {proj.n_views}")
     f_of_row = None if imp.rows == "frames" else (lambda r: proj.map_frame(0, view, r))
     summ = trackio.apply(proj.sessions[view], imp, col, f_of_row)
+    proj.sync_landmarks()               # one landmark list for every camera (G19), as the app does
     out = a.out or a.project
     projectfile.write(projectfile.freeze(proj, state, meta.get("project_id") or projectfile.new_id(), target=out),
                       out)

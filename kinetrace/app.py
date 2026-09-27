@@ -100,7 +100,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>right-click</td><td>marker or list entry: rename · lock to seed appearance · data source · hidden on this frame · may leave the segment · delete</td></tr>
 <tr><td class=k>Ctrl/Shift+click (list)</td><td>select several points</td></tr>
 <tr><td class=k>Delete</td><td>delete selected point(s) — or clear the selected frame window (below)</td></tr>
-<tr><td class=k>Esc</td><td>drops a drag or polygon in progress; then, one per press: the segment tool, the armed crosshair, the pan tool, a half-marked event, the frame-window selection; then deselects</td></tr>
+<tr><td class=k>Esc</td><td>drops a drag or polygon in progress; then, one per press: the segment tool, the armed crosshair, the pan tool, a half-marked event, the frame-window selection, the dashed line of a click made with nothing selected; then deselects</td></tr>
 </table>
 <h3>Segment &amp; skeleton (optional)</h3><table>
 <tr><td class=k>S (or Segment)</td><td>segment tool: <b>click the animal</b> — its silhouette appears within a second. Shift+click = "not the animal", drag = box around it. Right-click a click marker to remove it. S or Esc when done. Optional: points track without a segment. The ▾ on the Segment button picks the segmentation model; its last entry is Settings (Ctrl+,)</td></tr>
@@ -380,6 +380,7 @@ class MainWindow(QMainWindow):
         self._project_dir: Path | None = None
         self._after_open = None          # (video path, job): runs once that video has opened
         self._undo_snap = None
+        self._epi_probe = None           # (view, x, y): a look-here click with nothing selected (G19)
         self._display_queue: deque = deque()
         self._fps_ema = 0.0
         self._last_emit_t = 0.0
@@ -1150,9 +1151,11 @@ class MainWindow(QMainWindow):
         m_view.addAction(self.act_loupe)
         self.act_epipolar = QAction("&Epipolar guides from the other cameras", self, checkable=True)
         self.act_epipolar.setChecked(True)
-        self.act_epipolar.setToolTip("With a calibration: dashed lines showing where the SELECTED landmark, as "
-                                     "the other cameras see it at this instant, can lie in this picture. "
-                                     "Place it on the line (or right-click it → Snap to the other cameras' rays).")
+        self.act_epipolar.setToolTip("With a calibration (switched on when one is loaded): dashed lines in EVERY "
+                                     "camera showing where the SELECTED landmark, as the other cameras see it at "
+                                     "this instant, can lie. Place it on the line (or right-click it → Snap to "
+                                     "the other cameras' rays). With nothing selected, a click on the video shows "
+                                     "where that spot can be in the other cameras (Esc clears it).")
         self.act_epipolar.toggled.connect(lambda _on: self._refresh_overlay())
         m_view.addAction(self.act_epipolar)
         # display-only filters
@@ -1744,6 +1747,7 @@ class MainWindow(QMainWindow):
         added afterwards with `_add_video_dialog`)."""
         self._leave_project()   # unsaved work -> recovery, where the user was -> view sidecar
         self._teardown_video()
+        self._epi_probe = None
         self._wand_result = (None, None)      # a new project: no wand run belongs to it (I33)
         self.project = Project([TrackingSession(info.path, info.n_frames, info.fps,
                                                 info.width, info.height)])
@@ -1919,6 +1923,7 @@ class MainWindow(QMainWindow):
         if ref is not None and ref.skeleton:
             s.apply_skeleton(ref.skeleton)
         i = self.project.add_view(s, Path(path).stem[:24] or None)
+        self.project.sync_landmarks()      # every point already made is waiting to be placed here (G19)
         self._views.append(_ViewRuntime(info, DEFAULT_CACHE_BYTES))
         self._rebudget_caches()
         for cv in self.grid.set_count(self.project.n_views):
@@ -1957,6 +1962,12 @@ class MainWindow(QMainWindow):
                 "This cannot be undone.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
+        self._epi_probe = None
+        if self._undo_extra:
+            # the undo step spans cameras by their index: after a removal the
+            # indices shift, so that step can no longer be taken back safely (G19)
+            self._undo_snap = None
+            self.act_undo.setEnabled(False)
         target = None
         if i == p.active:                 # the next camera takes over at the SAME instant (I111)
             nxt = i + 1 if i + 1 < p.n_views else i - 1
@@ -1995,13 +2006,27 @@ class MainWindow(QMainWindow):
         # turned auto-pause and ROI back on and swapped the point model (I50)
         self._sync_ui_state()
         carried = {k: self.session.ui_state[k] for k in GLOBAL_UI_KEYS if k in self.session.ui_state}
+        # the selected LANDMARK comes along (the cameras share one list, G19): pick
+        # a point in one camera, click the next camera, and place it there
+        s0 = self.session
+        keep = (s0.points[self.selected].name
+                if self.selected is not None and self.selected < s0.n_points else None)
+        prev = p.name(p.active)
         target = p.set_active(i)
         p.session.ui_state.update(carried)
         self.grid.set_active(i)
         self._apply_active_view(target if target is not None else p.session.current_frame)
         self._update_disagreement()            # the band is per camera: recompute for this one
-        self.statusBar().showMessage(
-            f"Working in {p.name(i)} — points, silhouette and timeline are this camera's", 5000)
+        j = p.session.pid_by_name(keep) if keep is not None else None
+        if j is not None:
+            self.point_list.setCurrentRow(j)   # selects it (and shows its epipolar guides)
+        msg = f"Working in {p.name(i)} — points, silhouette and timeline are this camera's"
+        s = p.session
+        if j is not None and not s.tracked[self.current, j] and not s.points[j].derived:
+            on_line = f" on the dashed line from {prev}" if self.canvas.guide_count() else ""
+            msg = (f"Working in {p.name(i)}: {keep} is not placed in this camera on this frame — "
+                   f"click it on the video{on_line}, then Track")
+        self.statusBar().showMessage(msg, 9000)
 
     def _apply_active_view(self, frame: int):
         """Re-point every widget at the active view's session and frame. This is
@@ -2038,6 +2063,7 @@ class MainWindow(QMainWindow):
     def _on_solo_toggled(self, on: bool):
         self.grid.set_solo(on)
         self._refresh_companions()
+        self._refresh_guides()
 
     def _on_view_offset(self, i: int, offset: float):
         if self.project is None:
@@ -2338,6 +2364,10 @@ class MainWindow(QMainWindow):
             elif self.timeline.sel_range is not None:
                 self.timeline.clear_selection()
                 self.statusBar().showMessage("Frame-window selection cleared", 3000)
+            elif self._epi_probe is not None and self.selected is None:
+                self._epi_probe = None
+                self._refresh_guides()
+                self.statusBar().showMessage("Epipolar line cleared", 3000)
             else:
                 self._deselect()
         elif key == Qt.Key_E and plain:
@@ -2487,7 +2517,10 @@ class MainWindow(QMainWindow):
                 cv.set_mask(None)
                 cv.set_midline(None)
             cv.set_bones(s.bones() if self.act_show_bones.isChecked() else [])
-            cv.set_points(s.positions_at(f), s.visibility[f], s.points, None,
+            sel_name = (self.session.points[self.selected].name if self.selected is not None
+                        and self.session is not None and self.selected < self.session.n_points else None)
+            cv.set_points(s.positions_at(f), s.visibility[f], s.points,
+                          s.pid_by_name(sel_name) if sel_name is not None else None,
                           occluded=s.occluded[f])
         rt_a = self._rt
         if rt_a is not None:
@@ -2585,6 +2618,7 @@ class MainWindow(QMainWindow):
             self._undo_snap = s.snapshot()      # adding is one undo step too (I123)
             self.act_undo.setEnabled(True)
             pid = s.add_ball(self.current, x, y)
+            self._share_landmarks()
             self.selected = pid
             self._refresh_point_list()
             self._refresh_overlay()
@@ -2615,6 +2649,7 @@ class MainWindow(QMainWindow):
         derived_sel = (self.selected is not None and self.selected < s.n_points
                        and s.points[self.selected].derived)
         pid = s.add_point(self.current, x, y)
+        self._share_landmarks()
         self.selected = pid
         self._refresh_point_list()
         self._refresh_overlay()
@@ -2634,6 +2669,7 @@ class MainWindow(QMainWindow):
         self._undo_snap = s.snapshot()          # (I123)
         self.act_undo.setEnabled(True)
         pid = s.add_point(self.current, cx, cy, kind="group", radius=radius)
+        self._share_landmarks()
         self.selected = pid
         self._refresh_point_list()
         self._refresh_overlay()
@@ -3069,6 +3105,7 @@ class MainWindow(QMainWindow):
         self.act_undo.setEnabled(True)
         pid = s.add_point(self.current, float(c[0]), float(c[1]), kind="group", radius=radius,
                           shape=shape, outline=pts.tolist())
+        self._share_landmarks()
         self.selected = pid
         self._refresh_point_list()
         self._refresh_overlay()
@@ -3289,6 +3326,13 @@ class MainWindow(QMainWindow):
         if s is None or self.state != READY:
             return
         new = s.apply_skeleton(t)
+        if self.project is not None and self.project.n_views > 1:
+            # the same animal in every camera: a camera without a skeleton adopts
+            # this one (bones, head anchor); the landmarks go to all of them (G19)
+            for v in self.project.others():
+                if not self.project.sessions[v].skeleton:
+                    self.project.sessions[v].apply_skeleton(t)
+            self._share_landmarks(undoable=False)
         self._refresh_point_list()
         self._refresh_overlay()
         self._refresh_skeleton_menu()
@@ -3473,7 +3517,9 @@ class MainWindow(QMainWindow):
     def _on_list_select(self, row: int):
         if row >= 0:
             self.selected = row
+            self._epi_probe = None
             self._refresh_overlay()
+            self._refresh_companions()          # the same landmark is ringed in the other cameras
             s = self.session
             if s is not None and row < s.n_points and not s.tracked[self.current, row]:
                 self.statusBar().showMessage(
@@ -3523,6 +3569,17 @@ class MainWindow(QMainWindow):
         s = self.session
         pid = self.selected
         if pid is None or pid >= s.n_points:
+            if self._guides_ready() and self.act_epipolar.isChecked():
+                # nothing is edited: the click only asks where this spot can be
+                # in the other cameras (a dashed line there, a cross here, G19)
+                self._epi_probe = (self.project.active, float(x), float(y))
+                self._refresh_guides()
+                others = ", ".join(self.project.name(v) for v in self.project.others())
+                self.statusBar().showMessage(
+                    f"The dashed line in {others} shows where this spot can be in that camera. Nothing was "
+                    "placed: select a point in the POINTS list first (or press N) to place one; Esc clears "
+                    "the line", 9000)
+                return
             self.statusBar().showMessage(
                 "Nothing placed: select a point in the POINTS list to annotate it here, "
                 "or press N to add a new point", 5000)
@@ -3588,9 +3645,12 @@ class MainWindow(QMainWindow):
         self.canvas.cancel_gesture()  # a live drag would hold a stale pid
         name = self.session.points[pid].name
         n_tracked = int(self.session.tracked[:, pid].sum())
-        if n_tracked > 1 and QMessageBox.question(
+        n_other, cams = self._landmark_data_elsewhere([name])
+        also = (f"\n\nIt is also removed from {', '.join(cams)} (every camera shares one list of points), "
+                f"with {n_other} tracked frame(s) there." if cams else "")
+        if (n_tracked > 1 or n_other) and QMessageBox.question(
                 self, "Delete point",
-                f"Delete {name} and its {n_tracked} tracked frames?\n\nCtrl+Z restores it.",
+                f"Delete {name} and its {n_tracked} tracked frames?{also}\n\nCtrl+Z restores it.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         # one undo step: without it Ctrl+Z restored an OLDER snapshot and took
@@ -3598,6 +3658,7 @@ class MainWindow(QMainWindow):
         self._undo_snap = self.session.snapshot()
         self.act_undo.setEnabled(True)
         self.session.remove_point(pid)
+        self._remove_landmarks_elsewhere([name])
         self.timeline.clear_selection()   # its lane rows would now point elsewhere
         if self.selected is not None:
             if self.selected == pid:
@@ -3607,6 +3668,36 @@ class MainWindow(QMainWindow):
         self._refresh_point_list()
         self._refresh_overlay()
         self._apply_state()
+
+    def _landmark_data_elsewhere(self, names: list[str]) -> tuple[int, list[str]]:
+        """(tracked frames, camera names) the landmarks `names` have in the OTHER
+        cameras -- what deleting them there too removes (G19)."""
+        p = self.project
+        if p is None or p.n_views < 2:
+            return 0, []
+        n, cams = 0, []
+        for v in p.others():
+            sv = p.sessions[v]
+            js = [j for j in (sv.pid_by_name(nm) for nm in names) if j is not None]
+            if js:
+                cams.append(p.name(v))
+                n += sum(int(sv.tracked[:, j].sum()) for j in js)
+        return n, cams
+
+    def _remove_landmarks_elsewhere(self, names: list[str]) -> None:
+        """A deleted landmark leaves every camera (one shared list, G19); the other
+        cameras' copies join the undo step the caller has just set."""
+        p = self.project
+        if p is None or p.n_views < 2:
+            return
+        for v in p.others():
+            sv = p.sessions[v]
+            js = sorted((j for j in (sv.pid_by_name(nm) for nm in names) if j is not None), reverse=True)
+            if js:
+                self._undo_extra.setdefault(v, sv.snapshot())
+                for j in js:
+                    sv.remove_point(j)
+        self._refresh_companions()
 
     def _selected_pids(self) -> list[int]:
         """Rows multi-selected in the point panel (Ctrl/Shift+click)."""
@@ -3638,16 +3729,21 @@ class MainWindow(QMainWindow):
         names = ", ".join(s.points[p].name for p in pids[:5])
         if len(pids) > 5:
             names += f", … ({len(pids)} points)"
+        gone = [s.points[p].name for p in pids]
+        n_other, cams = self._landmark_data_elsewhere(gone)
+        also = (f"\n\nThey are also removed from {', '.join(cams)} (every camera shares one list of "
+                f"points), with {n_other} tracked frame(s) there." if cams else "")
         if QMessageBox.question(
                 self, "Delete points",
                 f"Delete {len(pids)} points ({names}) and their {n_cells} tracked "
-                "frames?\n\nCtrl+Z restores them.",
+                f"frames?{also}\n\nCtrl+Z restores them.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         self._undo_snap = s.snapshot()
         self.canvas.cancel_gesture()
         for pid in sorted(pids, reverse=True):  # descending keeps indices valid
             s.remove_point(pid)
+        self._remove_landmarks_elsewhere(gone)
         self.timeline.clear_selection()   # its lane rows would now point elsewhere
         self.selected = None
         self.act_undo.setEnabled(True)
@@ -3742,8 +3838,15 @@ class MainWindow(QMainWindow):
     def _apply_rename(self, pid: int, desired: str) -> str:
         """Rename a point with collision protection; explains the auto-suffix
         in the status bar. Returns the name actually applied. Single collision
-        UX for both the dialog and the in-list editor."""
-        applied = self.session.rename_point(pid, desired)
+        UX for both the dialog and the in-list editor. With several cameras the
+        landmark is renamed in all of them, to a name free in every camera: they
+        are joined by name for 3D (G19)."""
+        p = self.project
+        if p is not None and p.n_views > 1:
+            applied = p.rename_landmark(self.session.points[pid].name, desired)
+            self._refresh_companions()
+        else:
+            applied = self.session.rename_point(pid, desired)
         if applied != desired:
             self.statusBar().showMessage(
                 f"“{desired}” is already another point's name — renamed to "
@@ -4032,8 +4135,9 @@ class MainWindow(QMainWindow):
                                     "— fills in when you track with a segment defined (S)")
                 elif not has_any:
                     item.setForeground(QColor(theme.TEXT_DIM))
-                    item.setToolTip(f"{meta.name}: not placed yet — select it, press N, click it "
-                                    "on the video")
+                    item.setToolTip(f"{meta.name}: not placed in this camera yet — select it and click it "
+                                    "on the video (with a calibration, on the dashed line from the other "
+                                    "cameras), then Track")
                 elif meta.is_ball:
                     item.setToolTip(f"{meta.name}: a ball marker — SAM outlines it each frame and the "
                                     "fitted circle's centre is the point (its circle is drawn on the video)")
@@ -4049,21 +4153,11 @@ class MainWindow(QMainWindow):
     GUIDE_COLORS = [(255, 120, 200), (120, 220, 255), (255, 200, 90), (170, 255, 140),
                     (255, 140, 120), (200, 170, 255)]
 
-    def _epipolar_guides(self, pid: int, frame: int | None = None) -> list:
-        """[(polyline (M, 2) native px of the ACTIVE view, colour, camera name), ...]:
-        where landmark `pid`, as each OTHER camera sees it at this instant, can
-        lie in the active picture. Empty without a calibration, without a
-        selection, or when no other camera has it here."""
-        from kinetrace.calib import epipolar_polyline, working_probe
+    def _guide_depth(self, f: int):
+        """A 3D point in front of the cameras for the guides' forward sign: this
+        instant's reconstruction centroid, else calib.working_probe."""
+        from kinetrace.calib import working_probe
         p = self.project
-        s = self.session
-        if p is None or p.calibration is None or s is None or not (0 <= pid < s.n_points):
-            return []
-        if len(p.calibration.cameras) != p.n_views:
-            return []
-        f = self.current if frame is None else int(frame)
-        name = s.points[pid].name
-        probe = None
         r = p.reconstruction
         k = int(np.floor(p.reference_time(p.active, f) + 0.5)) - r.t0 if r is not None else -1
         if r is not None and r.n_frames and 0 <= k < r.n_frames:
@@ -4073,12 +4167,36 @@ class MainWindow(QMainWindow):
             row = r.xyz[k]
             if row is not None:
                 row = row[np.isfinite(row).all(axis=1)]
-                probe = row.mean(axis=0) if len(row) else None
-        if probe is None:
-            probe = working_probe(p.calibration)
-        dst = p.calibration.cameras[p.active]
+                if len(row):
+                    return row.mean(axis=0)
+        return working_probe(p.calibration)
+
+    def _guides_ready(self) -> bool:
+        p = self.project
+        return (p is not None and p.n_views > 1 and p.calibration is not None
+                and len(p.calibration.cameras) == p.n_views)
+
+    def _epipolar_guides(self, pid: int, frame: int | None = None, target: int | None = None) -> list:
+        """[(polyline (M, 2) native px of camera `target` (default: the working
+        camera), colour, camera name), ...]: where landmark `pid` of the working
+        camera, as each OTHER camera sees it at this instant, can lie in the
+        target picture. Empty without a calibration, without the landmark, or
+        when no other camera has it here."""
+        s = self.session
+        if not self._guides_ready() or s is None or not (0 <= pid < s.n_points):
+            return []
+        f = self.current if frame is None else int(frame)
+        return self._guides_into(self.project.active if target is None else target, s.points[pid].name, f)
+
+    def _guides_into(self, target: int, name: str, f: int) -> list:
+        from kinetrace.calib import epipolar_polyline
+        p = self.project
+        depth = self._guide_depth(f)
+        dst = p.calibration.cameras[target]
         out = []
-        for c in p.others():
+        for c in range(p.n_views):
+            if c == target:
+                continue
             sc = p.sessions[c]
             j = sc.pid_by_name(name)
             if j is None:
@@ -4090,18 +4208,53 @@ class MainWindow(QMainWindow):
             if not np.isfinite(uv).all():
                 continue
             try:
-                pts = epipolar_polyline(p.calibration.cameras[c], dst, uv, probe)
+                pts = epipolar_polyline(p.calibration.cameras[c], dst, uv, depth)
             except Exception:       # noqa: BLE001 -- a degenerate calibration must not break the overlay
                 continue
             if len(pts) >= 2:
                 out.append((pts, self.GUIDE_COLORS[c % len(self.GUIDE_COLORS)], p.name(c)))
         return out
 
+    def _probe_guides(self, target: int) -> list:
+        """The 'where is this spot in the other cameras?' click (nothing selected,
+        G19): its line in every other camera, a small cross where it was clicked."""
+        from kinetrace.calib import epipolar_polyline
+        p = self.project
+        pr = self._epi_probe
+        if pr is None or not (0 <= pr[0] < p.n_views):
+            return []
+        v, x, y = pr
+        col = self.GUIDE_COLORS[v % len(self.GUIDE_COLORS)]
+        if target == v:
+            r = max(6.0, 0.012 * p.sessions[v].width)
+            return [(np.array([[x - r, y], [x + r, y]]), col, ""),
+                    (np.array([[x, y - r], [x, y + r]]), col, "")]
+        try:
+            pts = epipolar_polyline(p.calibration.cameras[v], p.calibration.cameras[target],
+                                    np.array([x, y], np.float64), self._guide_depth(self.current))
+        except Exception:           # noqa: BLE001
+            return []
+        return [(pts, col, p.name(v))] if len(pts) >= 2 else []
+
     def _refresh_guides(self) -> None:
+        """Epipolar guides on EVERY camera on screen (G19): the selected landmark
+        as the other cameras see it -- so a point placed in one camera shows at
+        once, in the others, the line it must lie on -- or the look-here click."""
+        p = self.project
         pid = self.selected
-        show = (self.act_epipolar.isChecked() and pid is not None and self.project is not None
-                and self.project.calibration is not None and self.state == READY)
-        self.canvas.set_guides(self._epipolar_guides(pid) if show else [])
+        show = self.act_epipolar.isChecked() and self.state == READY and self._guides_ready()
+        canvases = self.grid.canvases
+        visible = set(self.grid.visible_indices()) if show else set()
+        for t, cv in enumerate(canvases):
+            lines = []
+            if t in visible:
+                if pid is not None and self.session is not None and pid < self.session.n_points:
+                    lines = self._epipolar_guides(pid, target=t)
+                elif self._epi_probe is not None:
+                    lines = self._probe_guides(t)
+            cv.set_guides(lines)
+        if not canvases:
+            self.canvas.set_guides([])
 
     def _snap_to_epipolar(self, pid: int) -> None:
         """Move landmark `pid` at this frame onto the other cameras' epipolar
@@ -4784,11 +4937,52 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Tracking failed",
                              (hint + "\n\n" if hint else "") + "Details:\n\n" + tb[-1500:])
 
+    # The undo point is ONE camera's snapshot, plus -- when an edit also changed
+    # the other cameras (a landmark added, renamed or deleted in all of them, G19)
+    # -- a snapshot of each of those. Setting a new undo point forgets the extra
+    # copies, so every existing `self._undo_snap = ...` stays a complete undo step.
+    @property
+    def _undo_snap(self):
+        return self.__dict__.get("_undo_main")
+
+    @_undo_snap.setter
+    def _undo_snap(self, snap):
+        self.__dict__["_undo_main"] = snap
+        self.__dict__["_undo_extra"] = {}
+
+    @property
+    def _undo_extra(self) -> dict:
+        return self.__dict__.setdefault("_undo_extra", {})
+
+    def _share_landmarks(self, undoable: bool = True) -> int:
+        """Give the other cameras the landmarks just made in this one (with no
+        data there), so each can be selected in those cameras, clicked on the
+        epipolar line and tracked (G19). `undoable`: the edit that made them has
+        just set the undo point, and taking it back removes them everywhere."""
+        p = self.project
+        if p is None or p.n_views < 2:
+            return 0
+        lack = p.missing_landmarks()
+        if not lack:
+            return 0
+        if undoable and self._undo_snap is not None:
+            for v in lack:
+                if v != p.active:
+                    self._undo_extra.setdefault(v, p.sessions[v].snapshot())
+        n = p.sync_landmarks()
+        self._refresh_companions()
+        return n
+
     def _undo_run(self):
         if self._undo_snap is None or self.session is None or self.state != READY:
             return
         self.session.restore(self._undo_snap)
+        p = self.project
+        for v, snap in self._undo_extra.items():
+            if p is not None and 0 <= v < p.n_views and v != p.active:
+                p.sessions[v].restore(snap)
         self._undo_snap = None
+        self._refresh_companions()
         self.act_undo.setEnabled(False)
         self._refresh_point_list()
         self._refresh_overlay()
@@ -5199,6 +5393,7 @@ class MainWindow(QMainWindow):
                         else (lambda r, v=view: p.map_frame(0, v, r)))
             summ = trackio.apply(p.sessions[view], imp, camera=c, frame_of_row=f_of_row)
             said.append((f"{p.name(view)}: " if len(targets) > 1 else "") + summ["sentence"])
+        self._share_landmarks(undoable=len(targets) == 1)   # new names reach every camera (G19)
         self._refresh_point_list()
         self._refresh_overlay()
         self._refresh_cameras()
@@ -5441,6 +5636,13 @@ class MainWindow(QMainWindow):
                 "To work with all cameras, close without saving, make the videos reachable (connect the "
                 "drive, or move them next to the project), and open the project again.")
         self._views = [rt for rt in runtimes if rt is not None]
+        # a project digitized before the cameras shared one landmark list: fill the
+        # gaps (points with no data) without calling the file changed (G19)
+        was = [s.dirty for s in proj.sessions]
+        if proj.sync_landmarks():
+            for s, d in zip(proj.sessions, was):
+                s.dirty = d
+            self._refresh_point_list()
         self._rebudget_caches()
         for cv in self.grid.set_count(proj.n_views):
             self._wire_canvas(cv)
@@ -5477,9 +5679,22 @@ class MainWindow(QMainWindow):
         self._hull_cache.clear()
         p.dirty = True
         self._apply_state()
+        self._guides_on()
         self.toast.show_message(
-            f"Calibration loaded for {p.n_views} cameras ({p.calibration.source}). "
-            "Next: <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3).", "info", 8000)
+            f"Calibration loaded for {p.n_views} cameras ({p.calibration.source}). " + self.GUIDES_HINT
+            + " Next: <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3).", "info", 14000)
+
+    GUIDES_HINT = ("Click a point in one camera: the other cameras show a dashed line where that point "
+                   "must be. Click that camera, and the same point (it is in every camera's POINTS list) "
+                   "is selected there: click it on the line, then Track.")
+
+    def _guides_on(self) -> None:
+        """A calibration has just arrived: the epipolar guides are what makes it
+        useful while digitizing, so they are switched on (View -> Epipolar
+        guides) and drawn at once (G19)."""
+        if not self.act_epipolar.isChecked():
+            self.act_epipolar.setChecked(True)
+        self._refresh_guides()
 
     def _lens_wizard(self):
         """3D → Calibrate a Lens: intrinsics + distortion of ONE camera from a
@@ -5561,9 +5776,11 @@ class MainWindow(QMainWindow):
         p.dirty = True
         self._apply_state()
         v = str(wiz.result.report.get("verdict", "?")).upper() if wiz.result is not None else "?"
+        self._guides_on()
         self.toast.show_message(
             f"Wand calibration ({v}) is now this project's calibration. Save the project (Ctrl+S); "
-            "<b>3D → Export Calibration</b> writes it for your animal projects.", "success", 9000)
+            "<b>3D → Export Calibration</b> writes it for your animal projects. " + self.GUIDES_HINT,
+            "success", 14000)
 
     def _export_calibration(self):
         """3D -> Export Calibration: the cameras for other programs, in the

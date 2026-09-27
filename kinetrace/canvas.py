@@ -876,6 +876,10 @@ class VideoCanvas(QGraphicsView):
         self._guides.lines = list(lines or [])
         self._guides.update()
 
+    def guide_count(self) -> int:
+        """How many epipolar guide lines are drawn now."""
+        return len(self._guides.lines)
+
     def set_group_members(self, members: dict[int, np.ndarray]) -> None:
         """Live overlay of a group's internal member points during tracking.
         members: {pid: (M, 2) native px}. Stale pids are hidden."""

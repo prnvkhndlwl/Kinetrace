@@ -308,6 +308,65 @@ class Project:
             self.active -= 1
         self.dirty = True
 
+    # ------------------------------------------- one landmark list (G19)
+    # Every camera is digitized separately, but 3D, the wand calibration and the
+    # all-cameras export join cameras BY LANDMARK NAME. A point made in one camera
+    # therefore exists in every camera (with no data where it has not been placed),
+    # so it can be selected there, clicked on the epipolar line and tracked.
+
+    def missing_landmarks(self) -> dict[int, list]:
+        """{view: [PointMeta another camera has and this one lacks, ...]} (the
+        first camera that has a name gives its colour, kind and data source)."""
+        first: dict[str, object] = {}
+        for s in self.sessions:
+            for meta in s.points:
+                first.setdefault(meta.name, meta)
+        out: dict[int, list] = {}
+        for v, s in enumerate(self.sessions):
+            have = {m.name for m in s.points}
+            lack = [m for n, m in first.items() if n not in have]
+            if lack:
+                out[v] = lack
+        return out
+
+    def sync_landmarks(self) -> int:
+        """Give every camera every landmark any camera has; returns how many
+        points were added. Never touches data. The default-name counters are
+        kept in step, so the next new point is not called 'P1' in one camera
+        while another camera's 'P1' is a different landmark."""
+        if self.n_views < 2:
+            return 0
+        added = 0
+        for v, metas in self.missing_landmarks().items():
+            for meta in metas:
+                self.sessions[v].add_placeholder(meta)
+                added += 1
+        top = max(s._name_counter for s in self.sessions)
+        for s in self.sessions:
+            s._name_counter = top
+        return added
+
+    def landmark_views(self, name: str) -> list[tuple[int, int]]:
+        """[(view, pid), ...] of the cameras that have landmark `name`."""
+        out = []
+        for v, s in enumerate(self.sessions):
+            pid = s.pid_by_name(name)
+            if pid is not None:
+                out.append((v, pid))
+        return out
+
+    def rename_landmark(self, old: str, desired: str) -> str:
+        """Rename a landmark in EVERY camera to one name that is free in all of
+        them (a per-camera suffix would split one landmark into two for 3D).
+        Returns the name applied."""
+        where = self.landmark_views(old)
+        base = desired.strip() or "point"
+        cand, k = base, 2
+        while any(s.unique_name(cand, exclude_pid=s.pid_by_name(old)) != cand for s in self.sessions):
+            cand, k = f"{base} ({k})", k + 1
+        for v, pid in where:
+            self.sessions[v].rename_point(pid, cand)
+        return cand
 
     def set_active(self, i: int) -> int | None:
         """Switch the working view. Returns the frame the new view should show
