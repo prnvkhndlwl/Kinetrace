@@ -1408,6 +1408,12 @@ class MainWindow(QMainWindow):
         self.act_syscheck.setToolTip("What this computer has (graphics card, memory, PyTorch build) and "
                                      "which features run on it, run slower, or are switched off")
         m_help.addAction(self.act_syscheck)
+        self.act_error_report = QAction("&Error Report… (what went wrong, to copy into a bug report)", self,
+                                        triggered=self._show_error_report)
+        self.act_error_report.setToolTip(
+            "The errors Kinetrace recorded while running (kinetrace.log in the Kinetrace folder's logs "
+            "folder) and the System Check, ready to copy into a bug report. Nothing is sent anywhere.")
+        m_help.addAction(self.act_error_report)
         m_help.addAction(QAction("&Keyboard && Mouse Reference…", self,
                                  triggered=self._show_hotkeys))
         # QMenu hides action tooltips unless told otherwise: every explanation
@@ -1829,6 +1835,69 @@ class MainWindow(QMainWindow):
         lay.addWidget(btns)
         dlg.exec()
         dlg.deleteLater()
+
+    def _error_report_text(self) -> str:
+        """Help → Error Report: the recorded errors (crashlog.report_text) and the
+        System Check, one block of text for a bug report."""
+        from kinetrace import crashlog
+        from kinetrace.device import cached_device, describe
+        sysc = describe() if cached_device() is not None else \
+            "(the hardware check has not finished yet: PyTorch is still loading)"
+        return crashlog.report_text() + "\n\n---- System check ----\n" + sysc
+
+    def _show_error_report(self):
+        """Help → Error Report…: what went wrong, with Copy and Open the log
+        folder (the files can be attached instead). Nothing is sent anywhere (I140)."""
+        import sys
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices, QFont
+        from kinetrace import crashlog
+        text = self._error_report_text()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Error report")
+        dlg.setMinimumSize(760, 480)
+        lay = QVBoxLayout(dlg)
+        view = QPlainTextEdit(text)
+        view.setReadOnly(True)
+        view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        view.setFont(QFont("Consolas" if sys.platform.startswith("win") else "Menlo", 10)
+                     if sys.platform != "linux" else QFont("Monospace", 10))
+        lay.addWidget(view)
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        copy = btns.addButton("Copy", QDialogButtonBox.ActionRole)
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
+        show = btns.addButton("Open the log folder", QDialogButtonBox.ActionRole)
+
+        def _open():
+            d = crashlog.log_path().parent
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
+
+        show.clicked.connect(_open)
+        btns.rejected.connect(dlg.reject)
+        btns.accepted.connect(dlg.accept)
+        lay.addWidget(btns)
+        dlg.exec()
+        dlg.deleteLater()
+
+    def _error_context(self) -> str:
+        """One line of where the program was, for an error-log entry. It can be
+        called on a worker thread, so plain attributes only -- no Qt calls."""
+        p = self.project
+        parts = [{IDLE: "no video open", READY: "ready", TRACKING: "tracking"}.get(self.state, str(self.state)),
+                 f"frame {self.current}"]
+        if p is not None:
+            parts.append(f"{p.n_views} camera(s), working in camera {p.active + 1}")
+        parts.append(f"point model {self._point_backend}")
+        return ", ".join(parts)
+
+    def _on_error_logged(self, text: str) -> None:
+        """The error log's on-screen notice (at most one every few seconds;
+        the log keeps every error)."""
+        self.toast.show_message(text, "error", 12000)
 
     def _show_manual(self):
         """Help → User Manual (F1). Non-modal and reused, so it can stay open
@@ -7928,11 +7997,17 @@ def main():
         sys.stdout = open(os.devnull, "w", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    # the error log (kinetrace/crashlog.py, I140): with no console an error in a
+    # button, a key handler or a thread left no trace at all, and a crash left
+    # only the window gone. Started before Qt, so Qt's own messages are kept too
+    from kinetrace import crashlog
+    crashlog.install(APP_VERSION)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     apply_theme(app)
     win = MainWindow()
+    crashlog.attach(win._error_context, win._on_error_logged)
     win.show()
     if len(sys.argv) > 1 and Path(sys.argv[1]).exists():
         arg = sys.argv[1]

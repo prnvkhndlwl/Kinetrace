@@ -2296,6 +2296,19 @@ The folder was moved or renamed while the program was set up in it. Run
 `run.bat` (Mac: `Kinetrace.command`, Ubuntu: `./run.sh`) once; it repairs
 itself.
 
+**A red notice says "Something went wrong", or the program closed by itself.**
+Kinetrace keeps a record of every error it meets — what went wrong, where in
+the program, and what you were doing (the frame, how many cameras) — in the file
+`kinetrace.log`, in the `logs` folder inside the program folder. Open **Help →
+Error Report…**: it shows the recent errors and the System Check; **Copy** puts
+all of it on the clipboard for an e-mail or a bug report, and **Open the log
+folder** shows the files if you would rather attach them. If the program closed
+by itself, start it again and open the Error Report: the session marked "did
+NOT end normally" is the one that closed, and the stack dump under it says
+where. Nothing in these files is ever sent anywhere (they can contain the names
+of your video files). The notice appears at most once every ten seconds even
+when several errors come together; the log keeps all of them.
+
 **The status bar says *cpu* although the computer has an NVIDIA card.** Open
 **Help → System Check…**: it says whether the card's driver is too old for the
 program's PyTorch (update the driver at nvidia.com/drivers, then restart the
