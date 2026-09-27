@@ -30,7 +30,7 @@ from kinetrace import alltracker_backend
 from kinetrace.camerapanel import CameraPanel
 from kinetrace.view3d import CalibrationDialog, Scene3D, View3D
 from kinetrace.canvas import (ZOOM_STEP as CANVAS_ZOOM_STEP,
-                                  TRAIL_FRAMES, DISPLAY_FILTERS, REGION_SHAPES)
+                                  TRAIL_FRAMES, TRAIL_MAX, DISPLAY_FILTERS, REGION_SHAPES)
 from kinetrace.project import MAX_VIEWS, REFERENCE_VIEW, Project
 from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_token,
                                      model_is_cached as seg_is_cached, preferred_backend,
@@ -112,7 +112,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>Add ▾</td><td>region shape for an armed drag: circle · rectangle · polygon (click corners, Enter closes) · <b>Ball marker</b>: click a ball, SAM outlines it every frame and the fitted circle's centre is the point (wand balls, markers, a dropped ball — add one per ball; they track together as long as they stay within about 740 px of each other — farther apart, the run stops and says to track each ball alone)</td></tr>
 <tr><td class=k>O</td><td>onion skin: ghost markers of the previous (solid) and next (dashed) frame</td></tr>
 <tr><td class=k>L</td><td>loupe: magnifier under the cursor with a crosshair on the exact pixel</td></tr>
-<tr><td class=k>View → Trails</td><td>trail length (fading), optional upcoming path; View → Display filter: contrast / brighten / frame difference (display only)</td></tr>
+<tr><td class=k>View → Trails</td><td>Off / Last 10 frames / Custom… (any length) — fading, optional upcoming path; in every camera while Track ▾ → Every camera is ticked; View → Display filter: contrast / brighten / frame difference (display only)</td></tr>
 <tr><td class=k>drag (armed)</td><td>outline a region in the Add ▾ shape (circle or rectangle; a polygon is clicked corner by corner) → tracked as one point (its fitted center)</td></tr>
 <tr><td class=k>drag a marker</td><td>move / correct it on this frame (one Ctrl+Z step; not for a landmark derived from the silhouette)</td></tr>
 <tr><td class=k>Ctrl+click</td><td>move the selected point here (one Ctrl+Z step)</td></tr>
@@ -921,7 +921,7 @@ class MainWindow(QMainWindow):
             "time, each shown live in its own view. X stops them all at once. One Ctrl+Z undoes it in every "
             "camera. Shift+T does this once without ticking it. Combines with the run mode and the point model "
             "(the menu stays open while you tick).")
-        self.act_track_all.toggled.connect(lambda _on: self._update_track_button())
+        self.act_track_all.toggled.connect(lambda _on: (self._update_track_button(), self._refresh_companions()))
         menu_track.addAction(self.act_track_all)
         menu_track.setToolTipsVisible(True)
         # point-tracking model: AllTracker (robust on animals) or CoTracker3 (fast)
@@ -1323,12 +1323,20 @@ class MainWindow(QMainWindow):
         m_trails = m_view.addMenu("&Trails")
         self._trail_group = QActionGroup(self)
         self._trail_acts: dict[int, QAction] = {}
-        for n in (0, 15, 30, 60, 120, 300):
+        # three choices (owner 2026-09-27, G33): off, the preset, or a length you type
+        for n in (0, TRAIL_FRAMES):
             act = QAction("Off" if n == 0 else f"Last {n} frames", self, checkable=True)
             act.triggered.connect(lambda _=False, k=n: self._set_trail_len(k))
             self._trail_group.addAction(act)
             m_trails.addAction(act)
             self._trail_acts[n] = act
+        self._trail_custom = 30                     # the last length typed into Custom…
+        self.act_trail_custom = QAction("Custom…", self, checkable=True)
+        self.act_trail_custom.setToolTip(f"Type how many frames of trail to draw behind each point "
+                                         f"(1–{TRAIL_MAX})")
+        self.act_trail_custom.triggered.connect(self._ask_trail_len)
+        self._trail_group.addAction(self.act_trail_custom)
+        m_trails.addAction(self.act_trail_custom)
         self._trail_acts[TRAIL_FRAMES].setChecked(True)
         m_trails.addSeparator()
         self.act_trail_future = QAction("Also show the &upcoming path (dashed)", self, checkable=True)
@@ -3121,9 +3129,9 @@ class MainWindow(QMainWindow):
             return
         visible = set(self.grid.visible_indices())
         for i in p.others():
-            rt = self._views[i]
+            rt = self._views[i] if i < len(self._views) else None
             cv = self.grid.canvas(i)
-            if cv is None:
+            if cv is None or rt is None:     # a camera still being set up (a restored setting redraws, G33)
                 continue
             if i not in visible:
                 # hidden (solo): give the decoder thread and its VideoCapture
@@ -3185,9 +3193,10 @@ class MainWindow(QMainWindow):
                         and self.session is not None and self.selected < self.session.n_points else None)
             # the ball markers' fitted circles too: a ball lost its circle as soon as
             # its camera was not the working one (G22)
+            trails, future = self._companion_trails(s, f)      # (G33)
             cv.set_points(s.positions_at(f), s.visibility[f], s.points,
                           s.pid_by_name(sel_name) if sel_name is not None else None,
-                          occluded=s.occluded[f], radii=s.radius[f])
+                          trails, future, occluded=s.occluded[f], radii=s.radius[f])
         rt_a = self._rt
         if rt_a is not None:
             self.grid.set_caption(p.active, caption_for(p.name(p.active), self.current,
@@ -3813,18 +3822,52 @@ class MainWindow(QMainWindow):
                 "pixels", 5000)
 
     def _set_trail_len(self, n: int, announce: bool = True):
-        self._trail_len = int(n)
-        if n in self._trail_acts:
-            self._trail_acts[n].setChecked(True)
+        self._trail_len = n = int(max(0, min(TRAIL_MAX, n)))
+        act = self._trail_acts.get(n)
+        if act is None:                             # any other length is a custom one (G33)
+            self._trail_custom = n
+            act = self.act_trail_custom
+        act.setChecked(True)
+        self.act_trail_custom.setText(f"Custom… ({self._trail_custom} frames)"
+                                      if act is self.act_trail_custom else "Custom…")
         for cv in self.grid.canvases:
             cv.set_trails(self._trail_len, self._trail_future)
         self._refresh_overlay()
+        self._refresh_companions()
+
+    def _ask_trail_len(self):
+        """View → Trails → Custom…: how many frames of trail to draw (G33)."""
+        n, ok = QInputDialog.getInt(
+            self, "Trail length",
+            f"How many frames of trail to draw behind each point (1–{TRAIL_MAX}; the line fades towards "
+            "its oldest frame):", self._trail_custom, 1, TRAIL_MAX, 1)
+        # cancelled: the entry chosen before is ticked again
+        self._set_trail_len(int(n) if ok else self._trail_len)
+
+    def _trails_for(self, s, f: int):
+        """View → Trails for session `s` at frame `f`: (the past path, the upcoming
+        path) per point, or None where that part is off. One place, so the working
+        camera and the others draw the same trails (G33)."""
+        n = self._trail_len
+        if n <= 0 or not (0 <= f < s.n_frames):
+            return None, None
+        lo = max(0, f - n)
+        past = [s.tracks[lo:f + 1, i] for i in range(s.n_points)]
+        future = ([s.tracks[f:min(s.n_frames, f + n + 1), i] for i in range(s.n_points)]
+                  if self._trail_future else None)
+        return past, future
+
+    def _companion_trails(self, s, f: int):
+        """The other cameras draw their trails only while Track ▾ → Every camera is
+        ticked -- the cameras being tracked together (owner 2026-09-27, G33)."""
+        return self._trails_for(s, f) if self.act_track_all.isChecked() else (None, None)
 
     def _on_trail_future(self, on: bool):
         self._trail_future = bool(on)
         for cv in self.grid.canvases:
             cv.set_trails(self._trail_len, self._trail_future)
         self._refresh_overlay()
+        self._refresh_companions()
 
     def _set_region_shape(self, key: str, announce: bool = True):
         key = key if key in REGION_SHAPES else "circle"
@@ -5478,11 +5521,7 @@ class MainWindow(QMainWindow):
             return
         s = self.session
         f = self.current
-        n_tr = self._trail_len
-        lo = max(0, f - n_tr)
-        trails = [s.tracks[lo:f + 1, i] for i in range(s.n_points)] if n_tr > 0 else None
-        future = ([s.tracks[f:min(s.n_frames, f + n_tr + 1), i] for i in range(s.n_points)]
-                  if (n_tr > 0 and self._trail_future) else None)
+        trails, future = self._trails_for(s, f)
         onion = self.act_onion.isChecked()
         ghost_prev = s.tracks[f - 1] if (onion and f > 0) else None
         ghost_next = s.tracks[f + 1] if (onion and f + 1 < s.n_frames) else None
@@ -5650,8 +5689,9 @@ class MainWindow(QMainWindow):
             cv.set_frame(rgb)
             if s.animal is not None and s.masks is not None and self.btn_mask.isChecked():
                 cv.set_mask(s.masks.contours.get(idx), s.animal.color, self._mask_opacity)
+            trails, future = self._companion_trails(s, idx)    # (G33)
             cv.set_points(s.positions_at(idx), s.visibility[idx], s.points, None,
-                          occluded=s.occluded[idx], radii=s.radius[idx])
+                          trails, future, occluded=s.occluded[idx], radii=s.radius[idx])
             self.grid.set_caption(v, f"{p.name(v)}  ·  frame {idx} · tracking")
 
     def _multi_parallel_done(self) -> None:
@@ -6395,8 +6435,11 @@ class MainWindow(QMainWindow):
          else self.act_mode_auto).setChecked(True)
         self.act_track_all.setChecked(bool(st.get("track_all", False)))
         self.marker_spin.setValue(int(np.clip(st.get("marker_size", 3), 2, 24)))
-        tl = int(st.get("trail_len", TRAIL_FRAMES))
-        self._set_trail_len(tl if tl in self._trail_acts else TRAIL_FRAMES, announce=False)
+        try:
+            tl = int(st.get("trail_len", TRAIL_FRAMES))
+        except (TypeError, ValueError):
+            tl = TRAIL_FRAMES
+        self._set_trail_len(tl, announce=False)         # any saved length: a custom one (G33)
         self.act_trail_future.setChecked(bool(st.get("trail_future", False)))
         self.act_onion.setChecked(bool(st.get("onion", False)))
         self.act_loupe.setChecked(bool(st.get("loupe", False)))

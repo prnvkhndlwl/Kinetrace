@@ -145,10 +145,13 @@ win._render_side = lambda: (side_draws.__setitem__(0, side_draws[0] + 1), _real_
 t0 = time.time()
 QTest.keyClick(win, Qt.Key_T)
 wait(lambda: win._multi is not None or win.state == TRACKING, 30, "the run starts")
-seen, together = set(), False
+seen, together, side_trail = set(), False, False
 while win._multi is not None or win.state != READY:
     if win.state == TRACKING:
         seen.add(p.active)
+        past = win.grid.canvas(1)._motion.past or []
+        if any(np.isfinite(x).all(axis=1).sum() > 2 for x in past):
+            side_trail = True           # another camera draws its trail while it tracks (G33)
         prog = [progress(v) for v in range(3)]
         if min(prog) > F0 + 4 and max(prog) < N - 1:
             together = True             # every camera under way, none finished yet
@@ -159,6 +162,7 @@ pump(0.3)
 assert together, "the cameras were not tracked at the same time (I141)"
 assert seen == {0}, f"the working camera stays the working camera during the run: {seen}"
 assert side_draws[0] > 3, "the other cameras are drawn live in their own views"
+assert side_trail, "with Every camera ticked, the other cameras draw their trails during the run (G33)"
 assert p.active == 0, "ends in the working camera"
 del win._render_side
 

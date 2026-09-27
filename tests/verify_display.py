@@ -289,6 +289,8 @@ assert s2.ui_state["onion"] is True
 win._open_project_from_path(proj)
 pump(lambda: win.state == READY and win.session is not s, 30, "reopen")
 assert win.canvas.display_filter() == "contrast" and win._trail_len == 120 and win.act_onion.isChecked()
+assert win.act_trail_custom.isChecked() and win.act_trail_custom.text() == "Custom… (120 frames)", \
+    "a saved length that is not a preset comes back as a custom one (G33)"
 win._set_display_filter("none")
 print("project round trip OK")
 

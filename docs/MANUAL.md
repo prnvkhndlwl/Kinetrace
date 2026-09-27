@@ -746,10 +746,13 @@ Three views help you judge a track without stepping through it frame by frame.
 All of them are under the **View** menu and none of them changes any data.
 
 - **Trails** (*View → Trails*) draw each body part's recent path as a fading
-  line behind its marker. Choose how many frames (the last 30 unless you change
-  it; *Off* hides them). Tick *Also show the upcoming
-  path* to see, dashed, where the point goes **after** this frame: a wrong step
-  ahead shows before you get there.
+  line behind its marker. Choose *Off*, *Last 10 frames* (the standard) or
+  *Custom…* and type how many frames you want (up to 1000). Tick *Also show the
+  upcoming path* to see, dashed, where the point goes **after** this frame: a
+  wrong step ahead shows before you get there. With several cameras the trails
+  are drawn in the camera you work in; while **Track ▾ → Every camera** is
+  ticked, every camera draws its own trails too — during the run and afterwards
+  while you scrub to check it. *Off* shows no trail in any camera.
 - **Onion skin** (**O**) draws a hollow ghost where every point was one frame
   ago (solid ring) and will be one frame on (dashed ring), joined to the marker
   by a dotted line. A point that jumped stands out immediately.
@@ -1140,7 +1143,8 @@ cameras a run will cover ("Track ▶ · 3 cams"). Press Track (**T**) and the
 selected points — or all of them, as usual — are tracked in each camera that has
 them at this instant, **all cameras at the same time**, each one moving on live
 in its own view; a camera where a point was not placed is simply skipped for
-that point. The Track ▾ menu stays open while you tick, so the run mode
+that point (with *View → Trails* on, each camera draws its trail as it goes).
+The Track ▾ menu stays open while you tick, so the run mode
 (Automatic / Semi-automatic), **Every camera** and the point model (AllTracker /
 CoTracker3) can all be chosen in one visit; they combine. If only the camera you
 are working in has the point at this instant, Track says which camera lacks it
@@ -2579,7 +2583,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | type in the frame box | go to that frame number |
 | **O** | onion skin: ghosts of the previous / next frame |
 | **L** | loupe: magnifier under the cursor |
-| View → Trails / Display filter | fading trails and upcoming path; contrast / brighten / frame difference (display only) |
+| View → Trails / Display filter | fading trails (Off / Last 10 frames / Custom…) and upcoming path; contrast / brighten / frame difference (display only) |
 
 ### Working on the video
 

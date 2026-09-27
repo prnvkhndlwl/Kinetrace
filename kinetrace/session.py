@@ -75,7 +75,7 @@ DEFAULT_UI_STATE: dict = {
     "seg_backend": "",       # "" = the app's preferred backend (SAM 3 if its weights are present)
     "on_body": True,         # tracked points are kept inside the animal's silhouette
     "point_backend": "",     # "" = preferred (AllTracker when vendored, else CoTracker3)
-    "trail_len": 30,         # trajectory trail length in frames (0 = off)
+    "trail_len": 10,         # trajectory trail length in frames (0 = off; View -> Trails, G33)
     "trail_future": False,   # also draw the upcoming path (dashed)
     "onion": False,          # onion skin: ghosts of the previous / next frame
     "loupe": False,          # magnifier under the cursor

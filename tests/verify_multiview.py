@@ -267,6 +267,52 @@ assert A._regions[ball].isVisible(), "a ball's fitted circle is drawn in a compa
 assert A.cursor().shape() == Qt.PointingHandCursor and win.canvas.cursor().shape() == Qt.ArrowCursor
 print("G22: Esc drops the ring in every camera; a companion draws a ball's circle and shows a pointing hand OK")
 
+# ---- 5b. (G33) View -> Trails: Off / Last 10 frames / Custom..., and the other cameras
+# draw THEIR trails only while Track -> Every camera is ticked ------------------------------
+from PySide6.QtWidgets import QInputDialog  # noqa: E402
+from kinetrace.canvas import TRAIL_FRAMES  # noqa: E402
+
+texts = [a.text() for a in win._trail_group.actions()]
+assert TRAIL_FRAMES == 10 and texts == ["Off", "Last 10 frames", "Custom…"], texts
+assert win._trail_len == 10 and win._trail_acts[10].isChecked(), "the default is the last 10 frames"
+comp = next(k for k in range(3) if k != p.active)
+sv, cvc = p.sessions[comp], win.grid.canvas(comp)
+jv = sv.pid_by_name(name)
+fv = p.map_frame(p.active, comp, win.current)
+L = 12
+_before = sv.snapshot()                            # put back exactly afterwards
+tw = np.stack([np.linspace(100, 160, L), np.linspace(90, 120, L)], 1).astype(np.float32)[:, None]
+sv.write_segment(fv - L + 1, tw, np.ones((L, 1), bool), [jv], np.ones((L, 1), np.float32))
+win.act_track_all.setChecked(False)
+pump(0.05)
+assert cvc._motion.past == [], "tracking in one camera: no trails in the others"
+win.act_track_all.setChecked(True)                 # ticking it redraws the others at once
+pump(0.05)
+tr = cvc._motion.past
+assert tr and len(tr[jv]) == 11 and np.isfinite(tr[jv]).all(), "Every camera: the others show their trails"
+_getint = QInputDialog.getInt
+try:
+    QInputDialog.getInt = staticmethod(lambda *a, **k: (25, True))
+    win.act_trail_custom.trigger()
+    assert win._trail_len == 25 and win.act_trail_custom.isChecked(), "Custom... sets the length typed"
+    assert win.act_trail_custom.text() == "Custom… (25 frames)", win.act_trail_custom.text()
+    assert len(cvc._motion.past[jv]) == min(fv, 25) + 1, "the other cameras use the same length"
+    win._trail_acts[10].trigger()
+    QInputDialog.getInt = staticmethod(lambda *a, **k: (0, False))
+    win.act_trail_custom.trigger()                 # Cancel: the choice before is ticked again
+    assert win._trail_len == 10 and win._trail_acts[10].isChecked() and win.act_trail_custom.text() == "Custom…"
+finally:
+    QInputDialog.getInt = _getint
+win._trail_acts[0].trigger()                       # Off: no trail anywhere, Every camera or not
+pump(0.05)
+assert win._trail_len == 0 and cvc._motion.past == [] and win.canvas._motion.past == []
+win._trail_acts[10].trigger()
+win.act_track_all.setChecked(False)
+sv.restore(_before)
+win._refresh_companions()
+print("G33: Trails = Off / Last 10 frames / Custom...; the other cameras draw theirs only with Every camera "
+      "ticked, and Off shows none anywhere OK")
+
 # ---- 6. (G24) Sync all: a step's pictures go up together ----------------------------------
 got = []
 for k, cv in enumerate((A, B, C)):

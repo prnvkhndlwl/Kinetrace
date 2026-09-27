@@ -40,7 +40,8 @@ from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsPat
 
 HIT_RADIUS_PX = 14      # screen px within which a click grabs a point
 MARKER_RADIUS = 3.0     # screen px (3 by default, was 7)
-TRAIL_FRAMES = 30
+TRAIL_FRAMES = 10          # View -> Trails' preset ("Last 10 frames") and the default (G33)
+TRAIL_MAX = 1000          # the longest Custom... trail
 DRAG_CIRCLE_PX = 6      # screen px of movement before a press becomes a circle drag
 MIN_GROUP_RADIUS = 8.0  # native px; a smaller circle is treated as a plain click
 MIN_BOX_PX = 10.0       # native px; a smaller animal box is treated as a click
@@ -460,7 +461,7 @@ class VideoCanvas(QGraphicsView):
         # _build_context_menu); left None, the menu is the canvas-only one
         self.menu_extra = None          # callable(menu, acts, pid)
         self.menu_extra_action = None   # callable(chosen, acts, pid) -> handled?
-        self._trail_len = 30
+        self._trail_len = TRAIL_FRAMES
         self._trail_future = False
         self._onion = False
         self._member_items: dict[int, QGraphicsPathItem] = {}  # pid -> live member dots
