@@ -86,6 +86,17 @@ DEFAULT_UI_STATE: dict = {
 SOURCES = ("track", "silhouette", "ball")
 
 
+def in_frame(pts, w: float, h: float):
+    """Which positions lie inside a w x h picture: finite, 0 <= x < w and
+    0 <= y < h, over the last axis (x, y) -- a numpy bool for one (2,) point, a
+    bool array for (..., 2). THE picture-bounds rule of the tracker and the
+    session, which lived in six copies (I138). A NaN or infinite coordinate
+    fails the bounds anyway; the finite test only says so outright."""
+    pts = np.asarray(pts)
+    x, y = pts[..., 0], pts[..., 1]
+    return np.isfinite(pts).all(axis=-1) & (x >= 0) & (x < w) & (y >= 0) & (y < h)
+
+
 def _sanitize(name: str) -> str:
     """Make a point/event name safe for CSV/TSV headers and cells."""
     return name.replace(",", "_").replace("\t", "_").replace("\n", " ").strip() or "point"
@@ -874,8 +885,7 @@ class TrackingSession:
         # A point that left the frame has no real coordinates — the model keeps
         # predicting (it must, for joint tracking), but we store blanks so the
         # marker disappears and the export has empty cells for those frames.
-        oob = ~((tw[..., 0] >= 0) & (tw[..., 0] < self.width)
-                & (tw[..., 1] >= 0) & (tw[..., 1] < self.height))
+        oob = ~in_frame(tw, self.width, self.height)
         tw[oob] = np.nan
         vw[oob] = False
         cw[oob] = 0.0

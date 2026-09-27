@@ -48,6 +48,25 @@ for _j in range(4):
     assert np.array_equal(_s.exportable_at(_idx, _j), _full[_idx, _j]), _j
 print("exportable_at matches exportable, one cell and a column (I137) OK")
 
+# ---------------------------------------------------------------- I138
+# in_frame = the six inline copies it replaced (tracker x5, session.write_segment)
+from kinetrace.session import in_frame  # noqa: E402
+
+_W, _H = 320, 240
+_vals = np.array([0.0, -0.0, -1e-6, 1e-6, 319.0, 319.999, 320.0, 239.0, 239.999, 240.0, -5.0, 1000.0,
+                  np.nan, np.inf, -np.inf, 17.25])
+_xy = np.stack(np.meshgrid(_vals, _vals), -1).reshape(-1, 2)
+for _dt in (np.float32, np.float64):
+    _p = _xy.astype(_dt)
+    _old_vec = (np.isfinite(_p).all(axis=1) & (_p[:, 0] >= 0) & (_p[:, 0] < _W) & (_p[:, 1] >= 0) & (_p[:, 1] < _H))
+    _old_seg = ((_p[..., 0] >= 0) & (_p[..., 0] < _W) & (_p[..., 1] >= 0) & (_p[..., 1] < _H))   # write_segment's
+    assert np.array_equal(in_frame(_p, _W, _H), _old_vec) and np.array_equal(in_frame(_p, _W, _H), _old_seg)
+    assert np.array_equal(in_frame(_p.reshape(16, 16, 2), _W, _H), _old_vec.reshape(16, 16)), "(L, K, 2) windows"
+    for _q in _p:
+        _old = bool(np.isfinite(_q).all() and 0 <= _q[0] < _W and 0 <= _q[1] < _H)
+        assert bool(in_frame(_q, _W, _H)) == _old, _q
+print("in_frame is the picture-bounds rule it replaced, NaN / inf / edges included (I138) OK")
+
 # ---------------------------------------------------------------- I19
 p = Project([sess(200, name="a.mp4"), sess(200, name="b.mp4")], ["A", "B"], [0.0, -36.5])
 seq = [p.map_frame(0, 1, f) for f in range(40, 48)]

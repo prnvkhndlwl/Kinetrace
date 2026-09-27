@@ -63,6 +63,7 @@ from kinetrace import alltracker_backend as at_backend
 from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, get_segmenter,
                                      score_to_confidence, summarize_mask)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
+from kinetrace.session import in_frame
 from kinetrace.video_source import FrameCache, ReadAhead, VideoSource
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
@@ -296,9 +297,7 @@ def fit_group(seed_pts: np.ndarray, seed_center: np.ndarray, cur_pts: np.ndarray
     """
     M = len(seed_pts)
     fw, fh = frame_wh
-    valid = (np.isfinite(cur_pts).all(axis=1)
-             & (cur_pts[:, 0] >= 0) & (cur_pts[:, 0] < fw)
-             & (cur_pts[:, 1] >= 0) & (cur_pts[:, 1] < fh))
+    valid = in_frame(cur_pts, fw, fh)
     if not valid.any():
         return np.array([np.nan, np.nan], np.float32), False, 0.0
 
@@ -809,7 +808,7 @@ class TrackingWorker(QThread):
                 restart_seeds = []
                 for a in range(len(specs)):
                     p = out_tr[-1, col_idx[a]]
-                    good = (np.isfinite(p).all() and 0 <= p[0] < nw and 0 <= p[1] < nh)
+                    good = bool(in_frame(p, nw, nh))
                     restart_seeds.append(p.copy() if good else None)
             if (crop is not None and room and self._autopause_hit is None and not self._pause
                     and not result["restart"]):
@@ -835,7 +834,7 @@ class TrackingWorker(QThread):
                     restart_seeds = []
                     for a in range(len(specs)):
                         p = out_tr[-1, col_idx[a]]
-                        good = (np.isfinite(p).all() and 0 <= p[0] < nw and 0 <= p[1] < nh)
+                        good = bool(in_frame(p, nw, nh))
                         restart_seeds.append(p.copy() if good else None)
 
         # decode runs a couple of frames ahead on its own thread, overlapping
@@ -1634,8 +1633,8 @@ class TrackingWorker(QThread):
             for a, sp in enumerate(specs):
                 k = col_idx[a]
                 p = out_tr[i, k]
-                in_frame = (np.isfinite(p).all() and 0 <= p[0] < nw and 0 <= p[1] < nh)
-                low = in_frame and out_cf[i, k] < CONF_PAUSE_THRESHOLD
+                inside = bool(in_frame(p, nw, nh))
+                low = inside and out_cf[i, k] < CONF_PAUSE_THRESHOLD
                 # Blanking is STRICTLY narrower than pausing: the model must
                 # also report the point as not visible. Low confidence alone is
                 # not enough, because the on-body constraint deliberately
@@ -1656,7 +1655,7 @@ class TrackingWorker(QThread):
                 snapped_here = (constrained and q is not None
                                 and q in self._snapped.get(f, ()))
                 gone = (low and not out_vi[i, k] and (not constrained or snapped_here))
-                if new_row and in_frame:   # OOB neither counts nor resets the run
+                if new_row and inside:     # OOB neither counts nor resets the run
                     if low:
                         if self._low_run[sp.pid] == 0:
                             self._low_start[sp.pid] = f  # OOB gaps make f-RUN+1 wrong
@@ -1782,10 +1781,8 @@ class TrackingWorker(QThread):
                     # own status bit is unreliable on locally-flat patches): accept a
                     # refinement only if finite, inside the frame, and within the gate.
                     fw, fh = self._frame_wh
-                    ok = (np.isfinite(p1).all(axis=1)
-                          & (np.linalg.norm(p1 - out[i][valid], axis=1) <= gate)
-                          & (p1[:, 0] >= 0) & (p1[:, 0] < fw)
-                          & (p1[:, 1] >= 0) & (p1[:, 1] < fh))
+                    ok = (in_frame(p1, fw, fh)
+                          & (np.linalg.norm(p1 - out[i][valid], axis=1) <= gate))
                     sel = np.nonzero(valid)[0][ok]
                     out[i][sel] = p1[ok]
             if anchor_q and g1 is not None:
