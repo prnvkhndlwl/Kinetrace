@@ -63,6 +63,12 @@ def np_to_qimage(rgb: np.ndarray) -> QImage:
     return QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).convertToFormat(QImage.Format_RGB32)
 
 
+# the display filters' lookup tables, built once: cv2.LUT on a 4K frame is ~25x
+# faster than numpy's lut[rgb] / an int32 clip, with the same pixels (I136)
+_BRIGHT_LUT = (255.0 * (np.arange(256) / 255.0) ** 0.5).astype(np.uint8)    # gamma 0.5
+_DIFF_GAIN_LUT = np.clip(np.arange(256) * 4, 0, 255).astype(np.uint8)       # x4 gain, saturating
+
+
 def apply_display_filter(rgb: np.ndarray, kind: str, prev: np.ndarray | None = None) -> np.ndarray:
     """Display-only image filters. `rgb` is HxWx3 uint8; returns a new array
     of the same shape (or `rgb` itself for "none"). Pure pixel ops — the
@@ -73,14 +79,13 @@ def apply_display_filter(rgb: np.ndarray, kind: str, prev: np.ndarray | None = N
         lab[..., 0] = clahe.apply(lab[..., 0])
         return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
     if kind == "bright":
-        lut = (255.0 * (np.arange(256) / 255.0) ** 0.5).astype(np.uint8)   # gamma 0.5
-        return lut[rgb]
+        return cv2.LUT(rgb, _BRIGHT_LUT)
     if kind == "diff":
         if prev is None or prev.shape != rgb.shape:
             return rgb
         d = cv2.absdiff(rgb, prev)
         g = cv2.cvtColor(d, cv2.COLOR_RGB2GRAY)
-        g = np.clip(g.astype(np.int32) * 4, 0, 255).astype(np.uint8)   # x4 gain
+        g = cv2.LUT(g, _DIFF_GAIN_LUT)                                  # x4 gain
         return cv2.cvtColor(g, cv2.COLOR_GRAY2RGB)
     return rgb
 
