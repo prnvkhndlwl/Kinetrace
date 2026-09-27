@@ -282,19 +282,31 @@ win.project.calibration = None
 print("adding a camera to a calibrated project says what happens to the calibration (I16) OK")
 
 win.btn_autopause.setChecked(False)
+win.btn_animal.setChecked(True)
+win._set_active_view(1)
+pump(0.3)
+assert not win.btn_animal.isChecked() and not win.canvas._animal_mode, "a switch left S armed (I47)"
+win._set_active_view(0)
+pump(0.3)
 win.btn_add.setChecked(True)
 win._pending_event = 3
 win.timeline.set_pending_event(3)
+old_canvas = win.canvas
 win._set_active_view(1)
 pump(0.3)
-assert not win.btn_add.isChecked() and not win.canvas._place_mode, "a switch left N armed"
+# (G20) Add is carried OVER: armed in one camera, a click on another places the point there --
+# but only the camera switched to is armed, so the button never shows armed over an unarmed view (I47)
+assert win.btn_add.isChecked() and win.canvas._place_mode and not old_canvas._place_mode, \
+    "Add must move with the switch to the camera switched to"
 assert win._pending_event is None, "a half-marked event crossed cameras"
 assert not win.btn_autopause.isChecked(), "a switch silently turned auto-pause back on"
+win.btn_add.setChecked(False)
 win._set_active_view(0)
 pump(0.3)
 assert not win.btn_autopause.isChecked()
 win.btn_autopause.setChecked(True)
-print("camera switch disarms tools, drops a pending event, keeps the user's toggles (I47, I65, I50) OK")
+print("camera switch puts S down, carries Add over to the camera clicked, drops a pending event, keeps the "
+      "user's toggles (I47, G20, I65, I50) OK")
 
 cur = win.current
 win._on_eof_truncated(1, 3)                                    # a companion's end is ITS frame number

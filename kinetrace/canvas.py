@@ -85,7 +85,12 @@ class _GuideOverlay(QGraphicsItem):
     """Epipolar guides: where the SELECTED landmark, as the other cameras see
     it at this instant, can lie in this picture -- one dashed polyline per
     other camera (a polyline, because lens undistortion bends it). Drawn in
-    screen-constant width; geometry in native video pixels."""
+    screen-constant width; geometry in native video pixels. `faint`: the parts
+    of a line where the lens model is guessing (I132); `preds`: where two or
+    more other cameras put the landmark together (G23) -- the lines then step
+    back (`dim`)."""
+
+    PRED_R = 8.0                       # screen px: half-diagonal of the predicted-point diamond
 
     def __init__(self):
         super().__init__()
@@ -93,12 +98,31 @@ class _GuideOverlay(QGraphicsItem):
         self.setAcceptedMouseButtons(Qt.NoButton)
         self.rect = QRectF()
         self.lines: list = []          # (pts (M, 2), (r, g, b), label)
+        self.faint: list = []          # (pts (M, 2), (r, g, b))
+        self.preds: list = []          # (x, y, (r, g, b), label, (px, py) placed here or None)
+        self.notes: list = []          # (x, y, text, (r, g, b)): the 3D rmse beside a placed point (G28)
+        self.dim = False
 
     def boundingRect(self) -> QRectF:
         return self.rect
 
+    @staticmethod
+    def _path(pts) -> QPainterPath:
+        path = QPainterPath(QPointF(float(pts[0, 0]), float(pts[0, 1])))
+        for x, y in pts[1:]:
+            path.lineTo(float(x), float(y))
+        return path
+
+    def _text(self, painter, x, y, dx, dy, text, color, scale):
+        painter.save()
+        painter.setPen(QPen(QColor(*color, 235), 1.0 / scale))
+        painter.translate(x, y)
+        painter.scale(1.0 / scale, 1.0 / scale)
+        painter.drawText(QPointF(dx, dy), text)
+        painter.restore()
+
     def paint(self, painter: QPainter, option, widget=None):
-        if not self.lines:
+        if not (self.lines or self.faint or self.preds or self.notes):
             return
         scale = painter.worldTransform().m11() or 1.0
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -106,21 +130,50 @@ class _GuideOverlay(QGraphicsItem):
             pts = np.asarray(pts, np.float64)
             if len(pts) < 2:
                 continue
-            pen = QPen(QColor(*color, 210), 1.6 / scale)
+            pen = QPen(QColor(*color, 110 if self.dim else 210), (1.2 if self.dim else 1.6) / scale)
             pen.setStyle(Qt.DashLine)
             painter.setPen(pen)
-            path = QPainterPath(QPointF(float(pts[0, 0]), float(pts[0, 1])))
-            for x, y in pts[1:]:
-                path.lineTo(float(x), float(y))
-            painter.drawPath(path)
+            painter.drawPath(self._path(pts))
             if label:
-                painter.save()
-                painter.setPen(QPen(QColor(*color, 230), 1.0 / scale))
-                x, y = float(pts[-1, 0]), float(pts[-1, 1])
-                painter.translate(x, y)
-                painter.scale(1.0 / scale, 1.0 / scale)
-                painter.drawText(QPointF(4, -4), label)
-                painter.restore()
+                self._text(painter, float(pts[-1, 0]), float(pts[-1, 1]), 4, -4, label, color, scale)
+        for pts, color in self.faint:
+            pts = np.asarray(pts, np.float64)
+            if len(pts) < 2:
+                continue
+            pen = QPen(QColor(*color, 80), 1.0 / scale)
+            pen.setStyle(Qt.DotLine)
+            painter.setPen(pen)
+            painter.drawPath(self._path(pts))
+        r = self.PRED_R / scale
+        for x, y, color, label, placed in self.preds:
+            if placed is not None:
+                pen = QPen(QColor(*color, 170), 1.0 / scale)
+                painter.setPen(pen)
+                painter.drawLine(QPointF(float(placed[0]), float(placed[1])), QPointF(x, y))
+            diamond = QPolygonF([QPointF(x, y - r), QPointF(x + r, y), QPointF(x, y + r), QPointF(x - r, y)])
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor(0, 0, 0, 160), 3.2 / scale))       # a dark halo: visible on any footage
+            painter.drawPolygon(diamond)
+            painter.setPen(QPen(QColor(*color, 240), 1.6 / scale))
+            painter.drawPolygon(diamond)
+            painter.setBrush(QBrush(QColor(*color, 240)))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QPointF(x, y), 1.4 / scale, 1.4 / scale)
+            if label:
+                self._text(painter, x, y, self.PRED_R + 4, -self.PRED_R - 2, label, color, scale)
+        for x, y, text, color in self.notes:
+            # below-right of the marker, on a dark plate: readable on any footage
+            painter.save()
+            painter.translate(float(x), float(y))
+            painter.scale(1.0 / scale, 1.0 / scale)
+            fm = painter.fontMetrics()
+            r = fm.boundingRect(text).adjusted(-4, -2, 4, 2).translated(10, 14 + fm.ascent())
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor(0, 0, 0, 170)))
+            painter.drawRoundedRect(r, 3, 3)
+            painter.setPen(QPen(QColor(*color, 245), 1.0))
+            painter.drawText(QPointF(10, 14 + fm.ascent()), text)
+            painter.restore()
 
 
 class _MotionOverlay(QGraphicsItem):
@@ -350,6 +403,7 @@ class VideoCanvas(QGraphicsView):
     animal_click = Signal(float, float, bool)      # (x, y, positive) — animal tool
     animal_box = Signal(float, float, float, float)  # (x0, y0, x1, y1) — animal tool drag
     prompt_remove_requested = Signal(int)          # index into this frame's prompt list
+    probe_requested = Signal(float, float)         # Alt+click: where is this spot in the other cameras?
     view_clicked = Signal()                        # any press — the camera grid uses
     #                                                it to make a clicked view active
 
@@ -402,6 +456,7 @@ class VideoCanvas(QGraphicsView):
         self._onion = False
         self._member_items: dict[int, QGraphicsPathItem] = {}  # pid -> live member dots
         self._interactive = True
+        self._switchable = False   # a view-only companion a click switches to (pointing hand, not busy)
         self._user_zoomed = False
         self._follow_enabled = True   # mirrors the ⌖ Follow toggle
         self._selected: int | None = None
@@ -457,6 +512,13 @@ class VideoCanvas(QGraphicsView):
         self._scene.addItem(self._motion)
         self._guides = _GuideOverlay()
         self._scene.addItem(self._guides)
+        # a companion that has not caught up with the playhead (Active view only, G24)
+        self._stale = QGraphicsRectItem()
+        self._stale.setPen(QPen(Qt.NoPen))
+        self._stale.setBrush(QBrush(QColor(0, 0, 0, 120)))
+        self._stale.setZValue(30)
+        self._stale.setVisible(False)
+        self._scene.addItem(self._stale)
         self._loupe = _Loupe(self.viewport())
         self.viewport().setMouseTracking(True)
         self.setMouseTracking(True)
@@ -489,6 +551,7 @@ class VideoCanvas(QGraphicsView):
         self._motion.rect = QRectF(-0.5, -0.5, w, h)
         self._guides.prepareGeometryChange()
         self._guides.rect = QRectF(-0.5, -0.5, w, h)
+        self._stale.setRect(QRectF(-0.5, -0.5, w, h))
         self._raw_rgb = None
         self._prev_rgb = None
         self._placeholder.setVisible(False)
@@ -504,7 +567,17 @@ class VideoCanvas(QGraphicsView):
         self.set_mask(None)
         self.set_midline(None)
         self.set_prompts([], None)
+        self.set_guides([])
+        self.set_stale(False)
         self.cancel_gesture()
+
+    def set_stale(self, on: bool) -> None:
+        """Veil a companion view whose picture is not at the playhead's instant
+        (Active view only: it is not decoded until Sync all views is back, G27)."""
+        self._stale.setVisible(bool(on) and self._native_size is not None)
+
+    def is_stale(self) -> bool:
+        return self._stale.isVisible()
 
     # ------------------------------------------------------- animal overlays
 
@@ -657,6 +730,12 @@ class VideoCanvas(QGraphicsView):
             self.cancel_gesture()
         self._update_cursor()
 
+    def set_switchable(self, on: bool) -> None:
+        """A view-only companion that a click makes the working camera: it shows
+        a pointing hand, not the busy cursor a tracking run shows (G22)."""
+        self._switchable = bool(on)
+        self._update_cursor()
+
     def set_pan_mode(self, enabled: bool) -> None:
         """✋ pan tool: left-drag pans the view; point editing is suspended.
         View-only, so it works during tracking too."""
@@ -764,6 +843,8 @@ class VideoCanvas(QGraphicsView):
             self.setCursor(Qt.CrossCursor)
         elif self._animal_mode and self._interactive:
             self.setCursor(Qt.PointingHandCursor)
+        elif not self._interactive and self._switchable:
+            self.setCursor(Qt.PointingHandCursor)
         else:
             self.setCursor(Qt.ArrowCursor if self._interactive else Qt.BusyCursor)
 
@@ -870,11 +951,28 @@ class VideoCanvas(QGraphicsView):
         for m in self._markers:
             m.set_radius(self._marker_radius)
 
-    def set_guides(self, lines: list) -> None:
+    def set_guides(self, lines: list, faint: list | None = None, preds: list | None = None,
+                   dim: bool | None = None, notes: list | None = None) -> None:
         """Epipolar guides for the selected landmark: [(pts (M, 2) native px,
-        (r, g, b), label), ...]; an empty list clears them."""
+        (r, g, b), label), ...]; `faint`: [(pts, (r, g, b)), ...] parts where
+        the lens model is guessing (I132); `preds`: [(x, y, (r, g, b), label,
+        (px, py) or None), ...] where two or more other cameras put it (G23);
+        `dim`: draw the lines faint (default: when there is a ◇; the app also
+        dims them once the point is placed in two cameras, G28); `notes`:
+        [(x, y, text, (r, g, b)), ...] beside a marker. Empty lists clear them."""
         self._guides.lines = list(lines or [])
+        self._guides.faint = list(faint or [])
+        self._guides.preds = list(preds or [])
+        self._guides.notes = list(notes or [])
+        self._guides.dim = bool(self._guides.preds) if dim is None else bool(dim)
         self._guides.update()
+
+    def prediction_count(self) -> int:
+        return len(self._guides.preds)
+
+    def scene_px_per_screen_px(self) -> float:
+        """How many native video pixels one screen pixel covers at this zoom."""
+        return 1.0 / (self.transform().m11() or 1.0)
 
     def guide_count(self) -> int:
         """How many epipolar guide lines are drawn now."""
@@ -1050,10 +1148,14 @@ class VideoCanvas(QGraphicsView):
         # until then, so no edit can be lost by the switch
         was_interactive = self._interactive
         self.view_clicked.emit()
-        if not was_interactive and ev.button() != Qt.MiddleButton and not self._pan_mode:
+        armed_here = self._interactive and self._place_mode and ev.button() == Qt.LeftButton
+        if not was_interactive and ev.button() != Qt.MiddleButton and not self._pan_mode and not armed_here:
             # a click on a view-only (companion) tile only SWITCHES to it: the
             # switch makes it interactive synchronously, and the same press then
-            # hand-placed its selected point (I110)
+            # hand-placed its selected point (I110). With Add armed the click is
+            # an explicit placement: the switch carries Add over, and the press
+            # places the point in the camera clicked (G20) -- before, it was
+            # swallowed and the NEXT click, unarmed, placed nothing
             return
         if ev.button() == Qt.MiddleButton or \
                 (ev.button() == Qt.LeftButton and self._pan_mode and self._native_size):
@@ -1084,6 +1186,12 @@ class VideoCanvas(QGraphicsView):
             super().mousePressEvent(ev)
             return
         if ev.button() == Qt.LeftButton and self._interactive and self._native_size:
+            if ev.modifiers() & Qt.AltModifier and not self._place_mode:
+                # look-here: never an edit, so it cannot pass for a placement (G21)
+                if self._in_video(sp):
+                    sp = self._onpic(sp)
+                    self.probe_requested.emit(sp.x(), sp.y())
+                return
             hit = self._hit_test(sp)
             if ev.modifiers() & Qt.ControlModifier:
                 if self._in_video(sp):

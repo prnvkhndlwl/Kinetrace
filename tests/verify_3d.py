@@ -488,6 +488,85 @@ for _X in (_tgt + [0.1, 0.2, -0.05], _tgt + [-0.3, -0.4, 0.2]):
     assert len(_line) >= 2 and np.linalg.norm(closest_on_polyline(_line, _u1) - _u1) < 1.5
 print("epipolar guides without a reconstruction hit on near-parallel / toed-out / mirrored pairs OK (I98)")
 
+# (I132) the line is computed exactly: it runs to the picture's edges, or ends at the
+# vanishing point (infinitely far along the ray) / the epipole (the other camera's
+# centre) when that lies inside the picture -- the sampled version stopped at its
+# last sample, short of both
+from kinetrace.calib import OpenCVUndistort, dlt_camera_center  # noqa: E402
+
+
+def _ends_ok(line, cam, special):
+    """Each end of `line` is on the picture border, or at one of the `special`
+    points (vanishing point / epipole) that lies inside the picture."""
+    w, h = cam.width, cam.height
+    for q in (line[0], line[-1]):
+        border = min(abs(q[0] + 0.5), abs(q[0] - (w - 0.5)), abs(q[1] + 0.5), abs(q[1] - (h - 0.5)))
+        near = min([np.linalg.norm(q - s_) for s_ in special] + [np.inf])
+        if not (border < 0.02 or near < 0.05):
+            return False, (q, border, near)
+    return True, None
+
+
+_Kl = np.array([[900.0, 0, 640], [0, 900.0, 360], [0, 0, 1]])
+_rig = []
+# a side-by-side pair (the vanishing point of one camera's ray lands in the other's
+# picture) and a camera facing them (each sees the other's centre: the epipole)
+for _pos in (np.array([0.0, -3.0, 0.3]), np.array([0.4, -3.0, 0.3]), np.array([0.3, 3.0, 0.2])):
+    _R, _t = look_at(_pos, np.zeros(3))
+    _rig.append(CameraCalibration(dlt_from_camera(_Kl, _R, _t), 1280, 720, NoUndistort(), pixel_origin=0.0))
+_pr = working_probe(Calibration(_rig))
+_n_vp = _n_ep = 0
+for _a in range(3):
+    for _b in range(3):
+        if _a == _b:
+            continue
+        for _X in (np.array([0.05, 0.1, 0.08]), np.array([-0.4, 0.3, -0.2]), np.array([0.6, -0.5, 0.4])):
+            _u0 = _rig[_a].project(_X[None])[0]
+            _u1 = _rig[_b].project(_X[None])[0]
+            if not (0 <= _u1[0] < 1280 and 0 <= _u1[1] < 720):
+                continue
+            _line = epipolar_polyline(_rig[_a], _rig[_b], _u0, _pr, margin=0.0)
+            assert len(_line) >= 2 and np.linalg.norm(closest_on_polyline(_line, _u1) - _u1) < 0.01, (_a, _b, _X)
+            assert ((_line[:, 0] >= -0.5 - 1e-6) & (_line[:, 0] <= 1279.5 + 1e-6)
+                    & (_line[:, 1] >= -0.5 - 1e-6) & (_line[:, 1] <= 719.5 + 1e-6)).all(), "inside the picture"
+            _c, _d = dlt_ray(_rig[_a].coefs, _u0[None], _pr)
+            _L = _rig[_b].coefs
+            _vp = np.array([_L[0:3] @ _d[0], _L[4:7] @ _d[0]]) / (_L[8:11] @ _d[0])
+            _ep = _rig[_b].project(dlt_camera_center(_rig[_a].coefs)[None])[0]
+            _spec = [s_ for s_ in (_vp, _ep) if -0.5 <= s_[0] <= 1279.5 and -0.5 <= s_[1] <= 719.5]
+            _n_vp += int(any(np.allclose(s_, _vp) for s_ in _spec))
+            _n_ep += int(any(np.allclose(s_, _ep) for s_ in _spec))
+            _ok, _why = _ends_ok(_line, _rig[_b], _spec)
+            assert _ok, (_a, _b, _X, _why)
+assert _n_vp and _n_ep, f"the rig must put a vanishing point ({_n_vp}) and an epipole ({_n_ep}) in a picture"
+# a strong barrel lens on the target camera: still through the truth, still cut at the edges
+_lens = OpenCVUndistort(_Kl, np.array([-0.32, 0.11, 0.0, 0.0, 0.0]))
+_bent = CameraCalibration(_rig[1].coefs, 1280, 720, _lens, pixel_origin=0.0)
+for _X in (np.array([0.05, 0.1, 0.08]), np.array([-0.4, 0.3, -0.2])):
+    _u0 = _rig[0].project(_X[None])[0]
+    _u1 = _bent.project(_X[None])[0]
+    _info = {}
+    _line = epipolar_polyline(_rig[0], _bent, _u0, _pr, margin=0.0, info=_info)
+    _miss = np.linalg.norm(closest_on_polyline(_line, _u1) - _u1)
+    assert _miss < 0.5, f"a bent guide misses the truth by {_miss:.2f} px"
+    assert _info["trusted"].shape == (len(_line),) and _info["trusted"].all(), "an invertible lens is trusted"
+    _c, _d = dlt_ray(_rig[0].coefs, _u0[None], _pr)
+    _L = _bent.coefs
+    _vp = _bent.from_calib_frame((np.array([_L[0:3] @ _d[0], _L[4:7] @ _d[0]]) / (_L[8:11] @ _d[0]))[None])[0]
+    _ep = _bent.project(dlt_camera_center(_rig[0].coefs)[None])[0]
+    _spec = [s_ for s_ in (_vp, _ep) if -0.5 <= s_[0] <= 1279.5 and -0.5 <= s_[1] <= 719.5]
+    _ok, _why = _ends_ok(_line, _bent, _spec)
+    assert _ok, ("bent line ends", _why)
+    _ch = _line[-1] - _line[0]
+    _dev = np.abs(_ch[0] * (_line[:, 1] - _line[0, 1]) - _ch[1] * (_line[:, 0] - _line[0, 0])) / np.linalg.norm(_ch)
+    assert _dev.max() > 1.0, "the lens bends the line (a polyline, not a straight line)"
+# the default margin (retrack's contract) still keeps a quarter picture outside
+_wide = epipolar_polyline(_rig[0], _rig[1], _rig[0].project(np.array([[0.05, 0.1, 0.08]]))[0], _pr)
+assert (_wide[:, 0].min() < -0.5 or _wide[:, 0].max() > 1279.5 or _wide[:, 1].min() < -0.5
+        or _wide[:, 1].max() > 719.5), "margin=0.25 reaches past the picture as before"
+print(f"epipolar lines are exact: through the truth, cut at the picture edges or ending at the vanishing "
+      f"point ({_n_vp}) / epipole ({_n_ep}) inside it; a barrel lens bends them and they still hit OK (I132)")
+
 # ---- reconstruction verdict: the two-camera blind spot from the evidence (I101) -------
 _T = 50
 _z = np.zeros((_T, 2, 3))

@@ -379,6 +379,14 @@ Work through this once with a short, easy clip before using a clip that matters.
 
 **File → Open Video…** (or **Ctrl+O**). Pick your file.
 
+While it opens, a card in the middle of the window says what is happening —
+reading the file, checking its frame rate, checking that every frame can be read
+— with a bar that fills as it goes. A 4K file takes a few seconds; a file on a
+network drive longer (the card says so, and a copy on your own disk opens and
+plays much faster). **Cancel** (or **Esc**) stops it without changing anything
+that was already open. The same card appears when you open a project or add
+cameras; several cameras are read at the same time.
+
 The first frame appears. If a warning about "variable frame rate" appears, stop
 and fix the file first — see [section 2](#2-what-you-need-before-you-start).
 If you worked on this video before without saving a project, the program asks
@@ -984,9 +992,19 @@ the numbers just get measured from the new starting point.
 
 ### Setting it up
 
-1. Open the first camera's video normally. **This one becomes the reference**, so
-   if it matters to you which camera the numbers are measured against, load that
-   one first.
+1. **All the cameras' videos in one folder?** Use **File → Open Folder of
+   Videos…** and pick the folder. Every video in it is listed with its picture
+   size, frame rate and length. Tick the ones that belong to this event (*Include
+   subfolders* looks deeper), and choose the **base** camera with the round
+   button in its row: it becomes camera 1, the reference that every other
+   camera's offset is measured against. The base must be one of the ticked
+   videos. Leave *Save the project now as* ticked and the project is saved at
+   once as a file named after the folder, inside it — the file remembers which
+   videos you chose and which one is the base. Each camera is named after its
+   file. Then go on at step 3.
+   Otherwise: open the first camera's video normally. **This one becomes the
+   reference**, so if it matters to you which camera the numbers are measured
+   against, load that one first.
 2. In the **CAMERAS** panel at the top of the right panel, click
    **＋ Add video** and choose the others. You can add several at once, up to 15
    cameras in total. Each appears as its own view in a grid above the timeline.
@@ -1065,38 +1083,72 @@ that camera. The other views follow along, showing the same instant, with their
 own markers drawn on them, but you cannot edit them until you switch.
 
 Switching cameras keeps you on the same instant, so you never lose your place.
-It also puts down any tool you had picked up: an armed **N** or **S**, and an
-event whose start you had marked with **E**, are cancelled, so a click meant for
-one camera can never land in another. The toggles in the bottom bar (Auto-pause,
-ROI, Body, Follow, Mask, the point model, semi-automatic mode) and the *View*
-settings stay as you set them: they belong to you, not to a camera. The
-selected body part comes along too: select *snout* in one camera, click another
-camera, and *snout* is selected there, ready to be clicked. The one thing a
-switch forgets is the undo step — **Ctrl+Z** only reaches back to what you did
-since you last switched.
+A plain click on another camera's picture **only switches** to it — it never
+places anything, so looking at a camera can never put a point in it. With **N**
+(＋ Add) armed it is different: you have said you want to place a point, so the
+click switches to that camera **and places the point there**, in one go. The
+segment tool (**S**) and an event whose start you had marked with **E** are put
+down by a switch, so a click meant for one camera's silhouette can never land in
+another. The toggles in the bottom bar (Auto-pause, ROI, Body, Follow, Mask, the
+point model, semi-automatic mode) and the *View* settings — marker size, trails,
+the display filter and the like — stay as you set them: they belong to you, not
+to a camera. The selected body part comes along too: select *snout* in one
+camera, click another camera, and *snout* is selected there, ready to be
+clicked. The one thing a switch forgets is the undo step — **Ctrl+Z** only
+reaches back to what you did since you last switched.
 
 Each camera's row in the CAMERAS panel shows its name with **Align here** and
 **×** on the first line, and the offset box with **◂ ▸** (and ×2 for a camera
 recording at twice the reference rate) underneath. **×** removes that camera
 from the project; it asks first when the camera has tracked frames, and its
 tracks go with it.
-It also puts your tools down: an armed point placement (**N**) or segment tool
-(**S**) and an event whose start you had marked are cancelled, so a click can
-never land in the wrong camera. Your settings — auto-pause, ROI zoom, the
-tracking model, Follow, marker size, trails, the display filter and the like —
-travel with you from camera to camera.
 
-**Every camera has the same list of body parts.** A point you add in one camera
-appears in the POINTS list of every other camera straight away, greyed until you
-place it there: select it in that camera, click it on the video, and track it.
-Renaming or deleting a point does the same in every camera (the delete question
-says which other cameras lose their tracks, and **Ctrl+Z** brings them all back).
-A skeleton chosen in one camera is given to the others, and a camera added later
-receives the whole list. That shared list is what lets the cameras be combined in
-3D: the program matches them by name.
+**Every camera has the same list of body parts, in the same order.** A point you
+add in one camera appears in the POINTS list of every other camera straight
+away, greyed until you place it there: select it in that camera, click it on the
+video, and track it. **＋ New point** (above the POINTS list) makes a point with
+no position yet, already selected, in every camera — the way to define your body
+parts first and then click each one in each camera. Renaming or deleting a point
+does the same in every camera (the delete question says which other cameras lose
+their tracks, and **Ctrl+Z** brings them all back). A skeleton chosen in one
+camera is given to the others, and a camera added later receives the whole list.
+That shared list is what lets the cameras be combined in 3D: the program matches
+them by name.
 
-**Ctrl+2** shows only the camera you are working on, and gives the whole window
-to it.
+**How the other cameras follow the playhead** — *View → Other cameras*, or the
+**Sync all** button in the CAMERAS panel:
+
+- **Sync all views** (the usual choice): every camera shows the instant the
+  playhead is on, with its markers and guides. When you step one frame (**F**,
+  **B**, a click on the timeline) every camera's new picture appears at the same
+  moment, so what you compare is always one instant.
+- **Active view only** (**Ctrl+Shift+2**, or untick **Sync all**): only the
+  camera you are working on reads its video — much faster with many 4K cameras.
+  The others stay on the picture they last showed, dimmed, with "not following
+  (Active view only)" and that picture's frame number in their caption, however
+  you move — playing, scrubbing or a single step. Tick **Sync all** again (or
+  press Ctrl+Shift+2 again) and they come back to the playhead; click one of
+  them to work in it. The dashed lines and ◇ in your working camera keep
+  working, because they come from the other cameras' tracks, not their pictures.
+- **Only the working camera** (**Ctrl+2**): the others are hidden and give the
+  whole window to the camera you are working on.
+
+**Tracking the same points in every camera.** When a body part (or a ball
+marker) is placed in several cameras, you do not have to track it camera by
+camera: tick **Track ▾ → Every camera** and the Track button says how many
+cameras a run will cover ("Track ▶ · 3 cams"). Press Track (**T**) and the
+selected points — or all of them, as usual — are tracked in each camera that has
+them at this instant, one camera after another, each run on screen as it
+happens; a camera where a point was not placed is simply skipped for that
+point. In semi-automatic mode **F** steps one frame in every camera. **Shift+T**
+does one such run without ticking anything. **X** stops it there: the cameras
+after the one being tracked are left for later (the notice names them). One
+**Ctrl+Z** undoes the whole run in every camera. If a point is lost in one of
+the cameras, the others are still tracked, and at the end the playhead goes to
+the camera and frame where it was lost, as after any auto-pause. (The cameras
+run one after another rather than side by side because each 4K run needs most
+of the graphics card's memory and the whole disk, and so that you can always see
+and stop what is being tracked.)
 
 ### Calibrating the cameras yourself: the wand
 
@@ -1537,7 +1589,9 @@ that is already calibrated, the calibration is kept, in the project and in its
 saved file, but 3D waits until every camera is calibrated, and the program tells
 you so when you add it. Calibrate again with all the cameras, import a
 calibration that includes the new one, or remove the new camera again with its
-**×** in the CAMERAS panel to get 3D back.
+**×** in the CAMERAS panel to get 3D back. Meanwhile the dashed guides and the ◇
+(below) keep working among the cameras the calibration does cover; the new
+camera simply gets none.
 
 **Two helpers appear once a calibration is in place.** Loading or making a
 calibration switches the first one on.
@@ -1547,11 +1601,40 @@ calibration switches the first one on.
   *other* camera that has that body part at this instant: the line is
   everywhere the part *can* be, given where that camera sees it. So: click the
   snout in camera 1, and camera 2 shows at once where the snout must be; click
-  camera 2 — the snout stays selected — and click it on the line. Where two
-  lines cross is the only place consistent with both cameras. With nothing
-  selected, a click on the video edits nothing: it only draws where that spot
-  can be in the other cameras (a small cross marks the spot; **Esc** clears it).
-  Right-click the part → **Snap to the other cameras' rays here** moves it
+  camera 2 — the snout stays selected — and click it on the line (or press
+  **N** first, and the one click on camera 2 switches and places). Each line
+  runs right to the edges of the picture, or stops where it must: at the point
+  that is infinitely far along the other camera's line of sight, or at the other
+  camera itself when it is in the picture — the part cannot be beyond either.
+  With a strongly curved lens, the stretch where the lens correction is only
+  guessing is drawn dotted.
+- **The 3D rmse once two cameras have it.** As soon as the body part is placed
+  in two cameras at this instant, the program works out its 3D position and
+  writes, beside the part in each camera that has it, how well the cameras
+  agree: *3D rmse 0.84 px · 2 cams*. It is the reconstruction residual in
+  pixels (DLTdv's definition — the number 3D → Reconstruct reports for every
+  frame): green = good (under about 1.5 px at 1920 px wide), amber = usable,
+  red = one of the placements is off. The status bar says the same after each
+  click. The dashed lines turn faint in every camera from then on — they have
+  done their job. With only two cameras a slip *along* the other camera's line
+  does not raise the rmse; a third camera does catch it.
+- **A ◇ once two cameras agree.** When two or more *other* cameras have the
+  part at this instant, their lines of sight meet in 3D, and a **◇** (a small
+  diamond) shows where that point is in this camera; the dashed lines fade. Press
+  **A**, or click on the ◇, and the part is placed exactly there (hand-placed,
+  one **Ctrl+Z**). In a camera where you have already placed it, the ◇ is a
+  check: its label says how many pixels your placement is from the other
+  cameras'. There is no ◇ when those cameras disagree (one of them is on the
+  wrong spot) or see the part along almost the same line (their crossing would
+  be a guess) — the line's label says which, and **A** says why in the status
+  bar. With two cameras, a slip *along* the other camera's line cannot be seen
+  by either: check that stretch by eye.
+- **Look here: Alt+click.** An Alt+click on the video edits nothing: it draws
+  where that spot can be in the other cameras (a dashed "?" ring marks the spot;
+  **Esc** clears it). A plain click with no body part selected places nothing
+  either, and says so on the video: press **N** to add a point, or select one in
+  the POINTS list first.
+- **Snapping.** Right-click the part → **Snap to the other cameras' rays here** moves it
   there for you (the nearest point on one line, the crossing of two or more),
   marks the frame hand-placed, and Track re-seeds from it — that is how a
   camera that slid onto the wrong body part gets pulled back into agreement.
@@ -2490,26 +2573,30 @@ view keys work. Hover over any button or menu entry to see what it does.
 | click (armed) | place a point, or continue the selected one where it has no data |
 | drag a circle (armed) | track a whole region as one point |
 | drag a marker | correct it on this frame (one **Ctrl+Z** step; a landmark derived from the outline cannot be moved by hand) |
-| click (not armed) | place the point selected in the list here, by hand |
+| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed |
+| **＋ New point** (POINTS panel) | a point with no position yet, selected — and in every camera's list |
+| **A** | with a calibration: place the selected point at the ◇, where two or more other cameras put it |
+| **Alt+click** | with a calibration: where this spot can be in the other cameras (nothing is edited) |
 | **Ctrl+click** | move the selected point here |
 | **Shift+<** / **Shift+>** | first / last frame the selected point has data on (nothing selected: the silhouette's) |
 | **,** / **.** | previous / next frame placed by hand for the selected point |
-| right-click a point | go to its first / last / hand-placed / doubtful frames; clear it on this frame, in the selected window, or entirely; fill its gaps between hand placements with a curve; with a calibration, snap it to the other cameras' rays |
+| right-click a point | go to its first / last / hand-placed / doubtful frames; clear it on this frame, in the selected window, or entirely; fill its gaps between hand placements with a curve; with a calibration, snap it to the other cameras' rays, or place it at the ◇ |
 | **J** / **Shift+J** | next / previous low-confidence (red) stretch |
 | **Shift+X** | mark the selected point hidden on this frame (again to unmark) |
 | **Shift+N** | note on this frame |
 | Add **▾** | region shape: circle, rectangle, polygon (click the corners, then Enter or a double-click); **Ball marker** — click a ball, SAM outlines it every frame and the fitted circle's centre is the point (balls tracked together must stay within about 740 px of each other) |
 | right-click a marker | rename, delete, lock it to its look, change how it is found (appearance or silhouette), hidden on this frame, may leave the segment |
 | **S** (the Segment button) | the outlining tool — click the animal (Shift+click = not the animal, drag = a box around it, right-click a click to remove it); **S** or **Esc** when done |
-| **Esc** | cancel whatever you just started: a drag or polygon, the segment tool, the armed crosshair, the pan tool, a half-marked event, a selected stretch of the timeline, the dashed line of a click made with nothing selected — and, with nothing left to cancel, deselect the point |
+| **Esc** | cancel whatever you just started: a drag or polygon, the segment tool, the armed crosshair, the pan tool, a half-marked event, a selected stretch of the timeline, the look-here line of an Alt+click — and, with nothing left to cancel, deselect the point |
 
 ### Tracking
 
 | Key | Does |
 |---|---|
-| **Track ▶** or **T** | start tracking from this frame |
-| **X** or **Space** | stop (during **3D → Re-track Disagreeing Stretches** it stops the whole queue and asks whether to keep what was re-tracked) |
-| **F** (semi-automatic mode) | track exactly one frame |
+| **Track ▶** or **T** | start tracking from this frame (with Track ▾ → **Every camera**: in each camera that has the points) |
+| **Shift+T** | several cameras: this run in every camera that has the points here, one after another |
+| **X** or **Space** | stop (during **3D → Re-track Disagreeing Stretches** it stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run the cameras after this one are left for later) |
+| **F** (semi-automatic mode) | track exactly one frame (in every camera with Track ▾ → Every camera) |
 | **Ctrl+Z** | undo the last run, bulk edit or hand edit — a click, drag, Ctrl+click, deleted point or Shift+X (one step only) |
 
 ### Looking
@@ -2523,6 +2610,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Shift + +** / **Shift + −**, or **Ctrl+wheel** over the timeline | zoom the timeline's time axis |
 | **Ctrl+1** | show / hide the right panel |
 | **Ctrl+2** | show only the camera you are working on |
+| **Ctrl+Shift+2** | Active view only: only the working camera reads its video; the others stay where they are until Sync all views (again: back to Sync all views; also *View → Other cameras*) |
 | **Ctrl+3** / **Ctrl+4** | reconstruct the 3D landmarks / carve the volume at this frame |
 | **Ctrl+5** | show / hide the 3D view (drag to turn, wheel to zoom, middle-drag to move) |
 | **Ctrl+3** | reconstruct the 3D landmarks (needs a calibration of every camera) and show the 3D view |
@@ -2536,6 +2624,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | Key | Does |
 |---|---|
 | **Ctrl+O** / **Ctrl+Shift+O** | open a video / a project |
+| **File → Open Folder of Videos…** | several cameras in one folder: tick which to import, choose the base camera |
 | **Ctrl+S** / **Ctrl+Shift+S** | save the project / save it under a new name |
 | **Ctrl+E** | export your results |
 | **Ctrl+,** | settings (also the last entry of the **Segment ▾** dropdown) |

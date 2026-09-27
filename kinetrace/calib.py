@@ -878,22 +878,167 @@ def working_probe(cal: "Calibration") -> np.ndarray | None:
     return probe
 
 
+def _calib_affine(cam: CameraCalibration, pts_xy: np.ndarray) -> np.ndarray:
+    """Kinetrace pixels -> the DLT's pixel convention WITHOUT undistortion."""
+    p = np.atleast_2d(np.asarray(pts_xy, np.float64)).copy() + cam.pixel_origin
+    if cam.y_flip:
+        p[:, 1] = cam.height - p[:, 1] + 2 * cam.pixel_origin - 1
+    return p
+
+
+def _picture_in_calib_frame(cam: CameraCalibration, margin: float) -> tuple:
+    """((x0, y0, x1, y1) of the picture plus `margin` in raw Kinetrace pixels,
+    (x0, y0, x1, y1) of a box holding it in the undistorted calibration frame).
+    With a lens model the picture's outline is bent there, so the box is that
+    of its undistorted border -- the points of it the model round-trips (a
+    model that runs away past its boards must not blow the box up); the exact
+    cut is made afterwards in raw pixels."""
+    key = (float(margin), cam.width, cam.height, id(cam.undistort), cam.pixel_origin, cam.y_flip)
+    cached = getattr(cam, "_picture_box_cache", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    mx, my = margin * cam.width, margin * cam.height
+    raw = (-0.5 - mx, -0.5 - my, cam.width - 0.5 + mx, cam.height - 0.5 + my)
+    x0, y0, x1, y1 = raw
+    if getattr(cam.undistort, "kind", "none") == "none":
+        q = _calib_affine(cam, np.array([[x0, y0], [x1, y0], [x0, y1], [x1, y1]]))
+    else:
+        t = np.linspace(0.0, 1.0, 64)
+        border = np.vstack([np.column_stack([x0 + t * (x1 - x0), np.full_like(t, y0)]),
+                            np.column_stack([x0 + t * (x1 - x0), np.full_like(t, y1)]),
+                            np.column_stack([np.full_like(t, x0), y0 + t * (y1 - y0)]),
+                            np.column_stack([np.full_like(t, x1), y0 + t * (y1 - y0)])])
+        q = cam.to_calib_frame(border)
+        back = cam.from_calib_frame(q)
+        tol = max(1.0, 1e-3 * cam.width)
+        ok = np.isfinite(q).all(axis=1) & np.isfinite(back).all(axis=1)
+        ok[ok] &= np.linalg.norm(back[ok] - border[ok], axis=1) < tol
+        q = q[ok] if ok.sum() >= 8 else _calib_affine(cam, border)
+    box = (float(q[:, 0].min()), float(q[:, 1].min()), float(q[:, 0].max()), float(q[:, 1].max()))
+    out = (raw, box)
+    try:
+        cam._picture_box_cache = (key, out)
+    except Exception:       # noqa: BLE001
+        pass
+    return out
+
+
+def _clip_s(lo: float, hi: float, a: float, b: float) -> tuple[float, float]:
+    """Narrow the ray parameter interval [lo, hi] to where a + s * b >= 0."""
+    if abs(b) < 1e-300:
+        return (lo, hi) if a >= 0 else (1.0, 0.0)
+    r = -a / b
+    return (max(lo, r), hi) if b > 0 else (lo, min(hi, r))
+
+
+def _clip_polyline_to_box(pts: np.ndarray, flags: np.ndarray, box) -> tuple[np.ndarray, np.ndarray]:
+    """The longest run of polyline `pts` inside `box` (x0, y0, x1, y1), cut
+    exactly where it crosses the box's edges; `flags` travel with the points."""
+    x0, y0, x1, y1 = box
+    eps = 1e-6
+    ins = ((pts[:, 0] >= x0 - eps) & (pts[:, 0] <= x1 + eps)
+           & (pts[:, 1] >= y0 - eps) & (pts[:, 1] <= y1 + eps))
+
+    def exit_point(a, b):
+        # from `a` (inside) towards `b` (outside): where the segment leaves the box
+        d = b - a
+        t = 1.0
+        for k, lo_, hi_ in ((0, x0, x1), (1, y0, y1)):
+            if d[k] > 1e-12:
+                t = min(t, (hi_ - a[k]) / d[k])
+            elif d[k] < -1e-12:
+                t = min(t, (lo_ - a[k]) / d[k])
+        return a + max(t, 0.0) * d
+
+    runs, cur, curf = [], [], []
+    for i in range(len(pts)):
+        if ins[i]:
+            if not cur and i > 0:
+                cur.append(exit_point(pts[i], pts[i - 1]))
+                curf.append(flags[i])
+            cur.append(pts[i])
+            curf.append(flags[i])
+        elif cur:
+            cur.append(exit_point(pts[i - 1], pts[i]))
+            curf.append(flags[i - 1])
+            runs.append((cur, curf))
+            cur, curf = [], []
+    if cur:
+        runs.append((cur, curf))
+    if not runs:
+        return np.zeros((0, 2)), np.zeros(0, bool)
+    arc = [float(np.linalg.norm(np.diff(np.asarray(r), axis=0), axis=1).sum()) if len(r) > 1 else 0.0
+           for r, _f in runs]
+    r, f = runs[int(np.argmax(arc))]
+    return np.asarray(r, np.float64), np.asarray(f, bool)
+
+
 def epipolar_polyline(src: CameraCalibration, dst: CameraCalibration, uv_raw_src, probe=None,
-                      n: int = 80, margin: float = 0.25) -> np.ndarray:
+                      n: int = 240, margin: float = 0.25, info: dict | None = None) -> np.ndarray:
     """Where a landmark seen at raw pixel `uv_raw_src` of camera `src` can be
     in camera `dst`: its viewing ray, projected into `dst` as a polyline in
-    DST RAW pixels (M, 2) -- a polyline, not a line, because `dst`'s lens
-    undistortion bends it. Depths along the ray are sampled log-spaced from
-    1/50 to 50 times the distance from `src` to `probe` (a point the cameras
-    look at; wide because a probe from the calibration alone -- the world
-    origin -- need not sit where the animal is, I98); points landing outside
-    `dst`'s picture (plus `margin` of its size) are dropped. Empty when
-    nothing lands in the picture."""
+    DST RAW pixels (M, 2), ordered from the near end (the epipole side) to the
+    far end (the vanishing point side) -- a polyline, not a line, because
+    `dst`'s lens undistortion bends it. Only the part in front of BOTH cameras
+    is kept, cut at `dst`'s picture plus `margin` of its size (0 = exactly at
+    the picture's edges, what the guides draw). Empty when none of it lands
+    there. `probe` is a point the cameras look at (the forward direction of
+    each camera; I98).
+
+    (I132) Computed exactly: in `dst`'s undistorted plane the ray's image is
+    the straight segment from the epipole (depth 0) to the vanishing point
+    (infinite depth); the depths in front of `dst` and inside the picture are
+    each a linear condition on the ray parameter, so the kept part is found
+    in closed form, then sampled evenly ALONG THE PICTURE and bent through
+    the lens. The old version sampled 80 depths from 1/50 to 50 times the
+    probe distance and joined them, so it stopped at its last sample: short
+    of the picture edge, or of the vanishing point on a long baseline.
+    `info`, if given, receives {"trusted": (M,) bool} -- False where the lens
+    model does not invert consistently (it is guessing there)."""
     p = src.to_calib_frame(np.asarray(uv_raw_src, np.float64).reshape(1, 2))
+    if info is not None:
+        info["trusted"] = np.zeros(0, bool)
     if not np.isfinite(p).all():
         return np.zeros((0, 2))
     c, d = dlt_ray(src.coefs, p, probe)
     d = d[0]
+    if dst.width and dst.height:
+        L = np.asarray(dst.coefs, np.float64).reshape(11)
+        P = np.array([[L[0], L[1], L[2], L[3]], [L[4], L[5], L[6], L[7]], [L[8], L[9], L[10], 1.0]])
+        xc, xd = P @ np.append(c, 1.0), P @ np.append(d, 0.0)       # x(s) = xc + s xd, s >= 0
+        sgn = front_sign(L, probe)
+        lo, hi = _clip_s(0.0, np.inf, sgn * xc[2], sgn * xd[2])      # in front of dst
+        raw_box, (bx0, by0, bx1, by1) = _picture_in_calib_frame(dst, margin)
+        # inside the box: sgn * (h . x(s)) >= 0 per edge (w keeps the sign sgn in front)
+        for h in ((1.0, 0.0, -bx0), (-1.0, 0.0, bx1), (0.0, 1.0, -by0), (0.0, -1.0, by1)):
+            h = np.asarray(h)
+            lo, hi = _clip_s(lo, hi, sgn * float(h @ xc), sgn * float(h @ xd))
+        if not lo < hi:
+            return np.zeros((0, 2))
+        q0 = (xc + lo * xd)[:2] / (xc + lo * xd)[2]
+        q1 = xd[:2] / xd[2] if not np.isfinite(hi) else (xc + hi * xd)[:2] / (xc + hi * xd)[2]
+        kind = getattr(dst.undistort, "kind", "none")
+        # a bent line is smooth: a quarter of the samples draws it to a fraction of a
+        # pixel, and an LWM map costs O(samples x control points) -- 25 ms a line at 240
+        m = max(int(n), 2) if kind == "none" else max(int(n) // 4, 16)
+        t = np.linspace(0.0, 1.0, m)
+        und = q0[None, :] + t[:, None] * (q1 - q0)[None, :]
+        uv = dst.from_calib_frame(und)
+        ok = np.isfinite(uv).all(axis=1)         # an LWM map is undefined (NaN) off its control points
+        uv, und = uv[ok], und[ok]
+        trusted = np.ones(len(uv), bool)
+        if kind == "opencv" and len(uv):
+            # a polynomial lens model extrapolates past its boards and can run away;
+            # where it no longer inverts consistently it is guessing
+            back = dst.to_calib_frame(uv)
+            tol = max(0.5, 5e-4 * dst.width)
+            trusted = np.isfinite(back).all(axis=1)
+            trusted[trusted] &= np.linalg.norm(back[trusted] - und[trusted], axis=1) < tol
+        uv, trusted = _clip_polyline_to_box(uv, trusted, raw_box)
+        if info is not None:
+            info["trusted"] = trusted
+        return uv
+    # no picture size recorded: sample depths as before (a few decades around the probe)
     ref = float(np.linalg.norm(np.asarray(probe, np.float64) - c)) if probe is not None else 1.0
     ref = ref if np.isfinite(ref) and ref > 1e-9 else 1.0
     depths = ref * np.logspace(np.log10(0.02), np.log10(50.0), int(n))
@@ -906,11 +1051,10 @@ def epipolar_polyline(src: CameraCalibration, dst: CameraCalibration, uv_raw_src
         if len(xyz) == 0:
             return np.zeros((0, 2))
     uv = dst.project(xyz)
-    ok = np.isfinite(uv).all(axis=1)
-    if dst.width and dst.height:
-        mx, my = margin * dst.width, margin * dst.height
-        ok &= (uv[:, 0] > -mx) & (uv[:, 0] < dst.width + mx) & (uv[:, 1] > -my) & (uv[:, 1] < dst.height + my)
-    return uv[ok]
+    uv = uv[np.isfinite(uv).all(axis=1)]
+    if info is not None:
+        info["trusted"] = np.ones(len(uv), bool)
+    return uv
 
 
 def closest_on_polyline(pts: np.ndarray, p) -> np.ndarray | None:

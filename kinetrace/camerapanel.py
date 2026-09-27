@@ -168,6 +168,7 @@ class CameraPanel(QWidget):
     align_requested = Signal(int)
     remove_requested = Signal(int)
     add_requested = Signal()
+    sync_toggled = Signal(bool)          # Sync all views (True) / Active view only (False), G24
 
     def __init__(self):
         super().__init__()
@@ -181,6 +182,18 @@ class CameraPanel(QWidget):
             f"color: {theme.TEXT_DIM}; font-weight: 600; letter-spacing: 1px;")
         head.addWidget(title)
         head.addStretch(1)
+        self.btn_sync = QToolButton()
+        self.btn_sync.setText("Sync all")
+        self.btn_sync.setCheckable(True)
+        self.btn_sync.setChecked(True)
+        self.btn_sync.setToolTip(
+            "Sync all: every camera follows the playhead.\n"
+            "Off (Active view only): only the working camera reads its video; the others stay on\n"
+            "the picture they last showed until Sync all is back — much faster with many 4K cameras.\n"
+            "Click another camera to work in it. Also under View → Other cameras.")
+        self.btn_sync.toggled.connect(self.sync_toggled)
+        self.btn_sync.setVisible(False)       # shown with a second camera
+        head.addWidget(self.btn_sync)
         self.btn_add = QToolButton()
         self.btn_add.setText("＋ Add video")
         self.btn_add.setToolTip(
@@ -253,3 +266,10 @@ class CameraPanel(QWidget):
         self._suppress = False
         self.note.setText(note)
         self.note.setVisible(bool(note))
+        self.btn_sync.setVisible(len(names) > 1)
+
+    def set_sync(self, on: bool) -> None:
+        """Mirror the app's choice without emitting `sync_toggled` back."""
+        self.btn_sync.blockSignals(True)
+        self.btn_sync.setChecked(bool(on))
+        self.btn_sync.blockSignals(False)

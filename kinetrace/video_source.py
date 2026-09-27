@@ -192,8 +192,20 @@ def verified_frame_count(cap, n_header: int, max_probes: int = 24) -> int:
     return lo + 1
 
 
-def probe_video(path: str, vfr_samples: int = 60) -> VideoInfo:
-    """Read metadata and sniff for variable frame rate. Raises ValueError on failure."""
+def probe_video(path: str, vfr_samples: int = 60, progress=None) -> VideoInfo:
+    """Read metadata and sniff for variable frame rate. Raises ValueError on failure.
+    `progress(stage, facts)`, if given, is called as the work goes -- "open",
+    "rate" (facts: width, height, fps, frames), "frames" -- so a caller can say
+    what is taking the time (a 4K file spends ~2 s decoding its first frames and
+    its last one); it changes nothing in the result."""
+    def say(stage: str, **facts) -> None:
+        if progress is not None:
+            try:
+                progress(stage, facts)
+            except Exception:       # noqa: BLE001 -- a progress display must never fail the probe
+                pass
+
+    say("open")
     cap = open_capture(path)  # same backend as decoding: frame counts must agree
     if not cap.isOpened():
         raise ValueError(
@@ -208,6 +220,7 @@ def probe_video(path: str, vfr_samples: int = 60) -> VideoInfo:
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if n_frames <= 0 or width <= 0 or height <= 0:
             raise ValueError(f"Video reports invalid metadata (frames={n_frames}, {width}x{height}).")
+        say("rate", width=width, height=height, fps=raw_fps, frames=n_frames)
 
         # VFR sniff: timestamps of the first frames should tick at ~1/fps.
         times = []
@@ -252,6 +265,7 @@ def probe_video(path: str, vfr_samples: int = 60) -> VideoInfo:
         elif 0.0 < ts_fps <= MAX_HEADER_FPS:
             fps, fps_source = ts_fps, "timestamps"
         header = n_frames
+        say("frames", width=width, height=height, fps=fps, frames=header)
         n_frames = verified_frame_count(cap, header)
         if n_frames <= 0:
             raise ValueError(f"No frame of this video could be decoded ({header} claimed).")

@@ -8,6 +8,8 @@ Threading rules (the GUI thread never blocks):
 
 from __future__ import annotations
 
+import os
+import sys
 import time
 import traceback
 from collections import deque
@@ -43,7 +45,7 @@ from kinetrace.theme import apply_theme
 from kinetrace.timeline import TIME_ZOOM_STEP, TimelinePanel
 from kinetrace.video_source import DEFAULT_CACHE_BYTES, FrameCache, SeekService, VideoInfo, probe_video
 from kinetrace import icons
-from kinetrace.widgets import ManualDialog, OnboardingStrip, SettingsDialog, Toast
+from kinetrace.widgets import LoadingOverlay, ManualDialog, OnboardingStrip, SettingsDialog, Toast
 
 # duplicated from tracker.py so the GUI can check without importing torch
 _CHECKPOINT = Path(__file__).resolve().parent.parent / "models" / "checkpoints" / "scaled_online.pth"
@@ -54,6 +56,19 @@ TRACKS_FILTER = ("Tracks - DeepLabCut, SLEAP, DLTdv / Argus, Kinetrace (*.csv);;
 # a companion camera only ever displays ONE frame, so it needs room for a couple
 # of 4K frames and nothing more (see MainWindow._rebudget_caches)
 COMPANION_CACHE_BYTES = 96 * 1024 ** 2
+# the other cameras (G24): playhead moves closer together than STEP_GAP_S are one
+# continuous motion (playing, scrubbing, a held key); a lone move is a STEP, and on
+# a step Sync all views shows every camera's new picture at once (waiting at most
+# LOCKSTEP_MS for a slow decoder). "Active view only" never decodes them (G27).
+STEP_GAP_S = 0.15
+LOCKSTEP_MS = 300
+# the loading card stays up until the working camera's first picture is on screen,
+# or this long at most (a file whose first picture never comes is reported elsewhere)
+FIRST_FRAME_WAIT_MS = 6000
+# videos probed at once when several cameras open (each decodes its first frames
+# and its last one: more at a time only thrash the disk)
+PROBE_PARALLEL = 4
+OPEN_STAGES = 5          # the loading card's bar for one video: file, rate, frames, timeline, picture
 
 HOTKEYS_HTML = f"""
 <style>
@@ -72,8 +87,9 @@ HOTKEYS_HTML = f"""
 </table>
 <h3>Tracking</h3><table>
 <tr><td class=k>T</td><td>start tracking / pause (semi-automatic mode: one step)</td></tr>
-<tr><td class=k>X / Space</td><td>pause a running track (during 3D → Re-track Disagreeing Stretches: stops the whole queue and asks whether to keep what was re-tracked)</td></tr>
-<tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>point model</b>: AllTracker (default, holds points on animals) or CoTracker3 (faster, sub-pixel on high-contrast markers)</td></tr>
+<tr><td class=k>Shift+T</td><td>several cameras: this run in <b>every camera</b> that has the point(s) here, one after another (Track ▾ → <i>Every camera</i> makes T and F always do that)</td></tr>
+<tr><td class=k>X / Space</td><td>pause a running track (during 3D → Re-track Disagreeing Stretches: stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run: stops it there, the cameras after it are not tracked)</td></tr>
+<tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>Every camera</b> (several cameras: the selected points — or all — tracked in each camera that has them at this instant, ball markers included, each run shown live; the button says "· 3 cams"; X stops them all; one Ctrl+Z undoes all); <b>point model</b>: AllTracker (default, holds points on animals) or CoTracker3 (faster, sub-pixel on high-contrast markers)</td></tr>
 <tr><td class=k>Auto-pause</td><td>stop the run when the model loses a point (a brief occlusion doesn't trigger it); the point's track is <b>cut</b> at the first unreliable frame and the playhead goes there</td></tr>
 <tr><td class=k>ROI</td><td>track inside a crop around the points when it clearly helps</td></tr>
 <tr><td class=k>Ctrl+Z</td><td>undo the last tracking run, bulk edit or hand edit (a click, drag, Ctrl+click, deleted point, Shift+X) — one step</td></tr>
@@ -82,10 +98,13 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>Body</td><td>keep tracked points on the segment: a point a few pixels off the silhouette is nudged back onto it; a point that <b>leaves</b> it stops the run at that frame and its track ends there — click it where it really is and Track again (right-click a point → "May leave the segment (free point)" to exempt it)</td></tr>
 <tr><td class=k>N (or Add)</td><td>arm the crosshair: the next click places a point — stray clicks never edit</td></tr>
 <tr><td class=k>click (armed)</td><td>place a new point — or continue the selected point where it has no data</td></tr>
-<tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing happens. One Ctrl+Z step. A landmark derived from the silhouette cannot be placed by hand (right-click → Data source → Track by appearance first)</td></tr>
+<tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing is placed (a notice on the video says so). One Ctrl+Z step. A click on or right beside the ◇ places it exactly there. A landmark derived from the silhouette cannot be placed by hand (right-click → Data source → Track by appearance first)</td></tr>
+<tr><td class=k>＋ New point</td><td>POINTS panel: a named point with no position yet, selected (and in every camera's list) — then click it on the video</td></tr>
+<tr><td class=k>A</td><td>with a calibration: place the selected point at the <b>◇</b> — where two or more other cameras put it — exactly (one Ctrl+Z step)</td></tr>
+<tr><td class=k>Alt+click</td><td>with a calibration: <b>look here</b> — where this spot can be in the other cameras (a dashed line there, a "?" ring here). Nothing is edited; Esc clears it</td></tr>
 <tr><td class=k>Shift+&lt; / Shift+&gt;</td><td>jump to the selected point's <b>first / last frame with data</b>; with nothing selected, the segment's first / last silhouette</td></tr>
 <tr><td class=k>right-click a point (curve)</td><td><b>Fill its gaps between hand placements</b> / <b>Replace everything between its hand placements with that curve</b>: keyframe digitizing — a smooth curve through the frames you placed by hand fills the frames between (confidence 0.6); frames you marked hidden are left alone; Ctrl+Z undoes</td></tr>
-<tr><td class=k>right-click a point</td><td>also: go to its first / last frame, its first / last hand-placed frame, its first doubtful stretch; clear its position on this frame, in the selected frame window, or its whole track; with a calibration, <b>Snap to the other cameras' rays here</b></td></tr>
+<tr><td class=k>right-click a point</td><td>also: go to its first / last frame, its first / last hand-placed frame, its first doubtful stretch; clear its position on this frame, in the selected frame window, or its whole track; with a calibration, <b>Snap to the other cameras' rays here</b> and <b>Place it where the other cameras put it (◇)</b></td></tr>
 <tr><td class=k>, / .</td><td>previous / next hand-placed frame of the selected point</td></tr>
 <tr><td class=k>J / Shift+J</td><td>next / previous low-confidence stretch (the red runs) — of the selected points, or of all</td></tr>
 <tr><td class=k>Shift+X</td><td>mark the selected point <b>hidden</b> on this frame (kept, not exported, not used for 3D); again to unmark. On the timeline: Shift+drag a window, right-click → Mark hidden</td></tr>
@@ -100,7 +119,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>right-click</td><td>marker or list entry: rename · lock to seed appearance · data source · hidden on this frame · may leave the segment · delete</td></tr>
 <tr><td class=k>Ctrl/Shift+click (list)</td><td>select several points</td></tr>
 <tr><td class=k>Delete</td><td>delete selected point(s) — or clear the selected frame window (below)</td></tr>
-<tr><td class=k>Esc</td><td>drops a drag or polygon in progress; then, one per press: the segment tool, the armed crosshair, the pan tool, a half-marked event, the frame-window selection, the dashed line of a click made with nothing selected; then deselects</td></tr>
+<tr><td class=k>Esc</td><td>drops a drag or polygon in progress; then, one per press: the segment tool, the armed crosshair, the pan tool, a half-marked event, the frame-window selection, the look-here line (Alt+click); then deselects</td></tr>
 </table>
 <h3>Segment &amp; skeleton (optional)</h3><table>
 <tr><td class=k>S (or Segment)</td><td>segment tool: <b>click the animal</b> — its silhouette appears within a second. Shift+click = "not the animal", drag = box around it. Right-click a click marker to remove it. S or Esc when done. Optional: points track without a segment. The ▾ on the Segment button picks the segmentation model; its last entry is Settings (Ctrl+,)</td></tr>
@@ -116,9 +135,11 @@ HOTKEYS_HTML = f"""
 </table>
 <h3>Several cameras</h3><table>
 <tr><td class=k>＋ Add video</td><td>CAMERAS panel (top of the right dock): put every camera of the same event in one project. Each view shows its own points and silhouette; up to 15</td></tr>
+<tr><td class=k>File → Open Folder of Videos</td><td>every video of a folder listed: tick the ones to import, choose the <b>base</b> camera (camera 1, the reference clock), and they open as one project — saved at once as &lt;folder&gt;.kinetrace unless you untick it</td></tr>
 <tr><td class=k>offset  ◂ ▸</td><td><b>the frame this camera shows when camera 1 (the reference) is at its frame 0</b>: a camera switched on 12 frames after the reference has offset −12, one switched on earlier a positive offset. The first camera loaded is the reference: its offset is 0 by definition and locked, so every other number is measured against it and stays put when you switch cameras. Scrub to something every camera saw (a flash, a clap, first contact) and nudge until it lines up — or press <b>Align here</b> to take what you see as the match. The panel then reports the overlap window</td></tr>
-<tr><td class=k>click a view</td><td>switch to that camera. Points, silhouette, events and the timeline are always the <i>working</i> camera's; the playhead keeps the same instant across the switch. Switching disarms N / S, drops a half-marked event and forgets the undo step; the tool toggles (Auto-pause, ROI, Body, Follow, the point model…) stay as you set them</td></tr>
-<tr><td class=k>Ctrl+2</td><td>show only the working camera (the others stop decoding too)</td></tr>
+<tr><td class=k>click a view</td><td>switch to that camera. Every camera has the same list of points (in the same order); their positions, the silhouette, events and the timeline are always the <i>working</i> camera's; the playhead keeps the same instant and the selected point stays selected. With <b>N (Add) armed</b> the click switches AND places the point in the camera clicked; otherwise it only switches. Switching puts the segment tool down, drops a half-marked event and forgets the undo step; the tool toggles (Auto-pause, ROI, Body, Follow, the point model…) stay as you set them</td></tr>
+<tr><td class=k>guides &amp; ◇</td><td>with a calibration: the selected point's <b>dashed line</b> from every other camera that has it, run to the picture's edges (dotted where a lens model is only guessing). Once <b>two cameras</b> have it, every camera's lines turn faint and each camera that has it shows its <b>3D rmse</b> beside it (the reconstruction residual in px — green good, amber usable, red poor; also in the status bar). Once two <i>other</i> cameras have it, a <b>◇</b> shows where they put it (the lines fade; A or a click on it places it); in a camera that already has it, the ◇ shows how many px its placement is from the others'. No ◇ when those cameras disagree or see it along one line — the line's label says why. A camera added after calibrating gets none; the others keep theirs</td></tr>
+<tr><td class=k>View → Other cameras</td><td><b>Sync all views</b> (the default: every camera follows the playhead; a single step shows every camera's new picture at once) · <b>Active view only</b> (Ctrl+Shift+2, or untick <i>Sync all</i> in the CAMERAS panel: only the working camera reads its video; the others stay on the picture they last showed, veiled, until you tick Sync all again or click one to work in it — its guides still come from the others' tracks) ·<b>Only the working camera</b> (Ctrl+2: the others are hidden and stop decoding)</td></tr>
 <tr><td class=k>Ctrl+E</td><td><b>ALL CAMERAS — DLTdv8 xypts</b> writes one file for 3D reconstruction: row k = frame k of the reference camera (from 0), every camera sampled through its offset, landmarks matched across cameras <i>by name</i>, NaN where a camera has no data; top-left origin, first pixel = 1</td></tr>
 <tr><td class=k>3D menu</td><td><b>Sync Cameras (Sound / Motion)</b> (whole-frame offsets from the sound tracks or the pictures, with a noise filter) · <b>Calibrate a Lens (checkerboard)</b> (how a wide-angle lens bends the picture; opens with or without a video — with nothing open, save the lens file and attach it later) · <b>Calibrate Cameras with a Wand</b> · <b>Import Calibration</b> (a Kinetrace .kcal.json, DLT coefficients from DLTdv / easyWand / Argus, K + R/t, or a DLTdv8 project with its lens undistortion) · <b>Export Calibration</b> · <b>Estimate Sub-frame Offsets</b> (fractional sync from the tracks) · <b>Re-track Disagreeing Stretches</b> (a camera's landmark put back on the other cameras' rays and re-tracked, before / after verdict) · <b>Export Mesh of This Frame</b>. Entries that need more (a video, a second camera, a calibration) open anyway and say what is missing</td></tr>
 <tr><td class=k>Ctrl+3</td><td>reconstruct the 3D landmarks (matched by name across cameras) and open the 3D view</td></tr>
@@ -158,6 +179,7 @@ HOTKEYS_HTML = f"""
 
 class _VideoProbe(QThread):
     done = Signal(object)  # VideoInfo | str(error)
+    step = Signal(str, object)  # probe_video's stage + facts, for the loading card
 
     def __init__(self, path: str):
         super().__init__()
@@ -165,9 +187,27 @@ class _VideoProbe(QThread):
 
     def run(self):
         try:
-            self.done.emit(probe_video(self._path))
+            self.done.emit(probe_video(self._path, progress=lambda st, facts: self.step.emit(st, facts)))
         except Exception as e:  # noqa: BLE001 — reported to the user verbatim
             self.done.emit(str(e))
+
+
+def on_network_drive(path: str) -> bool:
+    """A UNC path or a mapped network drive: opening and scrubbing are several
+    times slower there (measured: a cold model load 126 s vs 7 s, 4K tracking
+    10 vs 16 fps), which the loading card says."""
+    p = os.path.abspath(str(path))
+    if p.startswith("\\\\") or p.startswith("//"):
+        return True
+    if sys.platform.startswith("win"):
+        drive = os.path.splitdrive(p)[0]
+        if drive:
+            try:
+                import ctypes
+                return ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == 4      # DRIVE_REMOTE
+            except Exception:       # noqa: BLE001
+                return False
+    return False
 
 
 class _DeviceProbe(QThread):
@@ -329,7 +369,7 @@ class _SaveWorker(QThread):
 
 # ui_state entries that belong to the USER (tools, display), not to one camera:
 # carried across a camera switch (I50). Frame, selection and zoom stay per camera.
-GLOBAL_UI_KEYS = ("follow", "autopause", "roi", "track_mode", "marker_size", "show_mask", "mask_opacity",
+GLOBAL_UI_KEYS = ("follow", "autopause", "roi", "track_mode", "track_all", "marker_size", "show_mask", "mask_opacity",
                   "show_midline", "show_bones", "seg_backend", "on_body", "point_backend", "trail_len",
                   "trail_future", "onion", "loupe", "epipolar", "display_filter", "region_shape")
 
@@ -380,7 +420,15 @@ class MainWindow(QMainWindow):
         self._project_dir: Path | None = None
         self._after_open = None          # (video path, job): runs once that video has opened
         self._undo_snap = None
-        self._epi_probe = None           # (view, x, y): a look-here click with nothing selected (G19)
+        self._epi_probe = None           # (view, x, y): a look-here Alt+click (G19, G21)
+        # the other cameras (G24): "all" = follow the playhead; "active" = only the
+        # working video decodes, the others stay where they were (G27). View →
+        # Other cameras also has Hidden (act_solo).
+        self._sync_mode = "all"
+        self._companions_stale = False   # "active": the others are not at the playhead yet
+        self._last_goto_t = 0.0
+        self._lock: dict | None = None   # a discrete step: {"want": {view}, "frames": {view: rgb}}
+        self._multi: dict | None = None  # tracking in every camera, one after another (G29)
         self._display_queue: deque = deque()
         self._fps_ema = 0.0
         self._last_emit_t = 0.0
@@ -422,11 +470,15 @@ class MainWindow(QMainWindow):
         self._render_timer = QTimer(self, interval=33, timerType=Qt.CoarseTimer)
         self._render_timer.timeout.connect(self._render_tick)
         self._autosave_timer = QTimer(self, interval=30_000)
-        self._autosave_timer.timeout.connect(self._autosave)
+        # never in the middle of an open (the project is half-built until it ends)
+        self._autosave_timer.timeout.connect(lambda: None if self._loading else self._autosave())
         self._autosave_timer.start()
         QTimer.singleShot(2500, self._announce_recovery)
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_tick)
+        # lockstep: a camera that does not deliver in time is not waited for
+        self._lock_timer = QTimer(self, singleShot=True, interval=LOCKSTEP_MS)
+        self._lock_timer.timeout.connect(self._flush_lockstep)
 
     # ----------------------------------------------- the ACTIVE view, as attrs
     # Everything below the project layer works on one view at a time. Exposing
@@ -491,6 +543,14 @@ class MainWindow(QMainWindow):
         self._wire_canvas(self.grid.canvases[0])
         self.toast = Toast(self.grid)   # important notices float over the video
         self._build_ui_rest()
+        # opening videos / a project: a card over the window says what is happening
+        # (the owner: the wait "seems like the app is frozen")
+        self.overlay = LoadingOverlay(self)
+        self._busy_stack: list[dict] = []
+        self._busy_next = 0
+        self._first_frame_token: int | None = None
+        self._first_frame_timer = QTimer(self, singleShot=True, interval=FIRST_FRAME_WAIT_MS)
+        self._first_frame_timer.timeout.connect(self._first_frame_arrived)
 
     def _wire_canvas(self, canvas) -> None:
         """Every view's canvas reports to the same handlers. Only the active one
@@ -515,6 +575,7 @@ class MainWindow(QMainWindow):
         canvas.animal_click.connect(self._on_animal_click)
         canvas.animal_box.connect(self._on_animal_box)
         canvas.prompt_remove_requested.connect(self._on_prompt_remove)
+        canvas.probe_requested.connect(self._on_probe)
         canvas.view_clicked.connect(
             lambda c=canvas: self._on_canvas_clicked(c))
         self._init_canvas_state(canvas)
@@ -758,7 +819,7 @@ class MainWindow(QMainWindow):
         self.btn_track.setMinimumWidth(150)
         self.btn_track.setPopupMode(QToolButton.MenuButtonPopup)
         self.btn_track.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        self.btn_track.clicked.connect(self._toggle_tracking)
+        self.btn_track.clicked.connect(lambda _=False: self._toggle_tracking())   # clicked(bool) is not all_cameras
         menu_track = QMenu(self.btn_track)
         self._mode_group = QActionGroup(self)
         self.act_mode_auto = QAction("Automatic — track to the end of the video", self,
@@ -769,6 +830,18 @@ class MainWindow(QMainWindow):
             self._mode_group.addAction(act)
             menu_track.addAction(act)
             act.triggered.connect(lambda _=False, m=mode: self._set_track_mode(m))
+        # several cameras: the same points tracked in every camera that has them (G29)
+        menu_track.addSeparator()
+        self.act_track_all = QAction("Every camera — track the point(s) in each camera that has them here",
+                                     self, checkable=True)
+        self.act_track_all.setToolTip(
+            "With several cameras: Track (T, or F in semi-automatic mode) tracks the selected points — or all — "
+            "in EVERY camera that has them at this instant, ball markers included, one camera after another, "
+            "each shown live. X stops the whole run. One Ctrl+Z undoes it in every camera. Shift+T does this "
+            "once without ticking it.")
+        self.act_track_all.toggled.connect(lambda _on: self._update_track_button())
+        menu_track.addAction(self.act_track_all)
+        menu_track.setToolTipsVisible(True)
         # point-tracking model: AllTracker (robust on animals) or CoTracker3 (fast)
         menu_track.addSeparator()
         self._point_group = QActionGroup(self)
@@ -970,6 +1043,7 @@ class MainWindow(QMainWindow):
         self.cameras.offset_changed.connect(self._on_view_offset)
         self.cameras.align_requested.connect(self._align_view_here)
         self.cameras.remove_requested.connect(self._remove_view)
+        self.cameras.sync_toggled.connect(lambda on: self._set_sync_mode("all" if on else "active"))
         pl.addWidget(self.cameras)
         sep0 = QWidget()
         sep0.setFixedHeight(1)
@@ -1019,7 +1093,22 @@ class MainWindow(QMainWindow):
         pl.addWidget(sep)
         head2 = QLabel("POINTS")
         head2.setStyleSheet(f"color: {theme.TEXT_DIM}; font-weight: 600; letter-spacing: 1px;")
-        pl.addWidget(head2)
+        row2 = QHBoxLayout()
+        row2.setSpacing(4)
+        row2.addWidget(head2)
+        row2.addStretch(1)
+        # define a point in the panel, then click it in each camera (G26)
+        self.btn_new_point = QToolButton()
+        self.btn_new_point.setText("＋ New point")
+        self.btn_new_point.setFocusPolicy(Qt.NoFocus)
+        self.btn_new_point.setToolTip(
+            "Make a named point with no position yet and select it; then click it on the video. With several "
+            "cameras it is in every camera's list: click it in one camera, click the next camera, click it "
+            "there (on the dashed line, or on the ◇ once two cameras have it), and so on. Double-click the name "
+            "to rename it. (N + click makes and places a point in one go.)")
+        self.btn_new_point.clicked.connect(self._new_point)
+        row2.addWidget(self.btn_new_point)
+        pl.addLayout(row2)
         pl.addWidget(self.point_list, 1)
         dock = QDockWidget("Segment && Points", self)   # && = a literal ampersand (not a mnemonic)
         dock.setWidget(panel)
@@ -1034,6 +1123,10 @@ class MainWindow(QMainWindow):
                                 triggered=self._open_video_dialog)
         self.act_open_proj = QAction("Open &Project…", self, shortcut=QKeySequence("Ctrl+Shift+O"),
                                      triggered=self._open_project_dialog)
+        self.act_open_folder = QAction("Open &Folder of Videos…", self, triggered=self._open_folder_dialog)
+        self.act_open_folder.setToolTip("Several cameras of one event in one folder: pick the folder, tick the "
+                                        "videos to import and choose the base (reference) camera — they open "
+                                        "as one project, saved at once if you like")
         self.act_save = QAction("&Save Project", self, shortcut=QKeySequence("Ctrl+S"),
                                 triggered=self._save_project)
         self.act_save_as = QAction("Save Project &As…", self, shortcut=QKeySequence("Ctrl+Shift+S"),
@@ -1059,8 +1152,8 @@ class MainWindow(QMainWindow):
         self.act_import_masks = QAction("&Silhouettes (mask images)…", self, triggered=self._import_masks)
         self.act_import_masks.setToolTip("A folder of black / white mask images named with their frame number "
                                          "(mask_000012.png), from another segmentation tool")
-        for a in (self.act_open, self.act_open_proj, self.act_recover, None, self.act_save, self.act_save_as,
-                  None):
+        for a in (self.act_open, self.act_open_folder, self.act_open_proj, self.act_recover, None, self.act_save,
+                  self.act_save_as, None):
             m_file.addSeparator() if a is None else m_file.addAction(a)
         m_import = m_file.addMenu("&Import")
         self.act_import_tracks.setText("&Tracks…")
@@ -1099,13 +1192,37 @@ class MainWindow(QMainWindow):
         self.act_onboarding = QAction("Getting started strip", self, checkable=True, checked=True)
         self.act_onboarding.toggled.connect(lambda on: self.onboarding.setVisible(on))
         m_view.addAction(self.act_onboarding)
-        self.act_solo = QAction("Only the &working camera", self, checkable=True, checked=False,
+        # the other cameras (G24): one choice of three
+        m_others = m_view.addMenu("Other &cameras")
+        m_others.setToolTipsVisible(True)
+        self.m_others = m_others
+        self.act_sync_all = QAction("&Sync all views (follow the playhead)", self, checkable=True, checked=True)
+        self.act_sync_all.setToolTip("Every camera shows the instant the playhead is on, with its points and "
+                                     "the epipolar guides; a single step shows every camera's new picture at once")
+        self.act_sync_active = QAction("&Active view only (the others stay where they are)", self,
+                                       checkable=True, shortcut=QKeySequence("Ctrl+Shift+2"))
+        self.act_sync_active.setToolTip(
+            "Only the working camera reads its video (fastest with many 4K cameras); the others keep the "
+            "picture they last showed, veiled, until you choose Sync all views again or click one to work in "
+            "it. The guides and ◇ in the working camera need only the other cameras' tracks, not their "
+            "pictures, so they keep working")
+        self.act_solo = QAction("Only the &working camera (hide the others)", self, checkable=True, checked=False,
                                 shortcut=QKeySequence("Ctrl+2"))
         self.act_solo.setToolTip("Hide the other cameras — they also stop decoding, "
                                  "which gives scrubbing the whole disk back")
+        # ExclusiveOptional: Ctrl+2 / Ctrl+Shift+2 pressed again untick their choice
+        # (a strictly exclusive group ignores that); the handlers then fall back
+        # (Hidden -> how the cameras were followed, Active view only -> Sync all)
+        self._others_group = QActionGroup(self)
+        self._others_group.setExclusionPolicy(QActionGroup.ExclusionPolicy.ExclusiveOptional)
+        for a in (self.act_sync_all, self.act_sync_active, self.act_solo):
+            self._others_group.addAction(a)
+            m_others.addAction(a)
+        self.act_sync_all.toggled.connect(lambda on: self._on_sync_action("all", on))
+        self.act_sync_active.toggled.connect(lambda on: self._on_sync_action("active", on))
         self.act_solo.toggled.connect(self._on_solo_toggled)
+        m_others.setEnabled(False)
         self.act_solo.setEnabled(False)
-        m_view.addAction(self.act_solo)
         m_view.addSeparator()
         self.act_show_midline = QAction("Show segment &midline", self, checkable=True, checked=True,
                                         triggered=lambda _=False: self._refresh_overlay())
@@ -1154,8 +1271,9 @@ class MainWindow(QMainWindow):
         self.act_epipolar.setToolTip("With a calibration (switched on when one is loaded): dashed lines in EVERY "
                                      "camera showing where the SELECTED landmark, as the other cameras see it at "
                                      "this instant, can lie. Place it on the line (or right-click it → Snap to "
-                                     "the other cameras' rays). With nothing selected, a click on the video shows "
-                                     "where that spot can be in the other cameras (Esc clears it).")
+                                     "the other cameras' rays). Once two other cameras have it, a ◇ shows where it "
+                                     "is (A places it there). Alt+click on the video shows where any spot can be in "
+                                     "the other cameras (Esc clears it).")
         self.act_epipolar.toggled.connect(lambda _on: self._refresh_overlay())
         m_view.addAction(self.act_epipolar)
         # display-only filters
@@ -1469,6 +1587,7 @@ class MainWindow(QMainWindow):
         self.act_save.setEnabled(has_video and not tracking)
         self.act_save_as.setEnabled(has_video and not tracking)
         self.act_open.setEnabled(not tracking)
+        self.act_open_folder.setEnabled(not tracking)
         self.act_open_proj.setEnabled(not tracking)
         # recovering replaces the project on screen: never in the middle of a run
         for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks,
@@ -1482,6 +1601,7 @@ class MainWindow(QMainWindow):
         active_i = self.project.active if self.project is not None else 0
         for k, cv in enumerate(self.grid.canvases):
             cv.set_interactive(has_video and not tracking and k == active_i)
+            cv.set_switchable(has_video and not tracking and k != active_i)
         self.btn_add.setEnabled(has_video and not tracking)
         if tracking and self.btn_add.isChecked():
             self.btn_add.setChecked(False)
@@ -1491,11 +1611,12 @@ class MainWindow(QMainWindow):
         self.btn_mask.setEnabled(has_video)
         self.btn_onbody.setEnabled(has_video and not tracking)
         self.btn_skeleton.setEnabled(has_video and not tracking)
+        self.btn_new_point.setEnabled(has_video and not tracking)
         self.m_skeleton.setEnabled(has_video and not tracking)
         self.btn_clear_animal.setEnabled(has_video and not tracking and s is not None
                                          and s.animal is not None)
         self.btn_pan.setEnabled(has_video)  # panning is view-only: fine mid-run
-        for act in (self.act_mode_auto, self.act_mode_semi):
+        for act in (self.act_mode_auto, self.act_mode_semi, self.act_track_all):
             act.setEnabled(not tracking)
         self.progress.setVisible(tracking and not self._step_run)  # a 1-frame bar is noise
         self._update_track_button()
@@ -1569,6 +1690,9 @@ class MainWindow(QMainWindow):
             self.btn_track.setText(f"Step {n_sel} sel. ▶  (F)" if semi else f"Track {n_sel} sel. ▶")
         else:
             self.btn_track.setText("Step ▶  (F)" if semi else "Track ▶")
+        n_cams = len(self._multi_jobs(semi)) if self.act_track_all.isChecked() and self.state == READY else 0
+        if n_cams > 1:
+            self.btn_track.setText(self.btn_track.text() + f" · {n_cams} cams")   # Track ▾ → Every camera (G29)
         n = len([p for p in s.seedable_at(self.current) if scope is None or p in scope]) if s is not None else 0
         animal_ok = s is not None and s.animal_seedable_at(self.current)
         if self.state == IDLE:
@@ -1599,6 +1723,10 @@ class MainWindow(QMainWindow):
                     "each step re-seeds from what you see.")
             else:
                 self.btn_track.setToolTip(f"Track {what} forward from frame {self.current} (T)")
+            if n_cams > 1:
+                self.btn_track.setToolTip(
+                    self.btn_track.toolTip() + f" — in each of the {n_cams} cameras that have them here, one after "
+                    "another (Track ▾ → Every camera; X stops them all; one Ctrl+Z undoes all)")
 
     @staticmethod
     def _preferred_point_backend() -> str:
@@ -1713,6 +1841,171 @@ class MainWindow(QMainWindow):
         dlg.raise_()
         dlg.activateWindow()
 
+    # ------------------------------------------------------- the loading card
+
+    @property
+    def _loading(self) -> bool:
+        """An open is under way that input must not disturb (the project is being
+        built). The last phase -- waiting for the first picture -- is passive: the
+        card still says so, but clicks and keys go through."""
+        return any(not b.get("passive") for b in (getattr(self, "_busy_stack", None) or []))
+
+    def _busy_push(self, title: str | None = None, detail: str | None = None, total: int | None = None,
+                   hint: str | None = None, on_cancel=None, immediate: bool = False) -> int:
+        """One level of 'please wait': the loading card shows while any level is
+        open (nested waits -- a project, then its cameras, then the first picture --
+        share one card). Returns a token for `_busy_pop`. The menus are off and the
+        hotkeys swallowed meanwhile; Cancel calls the innermost `on_cancel`."""
+        self._busy_next += 1
+        tok = self._busy_next
+        first = not self._busy_stack
+        self._busy_stack.append({"tok": tok, "cancel": on_cancel})
+        if first:
+            self.menuBar().setEnabled(False)
+            self.overlay.start(title or "Please wait", detail or "", total or 0, hint or "",
+                               on_cancel, immediate)
+        else:
+            if title is not None:
+                self.overlay.title.setText(title)
+            self.overlay.step(detail, 0 if total is not None else None, total)
+            if hint is not None:
+                self.overlay.set_hint(hint)
+            self._busy_refresh_cancel()
+            self._busy_refresh_mode()        # a new blocking level over a passive one blocks again
+        return tok
+
+    def _busy_step(self, detail: str | None = None, value: int | None = None, total: int | None = None) -> None:
+        if self._loading:
+            self.overlay.step(detail, value, total)
+
+    def _busy_pop(self, tok: int | None) -> None:
+        """Close one level (any order); the card goes when none is left."""
+        if tok is None:
+            return
+        self._busy_stack = [b for b in self._busy_stack if b["tok"] != tok]
+        if not self._busy_stack:
+            self.overlay.finish()
+            self.menuBar().setEnabled(True)
+        else:
+            self._busy_refresh_cancel()
+            self._busy_refresh_mode()
+
+    def _busy_set_passive(self, tok: int) -> None:
+        """Level `tok` no longer holds input back (the project is built)."""
+        for b in self._busy_stack:
+            if b["tok"] == tok:
+                b["passive"] = True
+        self._busy_refresh_mode()
+
+    def _busy_refresh_mode(self) -> None:
+        blocking = self._loading
+        self.menuBar().setEnabled(not blocking)
+        self.overlay.set_passive(bool(self._busy_stack) and not blocking)
+
+    def _busy_cancel_cb(self):
+        return next((b["cancel"] for b in reversed(self._busy_stack) if b["cancel"] is not None), None)
+
+    def _busy_refresh_cancel(self) -> None:
+        self.overlay.set_cancel(self._busy_cancel_cb())
+
+    def _busy_set_cancel(self, tok: int, on_cancel) -> None:
+        for b in self._busy_stack:
+            if b["tok"] == tok:
+                b["cancel"] = on_cancel
+        self._busy_refresh_cancel()
+
+    def _first_frame_arrived(self) -> None:
+        """The working camera's first picture is on screen (or it took too long):
+        the open is over."""
+        tok, self._first_frame_token = self._first_frame_token, None
+        self._first_frame_timer.stop()
+        self._busy_pop(tok)
+
+    def _open_hint(self, path: str, what: str = "video") -> str:
+        """Something useful to read while waiting."""
+        if on_network_drive(path):
+            return ("This file is on a network drive: opening and scrubbing are several times faster from a copy "
+                    "on this computer's own disk.")
+        if what == "project":
+            return "Every camera, point and track, and where you were, come back exactly as you left them."
+        if what == "cameras":
+            return ("Next: line the cameras up in time with 3D → Sync Cameras (Sound / Motion); every camera "
+                    "shares one list of points.")
+        return ("Next: press N and click what you want to track (or S to outline the animal). F1 opens the "
+                "manual, written for first-time users.")
+
+    @staticmethod
+    def _probe_message(stage: str, facts: dict, prefix: str = "") -> str:
+        """probe_video's stage in plain words."""
+        if stage == "open":
+            return prefix + "Opening the file…"
+        w, h, n = facts.get("width", 0), facts.get("height", 0), facts.get("frames", 0)
+        fps = facts.get("fps", 0.0) or 0.0
+        big = max(w, h) >= 3000
+        if stage == "rate":
+            return (prefix + f"{w} × {h}" + (f", {fps:.4g} fps" if fps else "") + f", {n:,} frames — "
+                    "reading the first frames to check the frame rate…")
+        if stage == "frames":
+            return (prefix + f"Checking that all {n:,} frames can be read"
+                    + (" (a 4K file takes a few seconds)" if big else "") + "…")
+        return prefix + "Reading…"
+
+    def _probe_many(self, paths: list[str], title: str, hint: str | None = None) -> dict:
+        """Probe several videos off the GUI thread, `PROBE_PARALLEL` at a time,
+        with the loading card counting them; the window keeps repainting (a
+        local event loop, input blocked by the card). Returns {path: VideoInfo |
+        error text | "cancelled"}. Before, each probe ran ON the GUI thread: the
+        window froze ~2.3 s per 4K camera (measured on a real clip)."""
+        paths = list(dict.fromkeys(str(x) for x in paths))
+        out: dict = {}
+        if not paths:
+            return out
+        loop = QEventLoop()
+        queue = list(paths)
+        running: dict = {}
+        state = {"cancelled": False}
+
+        def say() -> None:
+            waiting = ", ".join(Path(x).name for x in running)
+            self._busy_step(f"{len(out)} of {len(paths)} ready" + (f" — reading {waiting}" if waiting else ""),
+                            len(out), len(paths))
+
+        def launch() -> None:
+            while queue and len(running) < PROBE_PARALLEL and not state["cancelled"]:
+                path = queue.pop(0)
+                th = _VideoProbe(path)
+                th.done.connect(lambda r, p=path: finished(p, r))
+                running[path] = th
+                th.start()
+            say()
+
+        def finished(path: str, result) -> None:
+            th = running.pop(path, None)
+            if th is not None:
+                th.wait(2000)
+            if state["cancelled"]:
+                return
+            out[path] = result
+            if len(out) == len(paths):
+                loop.quit()
+            else:
+                launch()
+
+        def cancel() -> None:
+            state["cancelled"] = True
+            loop.quit()
+
+        tok = self._busy_push(title, "", len(paths), hint, on_cancel=cancel)
+        launch()
+        if len(out) < len(paths):
+            loop.exec()
+        for th in running.values():
+            _retire(th)                  # still reading: kept alive until it ends (never destroyed running)
+        for path in paths:
+            out.setdefault(path, "cancelled")
+        self._busy_pop(tok)
+        return out
+
     # ------------------------------------------------------------ open video
 
     def _open_video_dialog(self):
@@ -1720,27 +2013,144 @@ class MainWindow(QMainWindow):
         if path:
             self._open_video(path)
 
-    def _open_video(self, path: str, then=None):
+    def _open_folder_dialog(self):
+        """File → Open Folder of Videos… (G30): the folder's videos listed, the user
+        ticks which to import and picks the base (reference) camera."""
+        from kinetrace.folderimport import VideoFolderDialog
+        if self.state == TRACKING:
+            return
+        start = str(self._project_dir or (Path(self.info.path).parent if self.info else Path.home()))
+        folder = QFileDialog.getExistingDirectory(self, "Open a folder of videos", start)
+        if not folder:
+            return
+        dlg = VideoFolderDialog(self, folder)
+        accepted = dlg.exec() == QDialog.Accepted
+        dlg.stop_probe()              # however the dialog ended: never delete a running QThread
+        paths, save_to = list(dlg.result_paths), dlg.result_project
+        dlg.deleteLater()
+        if accepted and paths:
+            self._import_folder(paths, save_to)
+
+    def _import_folder(self, paths: list[str], save_to: str | None = None) -> None:
+        """Open `paths[0]` (the base camera) as a new project, add the others, name
+        every camera after its file, and save to `save_to` when given."""
+        if not paths or self.state == TRACKING:
+            return
+        base = paths[0]
+        folder = Path(base).parent.name
+        n = len(paths)
+        # every camera is read at once (PROBE_PARALLEL at a time), the base included,
+        # with the loading card counting them -- then the project is built
+        tok = self._busy_push(f"Opening {n} camera{'s' if n != 1 else ''} from {folder}", "", n,
+                              self._open_hint(base, "cameras"))
+        infos = self._probe_many(paths, f"Opening {n} camera{'s' if n != 1 else ''} from {folder}")
+        binfo = infos.get(str(base))
+        if isinstance(binfo, str):
+            self._busy_pop(tok)
+            if binfo != "cancelled":
+                QMessageBox.critical(self, "Could not open the base camera", f"{Path(base).name}:\n\n{binfo}")
+            else:
+                self.statusBar().showMessage("Opening the folder cancelled — nothing was changed", 5000)
+            return
+        self._busy_set_cancel(tok, None)
+        self._busy_step("Building the project: the timeline, every camera's view and the first pictures…")
+        try:
+            self._attach_video(binfo)
+            p = self.project
+            p.names[0] = Path(base).stem[:24] or p.names[0]
+            rest = paths[1:]
+            added = [x for x in rest if self._add_view(x, infos.get(str(x)))]
+            self._refresh_cameras()
+            self._refresh_companions()
+            saved = ""
+            if save_to:
+                self._busy_step(f"Saving the project as {Path(save_to).name}…")
+                self.project_path = Path(save_to)
+                self._project_dir = self.project_path.resolve().parent
+                if self._save_project():
+                    saved = f" Saved as {self.project_path.name}."
+        except Exception:
+            self._busy_pop(tok)
+            raise
+        if self.canvas._raw_rgb is None:
+            self._first_frame_token = tok
+            self._busy_step("Showing the first picture…")
+            self._busy_set_passive(tok)
+            self._first_frame_timer.start()
+        else:
+            self._busy_pop(tok)
+        missed = len(rest) - len(added)
+        self.toast.show_message(
+            f"Opened {1 + len(added)} camera(s) from {folder}; the base (reference) camera is "
+            f"<b>{p.name(0)}</b>." + (f" {missed} could not be added." if missed else "") + saved
+            + " Next: line them up in time with <b>3D → Sync Cameras (Sound / Motion)</b>.", "info", 12000)
+
+    def _open_video(self, path: str, then=None, title: str | None = None, hint: str | None = None):
         """Probe in a worker thread, then wire everything up. `then(info)` runs
-        after success (used by project loading)."""
-        self.statusBar().showMessage(f"Opening {Path(path).name}…")
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        after success (used by project loading). The loading card says each step,
+        and stays until the first picture is on screen; Cancel (while the file is
+        still being read) leaves whatever is open untouched."""
+        name = Path(path).name
+        try:
+            size = f" ({Path(path).stat().st_size / 1024 ** 2:,.0f} MB)"
+        except OSError:
+            size = ""
+        self.statusBar().showMessage(f"Opening {name}…")
         probe = _VideoProbe(path)
+        prev = self._probe
         self._probe = probe  # latest request wins; older probes are ignored below
+        if prev is not None:
+            _retire(prev)
+        if self._first_frame_token is not None:      # a previous open still waiting for its picture
+            self._first_frame_arrived()
+
+        def cancel():
+            if self._probe is probe:
+                self._probe = None           # its result is dropped when it comes
+                _retire(probe)               # and the thread is kept alive until it ends
+            self._after_open = None          # a folder import's follow-up must not run later
+            self._busy_pop(tok)
+            self.statusBar().showMessage(f"Opening {name} cancelled — nothing was changed", 5000)
+
+        tok = self._busy_push(title or f"Opening {name}", f"Opening the file{size}…", OPEN_STAGES,
+                              hint if hint is not None else self._open_hint(path), on_cancel=cancel)
+        # the bar counts the stages: open, frame rate, frame count, the timeline, the first picture
+        probe.step.connect(lambda st, facts: self._probe is probe and self._busy_step(
+            self._probe_message(st, facts, prefix=f"{name}: " if title else ""),
+            {"open": 1, "rate": 2, "frames": 3}.get(st)))
 
         def done(result):
             probe.wait(1000)
-            QApplication.restoreOverrideCursor()  # each open pushed exactly one
             if self._probe is not probe:
-                return  # a newer open superseded this one while it was probing
+                return  # a newer open superseded this one (or it was cancelled)
             self.statusBar().clearMessage()
             if isinstance(result, str):
+                self._busy_pop(tok)
                 QMessageBox.critical(self, "Could not open video", result)
                 return
-            self._attach_video(result, then)
+            self._attach_with_card(result, then, tok)
 
         probe.done.connect(done)
         probe.start()
+
+    def _attach_with_card(self, info, then, tok: int) -> None:
+        """Build the project on `info` with the loading card's level `tok` up: past
+        this point the open cannot be taken back (no Cancel); the level goes when
+        the working camera's first picture is on screen."""
+        self._busy_set_cancel(tok, None)
+        self._busy_step("Preparing the timeline and the first picture…", OPEN_STAGES - 1, OPEN_STAGES)
+        try:
+            self._attach_video(info, then)
+        except Exception:
+            self._busy_pop(tok)
+            raise
+        if self.state == READY and self.canvas._raw_rgb is None:
+            self._first_frame_token = tok            # popped when the picture is on screen
+            self._busy_step("Showing the first picture…", OPEN_STAGES, OPEN_STAGES)
+            self._busy_set_passive(tok)              # built: clicks and keys go through meanwhile
+            self._first_frame_timer.start()
+        else:
+            self._busy_pop(tok)
 
     def _attach_video(self, info: VideoInfo, then=None):
         """Open `info` as a brand-new single-camera project (extra cameras are
@@ -1887,7 +2297,11 @@ class MainWindow(QMainWindow):
                                     f"A project holds up to {MAX_VIEWS} cameras.")
             return
         paths, _ = QFileDialog.getOpenFileNames(self, "Add camera video(s)", "", VIDEO_FILTER)
-        added = [p for p in paths if self._add_view(p)]
+        if not paths:
+            return
+        infos = self._probe_many(paths, f"Adding {len(paths)} camera{'s' if len(paths) != 1 else ''}",
+                                 self._open_hint(paths[0], "cameras"))
+        added = [p for p in paths if self._add_view(p, infos.get(str(p)))]
         if added:
             self._refresh_cameras()
             self._refresh_companions()
@@ -1897,25 +2311,22 @@ class MainWindow(QMainWindow):
                 "camera's <b>offset</b> (or press <b>Align here</b>).",
                 "info", 10000)
 
-    def _add_view(self, path: str) -> bool:
-        """Probe `path` and append it as a view. Probing is synchronous here —
-        the user is explicitly waiting for this one file, and chaining async
-        probes for a multi-select would buy nothing."""
+    def _add_view(self, path: str, probed=None) -> bool:
+        """Probe `path` and append it as a view. `probed`: its VideoInfo (or error
+        text / "cancelled") from an earlier `_probe_many` over several files.
+        Returns once the camera is in (the probe runs off the GUI thread with the
+        loading card up; it used to freeze the window ~2.3 s per 4K file)."""
         if self.project is None or self.project.n_views >= MAX_VIEWS:
             return False
         if any(rt.info.path == path for rt in self._views):
             self.statusBar().showMessage(f"{Path(path).name} is already in this project", 5000)
             return False
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            info = probe_video(path)
-        except (ValueError, OSError) as e:
-            QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "Could not open video", str(e))
+        info = probed if probed is not None else \
+            self._probe_many([path], f"Adding {Path(path).name}", self._open_hint(path, "cameras"))[str(path)]
+        if isinstance(info, str):
+            if info != "cancelled":
+                QMessageBox.critical(self, "Could not open video", info)
             return False
-        finally:
-            if QApplication.overrideCursor() is not None:
-                QApplication.restoreOverrideCursor()
         s = TrackingSession(info.path, info.n_frames, info.fps, info.width, info.height)
         # a second camera of the same animal wants the same landmark names —
         # matching names across views is exactly what the 3D export joins on
@@ -1994,10 +2405,17 @@ class MainWindow(QMainWindow):
         self.canvas.cancel_gesture()
         # The tools arm ONE canvas; left armed across a switch, the new view took
         # plain clicks as hand placements while S / N still looked on (I47), and a
-        # half-marked event was finished with the other camera's frame number (I65)
-        for b in (self.btn_add, self.btn_animal):
-            if b.isChecked():
-                b.setChecked(False)
+        # half-marked event was finished with the other camera's frame number (I65).
+        # Add is carried OVER instead (G20): armed in one camera, a click in another
+        # places the point there -- disarming it swallowed that click, and the next,
+        # unarmed click drew the look-here cross instead of a point. The segment
+        # tool still goes down: its clicks prompt one camera's SAM session.
+        add_on = self.btn_add.isChecked()
+        if add_on:
+            self.canvas.set_place_mode(False)       # the camera being left
+            self.canvas.set_click_only(False)
+        if self.btn_animal.isChecked():
+            self.btn_animal.setChecked(False)
         if self._pending_event is not None:
             self._pending_event = None
             self.timeline.set_pending_event(None)
@@ -2012,6 +2430,11 @@ class MainWindow(QMainWindow):
         keep = (s0.points[self.selected].name
                 if self.selected is not None and self.selected < s0.n_points else None)
         prev = p.name(p.active)
+        # the camera being left shows ITS frame at this instant; the one taken up is
+        # driven by the playhead from now on (Active view only keeps the first where
+        # it is and knows it is current, G27)
+        self._views[p.active].want_frame = self.current
+        self._views[i].want_frame = None
         target = p.set_active(i)
         p.session.ui_state.update(carried)
         self.grid.set_active(i)
@@ -2020,10 +2443,14 @@ class MainWindow(QMainWindow):
         j = p.session.pid_by_name(keep) if keep is not None else None
         if j is not None:
             self.point_list.setCurrentRow(j)   # selects it (and shows its epipolar guides)
+        if add_on and self.btn_add.isChecked():
+            self.canvas.set_place_mode(True)   # the camera clicked is armed (G20)
+            self.canvas.set_click_only(self._place_kind == "ball")
         msg = f"Working in {p.name(i)} — points, silhouette and timeline are this camera's"
         s = p.session
         if j is not None and not s.tracked[self.current, j] and not s.points[j].derived:
-            on_line = f" on the dashed line from {prev}" if self.canvas.guide_count() else ""
+            on_line = (" (the ◇ is where the other cameras put it)" if self.canvas.prediction_count() else
+                       f" on the dashed line from {prev}" if self.canvas.guide_count() else "")
             msg = (f"Working in {p.name(i)}: {keep} is not placed in this camera on this frame — "
                    f"click it on the video{on_line}, then Track")
         self.statusBar().showMessage(msg, 9000)
@@ -2045,6 +2472,8 @@ class MainWindow(QMainWindow):
         self._play_timer.setInterval(max(10, round(1000 / max(info.fps, 1e-6))))
         for k, cv in enumerate(self.grid.canvases):
             cv.set_interactive(k == p.active and self.state == READY)
+            cv.set_switchable(k != p.active and self.state == READY)
+            cv.set_stale(False)
         self.canvas.set_video_size(info.width, info.height)
         self.selected = None
         self._undo_snap = None
@@ -2062,6 +2491,9 @@ class MainWindow(QMainWindow):
 
     def _on_solo_toggled(self, on: bool):
         self.grid.set_solo(on)
+        if not on and not (self.act_sync_all.isChecked() or self.act_sync_active.isChecked()):
+            # unticked directly (Ctrl+2 again): back to how the cameras were followed
+            self._set_sync_mode(self._sync_mode)
         self._refresh_companions()
         self._refresh_guides()
 
@@ -2114,6 +2546,7 @@ class MainWindow(QMainWindow):
             return
         self.cameras.setVisible(True)
         self.act_solo.setEnabled(p.n_views > 1)
+        self.m_others.setEnabled(p.n_views > 1)      # View → Other cameras (G24)
         # the live frame number lives in each view's caption, which updates on
         # every scrub; this panel carries the things that only change on edits
         statuses = [f"{s.n_points} pts · {int(s.tracked.any(axis=1).sum())} tracked frames "
@@ -2204,6 +2637,10 @@ class MainWindow(QMainWindow):
         self.timeline.set_pending_event(None)
         self._render_timer.stop()
         self._play_timer.stop()
+        self._lock_timer.stop()
+        self._lock = None
+        self._companions_stale = False
+        self._multi = None
         self.btn_play.setChecked(False)
 
     def _on_seek_slow(self, view: int, idx: int):
@@ -2268,6 +2705,12 @@ class MainWindow(QMainWindow):
                   Qt.Key_Return, Qt.Key_Enter}
 
     def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.KeyPress and self._loading and QApplication.activeModalWidget() is None \
+                and QApplication.activeWindow() is self:
+            # opening: the window is half-built -- keys do nothing, Esc = Cancel where allowed
+            if ev.key() == Qt.Key_Escape and self._busy_cancel_cb() is not None:
+                self.overlay._on_cancel()
+            return True
         if ev.type() == QEvent.KeyPress and self._hotkeys_apply(ev):
             if self._hotkey(ev):
                 return True
@@ -2318,7 +2761,7 @@ class MainWindow(QMainWindow):
                     and self.current < self.n_frames - 1
                     and (self.session.seedable_at(self.current)
                          or self.session.animal_seedable_at(self.current))):
-                self._track_step()
+                self._toggle_tracking()             # one step (in every camera with Track ▾ → Every camera)
             else:
                 self._goto(self.current + 1)
         elif key == Qt.Key_B and plain:
@@ -2336,6 +2779,8 @@ class MainWindow(QMainWindow):
                 self.btn_play.toggle()
         elif key == Qt.Key_T and plain:
             self._toggle_tracking()
+        elif key == Qt.Key_T and shift_only:
+            self._toggle_tracking(all_cameras=True)  # Shift+T: this run in every camera (G29)
         elif key == Qt.Key_X and plain:
             self._pause_tracking()
         elif key == Qt.Key_N and plain:
@@ -2364,10 +2809,10 @@ class MainWindow(QMainWindow):
             elif self.timeline.sel_range is not None:
                 self.timeline.clear_selection()
                 self.statusBar().showMessage("Frame-window selection cleared", 3000)
-            elif self._epi_probe is not None and self.selected is None:
+            elif self._epi_probe is not None:
                 self._epi_probe = None
                 self._refresh_guides()
-                self.statusBar().showMessage("Epipolar line cleared", 3000)
+                self.statusBar().showMessage("Look-here line cleared", 3000)
             else:
                 self._deselect()
         elif key == Qt.Key_E and plain:
@@ -2397,6 +2842,8 @@ class MainWindow(QMainWindow):
             self._goto_low_conf(forward=True)       # J : next low-confidence stretch
         elif key == Qt.Key_J and shift_only:
             self._goto_low_conf(forward=False)
+        elif key == Qt.Key_A and plain:
+            self._accept_prediction()               # A : place the selected point at the ◇ (G23)
         elif key == Qt.Key_O and plain:
             self.act_onion.toggle()
         elif key == Qt.Key_L and plain:
@@ -2435,8 +2882,26 @@ class MainWindow(QMainWindow):
         self.spin.blockSignals(True)
         self.spin.setValue(idx)
         self.spin.blockSignals(False)
-        # instant preview from cache while the real frame decodes
-        if self.cache is not None and self.cache.get(idx) is None:
+        # (G24) playing, scrubbing or a held key = one continuous motion; a lone move
+        # is a step. Sync all views: a step shows every camera's new picture at once
+        # (lockstep). Active view only: ONLY the working video decodes, whatever the
+        # move -- the others stay where they were, veiled, until Sync all is back or
+        # one of them is clicked (G27; they used to catch up when the playhead
+        # stopped, which read as "it still syncs every camera")
+        now = time.monotonic()
+        continuous = self.btn_play.isChecked() or (now - self._last_goto_t) < STEP_GAP_S
+        self._last_goto_t = now
+        p = self.project
+        multi = p is not None and p.n_views > 1 and len(self.grid.visible_indices()) > 1
+        self._companions_stale = bool(multi and self._sync_mode == "active")
+        self._lock_timer.stop()
+        self._lock = ({"want": {p.active}, "frames": {}}
+                      if multi and self._sync_mode == "all" and not continuous
+                      and self.seek is not None and self.state != TRACKING else None)
+        if self._lock is not None:
+            self._lock_timer.start()
+        elif self.cache is not None and self.cache.get(idx) is None:
+            # instant preview from cache while the real frame decodes
             near = self.cache.nearest(idx)
             if near is not None:
                 self.canvas.set_frame(near[1])
@@ -2453,9 +2918,16 @@ class MainWindow(QMainWindow):
     def _on_seek_frame(self, view: int, idx: int, rgb: np.ndarray):
         if self.project is None or not (0 <= view < len(self._views)):
             return
+        lock = self._lock
         if view == self.project.active:
             if idx == self.current and self.state != TRACKING:
+                if lock is not None and view in lock["want"]:
+                    lock["frames"][view] = rgb        # goes up with the other cameras (G24)
+                    self._try_lockstep()
+                    return
                 self.canvas.set_frame(rgb)
+                if self._first_frame_token is not None:
+                    self._first_frame_arrived()          # the open is over: the loading card goes
                 # the side-by-side window shows the same instant, and the
                 # decoded frame only exists here -- a seek is what fills it
                 self._refresh_body_view()
@@ -2463,6 +2935,10 @@ class MainWindow(QMainWindow):
         # a companion view: only the frame we last asked it for (a scrub leaves
         # older replies in flight, and they would show the wrong instant)
         if idx == self._views[view].want_frame:
+            if lock is not None and view in lock["want"]:
+                lock["frames"][view] = rgb
+                self._try_lockstep()
+                return
             cv = self.grid.canvas(view)
             if cv is not None:
                 cv.set_frame(rgb)
@@ -2488,8 +2964,23 @@ class MainWindow(QMainWindow):
                 rt.stop()
                 continue
             f = p.map_frame(p.active, i, self.current)
-            self.grid.set_caption(i, caption_for(p.name(i), f, p.offsets[i], rt.n_frames))
             s = p.sessions[i]
+            if self._tile_stale(i):
+                # Active view only (G27): this camera is not decoded; it keeps the
+                # picture it last showed, veiled, with the markers of THAT frame
+                cv.set_stale(True)
+                f = rt.want_frame
+                self.grid.set_caption(
+                    i, f"{p.name(i)}  ·  " + (f"frame {f} · " if f is not None else "")
+                    + "not following (Active view only) — click to work in it")
+                if f is None:
+                    cv.set_points(np.zeros((0, 2), np.float32), np.zeros(0, bool), [], None)
+                    cv.set_mask(None)
+                    cv.set_midline(None)
+                    continue
+            else:
+                cv.set_stale(False)
+                self.grid.set_caption(i, caption_for(p.name(i), f, p.offsets[i], rt.n_frames))
             if f is None:                    # this camera was not recording yet
                 rt.want_frame = None
                 cv.set_points(np.zeros((0, 2), np.float32), np.zeros(0, bool), [], None)
@@ -2497,11 +2988,16 @@ class MainWindow(QMainWindow):
                 cv.set_midline(None)
                 continue
             f = min(f, rt.n_frames - 1)
-            if rt.want_frame != f:
+            if rt.want_frame != f and not cv.is_stale():
                 rt.want_frame = f
                 cached = rt.cache.get(f)
+                if self._lock is not None:
+                    self._lock["want"].add(i)         # shown with the others (lockstep, G24)
                 if cached is not None:
-                    cv.set_frame(cached)
+                    if self._lock is not None:
+                        self._lock["frames"][i] = cached
+                    else:
+                        cv.set_frame(cached)
                 else:
                     # decoder threads are started on FIRST NEED, not up front: at
                     # 15 cameras that is 15 idle threads each holding a 4K
@@ -2519,13 +3015,68 @@ class MainWindow(QMainWindow):
             cv.set_bones(s.bones() if self.act_show_bones.isChecked() else [])
             sel_name = (self.session.points[self.selected].name if self.selected is not None
                         and self.session is not None and self.selected < self.session.n_points else None)
+            # the ball markers' fitted circles too: a ball lost its circle as soon as
+            # its camera was not the working one (G22)
             cv.set_points(s.positions_at(f), s.visibility[f], s.points,
                           s.pid_by_name(sel_name) if sel_name is not None else None,
-                          occluded=s.occluded[f])
+                          occluded=s.occluded[f], radii=s.radius[f])
         rt_a = self._rt
         if rt_a is not None:
             self.grid.set_caption(p.active, caption_for(p.name(p.active), self.current,
                                                         p.offsets[p.active], rt_a.n_frames))
+        self._try_lockstep()
+
+    def _try_lockstep(self) -> None:
+        """A step's pictures go up together once every camera has delivered (G24)."""
+        lock = self._lock
+        if lock is not None and lock["want"] <= set(lock["frames"]):
+            self._flush_lockstep()
+
+    def _flush_lockstep(self) -> None:
+        """Show every picture a step has collected (all of them, or -- after
+        LOCKSTEP_MS -- the ones that arrived; a late one then shows on arrival)."""
+        lock, self._lock = self._lock, None
+        self._lock_timer.stop()
+        p = self.project
+        if not lock or p is None:
+            return
+        for v, rgb in lock["frames"].items():
+            cv = self.canvas if v == p.active else self.grid.canvas(v)
+            if cv is not None and 0 <= v < len(self._views):
+                cv.set_frame(rgb)
+        if p.active in lock["frames"]:
+            self._refresh_body_view()
+            if self._first_frame_token is not None:
+                self._first_frame_arrived()
+
+    def _set_sync_mode(self, mode: str) -> None:
+        """View → Other cameras / the CAMERAS panel's Sync all: "all" | "active" |
+        "hidden" (G24). One entry point, so the menu and the panel agree."""
+        act = {"all": self.act_sync_all, "active": self.act_sync_active, "hidden": self.act_solo}.get(mode)
+        if act is not None and not act.isChecked():
+            act.setChecked(True)
+
+    def _on_sync_action(self, mode: str, on: bool) -> None:
+        if not on:
+            # its own shortcut again (nothing ticked now): Active view only goes back
+            # to Sync all views, and Sync all views cannot be ticked off by itself. While
+            # the group SWITCHES, checkedAction() is None too, but the new choice is
+            # already ticked -- so ask the actions, not the group
+            if not any(a.isChecked() for a in self._others_group.actions()):
+                self._sync_mode = "all"
+                self.act_sync_all.setChecked(True)
+            return
+        self._sync_mode = mode
+        # Sync all: the others come back to the playhead now. Active view only: they
+        # are at this instant already, and stay where they are from the next move on
+        self._companions_stale = False
+        self.cameras.set_sync(mode == "all")
+        self._refresh_companions()
+        self._refresh_guides()
+        if mode == "active":
+            self.statusBar().showMessage(
+                "Active view only: only the working camera reads its video; the others stay where they are "
+                "(veiled once the playhead moves) until Sync all views, or until you click one to work in it", 8000)
 
     def _toggle_play(self, on: bool):
         self.btn_play.setIcon(icons.pause() if on else icons.play())
@@ -2637,10 +3188,12 @@ class MainWindow(QMainWindow):
         if (self.selected is not None and self.selected < s.n_points
                 and not s.points[self.selected].derived
                 and not s.tracked[self.current, self.selected]):
-            self._on_place(self.selected, x, y)
+            self._on_place(self.selected, *self._snap_to_prediction(self.selected, x, y))
+            rmse = self._residual_sentence(s.points[self.selected].name)      # (G28)
             self.statusBar().showMessage(
-                f"{s.points[self.selected].name} placed here (same point, no new point created) — "
-                "press Track to continue it, or Esc first if you wanted a new point", 7000)
+                (rmse + " — " if rmse else "")
+                + f"{s.points[self.selected].name} placed here (same point, no new point created) — "
+                "press Track to continue it, or Esc first if you wanted a new point", 8000)
             return
         # (I123) without a snapshot here, Ctrl+Z right after adding restored an OLDER
         # snapshot: the new point vanished AND the previous run or edit was undone
@@ -2658,6 +3211,32 @@ class MainWindow(QMainWindow):
             f"Added {s.points[pid].name} at ({x:.0f}, {y:.0f}) on frame {self.current}"
             + (" — the landmark that was selected is derived from the silhouette and cannot be placed by "
                "hand, so a NEW point was added" if derived_sel else ""), 6000 if derived_sel else 4000)
+
+    def _new_point(self) -> None:
+        """POINTS → ＋ New point: a point with no position yet, in every camera's
+        list and selected -- a plain click on the video then places it (G26)."""
+        s = self.session
+        if s is None or self.state != READY:
+            return
+        if self.btn_add.isChecked():
+            self.btn_add.setChecked(False)      # the next click places THIS point
+        self._undo_snap = s.snapshot()          # one undo step, in every camera (I123, G19)
+        self.act_undo.setEnabled(True)
+        pid = s.add_empty_point()
+        self._share_landmarks()
+        self.selected = pid
+        self._epi_probe = None
+        self._refresh_point_list()
+        self._refresh_overlay()
+        self._refresh_companions()
+        self._apply_state()
+        name = s.points[pid].name
+        multi = self.project is not None and self.project.n_views > 1
+        self.statusBar().showMessage(
+            f"{name} made" + (" in every camera's list" if multi else "") + " with no position yet: click it on "
+            "the video to place it" + (", then click the next camera and click it there (the dashed line shows "
+                                        "where it can be)" if multi else "") + ". Double-click its name to rename "
+            "it; Ctrl+Z removes it", 10000)
 
     def _on_add_group(self, cx: float, cy: float, radius: float):
         """Circle drag: track a region as one point (robust center of a member
@@ -3513,6 +4092,7 @@ class MainWindow(QMainWindow):
         self.point_list.setCurrentRow(pid)
         self.point_list.blockSignals(False)
         self._refresh_overlay()
+        self._refresh_companions()          # the same landmark is ringed in the other cameras (G22)
 
     def _on_list_select(self, row: int):
         if row >= 0:
@@ -3546,8 +4126,10 @@ class MainWindow(QMainWindow):
         self._refresh_overlay()
         self._update_track_button()
         name = self.session.points[pid].name
+        rmse = self._residual_sentence(name)                   # (G28)
         self.statusBar().showMessage(
-            f"{name} set to ({x:.1f}, {y:.1f}) at frame {self.current} — press Track to "
+            (rmse + " — " if rmse else "")
+            + f"{name} set to ({x:.1f}, {y:.1f}) at frame {self.current} — press Track to "
             "re-track forward from here (the Track button names the points it will track); "
             "Ctrl+Z undoes the move", 7000)
 
@@ -3569,26 +4151,23 @@ class MainWindow(QMainWindow):
         s = self.session
         pid = self.selected
         if pid is None or pid >= s.n_points:
-            if self._guides_ready() and self.act_epipolar.isChecked():
-                # nothing is edited: the click only asks where this spot can be
-                # in the other cameras (a dashed line there, a cross here, G19)
-                self._epi_probe = (self.project.active, float(x), float(y))
-                self._refresh_guides()
-                others = ", ".join(self.project.name(v) for v in self.project.others())
-                self.statusBar().showMessage(
-                    f"The dashed line in {others} shows where this spot can be in that camera. Nothing was "
-                    "placed: select a point in the POINTS list first (or press N) to place one; Esc clears "
-                    "the line", 9000)
-                return
-            self.statusBar().showMessage(
-                "Nothing placed: select a point in the POINTS list to annotate it here, "
-                "or press N to add a new point", 5000)
+            # (G21) the notice goes ON the video: in the status bar alone it was missed,
+            # and the look-here cross this click used to draw was taken for a point
+            # that "changed into a crosshair" and never reached the POINTS list
+            multi = self._guides_ready()
+            self.toast.show_message(
+                "Nothing was placed: no point is selected. Press <b>N</b> (＋ Add) and click to add a point"
+                + (" (it appears in every camera's list)" if multi else "")
+                + ", or pick one in the POINTS list and click where it is."
+                + (" <b>Alt+click</b> shows where a spot can be in the other cameras." if multi else ""),
+                "info", 7000)
             return
         if s.points[pid].derived:
             self.statusBar().showMessage(
                 f"{s.points[pid].name} is derived from the silhouette — to annotate it by hand, "
                 "right-click it → Data source → Track by appearance", 6000)
             return
+        x, y = self._snap_to_prediction(pid, x, y)
         self._undo_snap = s.snapshot()   # Ctrl+Z takes the click back
         s.set_position(self.current, pid, x, y)
         self._refresh_overlay()
@@ -3596,10 +4175,12 @@ class MainWindow(QMainWindow):
         self.act_undo.setEnabled(True)
         n = int(s.manual[:, pid].sum())
         plural = "s" if n != 1 else ""
+        rmse = self._residual_sentence(s.points[pid].name)      # (G28)
         self.statusBar().showMessage(
-            f"{s.points[pid].name} annotated at ({x:.1f}, {y:.1f}) on frame {self.current} "
+            (rmse + " — " if rmse else "")
+            + f"{s.points[pid].name} annotated at ({x:.1f}, {y:.1f}) on frame {self.current} "
             f"— {n} hand-placed frame{plural} (Shift+< / Shift+> jump to first / last; "
-            "Ctrl+Z undoes)", 6000)
+            "Ctrl+Z undoes)", 8000 if rmse else 6000)
 
     def _goto_clicked_frame(self, last: bool):
         """Shift+> / Shift+<: jump to the LAST / FIRST frame the selected point
@@ -3832,6 +4413,7 @@ class MainWindow(QMainWindow):
             self.point_list.setCurrentRow(-1)
             self.point_list.blockSignals(False)
             self._refresh_overlay()
+            self._refresh_companions()      # the other cameras drop the selection ring too (G22)
             self.statusBar().showMessage("Selection cleared — a plain click on the video now edits nothing; "
                                          "press N, then click, to add a new point", 5000)
 
@@ -3980,6 +4562,17 @@ class MainWindow(QMainWindow):
                           if n_other else
                           "Needs a calibration and this landmark tracked in another camera at this instant")
         acts["snap_epipolar"] = a_snap
+        pr = self._prediction(self.project.active, s.points[pid].name, self.current) \
+            if self._guides_ready() else None
+        a_pred = menu.addAction("Place it where the other cameras put it (◇)   A")
+        a_pred.setEnabled(pr is not None and pr["why"] is None and not s.points[pid].derived)
+        a_pred.setToolTip(
+            "Two or more other cameras have this landmark at this instant: their rays meet in 3D, and the ◇ is "
+            "that point seen from this camera. This places the landmark exactly there (hand-placed, one "
+            "Ctrl+Z step); Track re-seeds from it." if pr is not None and pr["why"] is None else
+            f"No ◇ here: {pr['why']}" if pr is not None else
+            "Needs this landmark placed in at least two other calibrated cameras at this instant")
+        acts["accept_prediction"] = a_pred
 
     def _point_menu_extra_action(self, chosen, acts: dict, pid: int) -> bool:
         """Apply one of the frame-aware point entries. Returns True when it
@@ -3990,6 +4583,9 @@ class MainWindow(QMainWindow):
         name = s.points[pid].name
         if chosen is acts.get("snap_epipolar"):
             self._snap_to_epipolar(pid)
+            return True
+        if chosen is acts.get("accept_prediction"):
+            self._accept_prediction(pid)
             return True
         if chosen is acts.get("interp_fill") or chosen is acts.get("interp_replace"):
             self._interpolate_keyframes(pid, replace=chosen is acts.get("interp_replace"))
@@ -4171,10 +4767,23 @@ class MainWindow(QMainWindow):
                     return row.mean(axis=0)
         return working_probe(p.calibration)
 
+    def _cal_cam(self, v: int):
+        """Camera `v`'s calibration, or None when the calibration does not cover
+        it -- a camera added after calibrating (G25). Calibration cameras are in
+        view order, and a camera added later is appended after them."""
+        p = self.project
+        cal = p.calibration if p is not None else None
+        if cal is None or not (0 <= v < min(len(cal.cameras), p.n_views)):
+            return None
+        return cal.cameras[v]
+
     def _guides_ready(self) -> bool:
+        """Two or more calibrated cameras: the guides and the ◇ predictions work
+        among them, even when a camera added later is not calibrated (G25) -- the
+        3D entries still need every camera (`_need_calibration`)."""
         p = self.project
         return (p is not None and p.n_views > 1 and p.calibration is not None
-                and len(p.calibration.cameras) == p.n_views)
+                and min(len(p.calibration.cameras), p.n_views) >= 2)
 
     def _epipolar_guides(self, pid: int, frame: int | None = None, target: int | None = None) -> list:
         """[(polyline (M, 2) native px of camera `target` (default: the working
@@ -4188,73 +4797,292 @@ class MainWindow(QMainWindow):
         f = self.current if frame is None else int(frame)
         return self._guides_into(self.project.active if target is None else target, s.points[pid].name, f)
 
-    def _guides_into(self, target: int, name: str, f: int) -> list:
-        from kinetrace.calib import epipolar_polyline
+    def _observations(self, name: str, f: int, exclude: int) -> list:
+        """[(view, calibration, raw (x, y)), ...]: the calibrated cameras other
+        than `exclude` that have landmark `name` at the instant of the working
+        camera's frame `f` (hidden cells left out)."""
         p = self.project
-        depth = self._guide_depth(f)
-        dst = p.calibration.cameras[target]
         out = []
         for c in range(p.n_views):
-            if c == target:
+            cal = self._cal_cam(c)
+            if c == exclude or cal is None:
                 continue
             sc = p.sessions[c]
             j = sc.pid_by_name(name)
-            if j is None:
-                continue
-            fc = p.map_frame(p.active, c, f)
-            if fc is None or not sc.exportable[fc, j]:
+            fc = p.map_frame(p.active, c, f) if j is not None else None
+            if fc is None or not (0 <= fc < sc.n_frames) or not sc.exportable[fc, j]:
                 continue
             uv = sc.tracks[fc, j]
-            if not np.isfinite(uv).all():
-                continue
+            if np.isfinite(uv).all():
+                out.append((c, cal, np.asarray(uv, np.float64)))
+        return out
+
+    def _guides_into(self, target: int, name: str, f: int, trusted: list | None = None) -> list:
+        """The lines in camera `target`, cut exactly at its picture's edges
+        (I132); `trusted`, if given, receives each line's (M,) mask -- False
+        where the lens model is guessing."""
+        from kinetrace.calib import epipolar_polyline
+        p = self.project
+        dst = self._cal_cam(target)
+        if dst is None:
+            return []
+        depth = self._guide_depth(f)
+        out = []
+        for c, cal, uv in self._observations(name, f, exclude=target):
+            info: dict = {}
             try:
-                pts = epipolar_polyline(p.calibration.cameras[c], dst, uv, depth)
+                pts = epipolar_polyline(cal, dst, uv, depth, margin=0.0, info=info)
             except Exception:       # noqa: BLE001 -- a degenerate calibration must not break the overlay
                 continue
             if len(pts) >= 2:
                 out.append((pts, self.GUIDE_COLORS[c % len(self.GUIDE_COLORS)], p.name(c)))
+                if trusted is not None:
+                    tr = info.get("trusted")
+                    trusted.append(tr if tr is not None and len(tr) == len(pts) else np.ones(len(pts), bool))
         return out
 
+    def _prediction(self, target: int, name: str, f: int) -> dict | None:
+        """Where landmark `name` is in camera `target` according to the OTHER
+        calibrated cameras (G23): their rays triangulated (DLT, DLTdv's residual)
+        and projected into `target`. None with fewer than two of them; otherwise
+        {"xy", "residual", "angle_deg", "views", "why"} -- `why` a reason in
+        words when the point must NOT be offered: the rays nearly parallel (the
+        crossing is noise), the cameras disagreeing (one is misplaced), or the
+        point behind / outside this camera's picture."""
+        from kinetrace.calib import PARALLEL_LINES_DEG, front_sign
+        p = self.project
+        dst = self._cal_cam(target)
+        if dst is None:
+            return None
+        tri = self._triangulate(self._observations(name, f, exclude=target))
+        if tri is None:
+            return None
+        xyz, res, widest, views = tri["xyz"], tri["residual"], tri["angle_deg"], tri["views"]
+        try:
+            xy = dst.project(xyz[None])[0]
+        except Exception:           # noqa: BLE001 -- a degenerate calibration must not break the overlay
+            return None
+        who = " and ".join(p.name(c) for c in views)
+        why = None
+        thr = 5.0 * max(1.0, max(p.sessions[c].width or 1920 for c in views) / 1920.0)
+        L = np.asarray(dst.coefs, np.float64).reshape(11)
+        probe = self._guide_depth(f)
+        if widest < PARALLEL_LINES_DEG:
+            why = (f"{who} see it along nearly the same line ({widest:.1f}°), so they cannot say where on "
+                   "that line it is — place it on the dashed line by eye")
+        elif not np.isfinite(res) or res > thr:
+            why = f"{who} disagree by {res:.1f} px (more than {thr:.0f}) — one of them is misplaced here"
+        elif probe is not None and np.sign(float(L[8:11] @ xyz) + 1.0) != front_sign(L, probe):
+            why = f"{who} put it behind {p.name(target)}"
+        elif not np.isfinite(xy).all() or not (-0.5 <= xy[0] < dst.width - 0.5 and -0.5 <= xy[1] < dst.height - 0.5):
+            why = f"{who} put it outside {p.name(target)}'s picture (out of the picture = no data)"
+        return {"xy": xy, "residual": float(res), "angle_deg": widest, "views": views, "why": why}
+
+    def _triangulate(self, obs: list) -> dict | None:
+        """The 3D point of observations [(view, calibration, raw xy), ...] from
+        two or more cameras: {"xyz", "residual" (DLTdv's rmse, px), "errors"
+        {view: reprojection px}, "angle_deg" (widest angle between the rays),
+        "views", "threshold" (good below it, px: 1.5 x w / 1920), "verdict"
+        good / ok / poor (the Reconstruct report's bands)}; None with fewer."""
+        from kinetrace.calib import dlt_ray, triangulate
+        rows = []
+        for c, cal, uv in obs:
+            q = cal.to_calib_frame(uv)[0]
+            if np.isfinite(q).all():
+                rows.append((c, cal, q))
+        if len(rows) < 2:
+            return None
+        try:
+            xyz, res, err = triangulate(np.array([cal.coefs for _c, cal, _q in rows]),
+                                        np.array([q for _c, _cal, q in rows]))
+            dirs = np.array([dlt_ray(cal.coefs, q[None], xyz)[1][0] for _c, cal, q in rows])
+        except Exception:           # noqa: BLE001 -- a degenerate calibration must not break the overlay
+            return None
+        views = [c for c, _cal, _q in rows]
+        scale = max(1.0, max(self.project.sessions[c].width or 1920 for c in views) / 1920.0)
+        verdict = "good" if res <= 1.5 * scale else "ok" if res <= 5.0 * scale else "poor"
+        return {"xyz": xyz, "residual": float(res), "errors": dict(zip(views, (float(e) for e in err))),
+                "angle_deg": float(np.degrees(np.arccos(np.abs(np.clip(dirs @ dirs.T, -1.0, 1.0)).min()))),
+                "views": views, "threshold": 1.5 * scale, "verdict": verdict}
+
+    def _residual_sentence(self, name: str, f: int | None = None) -> str:
+        """'P1 in 2 cameras: 3D rmse 0.84 px (good)' -- or '' below two cameras (G28)."""
+        if not self._guides_ready():
+            return ""
+        tri = self._triangulate(self._observations(name, self.current if f is None else f, exclude=-1))
+        if tri is None:
+            return ""
+        return (f"{name} in {len(tri['views'])} cameras: 3D rmse {tri['residual']:.2f} px ({tri['verdict']}"
+                + (", the rays are nearly parallel so its depth is uncertain" if tri["angle_deg"] < 5.0 else "")
+                + ")")
+
     def _probe_guides(self, target: int) -> list:
-        """The 'where is this spot in the other cameras?' click (nothing selected,
-        G19): its line in every other camera, a small cross where it was clicked."""
+        """The look-here click (Alt+click, G21): the spot's line in every other
+        camera, and a dashed '?' ring where it was clicked -- a ring the size of
+        a region, so it cannot be taken for a point marker."""
         from kinetrace.calib import epipolar_polyline
         p = self.project
         pr = self._epi_probe
         if pr is None or not (0 <= pr[0] < p.n_views):
             return []
         v, x, y = pr
+        src, dst = self._cal_cam(v), self._cal_cam(target)
+        if src is None or dst is None:
+            return []
         col = self.GUIDE_COLORS[v % len(self.GUIDE_COLORS)]
         if target == v:
-            r = max(6.0, 0.012 * p.sessions[v].width)
-            return [(np.array([[x - r, y], [x + r, y]]), col, ""),
-                    (np.array([[x, y - r], [x, y + r]]), col, "")]
+            # at least 16 screen px across whatever the zoom: never marker-sized
+            cv = self.grid.canvas(v)
+            r = max(0.015 * p.sessions[v].width, 16.0 * (cv.scene_px_per_screen_px() if cv is not None else 1.0))
+            a = np.linspace(0.0, 2 * np.pi, 41)
+            return [(np.column_stack([x + r * np.cos(a), y + r * np.sin(a)]), col, "?")]
         try:
-            pts = epipolar_polyline(p.calibration.cameras[v], p.calibration.cameras[target],
-                                    np.array([x, y], np.float64), self._guide_depth(self.current))
+            pts = epipolar_polyline(src, dst, np.array([x, y], np.float64), self._guide_depth(self.current),
+                                    margin=0.0)
         except Exception:           # noqa: BLE001
             return []
-        return [(pts, col, p.name(v))] if len(pts) >= 2 else []
+        return [(pts, col, f"{p.name(v)} (look-here)")] if len(pts) >= 2 else []
 
     def _refresh_guides(self) -> None:
         """Epipolar guides on EVERY camera on screen (G19): the selected landmark
         as the other cameras see it -- so a point placed in one camera shows at
-        once, in the others, the line it must lie on -- or the look-here click."""
+        once, in the others, the line it must lie on; with two or more of them,
+        the ◇ where they put it (G23) -- plus the look-here click (Alt+click).
+        Once two cameras have the point, its 3D rmse is written beside it in each
+        of them and the lines turn faint everywhere (G28)."""
         p = self.project
         pid = self.selected
         show = self.act_epipolar.isChecked() and self.state == READY and self._guides_ready()
         canvases = self.grid.canvases
         visible = set(self.grid.visible_indices()) if show else set()
+        name = (self.session.points[pid].name
+                if pid is not None and self.session is not None and pid < self.session.n_points else None)
+        allobs = self._observations(name, self.current, exclude=-1) if (name is not None and visible) else []
+        tri = self._triangulate(allobs)
+        placed_at = {c: uv for c, _cal, uv in allobs}
+        verdict_col = {"good": theme.GREEN, "ok": theme.AMBER, "poor": theme.RED}
         for t, cv in enumerate(canvases):
-            lines = []
-            if t in visible:
-                if pid is not None and self.session is not None and pid < self.session.n_points:
-                    lines = self._epipolar_guides(pid, target=t)
-                elif self._epi_probe is not None:
-                    lines = self._probe_guides(t)
-            cv.set_guides(lines)
+            lines, faint, preds, notes = [], [], [], []
+            if t in visible and not self._tile_stale(t):
+                if tri is not None and t in placed_at:
+                    q = QColor(verdict_col[tri["verdict"]])
+                    notes.append((float(placed_at[t][0]), float(placed_at[t][1]),
+                                  f"3D rmse {tri['residual']:.2f} px · {len(tri['views'])} cams"
+                                  + (" · rays nearly parallel" if tri["angle_deg"] < 5.0 else ""),
+                                  (q.red(), q.green(), q.blue())))
+                if name is not None:
+                    masks: list = []
+                    for (pts, col, lab), tr in zip(self._guides_into(t, name, self.current, masks), masks):
+                        # the parts where the lens model is guessing are drawn faint (I132);
+                        # each run overlaps the one before by a point, so the line stays whole
+                        edges = np.flatnonzero(np.diff(tr.astype(np.int8))) + 1
+                        for a, b in zip(np.r_[0, edges], np.r_[edges, len(pts)]):
+                            seg = pts[max(a - 1, 0):b]
+                            if tr[a]:
+                                lines.append((seg, col, lab))
+                                lab = ""                    # the camera's name once
+                            else:
+                                faint.append((seg, col))
+                    pr = self._prediction(t, name, self.current)
+                    if pr is not None and pr["why"] is None:
+                        st = p.sessions[t]
+                        j = st.pid_by_name(name)
+                        ft = p.map_frame(p.active, t, self.current)
+                        placed = (st.tracks[ft, j] if j is not None and ft is not None and 0 <= ft < st.n_frames
+                                  and st.exportable[ft, j] and np.isfinite(st.tracks[ft, j]).all() else None)
+                        col = tuple(st.points[j].color) if j is not None else (255, 255, 255)
+                        x, y = float(pr["xy"][0]), float(pr["xy"][1])
+                        n = len(pr["views"])
+                        label = (f"{name}: {np.hypot(placed[0] - x, placed[1] - y):.1f} px from the {n} other cameras"
+                                 if placed is not None else f"{name} ◇ from {n} cameras")
+                        preds.append((x, y, col, label, placed))
+                    elif pr is not None and lines:
+                        pts0, col0, lab0 = lines[0]
+                        lines[0] = (pts0, col0, f"{lab0} — no ◇: {pr['why']}")
+                if self._epi_probe is not None:
+                    lines += self._probe_guides(t)
+            cv.set_guides(lines, faint, preds, dim=bool(preds) or tri is not None, notes=notes)
         if not canvases:
             self.canvas.set_guides([])
+
+    def _tile_stale(self, v: int) -> bool:
+        """Camera `v` is on screen but NOT at the playhead's instant: Active view
+        only leaves the other cameras where they were (G27)."""
+        p = self.project
+        if not self._companions_stale or p is None or v == p.active or not (0 <= v < len(self._views)):
+            return False
+        f = p.map_frame(p.active, v, self.current)
+        rt = self._views[v]
+        # a camera that has shown nothing yet (just added, or a project reopened in
+        # this mode) is decoded once, at this instant; after that it stays put
+        return f is not None and rt.want_frame is not None and rt.want_frame != min(f, rt.n_frames - 1)
+
+    def _snap_to_prediction(self, pid: int, x: float, y: float) -> tuple[float, float]:
+        """A click on (or next to) the ◇ of the selected landmark places it EXACTLY
+        at the ◇ (G23); anywhere else the click is taken as it is."""
+        s = self.session
+        if not self._guides_ready() or not self.act_epipolar.isChecked() or s is None or pid >= s.n_points:
+            return x, y
+        pr = self._prediction(self.project.active, s.points[pid].name, self.current)
+        if pr is None or pr["why"] is not None:
+            return x, y
+        reach = (self.canvas._guides.PRED_R + 4.0) * self.canvas.scene_px_per_screen_px()
+        px, py = float(pr["xy"][0]), float(pr["xy"][1])
+        return (px, py) if np.hypot(px - x, py - y) <= reach else (x, y)
+
+    def _accept_prediction(self, pid: int | None = None) -> None:
+        """A (or the point menu): place the selected landmark where two or more
+        other cameras put it (G23). Hand-placed, one undo step."""
+        s = self.session
+        pid = self.selected if pid is None else pid
+        if self.state != READY or s is None:
+            return
+        if pid is None or pid >= s.n_points:
+            self.statusBar().showMessage("A places the selected point at the ◇ — select a point first", 5000)
+            return
+        name = s.points[pid].name
+        if s.points[pid].derived:
+            self.statusBar().showMessage(f"{name} is derived from the silhouette — it cannot be placed by hand", 5000)
+            return
+        pr = self._prediction(self.project.active, name, self.current) if self._guides_ready() else None
+        if pr is None:
+            n = len(self._observations(name, self.current, self.project.active)) if self._guides_ready() else 0
+            self.statusBar().showMessage(
+                f"No ◇ for {name}: it needs a calibration and {name} placed in two other calibrated cameras at this "
+                f"instant ({n} {'has' if n == 1 else 'have'} it)", 7000)
+            return
+        if pr["why"] is not None:
+            self.statusBar().showMessage(f"No ◇ for {name}: {pr['why']}", 9000)
+            return
+        x, y = float(pr["xy"][0]), float(pr["xy"][1])
+        self._undo_snap = s.snapshot()
+        self.act_undo.setEnabled(True)
+        s.set_position(self.current, pid, x, y)
+        self._refresh_overlay()
+        self._update_track_button()
+        rmse = self._residual_sentence(name)                   # (G28)
+        self.statusBar().showMessage(
+            f"{name} placed where {' and '.join(self.project.name(c) for c in pr['views'])} put it on frame "
+            f"{self.current}" + (f" — {rmse}" if rmse else "") + " — Track re-seeds from here; Ctrl+Z undoes",
+            8000)
+
+    def _on_probe(self, x: float, y: float) -> None:
+        """Alt+click: where can this spot be in the other cameras? Nothing is
+        edited (G21)."""
+        p = self.project
+        if self.state != READY or p is None:
+            return
+        if not self._guides_ready() or self._cal_cam(p.active) is None:
+            self.toast.show_message(
+                "Alt+click shows where a spot can be in the other cameras: it needs a calibration of this camera "
+                "and at least one other (3D → Import Calibration, or calibrate with a wand).", "info", 7000)
+            return
+        self._epi_probe = (p.active, float(x), float(y))
+        self._guides_on()
+        others = ", ".join(p.name(v) for v in p.others() if self._cal_cam(v) is not None)
+        self.statusBar().showMessage(
+            f"Look-here: the dashed line in {others} shows where this spot can be in that camera. Nothing was "
+            "placed. Esc clears it", 9000)
 
     def _snap_to_epipolar(self, pid: int) -> None:
         """Move landmark `pid` at this frame onto the other cameras' epipolar
@@ -4512,11 +5340,16 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- tracking
 
-    def _toggle_tracking(self):
+    def _toggle_tracking(self, all_cameras: bool | None = None):
+        """T / the Track button. `all_cameras` (Shift+T = True) overrides Track ▾ →
+        Every camera for this one run."""
         if self.state == TRACKING:
             self._pause_tracking()
         elif self.state == READY:
-            if self._track_mode == "semi":
+            every = self.act_track_all.isChecked() if all_cameras is None else all_cameras
+            if every and len(self._multi_jobs(step=self._track_mode == "semi")) > 1:
+                self._start_multi_tracking(step=self._track_mode == "semi")
+            elif self._track_mode == "semi":
                 self._track_step()
             else:
                 self._start_tracking()
@@ -4537,6 +5370,137 @@ class MainWindow(QMainWindow):
                 "animal (or select a point in the list and click where it is)", 5000)
             return
         self._start_tracking(stop_after=self.current + 1)
+
+    # ------------------------------------------- tracking in every camera (G29)
+
+    def _multi_jobs(self, step: bool = False) -> list[dict]:
+        """One run per camera that has something to track at this instant: the
+        points of the run's scope (the panel selection, by NAME, or all) that
+        have a position at that camera's frame -- ball markers included -- or its
+        segment. The working camera first. Empty with one camera."""
+        p = self.project
+        if p is None or p.n_views < 2 or self.session is None:
+            return []
+        scope, _n = self._run_scope()
+        names = None if scope is None else {self.session.points[i].name for i in scope if i < self.session.n_points}
+        jobs = []
+        for v in [p.active] + p.others():
+            sv = p.sessions[v]
+            fv = p.map_frame(p.active, v, self.current)
+            rt = self._views[v] if v < len(self._views) else None
+            if fv is None or rt is None or not (0 <= fv < rt.n_frames - (1 if step else 0)):
+                continue
+            pids = [q for q in sv.seedable_at(fv) if names is None or sv.points[q].name in names]
+            if not pids and not sv.animal_seedable_at(fv):
+                continue
+            jobs.append({"view": v, "frame": int(fv), "pids": pids,
+                         "stop": int(fv) + 1 if step else None})
+        return jobs
+
+    def _start_multi_tracking(self, step: bool = False) -> None:
+        """Track in every camera that has the points: one run per camera, one after
+        another, each live on screen (X stops the whole run); one Ctrl+Z undoes it
+        in every camera. One camera at a time on purpose: the point model holds ~11
+        GB of GPU memory per 4K run and decoding is the bottleneck, and one live
+        picture you can pause and correct is the rule every run keeps."""
+        p = self.project
+        jobs = self._multi_jobs(step)
+        if self.state != READY or len(jobs) < 2:
+            return
+        self._multi = {"jobs": list(jobs), "orig": p.active, "orig_frame": self.current, "step": step,
+                       "snaps": {j["view"]: p.sessions[j["view"]].snapshot() for j in jobs}, "results": [],
+                       "stopped": None}
+        if p.active not in self._multi["snaps"]:
+            self._multi["snaps"][p.active] = self.session.snapshot()
+        self.statusBar().showMessage(
+            f"Tracking in {len(jobs)} cameras, one after another: "
+            + ", ".join(p.name(j["view"]) for j in jobs) + " — X stops them all", 8000)
+        self._multi_next()
+
+    def _multi_next(self) -> None:
+        st = self._multi
+        if st is None:
+            return
+        if self.state != READY:
+            QTimer.singleShot(100, self._multi_next)
+            return
+        p = self.project
+        while st["jobs"]:
+            job = st["jobs"].pop(0)
+            v = job["view"]
+            if v >= p.n_views:
+                continue
+            if p.active != v:
+                self._set_active_view(v)
+            self._goto(job["frame"], force=True)
+            # the same landmarks, looked up again: a switch re-selects by name
+            pids = [q for q in job["pids"] if q < self.session.n_points]
+            self._start_tracking(stop_after=job["stop"], only_pids=pids, quiet=True)
+            if self.state == TRACKING:
+                st["current"] = v
+                left = len(st["jobs"])
+                self.statusBar().showMessage(
+                    f"Tracking in {p.name(v)} from frame {job['frame']}"
+                    + (f" ({left} more camera{'s' if left != 1 else ''} after this)" if left else " (the last camera)")
+                    + " — X stops them all", 8000)
+                return                  # _on_track_finished comes back here
+            st["results"].append({"view": v, "last": None, "why": "nothing to start from"})
+        self._multi_finish()
+
+    def _multi_finish(self) -> None:
+        """Every camera done (or the run stopped): one undo step for all of them,
+        a summary, and the working camera back -- unless a camera stopped on a lost
+        point, which is then where the playhead goes (as after any auto-pause)."""
+        st, self._multi = self._multi, None
+        p = self.project
+        if st is None or p is None:
+            return
+        user_stop = st["stopped"] in ("user", "error")
+        problem = next((r for r in st["results"] if r.get("fail") is not None), None)
+        if not user_stop:
+            if problem is not None:
+                if p.active != problem["view"]:
+                    self._set_active_view(problem["view"])
+                self._goto(problem["fail"], force=True)
+                if problem.get("pid") is not None and problem["pid"] >= 0 and problem["pid"] < self.session.n_points:
+                    self._on_select(problem["pid"])
+            else:
+                orig = st["orig"]
+                if orig < p.n_views and p.active != orig:
+                    self._set_active_view(orig)
+                own = next((r for r in st["results"] if r["view"] == orig and r.get("last") is not None), None)
+                if st["step"]:
+                    self._goto(min(st["orig_frame"] + 1, self.n_frames - 1), force=True)
+                elif own is not None:
+                    self._goto(own["last"], force=True)
+        # one Ctrl+Z for the whole run, in every camera it touched (the switches above
+        # cleared the undo point, as any camera switch does)
+        snaps = {v: s for v, s in st["snaps"].items() if v < p.n_views}
+        self._undo_snap = snaps.get(p.active, self.session.snapshot())
+        self._undo_extra.update({v: s for v, s in snaps.items() if v != p.active})
+        self.act_undo.setEnabled(True)
+        self._refresh_companions()
+        self._refresh_guides()
+        self._update_track_button()
+        done = [r for r in st["results"] if r.get("last") is not None]
+        parts = []
+        for r in st["results"]:
+            nm = p.name(r["view"]) if r["view"] < p.n_views else "?"
+            if r.get("fail") is not None:
+                parts.append(f"<b>{nm}</b> stopped at frame {r['fail']} ({r.get('why') or 'a point was lost'})")
+            elif r.get("last") is not None:
+                parts.append(f"{nm} to frame {r['last']}")
+            else:
+                parts.append(f"{nm}: {r.get('why') or 'not tracked'}")
+        left = [p.name(j["view"]) for j in st["jobs"] if j["view"] < p.n_views]
+        if st["step"] and not user_stop and problem is None:
+            self.statusBar().showMessage(
+                f"Stepped one frame in {len(done)} cameras — F for the next; Ctrl+Z undoes the step in all", 6000)
+            return
+        self.toast.show_message(
+            ("Stopped: " if user_stop else "Tracked in every camera: ") + "; ".join(parts)
+            + (f". Not tracked yet: {', '.join(left)} — press Track again to go on from here" if left else "")
+            + ". One Ctrl+Z undoes the run in every camera.", "warn" if (problem or user_stop) else "info", 12000)
 
     def _pause_tracking(self):
         if self.state == TRACKING and self.worker is not None:
@@ -4783,7 +5747,28 @@ class MainWindow(QMainWindow):
     def _on_track_finished(self, last: int, was_paused: bool):
         user_pause = bool(getattr(self, "_user_paused", False))
         self._user_paused = False
+        autopause = self._autopause_info            # the impl consumes it
+        reason = getattr(self.worker, "_autopause_reason", "") if self.worker is not None else ""
         self._on_track_finished_impl(last, was_paused)
+        if self._multi is not None:
+            st = self._multi
+            res = {"view": st.get("current"), "last": int(last)}
+            if autopause is not None:
+                fail, pid = int(autopause[0]), int(autopause[1])
+                s = self.session
+                nm = (s.points[pid].name if s is not None and 0 <= pid < s.n_points
+                      else "the segment" if pid < 0 else f"point {pid}")
+                res.update(fail=fail, pid=pid, why={"exit": f"{nm} left the segment",
+                                                    "apart": f"{nm} too far from the other balls"}
+                           .get(reason, f"{nm} was lost"))
+            st["results"].append(res)
+            if user_pause and was_paused:
+                # X / Space stops the WHOLE run where it is (the camera and frame on
+                # screen), as it does an automatic re-track (I107)
+                st["stopped"] = "user"
+                QTimer.singleShot(0, self._multi_finish)
+            else:
+                QTimer.singleShot(0, self._multi_next)
         if self._retrack is not None:
             if user_pause and was_paused:
                 # X / Space during an automatic re-track stops the WHOLE queue and
@@ -4904,6 +5889,13 @@ class MainWindow(QMainWindow):
 
     def _on_track_error(self, tb: str):
         decode_at = getattr(self.worker, "decode_failed_at", None) if self.worker is not None else None
+        if self._multi is not None:
+            # every camera run so far is kept (one Ctrl+Z still undoes them all);
+            # the run stops where the error happened
+            self._multi["results"].append({"view": self._multi.get("current"), "last": None,
+                                           "why": "an error stopped it"})
+            self._multi["stopped"] = "error"
+            QTimer.singleShot(0, self._multi_finish)
         if self._retrack is not None:
             st = self._retrack
             self._retrack = None
@@ -4962,14 +5954,16 @@ class MainWindow(QMainWindow):
         p = self.project
         if p is None or p.n_views < 2:
             return 0
-        lack = p.missing_landmarks()
-        if not lack:
+        # every camera the sync changes -- a missing name, or its list in another
+        # order (G26); the working camera leads the order, so its ids never move
+        changes = p.landmark_changes(p.active)
+        if not changes:
             return 0
         if undoable and self._undo_snap is not None:
-            for v in lack:
+            for v in changes:
                 if v != p.active:
                     self._undo_extra.setdefault(v, p.sessions[v].snapshot())
-        n = p.sync_landmarks()
+        n = p.sync_landmarks(p.active)
         self._refresh_companions()
         return n
 
@@ -5004,6 +5998,7 @@ class MainWindow(QMainWindow):
         st["autopause"] = self.btn_autopause.isChecked()
         st["roi"] = self.btn_roi.isChecked()
         st["track_mode"] = self._track_mode
+        st["track_all"] = self.act_track_all.isChecked()
         st["marker_size"] = self.marker_spin.value()
         st["show_mask"] = self.btn_mask.isChecked()
         st["mask_opacity"] = float(self._mask_opacity)
@@ -5048,6 +6043,7 @@ class MainWindow(QMainWindow):
         self._track_mode = mode if mode in ("auto", "semi") else "auto"
         (self.act_mode_semi if self._track_mode == "semi"
          else self.act_mode_auto).setChecked(True)
+        self.act_track_all.setChecked(bool(st.get("track_all", False)))
         self.marker_spin.setValue(int(np.clip(st.get("marker_size", 3), 2, 24)))
         tl = int(st.get("trail_len", TRAIL_FRAMES))
         self._set_trail_len(tl if tl in self._trail_acts else TRAIL_FRAMES, announce=False)
@@ -5091,6 +6087,7 @@ class MainWindow(QMainWindow):
             "window": [geo.x(), geo.y(), geo.width(), geo.height()], "maximized": self.isMaximized(),
             "dock_visible": self.dock.isVisible(), "dock_floating": self.dock.isFloating(),
             "splitter": [int(v) for v in self._split.sizes()], "solo": self.act_solo.isChecked(),
+            "sync": self._sync_mode,
             "step": int(self.step_spin.value()), "onboarding": self.act_onboarding.isChecked()}}
 
     def _apply_layout(self, layout: dict | None) -> None:
@@ -5115,6 +6112,7 @@ class MainWindow(QMainWindow):
             if isinstance(sp, list) and len(sp) == len(self._split.sizes()) and all(int(v) >= 0 for v in sp):
                 self._split.setSizes([int(v) for v in sp])
             if self.act_solo.isEnabled():
+                self._set_sync_mode("active" if layout.get("sync") == "active" else "all")    # (G24)
                 self.act_solo.setChecked(bool(layout.get("solo", False)))
             self.step_spin.setValue(int(layout.get("step", self.step_spin.value())))
             self.act_onboarding.setChecked(bool(layout.get("onboarding", True)))
@@ -5471,6 +6469,19 @@ class MainWindow(QMainWindow):
         `recovered`: the file is a recovery copy chosen in Recover Unsaved Work."""
         if Path(path).name.lower() == "kinetrace.json":
             path = str(Path(path).parent)            # an unzipped project: its folder is the project
+        if self.state == TRACKING:
+            return
+        pname = Path(path).name
+        # the card shows at once: reading the file happens right here
+        ptok = self._busy_push(f"Opening {pname}", "Reading the project file…", 0,
+                               self._open_hint(path, "project"), immediate=True)
+        QApplication.processEvents()
+        try:
+            self._open_project_impl(path, recovered, pname)
+        finally:
+            self._busy_pop(ptok)             # the camera open, if it started, holds its own level
+
+    def _open_project_impl(self, path: str, recovered: dict | None, pname: str):
         self._leave_project()
         try:
             proj, state, meta = projectfile.read(path)
@@ -5568,42 +6579,69 @@ class MainWindow(QMainWindow):
             master.video_path = info.path
             self.project_path = file_path
             self._project_id, self._saved_at, self._recovery_sig = pid, saved_at, None
-            self._adopt_project(proj, info)
+            self._adopt_project(proj, info, located=located, infos=infos)
             if unsaved:
                 self.project.dirty = True
             QTimer.singleShot(0, lambda: self._apply_layout(state.get("layout")))
 
-        # _attach_video opens the ACTIVE view; the rest are attached in adopt
-        self._open_video(str(video), then=adopt)
+        # every camera's video is located first (a moved one asks), then ALL are read
+        # at once off the GUI thread -- the working one no longer waits in front of the
+        # others (2 x 4K cameras: 5.1 -> ~2.6 s; each used to freeze the window 2.4 s)
+        located = {i: (str(video) if i == proj.active else self._find_video(i, proj)) for i in range(proj.n_views)}
+        located = {i: (str(v) if v is not None else None) for i, v in located.items()}
+        n = proj.n_views
+        infos = self._probe_many([v for v in located.values() if v], f"Opening {pname}",
+                                 self._open_hint(str(video), "project"))
+        ainfo = infos.get(str(video), "cancelled")
+        if isinstance(ainfo, str):
+            if ainfo == "cancelled":
+                self.statusBar().showMessage(f"Opening {pname} cancelled — nothing was changed", 5000)
+            else:
+                QMessageBox.critical(self, "Could not open video", f"{proj.name(proj.active)}:\n\n{ainfo}")
+            return
+        tok = self._busy_push(f"Opening {pname}", f"{n} camera{'s' if n != 1 else ''} read; building the "
+                              "project…")
+        self._attach_with_card(ainfo, adopt, tok)
 
-    def _adopt_project(self, proj: Project, active_info: VideoInfo):
+    def _adopt_project(self, proj: Project, active_info: VideoInfo, located: dict | None = None,
+                       infos: dict | None = None):
         """Replace the one-view project `_attach_video` just built with the
-        loaded one, opening every other camera's video."""
+        loaded one, opening every other camera's video. `located` {view: path or
+        None} and `infos` {path: VideoInfo | error | "cancelled"}: the cameras
+        already found and read (Open Project reads them all at once)."""
         active = proj.active
         self.project = proj
         self._wand_result = (None, None)      # (I33)
         runtimes: list[_ViewRuntime | None] = [None] * proj.n_views
         runtimes[active] = self._views[0]
         drop: list[int] = []
+        # locate every other camera's video first (a moved one asks), then read them
+        # all at once off the GUI thread: this froze the window ~2.4 s per 4K camera
+        vids = {}
         for i in range(proj.n_views):
             if i == active:
                 continue
-            s = proj.sessions[i]
-            vid = self._find_video(i, proj)
+            vid = located.get(i) if located is not None else self._find_video(i, proj)
             if vid is None:
                 drop.append(i)
+            else:
+                vids[i] = str(vid)
+        infos = dict(infos or {})
+        todo = [v for v in vids.values() if v not in infos]
+        if todo:
+            infos.update(self._probe_many(todo, f"Opening the project's other {len(todo)} camera"
+                                          f"{'s' if len(todo) != 1 else ''}", self._open_hint(todo[0], "project")))
+        for i in range(proj.n_views):
+            if i == active or i not in vids:
                 continue
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            try:
-                info = probe_video(str(vid))
-            except (ValueError, OSError) as e:
+            s = proj.sessions[i]
+            info = infos.get(vids[i], "cancelled")
+            if isinstance(info, str):
                 QMessageBox.warning(self, "Could not open camera",
-                                    f"{proj.name(i)}: {e}\n\nIt is left out of this session.")
+                                    f"{proj.name(i)}: " + ("opening was cancelled" if info == "cancelled" else info)
+                                    + "\n\nIt is left out of this session.")
                 drop.append(i)
                 continue
-            finally:
-                if QApplication.overrideCursor() is not None:
-                    QApplication.restoreOverrideCursor()
             s.video_path = info.path
             runtimes[i] = _ViewRuntime(info, DEFAULT_CACHE_BYTES)
             if info.n_frames != s.n_frames:
@@ -5639,7 +6677,8 @@ class MainWindow(QMainWindow):
         # a project digitized before the cameras shared one landmark list: fill the
         # gaps (points with no data) without calling the file changed (G19)
         was = [s.dirty for s in proj.sessions]
-        if proj.sync_landmarks():
+        if proj.landmark_changes():          # a missing name, or another order (G26)
+            proj.sync_landmarks()
             for s, d in zip(proj.sessions, was):
                 s.dirty = d
             self._refresh_point_list()
@@ -5653,6 +6692,7 @@ class MainWindow(QMainWindow):
                 cv.set_interactive(False)
         self.grid.set_active(proj.active)
         self.act_solo.setEnabled(proj.n_views > 1)
+        self.m_others.setEnabled(proj.n_views > 1)      # View → Other cameras (G24)
         QTimer.singleShot(0, self._update_disagreement)   # a saved reconstruction paints its disagreement
 
     # -------------------------------------------------------------------- 3D
@@ -5684,9 +6724,11 @@ class MainWindow(QMainWindow):
             f"Calibration loaded for {p.n_views} cameras ({p.calibration.source}). " + self.GUIDES_HINT
             + " Next: <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3).", "info", 14000)
 
-    GUIDES_HINT = ("Click a point in one camera: the other cameras show a dashed line where that point "
-                   "must be. Click that camera, and the same point (it is in every camera's POINTS list) "
-                   "is selected there: click it on the line, then Track.")
+    GUIDES_HINT = ("Press <b>N</b> (＋ Add) and click a point in one camera: the other cameras show a dashed line "
+                   "where that point must be. Click the next camera to work there (the point stays selected) and "
+                   "click it on the line — or press N first, and that one click does both. Once two cameras have "
+                   "it, a ◇ shows where it is in the rest (<b>A</b> places it there). Alt+click shows where any "
+                   "spot can be.")
 
     def _guides_on(self) -> None:
         """A calibration has just arrived: the epipolar guides are what makes it
@@ -6752,6 +7794,17 @@ class MainWindow(QMainWindow):
     # ----------------------------------------------------------------- close
 
     def closeEvent(self, ev):
+        if self._first_frame_token is not None:
+            self._first_frame_arrived()      # only waiting for a picture: nothing half-built
+        if self._loading:
+            # in the middle of an open: cancel it where that is safe, and close once it
+            # has finished (the project being built must not be torn down half-way)
+            cb = self._busy_cancel_cb()
+            if cb is not None:
+                cb()
+            ev.ignore()
+            QTimer.singleShot(250, self.close)
+            return
         if self._overlay is not None and self._overlay.isRunning():
             self._overlay.request_cancel()
             self._overlay.wait(10000)
@@ -6761,6 +7814,7 @@ class MainWindow(QMainWindow):
                 th.request_cancel()
                 th.wait(10000)
         self._body_worker = self._body_video = None
+        self._multi = None                   # closing: no camera after this one starts (G29)
         if self.state == TRACKING and self.worker is not None:
             self.worker.request_pause()
             # let its last rows land (queued chunk_ready / finished) before the save
@@ -6809,7 +7863,8 @@ class MainWindow(QMainWindow):
         # tears Qt down, or Qt aborts ("QThread: Destroyed while thread is
         # still running" = exit 0xC0000409 on Windows). Only the working
         # camera's decoder used to be stopped here.
-        for timer in (getattr(self, "_render_timer", None), getattr(self, "_play_timer", None)):
+        for timer in (getattr(self, "_render_timer", None), getattr(self, "_play_timer", None),
+                      getattr(self, "_lock_timer", None)):
             if timer is not None:
                 timer.stop()
         for rt in list(getattr(self, "_views", [])):

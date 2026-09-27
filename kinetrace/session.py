@@ -61,6 +61,7 @@ DEFAULT_UI_STATE: dict = {
     "autopause": True,       # pause tracking on confidence collapse
     "roi": True,             # ROI-zoom tracking
     "track_mode": "auto",    # "auto" = run to end | "semi" = F steps one frame
+    "track_all": False,      # Track ▾ → Every camera: track the points in each camera that has them (G29)
     "marker_size": 3,        # marker radius, screen px (was 7 until 2026-09-22)
     "zoom": 0.0,             # canvas scale; 0 = never zoomed (fit on open)
     "center_x": 0.0,         # scene point at the viewport center
@@ -387,16 +388,43 @@ class TrackingSession:
         self._touch()
         return pid
 
+    def add_empty_point(self) -> int:
+        """POINTS → ＋ New point: a named point with no data yet (G26), numbered and
+        coloured like one placed with N + click. With several cameras the app
+        gives it to every camera, then a click in each camera places it."""
+        self._name_counter += 1
+        meta = PointMeta(self.unique_name(f"P{self._name_counter}"),
+                         PALETTE[(self._name_counter - 1) % len(PALETTE)])
+        pid = self._append_point(meta)
+        self._touch()
+        return pid
+
+    def _keep_columns(self, cols: list[int]) -> None:
+        self.tracks = self.tracks[:, cols]
+        self.visibility = self.visibility[:, cols]
+        self.manual = self.manual[:, cols]
+        self.tracked = self.tracked[:, cols]
+        self.confidence = self.confidence[:, cols]
+        self.occluded = self.occluded[:, cols]
+        self.radius = self.radius[:, cols]
+
     def remove_point(self, pid: int) -> None:
-        keep = [i for i in range(self.n_points) if i != pid]
-        self.tracks = self.tracks[:, keep]
-        self.visibility = self.visibility[:, keep]
-        self.manual = self.manual[:, keep]
-        self.tracked = self.tracked[:, keep]
-        self.confidence = self.confidence[:, keep]
-        self.occluded = self.occluded[:, keep]
-        self.radius = self.radius[:, keep]
+        self._keep_columns([i for i in range(self.n_points) if i != pid])
         del self.points[pid]
+        self._touch()
+
+    def reorder_points(self, order: list[int]) -> None:
+        """Put the points in `order` (a permutation of the point ids): one order
+        in every camera's POINTS list (G26). Data travels with its point; bones
+        and the head anchor name points, so they need nothing."""
+        order = [int(i) for i in order]
+        if sorted(order) != list(range(self.n_points)) or order == list(range(self.n_points)):
+            return
+        sel = int(self.ui_state.get("selected", -1))
+        if 0 <= sel < self.n_points:
+            self.ui_state["selected"] = order.index(sel)     # the saved selection stays on its point
+        self._keep_columns(order)
+        self.points = [self.points[i] for i in order]
         self._touch()
 
     def rename_point(self, pid: int, desired: str) -> str:

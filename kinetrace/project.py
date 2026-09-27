@@ -329,11 +329,32 @@ class Project:
                 out[v] = lack
         return out
 
-    def sync_landmarks(self) -> int:
-        """Give every camera every landmark any camera has; returns how many
-        points were added. Never touches data. The default-name counters are
-        kept in step, so the next new point is not called 'P1' in one camera
-        while another camera's 'P1' is a different landmark."""
+    def landmark_order(self, primary: int | None = None) -> list[str]:
+        """The one order of the shared list (G26): camera `primary`'s points
+        first (the working camera, so its point ids never move under the app),
+        then any other names in camera order."""
+        first = self.active if primary is None else int(primary)
+        seen: dict[str, None] = {}
+        for v in [first] + [k for k in range(self.n_views) if k != first]:
+            if 0 <= v < self.n_views:
+                for m in self.sessions[v].points:
+                    seen.setdefault(m.name, None)
+        return list(seen)
+
+    def landmark_changes(self, primary: int | None = None) -> list[int]:
+        """The cameras `sync_landmarks(primary)` would change (a name missing,
+        or the list in another order) -- what an undo step must snapshot."""
+        if self.n_views < 2:
+            return []
+        order = self.landmark_order(primary)
+        return [v for v, s in enumerate(self.sessions) if [m.name for m in s.points] != order]
+
+    def sync_landmarks(self, primary: int | None = None) -> int:
+        """Give every camera every landmark any camera has, in ONE order
+        (`landmark_order(primary)`, G26); returns how many points were added.
+        Never touches data. The default-name counters are kept in step, so the
+        next new point is not called 'P1' in one camera while another camera's
+        'P1' is a different landmark."""
         if self.n_views < 2:
             return 0
         added = 0
@@ -341,6 +362,12 @@ class Project:
             for meta in metas:
                 self.sessions[v].add_placeholder(meta)
                 added += 1
+        order = self.landmark_order(primary)
+        for s in self.sessions:
+            names = [m.name for m in s.points]
+            if names != order:
+                at = {n: i for i, n in enumerate(names)}
+                s.reorder_points([at[n] for n in order if n in at])
         top = max(s._name_counter for s in self.sessions)
         for s in self.sessions:
             s._name_counter = top

@@ -211,21 +211,31 @@ assert ja2 is not None and jb2 is not None, "Ctrl+Z restores it in every camera"
 assert sa.tracked[F, ja2] and sb.tracked[F, jb2], "with each camera's data"
 print("delete asks once, removes it from every camera, Ctrl+Z restores both OK")
 
-# ---- 7. a click with nothing selected: where is that spot in the other camera? -------------
+# ---- 7. nothing selected: a plain click places nothing and SAYS so; Alt+click looks ------
 win._deselect()
 pump(0.05)
 n_before = (sa.n_points, sb.n_points)
 spot = world(F) + [0.12, -0.05, 0.08]               # an empty spot, away from every marker
 click(win.canvas, *cams[1].project(spot)[0])
 assert (sa.n_points, sb.n_points) == n_before, "nothing edited"
-assert win._epi_probe is not None, "the click asked where the spot is"
-assert len(A._guides.lines) == 1 and len(win.canvas._guides.lines) == 2, "a line in A, a cross in B"
+# (G21) the owner took the look-here cross this click used to draw for a point that
+# "changed into a crosshair" and never reached the POINTS list
+assert win._epi_probe is None and not win.canvas._guides.lines, "a plain click draws no look-here cross"
+assert win.toast.isVisible() and "Nothing was placed" in win.toast.text(), "the notice is on the video"
+QTest.mouseClick(win.canvas.viewport(), Qt.LeftButton, Qt.AltModifier,
+                 win.canvas.mapFromScene(QPointF(*cams[1].project(spot)[0])))
+pump(0.1)
+assert (sa.n_points, sb.n_points) == n_before, "Alt+click edits nothing"
+assert win._epi_probe is not None, "Alt+click asked where the spot is"
+ring = win.canvas._guides.lines
+assert len(A._guides.lines) == 1 and len(ring) == 1 and ring[0][2] == "?", "a line in A, a '?' ring in B"
 d = dist_to_guides(A, cams[0].project(spot)[0])
 assert d < 3.0, f"the look-here line in camera A misses the truth by {d:.2f} px"
 QTest.keyClick(win, Qt.Key_Escape)
 pump(0.05)
 assert win._epi_probe is None and not A._guides.lines, "Esc clears the look-here line"
-print(f"a look-here click shows the spot's line in the other camera ({d:.2f} px), Esc clears it OK")
+print(f"a plain click with nothing selected places nothing and says so; Alt+click shows the spot's line "
+      f"({d:.2f} px), Esc clears it OK")
 
 # ---- 8. a skeleton reaches every camera -----------------------------------------------------
 win._apply_skeleton_template(template_by_name("Lizard / iguana"))
@@ -242,12 +252,14 @@ forget_recovery(cam3)
 assert win._add_view(cam3)
 pump(0.2)
 sc = p.sessions[2]
-assert {q.name for q in sc.points} == set(names_a), "the new camera has the shared list"
-assert not win._guides_ready(), "a calibration of 2 cameras draws no guides in a 3-camera project"
+assert [q.name for q in sc.points] == names_a, "the new camera has the shared list, in the same order"
+# (G25) the two calibrated cameras keep their guides; the new one has none and 3D still waits for it
+assert win._guides_ready() and win._cal_cam(2) is None and win._cal_cam(1) is not None
+assert win._need_calibration("test") is False, "3D still needs every camera calibrated"
 win._remove_view(2)
 pump(0.2)
 assert win._guides_ready()
-print("a camera added later receives every landmark OK")
+print("a camera added later receives every landmark, in the same order; guides stay among the calibrated OK")
 
 # ---- 10. an older project with different lists opens with one list, unchanged on disk -----
 s1 = TrackingSession(paths[0], N, FPS, W, H)
@@ -264,7 +276,8 @@ for _ in range(200):
             and win.project.sessions[0].pid_by_name("eye") is not None:
         break
 q = win.project
-assert {x.name for x in q.sessions[0].points} == {x.name for x in q.sessions[1].points} == {"eye", "tail"}
+assert [x.name for x in q.sessions[0].points] == [x.name for x in q.sessions[1].points] == ["eye", "tail"], \
+    "one list, in one order (G26)"
 assert q.sessions[1].tracked[5, q.sessions[1].pid_by_name("tail")]
 assert not q.sessions[0].tracked[:, q.sessions[0].pid_by_name("tail")].any(), "the filled-in point has no data"
 assert not q.dirty, "filling in the shared list does not make the project unsaved"
