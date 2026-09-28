@@ -350,6 +350,47 @@ win.act_about.trigger()                                  # blocks until closed
 check(seen_about.get("text") and "Developed at <b>biomechLab@CMC</b>" in seen_about["text"], seen_about)
 print("  Help -> About Kinetrace says 'Developed at biomechLab@CMC', version, licence OK")
 
+# G41: the app icon, drawn in code: a viewfinder around three tracked points (air / water / land)
+from kinetrace import appicon  # noqa: E402
+import numpy as np  # noqa: E402
+
+
+def _px(img):
+    img = img.convertToFormat(img.Format.Format_ARGB32)
+    return np.frombuffer(img.constBits(), np.uint8).reshape(img.height(), img.bytesPerLine())[:, :img.width() * 4].copy()
+
+
+a, b = _px(appicon.render(256)), _px(appicon.render(256))
+check(np.array_equal(a, b), "the icon draws the same pixels every time")
+px = a.reshape(256, 256, 4)
+rgb = px[..., :3][..., ::-1].astype(int)                                # BGRA in memory -> RGB
+for nm, col in (("air", appicon.AIR), ("water", appicon.WATER), ("land", appicon.LAND)):
+    n = int((np.abs(rgb - list(col)).sum(axis=2) < 50).sum())
+    check(n > 120, f"the {nm} trail is drawn in its landmark colour ({n} px)")
+white = int(((rgb > 235).all(axis=2)).sum())
+check(white > 60, f"the three heads have bright cores ({white} px)")
+check(px[0, 0, 3] == 0 and px[128, 128, 3] == 255, "the rounded corners transparent, the tile opaque")
+check(not np.array_equal(_px(appicon.render(32)), _px(appicon.render(32, simple=False))),
+      "small sizes get the simpler drawing")
+ic = appicon.icon()
+check(all(ic.pixmap(s, s).width() == s for s in (16, 32, 64, 256)), "every size is in the icon")
+check(all((appicon.CACHE / f"appicon_v{appicon.ICON_VERSION}_{s}.png").exists() for s in appicon.SIZES),
+      "rendered once into the theme cache")
+seen_about.clear()
+
+
+def _read_mark():
+    w = QApplication.activeModalWidget()
+    seen_about["mark"] = (w.about_mark.pixmap().width() if w is not None and hasattr(w, "about_mark") else 0)
+    if w is not None:
+        w.reject()
+
+
+QTimer.singleShot(200, _read_mark)
+win.act_about.trigger()
+check(seen_about.get("mark") == 96, f"the About box shows the icon: {seen_about}")
+print("  the app icon: three landmark-coloured trails, the same every draw, simpler when small, cached, in the About box (G41) OK")
+
 # nothing goes to the network before the dialog is on screen
 calls = []
 real_check = update.check

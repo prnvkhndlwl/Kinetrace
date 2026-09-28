@@ -11,9 +11,9 @@ import logging
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QLabel, QProgressBar, QPushButton,
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QProgressBar, QPushButton,
                                QTextBrowser, QVBoxLayout)
 
 from kinetrace import APP_NAME, APP_TAGLINE, APP_VERSION, update
@@ -43,11 +43,19 @@ def show_about(parent, on_check=None) -> QDialog:
     dlg = QDialog(parent)
     dlg.setWindowTitle(f"About {APP_NAME}")
     lay = QVBoxLayout(dlg)
+    top = QHBoxLayout()
+    from kinetrace import appicon
+    mark = QLabel()
+    mark.setPixmap(appicon.icon().pixmap(96, 96))           # the app icon (G41)
+    mark.setAlignment(Qt.AlignTop)
+    top.addWidget(mark)
     text = QLabel(about_html())
     text.setWordWrap(True)
     text.setOpenExternalLinks(True)
     text.setMinimumWidth(440)
-    lay.addWidget(text)
+    top.addWidget(text, 1)
+    lay.addLayout(top)
+    dlg.about_mark = mark                     # for tests
     btns = QDialogButtonBox(QDialogButtonBox.Close)
     if on_check is not None:
         chk = btns.addButton("Check for Updates…", QDialogButtonBox.ActionRole)

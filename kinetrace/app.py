@@ -8407,10 +8407,20 @@ def main():
     # only the window gone. Started before Qt, so Qt's own messages are kept too
     from kinetrace import crashlog
     crashlog.install(APP_VERSION)
+    if sys.platform == "win32":
+        # its own taskbar entry and icon: without an app id Windows groups the window
+        # under python.exe and shows Python's icon (G41)
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kinetrace.Kinetrace")
+        except Exception:     # noqa: BLE001 - cosmetic only
+            pass
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     apply_theme(app)
+    from kinetrace import appicon
+    app.setWindowIcon(appicon.icon())       # drawn in code, cached in _theme_cache (G41)
     win = MainWindow()
     crashlog.attach(win._error_context, win._on_error_logged)
     win.show()
