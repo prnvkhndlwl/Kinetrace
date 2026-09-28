@@ -226,6 +226,7 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
         cams.append({"name": project.names[i], "folder": folders[i],
                      "video": {"path": str(s.video_path), "relative_path": rel},
                      "n_frames": int(s.n_frames), "fps": float(s.fps),
+                     "file_fps": float(getattr(s, "file_fps", s.fps)),   # the file's own rate (G38)
                      "width": int(s.width), "height": int(s.height),
                      "offset": float(project.offsets[i]), "rate": float(project.rates[i])})
     files["project.json"] = _json({"cameras": cams, "active_camera": project.names[project.active]})
@@ -541,6 +542,10 @@ def read(path: str | Path):
         except (KeyError, TypeError, ValueError):
             raise ProjectFileError(f"{where}: needs n_frames, fps, width and height") from None
         s = TrackingSession(str((cam.get("video") or {}).get("path", "")), T, fps, w, h)
+        try:                                     # a project from before G38 has no file_fps: the same rate
+            s.file_fps = float(cam.get("file_fps", fps)) or fps
+        except (TypeError, ValueError):
+            s.file_fps = fps
         s.ui_state = dict(DEFAULT_UI_STATE)
         _read_camera(src, f"cameras/{folder}", s)
         sessions.append(s)

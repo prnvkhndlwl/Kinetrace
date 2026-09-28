@@ -109,6 +109,7 @@ def make_project():
     T = 120
     ss = [camera("cam1", T, 60.0, 640, 480, 1), camera("cam2", T * 2, 120.0, 800, 600, 2),
           camera("cam 3", T, 60.0, 640, 480, 3)]
+    ss[1].file_fps = 30.0          # a slow-motion file: says 30, recorded at 120 (G38)
     p = Project(ss, ["cam1", "cam2", "cam 3"], [0.0, -36.5, 12.25], 1, [1.0, 2.0, 1.0])
     K = np.array([[500.0, 0, 320], [0, 500.0, 240], [0, 0, 1]])
     cams = []
@@ -163,7 +164,7 @@ def compare(p, q):
           "cameras: names, offsets, rates, active camera")
     for i, (a, b) in enumerate(zip(p.sessions, q.sessions)):
         n = p.names[i]
-        for k in ("n_frames", "fps", "width", "height", "current_frame", "annotator", "_name_counter",
+        for k in ("n_frames", "fps", "file_fps", "width", "height", "current_frame", "annotator", "_name_counter",
                   "_event_counter"):
             if getattr(a, k) != getattr(b, k):
                 check(False, f"{n}: {k} {getattr(a, k)!r} vs {getattr(b, k)!r}")
@@ -249,7 +250,7 @@ TRANSIENT = {
     "BodyTrack": {"mesh_version", "_version", "_cache", "examined", "stopped_early"},
 }
 PERSISTED = {
-    "TrackingSession": {"n_frames", "fps", "width", "height", "tracks", "visibility", "manual", "tracked",
+    "TrackingSession": {"n_frames", "fps", "file_fps", "width", "height", "tracks", "visibility", "manual", "tracked",
                         "confidence", "occluded", "radius", "points", "events", "notes", "annotator", "animal",
                         "masks", "body", "skeleton", "current_frame", "ui_state", "_name_counter", "_event_counter"},
     "Project": {"sessions", "names", "offsets", "rates", "active", "calibration", "reconstruction", "lenses"},

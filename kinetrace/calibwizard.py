@@ -23,7 +23,7 @@ import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QGridLayout, QGroupBox, QHBoxLayout, QLabel, QListWidget,
-                               QListWidgetItem, QProgressBar, QPushButton, QRadioButton, QSpinBox,
+                               QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QRadioButton, QSpinBox,
                                QTextBrowser, QVBoxLayout, QWidget, QWizard, QWizardPage)
 
 from kinetrace import theme
@@ -57,6 +57,37 @@ def lens_size_mismatch(prof, width: int, height: int, cam_name: str) -> str | No
             f"{int(width)}×{int(height)}: its focal length and centre are in the other size's pixels. "
             "Calibrate the lens from a checkerboard video filmed in the SAME recording mode (resolution "
             "and field of view) as this camera.")
+
+
+def _same_lens(a, b) -> bool:
+    from kinetrace import lens as _lens
+    return _lens.same_profile(a, b)
+
+
+def share_targets(project, view: int, prof=None) -> tuple[list[int], list[int]]:
+    """The other cameras a lens profile of camera `view` can be shared with
+    (G40: identical cameras, one checkerboard calibration): every camera with
+    the same picture size. Returns (without a profile, with a DIFFERENT one) -
+    the second only after the user agrees. `prof` = the profile (default: the
+    one attached to `view`)."""
+    from kinetrace import lens as _lens
+    lenses = list(getattr(project, "lenses", []) or [])
+    if prof is None:
+        prof = lenses[view] if view < len(lenses) else None
+    s0 = project.sessions[view]
+    fill, replace = [], []
+    for c in range(project.n_views):
+        if c == view:
+            continue
+        sc = project.sessions[c]
+        if (int(sc.width), int(sc.height)) != (int(s0.width), int(s0.height)):
+            continue
+        other = lenses[c] if c < len(lenses) else None
+        if other is None:
+            fill.append(c)
+        elif not _lens.same_profile(other, prof):
+            replace.append(c)
+    return fill, replace
 
 
 def _guess_wand_names(names: list[str]) -> tuple[str | None, str | None]:
@@ -415,6 +446,7 @@ class CamerasPage(QWizardPage):
             if it.widget():
                 it.widget().deleteLater()
         self.lens_labels = []
+        self.lens_buttons = []
         for c in range(p.n_views):
             self.lens_grid.addWidget(QLabel(p.name(c)), c, 0)
             prof = p.lenses[c] if c < len(p.lenses) else None
@@ -429,6 +461,10 @@ class CamerasPage(QWizardPage):
                 text = f"{prof.summary()}; for {int(prof.width)}×{int(prof.height)} pictures"
                 if "line " in str(prof.source):
                     text += f" ({prof.source})"
+                twins = [p.name(j) for j in range(p.n_views) if j != c and j < len(p.lenses)
+                         and _same_lens(p.lenses[j], prof)]
+                if twins:
+                    text += f" — the same profile as {', '.join(twins)}"
             lab = _dim(QLabel(text))
             self.lens_grid.addWidget(lab, c, 1)
             self.lens_labels.append(lab)
@@ -441,9 +477,24 @@ class CamerasPage(QWizardPage):
             b3 = QPushButton("Remove")
             b3.setEnabled(prof is not None)
             b3.clicked.connect(lambda _=False, k=c: self._remove_lens(k))
+            # identical cameras share one checkerboard calibration (G40)
+            b4 = QPushButton("Use for all")
+            fill, replace = share_targets(p, c) if (prof is not None and not bad) else ([], [])
+            b4.setEnabled(bool(fill or replace))
+            b4.setToolTip(
+                f"Use {p.name(c)}'s lens profile for every other camera with {s.width}×{s.height} pictures "
+                "as well - right for identical cameras (same model, lens, zoom and recording mode). "
+                "The wand still fine-tunes each camera's focal length."
+                if (fill or replace) else
+                "Attach a lens profile to this camera first; it can then be used for every other camera with "
+                "the same picture size." if prof is None else
+                "Every other camera with this picture size already uses this profile (or there is none).")
+            b4.clicked.connect(lambda _=False, k=c: self._share_lens(k))
             self.lens_grid.addWidget(b1, c, 2)
             self.lens_grid.addWidget(b2, c, 3)
             self.lens_grid.addWidget(b3, c, 4)
+            self.lens_grid.addWidget(b4, c, 5)
+            self.lens_buttons.append((b1, b2, b3, b4))
         self.lens_grid.setColumnStretch(1, 1)
         # (I35) with a profile on EVERY camera there is nothing left for the tick to fit
         every = self.all_lensed()
@@ -472,7 +523,34 @@ class CamerasPage(QWizardPage):
             if bad:
                 self._refuse_lens(v, bad)
                 return
-            p.lenses[v] = lw.result_profile
+            for k in lw.result_views():          # + the cameras it is shared with (G40)
+                p.lenses[k] = lw.result_profile
+            p.dirty = True
+        self._refresh_lens_rows()
+
+    def _share_lens(self, c: int):
+        """Use camera c's lens profile for every other camera with the same
+        picture size (G40); cameras that carry a DIFFERENT profile only after
+        a Yes."""
+        p = self.wiz.project
+        prof = self.usable_lens(c)
+        if prof is None:
+            return
+        fill, replace = share_targets(p, c)
+        if replace:
+            names = ", ".join(p.name(k) for k in replace)
+            ans = QMessageBox.question(
+                self, "Replace their lens profiles?",
+                f"{names} already {'has' if len(replace) == 1 else 'have'} a lens profile of its own. Replace "
+                f"{'it' if len(replace) == 1 else 'them'} with {p.name(c)}'s as well?\n\n"
+                "Yes if the cameras are identical (same model, lens, zoom and recording mode); No keeps their "
+                "own and shares only with the cameras that have none.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ans != QMessageBox.Yes:
+                replace = []
+        for k in fill + replace:
+            p.lenses[k] = prof
+        if fill or replace:
             p.dirty = True
         self._refresh_lens_rows()
 
@@ -566,6 +644,19 @@ class CamerasPage(QWizardPage):
     def all_lensed(self) -> bool:
         p = self.wiz.project
         return p.n_views > 0 and all(self.usable_lens(c) is not None for c in range(p.n_views))
+
+    def focal_free_per_camera(self):
+        """What `calibrate_wand(estimate_focal=...)` gets (I144). A camera
+        without a profile frees every focal length (unchanged, I35); with a
+        profile on every camera, a camera SHARING its profile with another
+        refines its focal length from the profile's (identical cameras still
+        differ by up to ~1 %), a camera with its own profile keeps it."""
+        if not self.all_lensed():
+            return True
+        p = self.wiz.project
+        lenses = [self.usable_lens(c) for c in range(p.n_views)]
+        free = [any(j != c and _same_lens(lenses[j], l) for j in range(len(lenses))) for c, l in enumerate(lenses)]
+        return free if any(free) else False
 
     def distortion_per_camera(self):
         """What `calibrate_wand(estimate_distortion=...)` gets (I35): the tick
@@ -942,7 +1033,7 @@ class RunPage(QWizardPage):
         kwargs = dict(wand_uv=uv, wand_length=float(w.page_wand.length.value()),
                       sizes=[(s.width, s.height) for s in p.sessions],
                       focal=w.page_cams.focal(), principal=w.page_cams.principal(), bg_uv=bg,
-                      estimate_focal=not w.page_cams.all_lensed(),
+                      estimate_focal=w.page_cams.focal_free_per_camera(),     # (I144) shared lenses refine
                       estimate_distortion=w.page_cams.distortion_per_camera(),
                       unit=str(w.page_wand.unit.currentData()),
                       names=[p.name(c) for c in range(p.n_views)])        # (I34) messages say cam1, not 0
@@ -1222,9 +1313,16 @@ def report_html(report: dict, grav: dict | None, project, unit: str) -> str:
                      f"<td align='center'>{f_}</td><td>{l_}</td></tr>")
     parts.append("</table>")
     if any(lenses):
-        # (I35) with some cameras unprofiled the focal lengths are free for every camera
-        how_f = ("were refined by the wand from the checkerboard's values" if report.get("focal_estimated")
-                 else "come from the checkerboard")
+        # (I35) with some cameras unprofiled the focal lengths are free for every camera;
+        # (I144) with every camera profiled, those SHARING a profile are refined
+        ref = list(report.get("focal_refined") or [])
+        refined = [names[c] for c in range(min(len(ref), len(names))) if ref[c]]
+        if report.get("focal_estimated") and ref and len(refined) < len(ref):
+            how_f = (f"come from the checkerboard, and were refined by the wand for {', '.join(refined)} "
+                     "(cameras sharing one lens profile: identical cameras still differ a little)")
+        else:
+            how_f = ("were refined by the wand from the checkerboard's values" if report.get("focal_estimated")
+                     else "come from the checkerboard")
         parts.append(f"<p style='color:{theme.TEXT_DIM}'>Cameras with a lens correction were solved on "
                      f"straightened points and keep that correction for 3D; their focal lengths {how_f}.</p>")
         per = report.get("distortion_estimated_per_camera") or []

@@ -412,6 +412,44 @@ assert p.lenses[1] is not None and np.allclose(p.lenses[1].K, back.K), "the load
 p.lenses[1] = kept_lens1
 print("a lens file loaded in the wizard is attached through Finish OK")
 
+# ---- one lens calibration for identical cameras (G40): the result page's share box --------
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+
+kept_all = list(p.lenses)
+
+
+def drive_share(self):
+    self.show()
+    self.restart()
+    pump(0.1)
+    self.next()
+    pump(0.1)
+    self.page_video.cam.setCurrentIndex(0)
+    self.page_video._load()
+    self.next()
+    pump(0.1)
+    assert self.currentPage() is self.page_result
+    box = self.page_result.share
+    assert box.isVisible() and not box.isChecked() and "cam2, cam3" in box.text() and "640×480" in box.text(), box.text()
+    assert self.result_views() == [0] and self.buttonText(lw.QWizard.FinishButton) == "Attach to cam1"
+    QTest.mouseClick(box, Qt.LeftButton, pos=QPoint(8, box.height() // 2))
+    assert box.isChecked() and self.result_views() == [0, 1, 2], self.result_views()
+    assert self.buttonText(lw.QWizard.FinishButton) == "Attach to cam1 and 2 more", self.buttonText(lw.QWizard.FinishButton)
+    self.accept()
+    return QDialog.Accepted
+
+
+lw.LensWizard.exec = drive_share
+p.lenses = [None] * N_CAM
+win._lens_wizard()
+pump(0.2)
+assert all(l is not None for l in p.lenses) and all(lens.same_profile(l, p.lenses[0]) for l in p.lenses), \
+    "the shared profile is attached to all three cameras"
+assert "cam1, cam2, cam3" in win.toast.text(), win.toast.text()
+p.lenses = list(kept_all)
+print("the lens wizard shares one calibration with the identical cameras (real click) OK")
+
 # ---- a profile for another picture size is refused, with both sizes named (lens#2) ---
 big = TrackingSession(os.path.join(SCRATCH, "lens_bigcam.mp4"), 10, FPS, 2 * W, 2 * H)
 proj_sz = Project([sessions[0], big], ["cam1", "bigcam"], [0, 0])
@@ -483,6 +521,8 @@ def drive_wand(self):
     self.next()
     pump(0.1)
     assert self.currentPage() is self.page_cams
+    if ON_CAMS is not None:
+        ON_CAMS(self.page_cams)
     self.next()
     pump(0.1)
     assert self.currentPage() is self.page_frame
@@ -502,6 +542,7 @@ def drive_wand(self):
     return QDialog.Accepted
 
 
+ON_CAMS = None
 cw.WandWizard.exec = drive_wand
 win._wand_wizard()
 pump(0.2)
@@ -583,6 +624,100 @@ print(f"wand WITHOUT lenses: verdict {rep0['verdict']}, rmse {rep0['reproj_rmse_
 assert rep0["reproj_rmse_all"] > 2 * rep["reproj_rmse_all"] or max(err_without) > 2 * max(err_with), \
     "distortion should hurt the pinhole solve"
 p.lenses = saved_lenses
+
+# ---- identical cameras sharing camera 1's profile (G40, I144) ----------------------------
+# The three cameras share the distortion but NOT the focal length (600 / 620 / 590 px) nor
+# the lens centre (3 px apart): unit-to-unit spread, exaggerated. Camera 1's profile is shared
+# through the Cameras page's "Use for all" button (real clicks); the wand then refines each
+# camera's focal length from the profile's. The old behaviour (every focal held at the profile's)
+# is run for comparison.
+ASKED = {"answer": QMessageBox.Yes, "n": 0}
+
+
+def _ask(*a, **k):
+    ASKED["n"] += 1
+    return ASKED["answer"]
+
+
+QMessageBox.question = staticmethod(_ask)
+
+
+def use_for_all(page):
+    rows = page.lens_buttons
+    assert len(rows) == N_CAM and all(len(r) == 4 for r in rows)
+    # (a) only camera 1 has a profile: the others get it, nothing asked
+    p.lenses = [saved_lenses[0], None, None]
+    page._refresh_lens_rows()
+    b = page.lens_buttons[0][3]
+    assert b.isEnabled() and not page.lens_buttons[1][3].isEnabled(), "Use for all needs a profile on that row"
+    ASKED["n"] = 0
+    QTest.mouseClick(b, Qt.LeftButton)
+    assert ASKED["n"] == 0 and all(p.lenses[k] is saved_lenses[0] for k in range(N_CAM)), p.lenses
+    assert "the same profile as cam2, cam3" in page.lens_labels[0].text(), page.lens_labels[0].text()
+    assert not page.lens_buttons[0][3].isEnabled(), "nothing left to share with"
+    # (b) camera 2 has a profile of its own: asked; No keeps it, Yes replaces it
+    p.lenses = [saved_lenses[0], saved_lenses[1], None]
+    page._refresh_lens_rows()
+    ASKED.update(answer=QMessageBox.No, n=0)
+    QTest.mouseClick(page.lens_buttons[0][3], Qt.LeftButton)
+    assert ASKED["n"] == 1 and p.lenses[1] is saved_lenses[1] and p.lenses[2] is saved_lenses[0], p.lenses
+    assert page.focal_free_per_camera() == [True, False, True], page.focal_free_per_camera()
+    ASKED.update(answer=QMessageBox.Yes, n=0)
+    QTest.mouseClick(page.lens_buttons[0][3], Qt.LeftButton)
+    assert ASKED["n"] == 1 and all(p.lenses[k] is saved_lenses[0] for k in range(N_CAM)), p.lenses
+    assert page.focal_free_per_camera() == [True, True, True]
+
+
+def spacing_err(rep_):
+    out = []
+    for i, j, d in rep_["camera_distances"]:
+        truth = float(np.linalg.norm(true_pos[int(i)] - true_pos[int(j)]))
+        out.append(abs(d - truth) / truth)
+    return max(out)
+
+
+def floor_dx():
+    win._reconstruct_3d(quiet=True)
+    pump(0.3)
+    r_ = p.reconstruction
+    ix = {nm: i for i, nm in enumerate(r_.names)}
+    return float(np.nanmedian(np.linalg.norm(r_.xyz[:, ix["floor_x"]] - r_.xyz[:, ix["floor_origin"]], axis=1)))
+
+
+ON_CAMS = use_for_all
+win._wand_wizard()
+pump(0.2)
+ON_CAMS = None
+rep_sh = win._wand_result[0].report
+dx_sh = floor_dx()
+f_err_sh = [abs(f - t) / t for f, t in zip(rep_sh["focal_px"], FOCAL)]
+print(f"shared profile, focal refined: verdict {rep_sh['verdict']}, rmse {rep_sh['reproj_rmse_all']:.3f} px, "
+      f"focal {[round(f, 1) for f in rep_sh['focal_px']]} (truth {FOCAL}), camera spacing error max "
+      f"{100 * spacing_err(rep_sh):.2f} %, floor distance {dx_sh:.4f} m")
+assert rep_sh["focal_refined"] == [True, True, True], rep_sh.get("focal_refined")
+# a shared profile's lens centre is off by a few px on the other cameras, which a refined focal
+# length cannot absorb: close to per-camera profiles, not equal to them
+assert rep_sh["verdict"] in ("good", "ok") and rep_sh["reproj_rmse_all"] < 1.5, rep_sh["verdict_reasons"]
+assert max(f_err_sh) < 0.01, f_err_sh
+assert spacing_err(rep_sh) < 0.015 and abs(dx_sh - 0.5) < 0.006, (spacing_err(rep_sh), dx_sh)
+_ffpc = cw.CamerasPage.focal_free_per_camera
+cw.CamerasPage.focal_free_per_camera = lambda self: False          # the old rule: every focal held
+win._wand_wizard()
+pump(0.2)
+cw.CamerasPage.focal_free_per_camera = _ffpc
+rep_fx = win._wand_result[0].report
+dx_fx = floor_dx()
+print(f"shared profile, focal held (the old rule): verdict {rep_fx['verdict']}, rmse "
+      f"{rep_fx['reproj_rmse_all']:.3f} px, camera spacing error max {100 * spacing_err(rep_fx):.2f} %, "
+      f"floor distance {dx_fx:.4f} m")
+assert rep_fx["reproj_rmse_all"] > 1.5 * rep_sh["reproj_rmse_all"] or spacing_err(rep_fx) > 1.5 * spacing_err(rep_sh), \
+    "refining the focal lengths of cameras sharing a profile must measurably help"
+p.lenses = [saved_lenses[0], saved_lenses[0], saved_lenses[2]]
+assert cw.WandWizard(win, p, SCRATCH).page_cams.focal_free_per_camera() == [True, True, False], \
+    "a camera with its own profile keeps its focal length"
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+p.lenses = saved_lenses
+print("one lens calibration used for identical cameras: Use for all, focal refined per camera (G40, I144) OK")
 
 # ---- project round trip of the profiles ---------------------------------------------
 p.save(PROJ)

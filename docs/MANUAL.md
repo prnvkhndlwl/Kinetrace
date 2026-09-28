@@ -78,6 +78,11 @@ state a usable rate, Kinetrace measures it from the frames' own time stamps, or,
 when even those give nothing, assumes 30 frames per second — and says so in a
 notice over the video every time you open it. Check that number against the
 rate your camera recorded at: every time, speed and camera sync depends on it.
+**If the file's number is wrong**, and high-speed cameras often save footage for
+slow-motion playback, so the file says 30 while the camera filmed at 240 or
+1000, click the **fps button** under the camera's offset in the CAMERAS panel
+(it reads, say, *30 fps*) and enter the rate set on the camera. A rate set by
+hand shows a star (*240 fps \**). Enter the file's number again to undo it.
 (If a file claims more frames than can actually be read, Kinetrace uses the
 frames that exist and tells you.)
 
@@ -1092,7 +1097,10 @@ the numbers just get measured from the new starting point.
 > Cameras may record at *different frame rates* and *different resolutions*.
 > A camera at twice the reference rate shows **×2** next to its offset: it steps
 > two of its own frames for every frame of the reference, and its offset is
-> counted in its own frames. Nothing else changes for you.
+> counted in its own frames. Nothing else changes for you. Each camera's rate is
+> the **fps button** in its row: if a file gives the wrong rate, click it and
+> enter the real one (see [section 2](#2-what-you-need-before-you-start)); the
+> ×n and every time in seconds follow, and the offsets stay as they are.
 
 > Offsets you set by eye are whole frames. Cameras that were not electronically
 > synchronised actually differ by a *fraction* of a frame as well, and for 3D
@@ -1216,11 +1224,11 @@ that outlines the animal), fits a circle to that outline and takes the
 circle's **centre** as the point — exact to a fraction of a pixel even when a
 hand or the rod covers part of the ball. Add one ball marker per ball; they
 are tracked together in one pass, inside one 960-pixel window that follows
-them. Balls more than about 740 px apart in the picture (a long wand close to
-a 4K camera) do not fit that window together: the run stops at that frame,
-names the ball, and asks you to select one ball in the POINTS list and press
-Track, then do the same for each other ball. Balls as small as about 5 px
-across work. The fitted circle is drawn on the
+them. Balls too far apart for one window (more than about 740 px, such as a
+long wand close to a 4K camera) are split into groups, each with a window of
+its own, and brought back together when they come close again. Nothing to
+do on your side. Each extra window makes tracking a little slower. Balls as
+small as about 5 px across work. The fitted circle is drawn on the
 video so you can see what was found. If a ball leaves the picture its track
 simply ends and resumes when you click it again where it reappears (select
 it, Add ▾ → Ball marker, click, Track); if the program loses a ball that is
@@ -1305,6 +1313,13 @@ close it without saving, the program offers to save it for you. The wizard:
    DLTdv camera profile `.txt`): it goes straight to this last page. From an
    Argus file with several lines each camera gets the line with its own camera
    number, and a camera the file has no line for is refused.
+   **Several identical cameras?** Cameras of the same model, with the same lens,
+   zoom and recording mode, can share one checkerboard calibration. When other
+   cameras of the project record the same picture size and have no lens
+   profile yet, this page offers **Also use it for the other cameras with …
+   pictures** (it names them). Tick it and the button reads *Attach to cam1 and
+   9 more*. Leave it off for cameras with other lenses or zoom settings: the
+   same picture size does not prove the same lens.
 
 **Two hand checks on the last page.** The report says how many pixels the
 lens bends the edges by: a GoPro-style lens gives a few hundred at 2.7K, a
@@ -1420,8 +1435,17 @@ five pages and explains each one:
    no lens profile, where straight lines look bent at the edges of the picture.
    Under *Lens correction* each camera has a row: **Calibrate…** opens the lens
    wizard for it, **Load file…** takes a saved `.klens.json` or an Argus /
-   DLTdv profile, **Remove** drops it. With a profile on every camera the
-   distortion tick is greyed out — there is nothing left for it to estimate.
+   DLTdv profile, **Remove** drops it, and **Use for all** gives this camera's
+   profile to every other camera with the same picture size (identical
+   cameras: calibrate one lens, share it). A camera that already has a
+   different profile of its own is replaced only if you say yes. A shared
+   profile says *the same profile as …* on its row. With a profile on every
+   camera the distortion tick is greyed out — there is nothing left for it to
+   estimate. Identical cameras still differ a little from unit to unit, so the
+   wand fine-tunes the focal length of every camera that shares a profile (a
+   camera with a profile of its own keeps the profile's). Measured on a test
+   rig, a shared profile then gives distances as accurate as one profile per
+   camera.
    Any other landmark tracked in two or more cameras can be used as an extra
    constraint; leave them ticked.
 4. *Which way is up* — the dropped object (recommended), the three floor
@@ -1734,8 +1758,10 @@ the computer crashes you lose at most half a minute. The status bar shows
   found* (or *Restore unsaved work?*). **Yes** carries on where you stopped;
   **No** opens the last save and keeps the unsaved work aside — nothing is
   deleted.
-* When the program starts and unsaved work is waiting, it says so. **File →
-  Recover Unsaved Work…** lists everything waiting, newest first.
+* When the program starts and unsaved work is waiting, a notice says so over
+  the video: **click the notice** to see the list and restore it. **File →
+  Recover Unsaved Work…** shows the same list (everything waiting, newest
+  first) at any time.
 * **Moving or renaming the project file does not matter:** its unsaved work is
   found by the project itself, not by the file's name or folder.
 * If you open an **older copy** of a project while a newer copy has unsaved
@@ -2391,10 +2417,9 @@ when even that is impossible, is **assuming** 30 fps ("…so Kinetrace is
 ASSUMING 30 fps"). Frame numbers and the tracking itself are not affected.
 Everything in seconds is: times, speeds and accelerations, the sound sync and
 the ×n rate between cameras. Compare the number with the rate your camera was
-set to. If it is wrong, write a copy that states the right rate — for a camera
-that recorded at 500 fps, `ffmpeg -r 500 -i "clip.mp4" -c:v libx264 -crf 18
-fixed.mp4` — and open the copy. High-speed files that do state their rate are
-read as they are, up to 100 000 fps.
+set to. If it is wrong, click the camera's **fps button** in the CAMERAS panel
+and enter the right rate; nothing needs re-encoding. High-speed files that do
+state their rate are read as they are, up to 100 000 fps.
 
 **"This file says it has N frames but only M can be decoded."** Some cameras
 write a frame count into the file header that is a few frames longer than
@@ -2421,7 +2446,8 @@ many frames per second it holds, so the program measured the rate from the
 frames' own time stamps or, when even those are missing, is **assuming** one;
 the message says which, and gives the number. Frame numbers and positions are
 not affected, but times, speeds, accelerations and camera sync all use that
-number: check it against the rate the camera was set to before trusting them.
+number: check it against the rate the camera was set to before trusting them,
+and correct it with the camera's **fps button** in the CAMERAS panel.
 
 **"Tracking stopped: frame N of the video could not be decoded."** The video
 file is damaged at that frame, although it goes on after it. Everything tracked
@@ -2494,12 +2520,10 @@ else, such as the segment tool or a selected stretch of the timeline). The
 Track button always says what it is about to do: *Track ▶* for everything,
 *Track 2 sel. ▶* for two selected points.
 
-**"Stopped at frame N: the ball … is too far from the other ball markers."**
-Ball markers tracked in one run share one 960-pixel window, so balls more than
-about 740 pixels apart cannot be followed together. Clicking the ball again
-does not help: select one ball alone in the POINTS list and press **Track ▶**,
-then do the same for each of the others. (Small balls are fine, down to about
-5 pixels across.)
+**Speeds, times or camera matching are off by a round factor (8×, 33×…).**
+The file probably states a slow-motion playback rate instead of the rate the
+camera filmed at. Click the camera's **fps button** in the CAMERAS panel and
+enter the real rate.
 
 **You lost work.** Try **Ctrl+Z** (one step only). Otherwise open the project
 again (**Ctrl+Shift+O**) or, if you never saved one, the video: unsaved work from
@@ -2627,7 +2651,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **J** / **Shift+J** | next / previous low-confidence (red) stretch |
 | **Shift+X** | mark the selected point hidden on this frame (again to unmark) |
 | **Shift+N** | note on this frame |
-| Add **▾** | region shape: circle, rectangle, polygon (click the corners, then Enter or a double-click); **Ball marker** — click a ball, SAM outlines it every frame and the fitted circle's centre is the point (balls tracked together must stay within about 740 px of each other) |
+| Add **▾** | region shape: circle, rectangle, polygon (click the corners, then Enter or a double-click); **Ball marker** — click a ball, SAM outlines it every frame and the fitted circle's centre is the point (balls far apart get a window each, so any spacing works) |
 | right-click a marker | rename, delete, lock it to its look, change how it is found (appearance or silhouette), hidden on this frame, may leave the segment |
 | **S** (the Segment button) | the outlining tool — click the animal (Shift+click = not the animal, drag = a box around it, right-click a click to remove it); **S** or **Esc** when done |
 | **Esc** | cancel whatever you just started: a drag or polygon, the segment tool, the armed crosshair, the pan tool, a half-marked event, a selected stretch of the timeline, the look-here line of an Alt+click — and, with nothing left to cancel, deselect the point |

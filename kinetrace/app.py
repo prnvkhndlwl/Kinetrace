@@ -109,7 +109,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>J / Shift+J</td><td>next / previous low-confidence stretch (the red runs) — of the selected points, or of all</td></tr>
 <tr><td class=k>Shift+X</td><td>mark the selected point <b>hidden</b> on this frame (kept, not exported, not used for 3D); again to unmark. On the timeline: Shift+drag a window, right-click → Mark hidden</td></tr>
 <tr><td class=k>Shift+N</td><td>note on this frame (▲ on the timeline; right-click it to edit)</td></tr>
-<tr><td class=k>Add ▾</td><td>region shape for an armed drag: circle · rectangle · polygon (click corners, Enter closes) · <b>Ball marker</b>: click a ball, SAM outlines it every frame and the fitted circle's centre is the point (wand balls, markers, a dropped ball — add one per ball; they track together as long as they stay within about 740 px of each other — farther apart, the run stops and says to track each ball alone)</td></tr>
+<tr><td class=k>Add ▾</td><td>region shape for an armed drag: circle · rectangle · polygon (click corners, Enter closes) · <b>Ball marker</b>: click a ball, SAM outlines it every frame and the fitted circle's centre is the point (wand balls, markers, a dropped ball — add one per ball; they track together in one window, and balls too far apart for one (about 740 px) get a window each — any spacing works)</td></tr>
 <tr><td class=k>O</td><td>onion skin: ghost markers of the previous (solid) and next (dashed) frame</td></tr>
 <tr><td class=k>L</td><td>loupe: magnifier under the cursor with a crosshair on the exact pixel</td></tr>
 <tr><td class=k>View → Trails</td><td>Off / Last 10 frames / Custom… (any length) — fading, optional upcoming path; in every camera while Track ▾ → Every camera is ticked; View → Display filter: contrast / brighten / frame difference (display only)</td></tr>
@@ -820,9 +820,9 @@ class MainWindow(QMainWindow):
         self.act_add_ball.setToolTip(
             "For wand balls, reflective markers, a dropped ball: SAM segments the ball you click,\n"
             "a circle is fitted to it on every frame and the circle's centre is the tracked point.\n"
-            "Add one per ball; they are tracked together in one 960-pixel window, so balls more than\n"
-            "about 740 px apart cannot share a run: select one ball in the POINTS list and Track it\n"
-            "alone. Choosing this arms the crosshair like N.")
+            "Add one per ball; they are tracked together in one 960-pixel window, and balls too far\n"
+            "apart for it (about 740 px) are split into groups with a window each, so any spacing works.\n"
+            "Choosing this arms the crosshair like N.")
         self.act_add_ball.triggered.connect(self._arm_ball)
         menu_add.addAction(self.act_add_ball)
         self._place_kind = "point"          # what the next armed click creates: "point" | "ball"
@@ -1122,6 +1122,7 @@ class MainWindow(QMainWindow):
         self.cameras.offset_changed.connect(self._on_view_offset)
         self.cameras.align_requested.connect(self._align_view_here)
         self.cameras.remove_requested.connect(self._remove_view)
+        self.cameras.fps_requested.connect(self._set_camera_fps)
         self.cameras.sync_toggled.connect(lambda on: self._set_sync_mode("all" if on else "active"))
         pl.addWidget(self.cameras)
         sep0 = QWidget()
@@ -2797,7 +2798,45 @@ class MainWindow(QMainWindow):
             if p.has_fractional_offsets():
                 note += "  Sub-frame offsets are set — the 3D layer interpolates at them."
         self.cameras.update_rows(list(p.names), list(p.offsets), p.active, statuses, note,
-                                 rates=list(p.rates))
+                                 rates=list(p.rates), fps=[s.fps for s in p.sessions],
+                                 file_fps=[getattr(s, "file_fps", s.fps) for s in p.sessions])
+
+    def _set_camera_fps(self, i: int) -> None:
+        """A camera's fps button (G38): the rate it REALLY recorded at, when its
+        file header gives another (slow-motion files). Camera rates, times and
+        speeds follow; offsets are kept."""
+        p = self.project
+        if p is None or not (0 <= i < p.n_views):
+            return
+        if self.state == TRACKING:
+            self.toast.show_message("Stop tracking first (X), then change the frame rate.", "warn", 5000)
+            return
+        s = p.sessions[i]
+        file_fps = float(getattr(s, "file_fps", s.fps) or s.fps)
+        from kinetrace.video_source import MAX_HEADER_FPS
+        v, ok = QInputDialog.getDouble(
+            self, "Frame rate",
+            f"What frame rate did {p.name(i)} really record at (frames per second)?\n\n"
+            f"Its video file says {file_fps:g}. High-speed cameras often save their footage for\n"
+            "slow-motion playback, so the file says 30 while the camera filmed at 240 or 1000:\n"
+            "use the rate set on the camera.\n\n"
+            "Times, speeds and the matching of cameras all use this number; offsets are kept.\n"
+            f"To go back to the file's rate, enter {file_fps:g}.",
+            float(s.fps), 0.1, MAX_HEADER_FPS, 3)
+        if not ok:
+            return
+        had_3d = p.reconstruction is not None
+        if not p.set_fps(i, float(v)):
+            return
+        self._after_retime(had_3d)
+        self._refresh_companions()
+        self._refresh_cameras()
+        self._apply_state()                       # the window title's unsaved mark
+        same = abs(float(v) - file_fps) <= 1e-6
+        self.toast.show_message(
+            f"{p.name(i)}: {float(v):g} fps" + ("  (the file's own rate)" if same else
+                                                f"  (its file says {file_fps:g})")
+            + ". Camera rates, times and speeds now use it.", "info", 7000)
 
     def _offer_video_recovery(self, info: dict) -> None:
         """Unsaved work from an earlier session on this video (never saved as
@@ -6879,7 +6918,8 @@ class MainWindow(QMainWindow):
             more = f" (and {len(waiting) - 1} more)" if len(waiting) > 1 else ""
             self.toast.show_message(
                 f"Unsaved work from {r.get('written_at', 'an earlier session')} on <b>{what}</b>{more} can be "
-                "restored: <b>File → Recover Unsaved Work…</b>", "info", 12000)
+                "restored: <b>click here</b> (or File → Recover Unsaved Work…)", "info", 12000,
+                on_click=self._recover_dialog)          # a click used to only close the notice (G39)
 
     def _recover_dialog(self) -> None:
         if self.state == TRACKING:
@@ -7232,11 +7272,13 @@ class MainWindow(QMainWindow):
             return
         while len(p.lenses) < p.n_views:
             p.lenses.append(None)
-        p.lenses[wiz.result_view] = wiz.result_profile
+        views = wiz.result_views()               # + the identical cameras it was shared with (G40)
+        for k in views:
+            p.lenses[k] = wiz.result_profile
         p.dirty = True
         v = str(wiz.result_profile.report.get("verdict", "loaded")).upper()
         self.toast.show_message(
-            f"Lens profile attached to {p.name(wiz.result_view)} ({v}: {wiz.result_profile.summary()}). "
+            f"Lens profile attached to {', '.join(p.name(k) for k in views)} ({v}: {wiz.result_profile.summary()}). "
             "The wand calibration will use it; save the project to keep it.", "success", 9000)
 
     def _wand_wizard(self):

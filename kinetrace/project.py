@@ -213,6 +213,31 @@ class Project:
             self.sessions[i].dirty = True
             self.reconstruction = None          # triangulated under the old timing (I23)
 
+    def set_fps(self, i: int, fps: float) -> bool:
+        """The rate camera `i` REALLY recorded at (G38: a file header can lie -
+        high-speed footage saved for slow-motion playback says 30). Rescales the
+        rates instead of recomputing them, so offsets and any rate set by hand
+        or imported are kept: this camera's rate scales by new / old, and for the
+        reference (whose rate is 1 by definition) every other camera's rate
+        scales the other way. True when something changed."""
+        if not (0 <= i < self.n_views) or not fps or fps <= 0:
+            return False
+        s = self.sessions[i]
+        old = float(s.fps or 0.0)
+        if old > 0 and abs(old - float(fps)) <= 1e-9:
+            return False
+        if old > 0:
+            if i == REFERENCE_VIEW:
+                for j in range(1, self.n_views):
+                    self.rates[j] *= old / float(fps)
+            else:
+                self.rates[i] *= float(fps) / old
+        s.fps = float(fps)
+        for v in self.sessions:
+            v.dirty = True
+        self.reconstruction = None          # triangulated under the old timing (I23)
+        return True
+
     def fps_mismatch(self) -> bool:
         """True when the views were not all shot at the same rate. That is
         handled (each view has its own rate), but worth showing: a companion

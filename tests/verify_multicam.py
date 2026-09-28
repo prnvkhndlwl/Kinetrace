@@ -447,6 +447,50 @@ win._set_active_view(0)
 settle()
 print("camera panel marks and locks the reference row OK")
 
+# ---- a camera's real frame rate (G38): the file says 30, the camera filmed faster ---------
+from kinetrace.session import TrackingSession  # noqa: E402
+
+_s0, _s1 = TrackingSession("a.mp4", 100, 30.0, W, H), TrackingSession("b.mp4", 100, 30.0, W, H)
+_pr = Project([_s0, _s1], ["a", "b"], [0, -SHIFT])
+_pr.reconstruction = object()
+assert _pr.set_fps(1, 60.0) and _pr.rates == [1.0, 2.0] and _pr.offsets == [0, -SHIFT], (_pr.rates, _pr.offsets)
+assert _pr.reconstruction is None and _s1.dirty and _s1.fps == 60.0 and _s1.file_fps == 30.0, \
+    "a retimed camera clears the 3D result and marks the project unsaved"
+assert _pr.set_fps(0, 15.0) and _pr.rates == [1.0, 4.0] and _pr.offsets == [0, -SHIFT], \
+    f"the reference's rate rescales every other camera: {_pr.rates}"
+assert not _pr.set_fps(0, 15.0) and not _pr.set_fps(1, 0.0) and not _pr.set_fps(5, 30.0), "no-ops refused"
+from PySide6.QtCore import Qt as _Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QInputDialog  # noqa: E402
+
+p = win.project
+assert _rows[1].btn_fps.isVisible() and _rows[1].btn_fps.text() == "30 fps", _rows[1].btn_fps.text()
+_asked = {}
+
+
+def _getdouble(parent, title, label, value, lo, hi, dec):
+    _asked.update(label=label, value=value)
+    return _asked.get("answer", value), True
+
+
+_gd = QInputDialog.getDouble
+QInputDialog.getDouble = staticmethod(_getdouble)
+_off = list(p.offsets)
+_asked["answer"] = 240.0
+QTest.mouseClick(_rows[1].btn_fps, _Qt.LeftButton)
+settle()
+assert "says 30" in _asked["label"] and _asked["value"] == 30.0, _asked
+assert p.sessions[1].fps == 240.0 and p.sessions[1].file_fps == 30.0 and p.rates[1] == 8.0, (p.sessions[1].fps, p.rates)
+assert p.offsets == _off, "offsets are kept"
+assert _rows[1].btn_fps.text() == "240 fps *" and "says 30" in _rows[1].btn_fps.toolTip(), _rows[1].btn_fps.text()
+assert "240 fps" in win.toast.text() and "file says 30" in win.toast.text(), win.toast.text()
+_asked["answer"] = 30.0                      # back to the file's own rate
+QTest.mouseClick(_rows[1].btn_fps, _Qt.LeftButton)
+settle()
+assert p.sessions[1].fps == 30.0 and p.rates[1] == 1.0 and _rows[1].btn_fps.text() == "30 fps", p.rates
+QInputDialog.getDouble = _gd
+print("a camera's real frame rate: rates rescaled, offsets kept, marked in the panel, reset (G38) OK")
+
 # ---- removing the reference keeps everyone's RELATIVE timing -------------------
 _pair = Project([p.sessions[0], p.sessions[1]], list(p.names), [0, -SHIFT])
 _gap = _pair.offsets[1] - _pair.offsets[0]

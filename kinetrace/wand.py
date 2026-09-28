@@ -484,7 +484,8 @@ def _bundle_adjust(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, *, free_f: boo
     """Joint refinement of cameras and points on the kept observations of
     every point that has >= 2 of them. Parameter vector = the free entries of
     [cams (C x 11) | active points (x 3)]: camera 0's pose is never free (the
-    gauge), f only with `free_f`, k1/k2 only with `free_dist` (one bool, or
+    gauge), f only with `free_f` (one bool, or one per camera, I144), k1/k2
+    only with `free_dist` (one bool, or
     one per camera: a camera whose points were already undistorted by a lens
     profile keeps k1 = k2 = 0 while the others fit theirs), cx/cy only
     with `free_pp`. The Jacobian sparsity (each residual pair touches one
@@ -493,6 +494,7 @@ def _bundle_adjust(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, *, free_f: boo
     C = cams.shape[0]
     P = pts3.shape[0]
     fd = np.broadcast_to(np.asarray(free_dist, bool).ravel() if np.ndim(free_dist) else bool(free_dist), (C,))
+    ff = np.broadcast_to(np.asarray(free_f, bool).ravel() if np.ndim(free_f) else bool(free_f), (C,))
     ok_pt = np.isfinite(pts3).all(axis=1) & (np.bincount(obs.pt[obs.used], minlength=P) >= 2)
     sel = obs.used & ok_pt[obs.pt]
     pt_g, cam_g, uv = obs.pt[sel], obs.cam[sel], obs.uv[sel]
@@ -507,7 +509,7 @@ def _bundle_adjust(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, *, free_f: boo
         b = c * _NCP
         if c > 0:
             free[b:b + 6] = True
-        free[b + 6] = bool(free_f)
+        free[b + 6] = bool(ff[c])
         free[b + 7:b + 9] = bool(fd[c])
         free[b + 9:b + 11] = bool(free_pp)
     free[n_cam:] = True
@@ -625,7 +627,9 @@ def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, b
         length in px, one value or one per camera.
     principal: None (image centre) or (cx, cy) per camera.
     bg_uv: None or (B, C, 2) background points (NaN where unseen).
-    estimate_focal: leave the focal lengths free in the final adjustment.
+    estimate_focal: leave the focal lengths free in the final adjustment. One
+        bool, or one per camera (I144: cameras sharing one lens profile refine
+        theirs while a camera with its own profile keeps its focal length).
     estimate_distortion: also fit k1, k2 per camera (needs good corner
         coverage; leave off for pre-undistorted points). One bool, or one per
         camera (I35: a rig where some cameras carry a lens profile fits k1/k2
@@ -678,7 +682,12 @@ def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, b
     cv2.setRNGSeed(20260914)          # thread-local in OpenCV: deterministic RANSAC, no side effects
     scale_all = float(max(1.0, widths.max() / 1920.0))
     f_scale = 2.0 * scale_all          # soft-L1 knee, px
-    free_f = bool(estimate_focal)
+    if np.ndim(estimate_focal):
+        free_f = np.asarray(estimate_focal, bool).ravel()
+        if len(free_f) != C:
+            raise WandError(f"estimate_focal has {len(free_f)} entries for {C} cameras")
+    else:
+        free_f = np.full(C, bool(estimate_focal))
     free_pp = bool(estimate_principal)
     if np.ndim(estimate_distortion):
         free_d = np.asarray(estimate_distortion, bool).ravel()
@@ -882,6 +891,7 @@ def _build_report(obs, e, kept, wand_uv, bg_uv, sizes, Rm, tv, cams, wand_length
                   free_f, free_pp, best_mult, est_dist, names=None) -> dict:
     F, C = wand_uv.shape[:2]
     est_dist = np.broadcast_to(np.asarray(est_dist, bool), (C,))
+    free_f = np.broadcast_to(np.asarray(free_f, bool), (C,))
     score = float(100.0 * wand_sd / wand_mean) if np.isfinite(wand_sd) and wand_mean > 0 else float("nan")
     coverage = _coverage(wand_uv, bg_uv, sizes)
     n_obs_cam = [int(np.sum(kept & (obs.cam == c))) for c in range(C)]
@@ -938,8 +948,12 @@ def _build_report(obs, e, kept, wand_uv, bg_uv, sizes, Rm, tv, cams, wand_length
         reasons.append("Focal lengths were estimated from the data (f = "
                        + ", ".join(f"{f:.0f}" for f in cams[:, 6]) + " px); if you know them from the lens "
                        "specification, entering them makes the result more stable.")
-    elif free_f:
+    elif free_f.all():
         reasons.append("Focal lengths were refined from your initial values.")
+    elif free_f.any():
+        reasons.append("Focal lengths were refined for " + ", ".join(_cam(c, names) for c in range(C) if free_f[c])
+                       + " (from their starting values) and kept as given for "
+                       + ", ".join(_cam(c, names) for c in range(C) if not free_f[c]) + ".")
     if free_pp:
         reasons.append("Principal points were estimated from the data: "
                        + "; ".join(f"{_cam(c, names)}: ({cams[c, 9]:.0f}, {cams[c, 10]:.0f})" for c in range(C)) + ".")
@@ -973,7 +987,8 @@ def _build_report(obs, e, kept, wand_uv, bg_uv, sizes, Rm, tv, cams, wand_length
         "reproj_rmse_1080p_equiv": float(rmse_eq),
         "focal_px": [float(f) for f in cams[:, 6]],
         "principal_px": [[float(a), float(b)] for a, b in cams[:, 9:11]],
-        "focal_estimated": bool(free_f or searched),
+        "focal_estimated": bool(free_f.any() or searched),
+        "focal_refined": [bool(v or searched) for v in free_f],
         "focal_searched": bool(searched),
         "focal_grid_best": (None if best_mult is None else float(best_mult)),
         "principal_estimated": bool(free_pp),

@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QProgressBar, QPushButton, QRadioButton,
                                QSizePolicy, QSpinBox, QTextBrowser, QVBoxLayout, QWidget, QWizard,
                                QWizardPage)
@@ -556,6 +556,13 @@ class ResultPage(QWizardPage):
             col.addWidget(_dim(QLabel(cap)))
             pics.addLayout(col)
         lay.addLayout(pics)
+        # identical cameras share one checkerboard calibration (G40); off by default:
+        # the same picture size does not prove the same lens and zoom
+        self.share = QCheckBox("")
+        self.share.setVisible(False)
+        self.share.toggled.connect(lambda _on: self._finish_text())
+        lay.addWidget(self.share)
+        self.share_views: list[int] = []
         row = QHBoxLayout()
         self.btn_save = QPushButton("Save lens file…")
         self.btn_save.clicked.connect(self._save)
@@ -619,8 +626,33 @@ class ResultPage(QWizardPage):
         else:
             for w_ in (self.pic_before, self.pic_after, self.pic_cov):
                 w_.clear()
+        self.share_views = []
+        if self.wiz.project is not None and self.wiz.result_view is not None:
+            from kinetrace.calibwizard import share_targets
+            self.share_views, _ = share_targets(self.wiz.project, self.wiz.result_view, prof)
+        pr = self.wiz.project
+        self.share.setVisible(bool(self.share_views))
+        if self.share_views:
+            names = ", ".join(pr.name(k) for k in self.share_views)
+            sv = pr.sessions[self.wiz.result_view]
+            self.share.setText(f"Also use it for the other cameras with {sv.width}×{sv.height} pictures that have "
+                               f"no lens profile yet: {names}")
+            self.share.setToolTip("Right for identical cameras - same model, lens, zoom and recording mode: one "
+                                  "checkerboard calibration serves them all, and the wand still fine-tunes each "
+                                  "camera's focal length. Leave it off for cameras with other lenses or zoom.")
+        else:
+            self.share.setChecked(False)
+        self._finish_text()
+
+    def _finish_text(self):
+        pr = self.wiz.project
+        if pr is None or self.wiz.result_view is None:
+            self.wiz.setButtonText(QWizard.FinishButton, "Close")
+            return
+        cam = pr.name(self.wiz.result_view)
+        more = len(self.share_views) if self.share.isChecked() else 0
         self.wiz.setButtonText(QWizard.FinishButton,
-                               f"Attach to {cam}" if self.wiz.project is not None else "Close")
+                               f"Attach to {cam}" + (f" and {more} more" if more else ""))
 
     def _save(self):
         prof = self.wiz.result_profile
@@ -667,6 +699,14 @@ class LensWizard(QWizard):
         for pid, pg in ((ID_INTRO, self.page_intro), (ID_VIDEO, self.page_video),
                         (ID_REVIEW, self.page_review), (ID_RESULT, self.page_result)):
             self.setPage(pid, pg)
+
+    def result_views(self) -> list[int]:
+        """The cameras the result is attached to on Finish: the one it was made
+        for, plus the identical ones ticked on the result page (G40)."""
+        if self.result_view is None:
+            return []
+        pr = self.page_result
+        return [self.result_view] + (list(pr.share_views) if pr.share.isChecked() else [])
 
     def done(self, r):
         # Wait for any page's worker before the wizard (and then the

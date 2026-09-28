@@ -292,11 +292,13 @@ w.close()
 pump(0.2)
 check(w.isVisible(), "Cancel on close keeps the window open")
 close(w, None)
-said = []
 w = MainWindow()
-w.toast.show_message = lambda text, *a, **k: said.append(text)
+w.show()
 w._announce_recovery()
-check(said and "Recover Unsaved Work" in said[-1], "start-up says unsaved work is waiting", str(said))
+pump(0.1)
+said = w.toast.text()
+check(w.toast.isVisible() and "Recover Unsaved Work" in said and "click here" in said,
+      "start-up says unsaved work is waiting, and that a click restores it", said)
 labels_seen = []
 
 
@@ -306,7 +308,13 @@ def pick(parent, title, label, items, *a, **k):
 
 
 QInputDialog.getItem = staticmethod(pick)
-w._recover_dialog()
+# G39: CLICKING the notice opens the list (it used to only close the notice), with a real click
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+
+w.toast.show_message("An unrelated notice arrives meanwhile", "info", 4000)   # the click still restores
+check("click here" in w.toast.text() and w.toast.toolTip() == "click to open it", "the action survives", w.toast.text())
+QTest.mouseClick(w.toast, Qt.LeftButton)
 for _ in range(300):
     pump(0.05)
     if w.state == READY and w.project is not None:

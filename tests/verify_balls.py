@@ -96,6 +96,10 @@ class MockSeg:
 
     def new_session(self, start, size):
         mock = self
+        # the tracker that opened this session (the shared one, or a group's own, I143) has just
+        # set its crop: the discs are drawn relative to THAT crop's corner
+        x0, y0 = sys._getframe(1).f_locals["self"].crop[:2]
+        mock.sessions = getattr(mock, "sessions", 0) + 1
 
         class Sess:
             def __init__(self):
@@ -112,7 +116,6 @@ class MockSeg:
                         self.objs.append(p.obj_id)
                 if not self.objs:
                     raise ValueError("the first step of a session needs at least one prompt")
-                x0, y0 = mock.trk.crop[:2]
                 yy, xx = np.mgrid[0:h, 0:w]
                 ms, sc = [], []
                 for o in self.objs:
@@ -158,23 +161,66 @@ for v, gap in ((2.0, 3), (10.0, 5)):                               # ...but the 
     _, res, _ = run_mock(gt, (1920, 1080), 30, [1])
     assert min(f for f in res[1] if f >= 10) == 10 + gap, (v, gap)
 
-# balls farther apart than the one shared crop (I58): never a click outside SAM's picture, the
-# first ball tracked throughout, the other dropped as "apart" (clicking it again cannot help)
+# balls farther apart than one crop (I58 -> I143): each group of balls gets a crop of its own, so
+# both are tracked on every frame; never a click outside a session's picture; while they fit one
+# crop nothing changes (no split, one session at a time)
 WC, HC, RC = 2704, 1520, 14.0
 for span, vx, n in ((1100, 0.0, 40), (800, 4.0, 120), (600, 4.0, 120)):
     gt = (lambda f, o, span=span, vx=vx:
           ((WC / 2 - 300 + vx * f) + (-span / 2 if o == 1 else span / 2), 760.0, RC))
     tk, res, mock = run_mock(gt, (WC, HC), n, [1, 2])
     n1, n2 = len(res.get(1, {})), len(res.get(2, {}))
-    print(f"two balls {span} px apart ({vx:.0f} px/frame): ball 1 {n1}/{n}, ball 2 {n2}/{n}, "
-          f"dropped {tk.drop_reason}, clicks outside the crop {len(mock.bad)}")
+    groups = len(tk._groups) if tk._groups else 1
+    err = max(abs(fc.x - gt(f, o)[0]) for o in (1, 2) for f, fc in res.get(o, {}).items())
+    print(f"two balls {span} px apart ({vx:.0f} px/frame): ball 1 {n1}/{n}, ball 2 {n2}/{n}, {groups} crop(s), "
+          f"worst x error {err:.2f} px, dropped {tk.drop_reason}, clicks outside a crop {len(mock.bad)}")
     assert not mock.bad, mock.bad[:3]
-    assert n1 == n
-    if span <= 600:
-        assert n2 == n and not tk.drop_reason
-    else:
-        assert tk.drop_reason.get(2) == "apart"
+    assert n1 == n and n2 == n and not tk.drop_reason, "both balls tracked on every frame (I143)"
+    assert err < 0.5, err
+    assert groups == (1 if span <= 600 else 2), groups
 assert not balls.BallTracker(None, (WC, HC)).fits_one_crop([(500, 700), (1600, 700)])
+
+
+def run_script(gt, n, clicks):
+    """clicks = {frame: [ball, ...]}; returns (tracker, {ball: {frame: fit}}, crops per frame, mock)."""
+    mock = MockSeg(gt)
+    tk = balls.BallTracker(mock, (WC, HC))
+    img = np.full((HC, WC, 3), 200, np.uint8)
+    res, modes = {}, []
+    for f in range(n):
+        pr = [balls.BallPrompt(o, points=np.array([gt(f, o)[:2]]), labels=np.array([1]), radius=RC)
+              for o in clicks.get(f, [])] or None
+        for o, fc in tk.step(img, f, pr).items():
+            res.setdefault(o, {})[f] = fc
+        modes.append(len(tk._groups) if tk._groups else 1)
+    return tk, res, modes, mock
+
+
+def worst(res, gt):
+    return max(np.hypot(fc.x - gt(f, o)[0], fc.y - gt(f, o)[1]) for o in res for f, fc in res[o].items())
+
+
+# (a) the pair drifts apart (300 -> 1500 px: split) and back (-> 300 px: one crop again)
+N2 = 300
+sep = lambda f: 300 + 1200 * min(f, N2 - f) / (N2 / 2)                       # noqa: E731
+gt = lambda f, o: (WC / 2 + (sep(f) / 2 if o == 2 else -sep(f) / 2), 700.0, RC)   # noqa: E731
+tk, res, modes, mock = run_script(gt, N2, {0: [1, 2]})
+counts = {o: len(res.get(o, {})) for o in (1, 2)}
+print(f"drift apart and back: frames per ball {counts}, crops {modes[0]} -> {max(modes)} -> {modes[-1]}, "
+      f"{tk.n_restarts} restarts, worst error {worst(res, gt):.2f} px")
+assert counts == {1: N2, 2: N2} and not tk.drop_reason and not mock.bad, (counts, tk.drop_reason)
+assert worst(res, gt) < 0.5 and modes[0] == 1 and max(modes) == 2 and modes[-1] == 1, modes[::20]
+assert tk.n_restarts < 12, f"split + merge, not a restart per frame: {tk.n_restarts}"
+# (b) two balls 1500 px apart, a third clicked 200 px from ball 1 joins ball 1's crop;
+# (c) a fourth clicked far from both groups gets a third crop
+far = {1: (600.0, 400.0), 2: (2100.0, 400.0), 3: (800.0, 450.0), 4: (1350.0, 1400.0)}
+gt = lambda f, o: (far[o][0] + 0.5 * f, far[o][1], RC)                         # noqa: E731
+tk, res, modes, mock = run_script(gt, 60, {0: [1, 2], 10: [3], 30: [4]})
+counts = {o: len(res.get(o, {})) for o in far}
+print(f"a ball joining a group, a ball starting its own: frames per ball {counts}, crops at frames "
+      f"5 / 20 / 50: {modes[5]} / {modes[20]} / {modes[50]}, worst error {worst(res, gt):.2f} px")
+assert counts == {1: 60, 2: 60, 3: 50, 4: 30} and not tk.drop_reason and not mock.bad, counts
+assert (modes[5], modes[20], modes[50]) == (2, 2, 3) and worst(res, gt) < 0.5, modes
 tk, res, _ = run_mock(lambda f, o: None if (o == 2 and f >= 20) else ((900.0 if o == 1 else 1200.0), 700.0, RC),
                       (WC, HC), 40, [1, 2])
 assert tk.drop_reason.get(2) == "lost" and len(res[1]) == 40, "a ball lost inside a shared crop is 'lost'"
@@ -256,6 +302,33 @@ assert max(got[2]) <= VANISH + 2 and not trk.has(2), "ball B vanished inside the
 assert max(got[3]) < leave_frame + 3 and not trk.has(3), "ball C must be dropped once it left the picture (or was lost)"
 assert trk.n_restarts >= 2, "the balls cross the crop edge: restarts expected"
 print("BallTracker OK")
+
+# the same clip through a 320-px crop: its balls no longer fit one (limit 320 - 2 x 40 = 240 px,
+# A and C start 260 apart), so they are split into groups with a crop each (I143). Measured
+# 2026-09-27: the previous tracker kept ball C for 5 frames (it lay outside the one crop), this
+# one to the picture edge; with the 480 / 960-px crops (no split) both give identical numbers
+cap = cv2.VideoCapture(path)
+trk = balls.BallTracker(seg, (W, H), crop=320, margin=40)
+got = {1: {}, 3: {}}
+split_seen = False
+for k in range(N):
+    ok, bgr = cap.read()
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    prompts = ([balls.BallPrompt(1, points=truth_r[0, 0:1], labels=np.array([1])),
+                balls.BallPrompt(3, points=truth_r[0, 2:3], labels=np.array([1]), radius=R[2])] if k == 0 else [])
+    for obj, f in trk.step(rgb, k, prompts).items():
+        got[obj][k] = (f.x, f.y)
+    split_seen |= bool(trk._groups and len(trk._groups) > 1)
+cap.release()
+for obj, col in ((1, 0), (3, 2)):
+    ks = sorted(got[obj])
+    e = np.array([np.hypot(got[obj][k][0] - truth_r[k, col, 0], got[obj][k][1] - truth_r[k, col, 1]) for k in ks])
+    print(f"  320-px crops, ball {obj}: {len(ks)} frames, centre error median {np.median(e):.2f} px, "
+          f"95th {np.percentile(e, 95):.2f}")
+    assert np.median(e) < (1.0 if obj == 1 else 1.6) and np.percentile(e, 95) < (2.5 if obj == 1 else 6.0)
+assert split_seen, "the balls do not fit one 320-px crop: groups expected"
+assert len(got[1]) >= N - 2 and len(got[3]) >= leave_frame - 5, (len(got[1]), len(got[3]), leave_frame)
+print("far-apart balls, a crop per group, real SAM OK")
 
 # ---------------------------------------------------------------- 3. the worker
 # a QApplication from the start: a QCoreApplication here would be what

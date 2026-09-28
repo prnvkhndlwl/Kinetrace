@@ -40,10 +40,13 @@ a hand covers part of it.
   of the crop) is not the ball.
 * A ball whose circle is rejected for `lost_frames` frames in a row is dropped
   (its data stops there - the worker's auto-pause rules take over); a click on
-  a later frame prompts it again. `drop_reason[obj]` says why: "lost", or
-  "apart" when it was outside the one shared crop because the balls are too
-  far apart to fit it together (I58) - clicking again cannot help then; each
-  ball has to be tracked on its own run.
+  a later frame prompts it again. `drop_reason[obj]` says why ("lost").
+* Balls too far apart for one crop (more than about 960 - 2 x 110 = 740 px)
+  are split into GROUPS that each fit one, every group its own crop and SAM
+  session (I143; before, the run stopped with reason "apart", I58). While the
+  balls fit one crop nothing of this runs - the one-crop code is unchanged and
+  its output bit-identical - and they merge back into one crop once they fit it
+  again with room to spare. Each extra group costs one more SAM pass a frame.
 
 Pure numpy / cv2 apart from the segmenter it drives. No Qt. Used by the
 tracking worker.
@@ -237,10 +240,15 @@ class _State:
 
 class BallTracker:
     """One SAM session over a fixed native-resolution crop, every ball its own
-    object. Call `step` once per consecutive frame with the FULL frame."""
+    object - or, when the balls are too far apart for one crop, one child
+    tracker per group of balls that fit one (I143). Call `step` once per
+    consecutive frame with the FULL frame."""
 
     def __init__(self, seg, native_size: tuple[int, int], crop: int = CROP, margin: int = CROP_MARGIN,
-                 lost_frames: int = LOST_FRAMES, min_quality: float = MIN_QUALITY):
+                 lost_frames: int = LOST_FRAMES, min_quality: float = MIN_QUALITY, split: bool = True):
+        self.split = bool(split)                  # False = a group's own tracker: never splits again
+        self._groups: list[BallTracker] | None = None   # set while the balls need several crops
+        self._restarts_done = 0                   # restarts of groups already folded away
         self.seg = seg
         self.W, self.H = int(native_size[0]), int(native_size[1])
         self.crop_size = int(crop)
@@ -252,8 +260,8 @@ class BallTracker:
         self.active: dict[int, _State] = {}
         self.n_restarts = 0
         self.last: dict[int, CircleFit] = {}
-        # why each dropped ball was dropped: "lost" (SAM lost it) or "apart" (it lay
-        # outside the one shared crop because the balls do not fit it together, I58)
+        # why each dropped ball was dropped: "lost" (SAM lost it); "apart" (outside the
+        # one shared crop, I58) only from a tracker that may not split (split=False)
         self.drop_reason: dict[int, str] = {}
         self._outside: set[int] = set()      # balls not given to SAM: outside the crop
 
@@ -264,6 +272,8 @@ class BallTracker:
     def drop(self, obj: int) -> None:
         self.active.pop(obj, None)
         self._outside.discard(obj)
+        for g in self._groups or []:
+            g.drop(obj)
 
     def _bbox_crop(self, centres) -> tuple[int, int, int, int]:
         xs = [c[0] for c in centres]
@@ -284,14 +294,15 @@ class BallTracker:
             crop = self._bbox_crop(centres[:1])
         return crop
 
-    def fits_one_crop(self, centres=None) -> bool:
+    def fits_one_crop(self, centres=None, margin: int | None = None) -> bool:
         """Can these centres (default: every active ball) share one crop with
-        none of them in its restart margin? False = too far apart (I58)."""
+        none of them in its restart margin (default: the tracker's)? False = too
+        far apart for one crop (I58, I143)."""
         centres = [st.xy for st in self.active.values()] if centres is None else list(centres)
         if len(centres) < 2:
             return True
         crop = self._bbox_crop(centres)
-        return not any(not self._inside(crop, c) or self._near_edge_in(crop, c) for c in centres)
+        return not any(not self._inside(crop, c) or self._near_edge_in(crop, c, margin) for c in centres)
 
     @staticmethod
     def _inside(crop, xy) -> bool:
@@ -301,9 +312,9 @@ class BallTracker:
     def _near_edge(self, xy) -> bool:
         return self._near_edge_in(self.crop, xy)
 
-    def _near_edge_in(self, crop, xy) -> bool:
+    def _near_edge_in(self, crop, xy, margin: int | None = None) -> bool:
         x0, y0, x1, y1 = crop
-        m = self.margin
+        m = self.margin if margin is None else margin
         return bool((xy[0] - x0 < m and x0 > 0) or (x1 - xy[0] < m and x1 < self.W)
                     or (xy[1] - y0 < m and y0 > 0) or (y1 - xy[1] < m and y1 < self.H))
 
@@ -317,7 +328,179 @@ class BallTracker:
     # --------------------------------------------------------------- step
     def step(self, rgb: np.ndarray, frame_idx: int, prompts: list[BallPrompt] | None = None
              ) -> dict[int, CircleFit]:
-        """`rgb` = the full native frame. Returns the accepted circles this frame."""
+        """`rgb` = the full native frame. Returns the accepted circles this frame.
+        One shared crop (`_step_one`) while the balls fit it; groups of balls with
+        a crop each (`_step_groups`) when they do not (I143)."""
+        prompts = list(prompts or [])
+        if self._groups is not None:
+            return self._step_groups(rgb, frame_idx, prompts)
+        if self.split and self._must_split(frame_idx, prompts):
+            self._regroup(prompts)
+            return self._step_groups(rgb, frame_idx, prompts)
+        return self._step_one(rgb, frame_idx, prompts)
+
+    # ------------------------------------------------------ groups (I143)
+    @staticmethod
+    def _prompt_centre(p: BallPrompt):
+        """Where a prompt puts its ball (the mean of its clicks, else of its mask), or None."""
+        if p.points is not None and len(p.points):
+            pt = np.asarray(p.points, np.float64).reshape(-1, 2)
+            return float(pt[:, 0].mean()), float(pt[:, 1].mean())
+        if p.mask is not None and np.any(p.mask):
+            ys, xs = np.nonzero(p.mask)
+            return float(xs.mean()), float(ys.mean())
+        return None
+
+    def _items(self, prompts) -> list[tuple[int, tuple[float, float]]]:
+        """(ball, centre): the newest clicks first, then every other active ball."""
+        out, seen = [], set()
+        for p in prompts:
+            c = self._prompt_centre(p)
+            if c is not None and p.obj not in seen:
+                out.append((p.obj, c))
+                seen.add(p.obj)
+        out += [(o, st.xy) for o, st in self.active.items() if o not in seen]
+        return out
+
+    def _must_split(self, frame_idx: int, prompts) -> bool:
+        """The one shared crop cannot go on: a (re)start or a ball in its margin or
+        outside it needs a new crop, and no single crop holds every ball. While
+        the balls fit, this is False and `_step_one` runs exactly as before."""
+        centres = [c for _, c in self._items(prompts)]
+        if len(centres) < 2 or self.fits_one_crop(centres):
+            return False
+        if self.session is None or self.crop is None or self.session.next_frame != frame_idx or not self.active:
+            return True
+        return any(not self._inside(self.crop, c) or self._near_edge(c) for c in centres)
+
+    def _cluster(self, items) -> list[list[int]]:
+        """Greedy groups of balls that each fit one crop, in `items` order."""
+        groups: list[tuple[list[int], list]] = []
+        for obj, c in items:
+            for objs, cs in groups:
+                if self.fits_one_crop(cs + [c]):
+                    objs.append(obj)
+                    cs.append(c)
+                    break
+            else:
+                groups.append(([obj], [c]))
+        return [objs for objs, _ in groups]
+
+    def _new_group(self) -> "BallTracker":
+        return BallTracker(self.seg, (self.W, self.H), self.crop_size, self.margin, self.lost_frames,
+                           self.min_quality, split=False)
+
+    def _fold_groups(self) -> None:
+        """Count the restarts of the groups about to be replaced."""
+        self._restarts_done += sum(g.n_restarts for g in self._groups or [])
+
+    def _regroup(self, prompts) -> None:
+        """New groups from every ball's current centre; each starts a fresh session
+        (the usual restart: its balls re-prompted at their extrapolated centres)."""
+        if self._groups is None:
+            self._restarts_done = self.n_restarts
+        else:
+            self._fold_groups()
+        self._groups = []
+        for objs in self._cluster(self._items(prompts)):
+            g = self._new_group()
+            for o in objs:
+                if o in self.active:
+                    g.active[o] = self.active[o]      # the SAME state object: history and guards carry over
+            self._groups.append(g)
+        self.session, self.crop = None, None
+        self._outside.clear()
+
+    def _merge(self) -> None:
+        """Back to one shared crop (the next `_step_one` restarts it)."""
+        self._fold_groups()
+        self.n_restarts = self._restarts_done
+        self._groups = None
+        self.session, self.crop = None, None
+        self._outside.clear()
+
+    def _step_groups(self, rgb: np.ndarray, frame_idx: int, prompts: list[BallPrompt]) -> dict[int, CircleFit]:
+        for p in prompts:
+            self.drop_reason.pop(p.obj, None)
+        items = self._items(prompts)
+        # every ball fits one crop again, with room to spare (1.5x the margin, so a
+        # pair hovering at the limit does not split and merge on alternate frames)
+        if len(items) < 2 or self.fits_one_crop([c for _, c in items], int(round(1.5 * self.margin))):
+            self._merge()
+            return self._step_one(rgb, frame_idx, prompts)
+        owner = {o: g for g in self._groups for o in g.active}
+        where: dict[int, BallTracker] = {}
+        cents = {id(g): [] for g in self._groups}
+        new = []
+        for o, c in items:
+            g = owner.get(o)
+            if g is None:
+                new.append((o, c))
+            else:
+                where[o] = g
+                cents[id(g)].append(c)
+        regroup = any(not g.fits_one_crop(cents[id(g)]) for g in self._groups)
+        if not regroup:
+            for o, c in new:                          # a new ball joins the first group it fits
+                for g in self._groups:
+                    if g.fits_one_crop(cents[id(g)] + [c]):
+                        break
+                else:
+                    g = self._new_group()
+                    self._groups.append(g)
+                    cents[id(g)] = []
+                where[o] = g
+                cents[id(g)].append(c)
+        else:
+            self._regroup(prompts)
+            where = {}
+            for g, objs in zip(self._groups, self._cluster(self._items(prompts))):
+                for o in objs:
+                    where[o] = g
+        out: dict[int, CircleFit] = {}
+        for g in self._groups:
+            gp = [p for p in prompts if where.get(p.obj) is g]
+            if g.active or gp:
+                out.update(g.step(rgb, frame_idx, gp))
+        # one circle claimed by balls of two groups: the same rule as within a crop -
+        # the ball that moved more lost it this frame
+        grp = {o: id(g) for g in self._groups for o in g.active}
+        objs = list(out)
+        for i_a in range(len(objs)):
+            for i_b in range(i_a + 1, len(objs)):
+                a, b = objs[i_a], objs[i_b]
+                if a not in out or b not in out or grp.get(a) == grp.get(b):
+                    continue
+                fa, fb = out[a], out[b]
+                if np.hypot(fa.x - fb.x, fa.y - fb.y) < 0.8 * min(fa.r, fb.r):
+                    sa = next(g.active[a] for g in self._groups if a in g.active)
+                    sb = next(g.active[b] for g in self._groups if b in g.active)
+                    da = np.hypot(fa.x - sa.prev_xy[0], fa.y - sa.prev_xy[1]) if sa.prev_xy is not None else 0.0
+                    db = np.hypot(fb.x - sb.prev_xy[0], fb.y - sb.prev_xy[1]) if sb.prev_xy is not None else 0.0
+                    loser = a if da > db else b
+                    del out[loser]
+                    st = sa if loser == a else sb
+                    st.miss += 1
+                    if st.prev_xy is not None:
+                        st.xy, st.prev_xy = st.prev_xy, None
+        # the parent's view of every group: active balls, why the gone ones went
+        self.active = {}
+        for g in self._groups:
+            self.active.update(g.active)
+            for o, why in g.drop_reason.items():
+                self.drop_reason[o] = "lost" if why == "apart" else why   # groups never lack a crop
+            g.drop_reason.clear()
+        kept = [g for g in self._groups if g.active]
+        self._restarts_done += sum(g.n_restarts for g in self._groups if not g.active)
+        self._groups = kept
+        self.n_restarts = self._restarts_done + sum(g.n_restarts for g in kept)
+        if not kept:
+            self._groups = None                       # nothing left: the next prompt starts afresh
+        self.last = out
+        return out
+
+    def _step_one(self, rgb: np.ndarray, frame_idx: int, prompts: list[BallPrompt]) -> dict[int, CircleFit]:
+        """One SAM session on one crop for every ball (the tracker's original step)."""
         prompts = list(prompts or [])
         centres = []
         for p in prompts:

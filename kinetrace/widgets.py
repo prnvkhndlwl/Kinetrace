@@ -40,21 +40,34 @@ class Toast(QLabel):
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("click to dismiss")
         self._level = "info"
+        self._action = None                 # what a click does besides closing (G39)
+        self._action_text = ""              # the notice that owns it
         self.hide()
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.hide)
         host.installEventFilter(self)
 
-    def show_message(self, text: str, level: str = "info", ms: int = 6000) -> None:
+    def show_message(self, text: str, level: str = "info", ms: int = 6000, on_click=None) -> None:
+        """`on_click` = what clicking the notice does (then it closes); without
+        one a click only closes it (G39: a notice that says what can be done
+        should do it when clicked)."""
+        own = text
         # a second notice while one is still up used to REPLACE it, so the
         # first (often the verdict) was never read (G10): keep the latest two
         prev = self.text() if (self.isVisible() and self._timer.isActive()) else ""
+        kept = ""
         if prev and text not in prev.split("\n\n"):
-            text = prev.split("\n\n")[-1] + "\n\n" + text
+            kept = prev.split("\n\n")[-1]
+            text = kept + "\n\n" + text
             ms = max(ms, self._timer.remainingTime())
             if LEVEL_RANK.get(self._level, 0) > LEVEL_RANK.get(level, 0):
                 level = self._level
+        if on_click is not None:
+            self._action, self._action_text = on_click, own
+        elif not (kept and kept == self._action_text):
+            self._action, self._action_text = None, ""   # the notice with the action is gone
+        self.setToolTip("click to open it" if self._action is not None else "click to dismiss")
         self._level = level
         bg, fg, edge = LEVEL_COLORS.get(level, LEVEL_COLORS["info"])
         self.setStyleSheet(
@@ -69,6 +82,9 @@ class Toast(QLabel):
 
     def mousePressEvent(self, ev):
         self.hide()
+        action, self._action, self._action_text = self._action, None, ""
+        if action is not None:
+            QTimer.singleShot(0, action)      # after the press is over: it may open a dialog
 
     def eventFilter(self, obj: QObject, ev: QEvent) -> bool:
         if obj is self._host and ev.type() == QEvent.Resize and self.isVisible():

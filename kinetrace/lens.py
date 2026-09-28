@@ -50,6 +50,8 @@ MAX_RAY_DEG = 80.0
 
 @dataclass
 class LensProfile:
+    """One lens (intrinsic) calibration. Identical cameras (same model, lens,
+    zoom and recording mode) may share one: `same_profile` tells (G40)."""
     width: int
     height: int
     K: np.ndarray                      # (3, 3)
@@ -197,6 +199,19 @@ def _parse_argus(path: str | Path) -> list[tuple[int, LensProfile]]:
     if not out:
         raise ValueError(f"{Path(path).name}: no camera lines (expected 'cam f w h cx cy AR k1 k2 t1 t2 k3')")
     return out
+
+
+def same_profile(a: LensProfile | None, b: LensProfile | None) -> bool:
+    """The same lens calibration (one profile shared by several identical
+    cameras, G40) - compared by value, so it holds after a project reload,
+    where each camera gets its own copy."""
+    if a is None or b is None:
+        return False
+    if a is b:
+        return True
+    return (int(a.width) == int(b.width) and int(a.height) == int(b.height) and bool(a.fisheye) == bool(b.fisheye)
+            and np.shape(a.dist) == np.shape(b.dist) and np.allclose(a.K, b.K, rtol=0, atol=1e-9)
+            and np.allclose(a.dist, b.dist, rtol=0, atol=1e-12))
 
 
 def load_argus_profile(path: str | Path) -> list[LensProfile]:

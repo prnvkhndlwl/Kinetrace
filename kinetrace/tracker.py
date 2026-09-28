@@ -1625,8 +1625,8 @@ class TrackingWorker(QThread):
                 continue
             # the first frame without an accepted circle
             first_bad = max(self.start_frame, abs_idx - miss)
-            # "apart": the balls no longer fit one crop -- clicking it again cannot
-            # help, it has to be tracked on its own (I58)
+            # "apart" (the balls no longer fit one crop, I58) is kept as a fallback:
+            # since I143 far-apart balls get a crop per group and are not dropped for it
             why = "apart" if getattr(trk, "drop_reason", {}).get(obj) == "apart" else "lost"
             # kept with auto-pause OFF too, so the app can say which ball ended where (I127)
             self._ball_ended[int(pid)] = (int(first_bad), why)

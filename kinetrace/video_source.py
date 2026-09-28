@@ -149,11 +149,13 @@ class VideoInfo:
         if self.fps_source == "timestamps":
             return (f"This file does not state a usable frame rate, so Kinetrace measured "
                     f"{self.fps:.6g} fps from its frame timestamps. Times, speeds and camera sync "
-                    "use this number: check it against the rate the camera recorded at.")
+                    "use this number: check it against the rate the camera recorded at. "
+                    "If it is wrong, set the real rate with the camera's fps button in the CAMERAS panel.")
         if self.fps_source == "assumed":
             return (f"This file states no frame rate and its timestamps give none, so Kinetrace is "
                     f"ASSUMING {self.fps:.6g} fps. Times, speeds and camera sync will be wrong unless "
-                    "the camera really recorded at that rate.")
+                    "the camera really recorded at that rate: set the real rate with the camera's fps "
+                    "button in the CAMERAS panel.")
         return ""
 
 

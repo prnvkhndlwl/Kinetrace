@@ -50,6 +50,7 @@ class _CameraRow(QWidget):
     offset_changed = Signal(int, float)   # (view index, new offset in this view's frames)
     align_requested = Signal(int)
     remove_requested = Signal(int)
+    fps_requested = Signal(int)           # the frame-rate button (G38)
 
     def __init__(self, index: int):
         super().__init__()
@@ -113,11 +114,25 @@ class _CameraRow(QWidget):
         row.addStretch(1)
         lay.addLayout(row)
 
+        # the rate this camera recorded at, in front of the status line (the status
+        # shortens with "…"; the name line and the offset line have no room to give,
+        # G3): click to correct a file whose header gives the wrong rate (G38)
+        bottom = QHBoxLayout()
+        bottom.setSpacing(4)
+        self.btn_fps = QToolButton()
+        self.btn_fps.setProperty("compact", True)
+        self.btn_fps.clicked.connect(lambda: self.fps_requested.emit(self.index))
+        bottom.addWidget(self.btn_fps)
         self.status = _dim_label()
-        lay.addWidget(self.status)
+        bottom.addWidget(self.status, 1)
+        # no taller than the text line it shares, or every row grows and the list scrolls
+        # (the theme's min-height + padding would make it 28 px)
+        self.btn_fps.setStyleSheet("QToolButton { min-height: 0px; padding: 0px 6px; }")
+        lay.addLayout(bottom)
 
     def update_row(self, name: str, offset: float, active: bool, status: str,
-                   removable: bool, reference: bool = False, rate: float = 1.0) -> None:
+                   removable: bool, reference: bool = False, rate: float = 1.0,
+                   fps: float | None = None, file_fps: float | None = None) -> None:
         weight = "600" if active else "400"
         color = theme.TEXT if active else theme.TEXT_DIM
         tag = "  (reference)" if reference else ""
@@ -158,6 +173,17 @@ class _CameraRow(QWidget):
             "working camera's current frame, and set the offset from that.")
         self.btn_remove.setEnabled(removable)
         self.status.setText(status)
+        self.btn_fps.setVisible(bool(fps))
+        if fps:
+            changed = file_fps is not None and abs(float(file_fps) - float(fps)) > 1e-6
+            self.btn_fps.setText(f"{float(fps):g} fps" + (" *" if changed else ""))
+            self.btn_fps.setToolTip(
+                (f"This camera recorded at {float(fps):g} frames per second - set by hand; its video file "
+                 f"says {float(file_fps):g}." if changed else
+                 f"This camera recorded at {float(fps):g} frames per second (read from its video file).")
+                + "\nClick if that is wrong: high-speed footage is often saved for slow-motion playback,\n"
+                "so the file says 30 while the camera filmed at 240 or 1000. Times, speeds and the\n"
+                "matching of cameras all use this number.")
 
 
 class CameraPanel(QWidget):
@@ -168,6 +194,7 @@ class CameraPanel(QWidget):
     align_requested = Signal(int)
     remove_requested = Signal(int)
     add_requested = Signal()
+    fps_requested = Signal(int)          # a row's frame-rate button (G38)
     sync_toggled = Signal(bool)          # Sync all views (True) / Active view only (False), G24
 
     def __init__(self):
@@ -241,6 +268,7 @@ class CameraPanel(QWidget):
             row.offset_changed.connect(self.offset_changed)
             row.align_requested.connect(self.align_requested)
             row.remove_requested.connect(self.remove_requested)
+            row.fps_requested.connect(self.fps_requested)
             item = QListWidgetItem()          # NOT QListWidgetItem(self.list):
             # that inserts it, and addItem would again. Height from the row; width
             # left to the list, which stretches rows to its viewport (a natural-width
@@ -255,12 +283,15 @@ class CameraPanel(QWidget):
 
     def update_rows(self, names: list[str], offsets: list[float], active: int,
                     statuses: list[str], note: str = "",
-                    rates: list[float] | None = None) -> None:
+                    rates: list[float] | None = None, fps: list[float] | None = None,
+                    file_fps: list[float] | None = None) -> None:
         self.rebuild(len(names))
         for i, row in enumerate(self._rows):
             row.update_row(names[i], offsets[i], i == active, statuses[i],
                            len(names) > 1, reference=(i == REFERENCE_VIEW),
-                           rate=(rates[i] if rates and i < len(rates) else 1.0))
+                           rate=(rates[i] if rates and i < len(rates) else 1.0),
+                           fps=(fps[i] if fps and i < len(fps) else None),
+                           file_fps=(file_fps[i] if file_fps and i < len(file_fps) else None))
         self._suppress = True            # programmatic selection must not re-emit
         self.list.setCurrentRow(active)
         self._suppress = False

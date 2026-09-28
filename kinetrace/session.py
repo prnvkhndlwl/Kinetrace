@@ -235,7 +235,8 @@ class TrackingSession:
     def __init__(self, video_path: str, n_frames: int, fps: float, width: int, height: int):
         self.video_path = video_path
         self.n_frames = n_frames
-        self.fps = fps
+        self.fps = fps          # the rate the camera REALLY recorded at: times, velocities, camera rates (G38)
+        self.file_fps = fps     # the rate the video file says (differs when a header lies, e.g. slow-motion files)
         self.width = width
         self.height = height
         self.tracks = np.full((n_frames, 0, 2), np.nan, np.float32)
