@@ -57,7 +57,7 @@ created with default settings).
 ### `kinetrace.json`
 
 ```json
-{"format": "kinetrace-project", "format_version": 1, "app_version": "1.2.0",
+{"format": "kinetrace-project", "format_version": 1, "app_version": "0.1.0",
  "project_id": "5f0c…", "saved_at": "2026-09-23T21:04:11.482113+00:00",
  "cameras": [{"folder": "cam1", "name": "cam1"}]}
 ```
