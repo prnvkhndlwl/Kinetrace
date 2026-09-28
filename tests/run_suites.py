@@ -34,7 +34,7 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_onbody_rules", "verify_sync",
        "verify_timeline_events", "verify_scrub", "verify_multicam", "verify_3d_gui", "verify_ui_focus",
        "verify_annotate", "verify_display", "verify_render", "verify_segment_panel", "verify_point_menu",
-       "verify_wand_gui", "verify_lens_gui", "verify_body_gui", "verify_sweep_fixes", "verify_crashlog"]
+       "verify_wand_gui", "verify_lens_gui", "verify_body_gui", "verify_sweep_fixes", "verify_crashlog", "verify_update"]
 # the synthetic test videos are generated on demand (deterministic; not stored in the repo)
 TEST_VIDEOS = {
     "test600.mp4": ([], None),
@@ -69,7 +69,8 @@ def main(argv):
     ensure_test_videos(names)
     log = open(os.path.join(OUT, "suite_runs.txt"), "a", encoding="utf-8")
     log.write(f"\n==== run at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8", KINETRACE_RECOVERY_DIR=RECOVERY)
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8", KINETRACE_RECOVERY_DIR=RECOVERY,
+               KINETRACE_UPDATE_API="http://127.0.0.1:9/api")   # no suite ever asks GitHub (G37)
     bad = 0
     for name in names:
         path = os.path.join(ROOT, "tests", name + ".py")

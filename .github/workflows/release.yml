@@ -1,0 +1,47 @@
+# Publishes a new version for Help -> Check for Updates (G37).
+#
+# How to release: change APP_VERSION in kinetrace/__init__.py (e.g. "0.1.0" ->
+# "0.2.0"), commit and push to main. This workflow then tags that commit
+# v0.2.0 and publishes a GitHub Release with notes written from the commits
+# since the previous one (edit them on the Releases page if you like). Pushes
+# that leave APP_VERSION alone publish nothing, so work in progress never
+# reaches users. A version that is already published is left alone.
+# (Actions tab -> "Release" -> Run workflow does the same by hand.)
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ["kinetrace/__init__.py"]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # create the tag and the release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the previous tags, for the generated notes
+
+      - name: Read APP_VERSION
+        id: version
+        run: |
+          v=$(python3 -c "import re; print(re.search(r'APP_VERSION\s*=\s*\"([^\"]+)\"', open('kinetrace/__init__.py', encoding='utf-8').read()).group(1))")
+          echo "Kinetrace version in this commit: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the release (once per version)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is already published - nothing to do."
+            exit 0
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --title "Kinetrace $VERSION" --generate-notes
+          echo "Published $tag: users are offered it by Help -> Check for Updates."

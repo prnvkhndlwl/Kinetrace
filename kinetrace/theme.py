@@ -66,6 +66,8 @@ QToolButton#primary {{
 QToolButton#primary:hover {{ background: {ACCENT_HOVER}; }}
 QToolButton#primary:pressed {{ background: #0873DD; }}
 QToolButton#primary:disabled {{ background: #2E2E36; color: {TEXT_DISABLED}; }}
+QToolButton#primary[idle="true"] {{ background: #2E2E36; color: {TEXT_DISABLED}; font-weight: 400; }}
+QToolButton#primary[idle="true"]:hover {{ background: #383842; }}
 QToolButton#primary::menu-button {{ border: none; width: 16px; }}
 
 /* --- inputs (QAbstractSpinBox covers QSpinBox AND QDoubleSpinBox) --- */

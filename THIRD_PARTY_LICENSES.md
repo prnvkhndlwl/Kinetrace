@@ -10,9 +10,14 @@ institution's technology-transfer or legal office has the final word.
 ## 1. Kinetrace's own code
 
 Everything in this repository — `kinetrace/`, `tests/`, `tools/`, the
-installers and the docs — is the Kinetrace authors' own work. **No
-licence has been chosen for it yet**, so until one is added (a `LICENSE` file
-in this folder) all rights are reserved. Section 5 lists the options.
+installers and the docs — is the Kinetrace authors' own work (biomechLab@CMC),
+released under the **[PolyForm Noncommercial License 1.0.0](LICENSE.md)**:
+anyone may use, change and share it for any **non-commercial** purpose —
+research, teaching, study, personal projects — and every educational
+institution, public research organisation, charity and government body may use
+it whatever funds the work. **Commercial use is not licensed.** Whoever passes
+a copy on must include the licence (or its URL) and the `Required Notice:`
+line at its top. Section 5 says why this licence was chosen.
 
 The repository contains **no third-party code, model weights or footage**:
 `.venv/` and `models/` are created on each user's computer and never
@@ -171,7 +176,8 @@ Kinetrace's own source code for other labs:
 3. The only non-commercial piece, CoTracker3, is optional: the default point
    model (AllTracker) is MIT.
 
-**Choosing a licence for Kinetrace's own code** (the authors' decision):
+**The licence chosen (2026-09-27): PolyForm Noncommercial 1.0.0.** The
+authors' rule is "free for academic, non-commercial use", and the options were:
 
 | Option | Effect | Fits |
 |---|---|---|
@@ -180,13 +186,18 @@ Kinetrace's own source code for other labs:
 | **GPL-3.0** | open, and every redistributed derivative must stay open under the GPL | keeping forks open |
 | **PolyForm Noncommercial 1.0** | source available, **no commercial use** (not "open source" by the OSI definition) | a "non-commercial use only" rule |
 
-A permissive licence for the app plus a clear notice that CoTracker3 is
-non-commercial is the common pattern (it is how most tools built on
-CoTracker or SAM are published). If the "non-commercial only" rule must bind
-the app itself, PolyForm Noncommercial says that in software terms; Creative
-Commons licences are not recommended for code.
+PolyForm Noncommercial says "non-commercial only" in software terms (it has
+a patent grant, names educational institutions and public research
+organisations as permitted users regardless of funding, and gives 32 days to
+fix a violation); Creative Commons licences are not recommended for code, and
+a permissive licence (MIT / BSD / Apache) would allow commercial use of the
+app itself. It is "source-available", not "open source" by the OSI
+definition — the price of the non-commercial rule. Nothing in sections 2 and 3
+conflicts with it: the repository carries no third-party code, and every
+package licence allows Kinetrace's own code under any licence.
 
-**Before the repository is made public**, add the `LICENSE` file, check the
-institution's policy on releasing software written there and any grant's
-software-sharing terms, and add a `CITATION.cff` so other labs can cite
-Kinetrace alongside the model papers.
+**Still to do before a wide release:** check the institution's policy on
+software written there (it may want the College named as the copyright
+holder in the `Required Notice:` line) and any grant's software-sharing terms,
+and add a `CITATION.cff` so other labs can cite Kinetrace alongside the model
+papers.

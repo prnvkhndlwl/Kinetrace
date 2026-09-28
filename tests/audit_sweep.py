@@ -17,6 +17,7 @@ import traceback
 
 faulthandler.enable()
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
+os.environ.setdefault("KINETRACE_UPDATE_API", "http://127.0.0.1:9/api")   # never asks GitHub (G37)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
@@ -279,7 +280,7 @@ def drive_actions(state):
                 continue
         except RuntimeError:
             continue
-        if "Track" in label and "Undo" not in label and win.state == READY and win.btn_track.isEnabled():
+        if "Track" in label and "Undo" not in label and win.state == READY and win._track_blocked is None:
             continue                                # runs are driven explicitly
         for mode in ("cancel", "accept"):
             _CTX.update(state=state, what=f"menu: {label}", mode=mode)

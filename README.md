@@ -62,10 +62,14 @@ tracking? Start with the **[user manual](docs/MANUAL.md)**.
 with its Metal GPU) everything still works, only slower, and the one NVIDIA-only
 feature (SAM 3D Body) is greyed out with the reason. **Everything stays in the
 folder:** nothing is installed into the operating system, deleting the folder
-uninstalls Kinetrace, and it sends no usage data anywhere.
+uninstalls Kinetrace, and it sends no usage data anywhere. **Updating:**
+Help → Check for Updates… installs a newer version and restarts, keeping your
+projects and models (or, with the app closed, double-click `update.bat` /
+`Update.command`, or run `bash update.sh`).
 
-**Licences.** Kinetrace's own code has no licence chosen yet (all rights
-reserved until a `LICENSE` file is added). CoTracker3 is **non-commercial**
+**Licences.** Kinetrace is free for any **non-commercial** use — research,
+teaching, study — under the [PolyForm Noncommercial License 1.0.0](LICENSE.md)
+(developed at biomechLab@CMC). CoTracker3 is **non-commercial**
 (CC BY-NC 4.0); AllTracker is MIT; SAM 3 / SAM 3D Body are under Meta's SAM
 License (acknowledge them in publications). Every model and package is listed
 in **[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)**.

@@ -21,7 +21,7 @@ from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QP
 from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, QApplication, QDialog, QDialogButtonBox,
                                QDockWidget, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-                               QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QProgressDialog,
+                               QMenu, QMessageBox, QPlainTextEdit, QProgressDialog,
                                QPushButton, QSizePolicy, QSpinBox, QSplitter, QTextBrowser,
                                QToolButton, QVBoxLayout, QWidget)
 
@@ -520,6 +520,7 @@ class MainWindow(QMainWindow):
         self._member_frames: dict[int, dict] = {}   # frame -> {pid: (M,2)} overlay
         # _track_mode ("auto" | "semi") is a property over the Track menu's actions (I139)
         self._step_run = False                      # current run is a semi-auto step
+        self._track_blocked: str | None = None      # why Track cannot start here (G34)
         self._seg_backend = preferred_backend()     # segmentation model (Settings)
         self._point_backend = self._preferred_point_backend()   # Track dropdown
         self._mask_opacity = 0.35
@@ -954,11 +955,8 @@ class MainWindow(QMainWindow):
          else self.act_pm_cotracker).setChecked(True)
         self.btn_track.setMenu(menu_track)
 
-        self.progress = QProgressBar()
-        self.progress.setVisible(False)
-        self.progress.setMaximumWidth(220)
-        self.progress.setTextVisible(False)  # thin quiet bar; the timeline
-        # playhead, frame box and status fps/ETA already carry the numbers
+        # no run progress bar: it only repeated the timeline playhead; the status
+        # bar carries fps / ETA (G35)
 
         # The timeline panel IS the scrubber (click/drag it to seek): a separate
         # QSlider can never align with the lanes — its handle center is inset
@@ -1003,7 +1001,6 @@ class MainWindow(QMainWindow):
         tl.addWidget(self.btn_autopause)
         tl.addWidget(self.btn_roi)
         tl.addStretch(1)
-        tl.addWidget(self.progress)
         tl.addSpacing(8)
         tl.addWidget(self.btn_track)
         # With every tool button showing its label the bar needed ~1490 px, so
@@ -1506,6 +1503,15 @@ class MainWindow(QMainWindow):
         m_help.addAction(self.act_error_report)
         m_help.addAction(QAction("&Keyboard && Mouse Reference…", self,
                                  triggered=self._show_hotkeys))
+        m_help.addSeparator()
+        self.act_updates = QAction("Check for &Updates…", self, triggered=self._check_updates)
+        self.act_updates.setToolTip(
+            "Asks GitHub whether a newer Kinetrace has been published and, if so, installs it and restarts. "
+            "Your projects, models and settings are kept. Nothing is checked unless you ask.")
+        m_help.addAction(self.act_updates)
+        self.act_about = QAction(f"&About {APP_NAME}…", self, triggered=self._show_about)
+        self.act_about.setToolTip("Version, licence, where Kinetrace comes from, and the models it builds on")
+        m_help.addAction(self.act_about)
         # QMenu hides action tooltips unless told otherwise: every explanation
         # written on a menu entry (what a wizard needs, what an export holds)
         # was invisible until this (release sweep G1, 2026-09-22)
@@ -1714,7 +1720,6 @@ class MainWindow(QMainWindow):
         self.btn_pan.setEnabled(has_video)  # panning is view-only: fine mid-run
         for act in (self.act_mode_auto, self.act_mode_semi, self.act_track_all):
             act.setEnabled(not tracking)
-        self.progress.setVisible(tracking and not self._step_run)  # a 1-frame bar is noise
         self._update_track_button()
         self._refresh_onboarding()
 
@@ -1777,6 +1782,7 @@ class MainWindow(QMainWindow):
         if self.state == TRACKING:
             self.btn_track.setText("Pause ■  (X)")
             self.btn_track.setEnabled(True)
+            self._set_track_blocked(None)
             self.btn_track.setToolTip("Stop tracking (X or Space). Corrections are made while paused.")
             return
         s = self.session
@@ -1791,21 +1797,29 @@ class MainWindow(QMainWindow):
             self.btn_track.setText(self.btn_track.text() + f" · {n_cams} cams")   # Track ▾ → Every camera (G29)
         n = len([p for p in s.seedable_at(self.current) if scope is None or p in scope]) if s is not None else 0
         animal_ok = s is not None and s.animal_seedable_at(self.current)
+        # Nothing to start from: the button stays ENABLED, only drawn quiet, because Qt
+        # disables a disabled button's menu too and Track ▾'s choices must stay reachable;
+        # T / a click then says why instead of starting (G34)
+        self.btn_track.setEnabled(True)
         if self.state == IDLE:
-            self.btn_track.setEnabled(False)
-            self.btn_track.setToolTip("Open a video first")
+            blocked = "Open a video first (Ctrl+O) or a project (Ctrl+Shift+O)"
         elif s is None or (n == 0 and not animal_ok):
-            self.btn_track.setEnabled(False)
-            if s is not None and s.animal is not None:
-                self.btn_track.setToolTip(
-                    "Nothing to track from this frame: place a point (N), press S and click the "
-                    "segment here, or move to a frame where the points/segment exist")
+            if scope is not None:
+                blocked = (f"The selected point(s) have no position on frame {self.current}. Select a "
+                           "point that exists here, or clear the selection (Esc) to track everything")
+            elif s is not None and s.animal is not None:
+                blocked = ("Nothing to track from this frame: place a point (N), press S and click the "
+                           "segment here, or move to a frame where the points/segment exist")
             else:
-                self.btn_track.setToolTip("No point has a position at this frame — press N and "
-                                          "click the animal to add one (a few pixels is enough); "
-                                          "S outlines a larger animal, optionally")
+                blocked = ("No point has a position at this frame — press N and "
+                           "click the animal to add one (a few pixels is enough); "
+                           "S outlines a larger animal, optionally")
         else:
-            self.btn_track.setEnabled(True)
+            blocked = None
+        self._set_track_blocked(blocked)
+        if blocked is not None:
+            self.btn_track.setToolTip(blocked + ". Track ▾ still sets the mode and the point model.")
+        else:
             what = []
             if n:
                 what.append(f"the {n} selected point(s)" if scope is not None else f"all {n} point(s)")
@@ -1823,6 +1837,16 @@ class MainWindow(QMainWindow):
                 self.btn_track.setToolTip(
                     self.btn_track.toolTip() + f" — in each of the {n_cams} cameras that have them here, all at "
                     "the same time (Track ▾ → Every camera; X stops them all; one Ctrl+Z undoes all)")
+
+    def _set_track_blocked(self, reason: str | None):
+        """None = Track can start here; else the sentence T / a click shows. The
+        button is drawn quiet while blocked (the theme's [idle="true"] rule)."""
+        self._track_blocked = reason
+        idle = reason is not None
+        if self.btn_track.property("idle") != idle:
+            self.btn_track.setProperty("idle", idle)
+            self.btn_track.style().unpolish(self.btn_track)   # a dynamic property needs a re-polish
+            self.btn_track.style().polish(self.btn_track)
 
     @staticmethod
     def _preferred_point_backend() -> str:
@@ -1972,6 +1996,35 @@ class MainWindow(QMainWindow):
         lay.addWidget(btns)
         dlg.exec()
         dlg.deleteLater()
+
+    def _show_about(self):
+        """Help → About Kinetrace (G36)."""
+        from kinetrace import updatedialog
+        updatedialog.show_about(self, on_check=self._check_updates)
+
+    def _update_busy(self) -> str | None:
+        """Why an update must wait, or None (G37)."""
+        if self.state == TRACKING:
+            return "Stop tracking first (X), then press Update now."
+        if self._loading:
+            return "Wait until the videos have finished opening, then press Update now."
+        return None
+
+    def _check_updates(self):
+        """Help → Check for Updates… (G37): look, install, restart."""
+        from kinetrace import updatedialog
+        dlg = updatedialog.UpdateDialog(self, busy=self._update_busy, restart=self._restart_after_update)
+        dlg.exec()
+        dlg.deleteLater()
+
+    def _restart_after_update(self):
+        """Close the usual way (Save / Discard / Cancel for unsaved work), then
+        start Kinetrace again through its launcher; Cancel keeps it running."""
+        from kinetrace import update
+        if self.close():
+            update.relaunch()
+        else:
+            self.statusBar().showMessage("The new version starts the next time you open Kinetrace", 8000)
 
     def _error_context(self) -> str:
         """One line of where the program was, for an error-log entry. It can be
@@ -2330,12 +2383,19 @@ class MainWindow(QMainWindow):
     def _attach_video(self, info: VideoInfo, then=None):
         """Open `info` as a brand-new single-camera project (extra cameras are
         added afterwards with `_add_video_dialog`)."""
+        # Track ▾ is usable with no video open (G34): what was chosen there carries
+        # into this first video instead of snapping back to the defaults
+        chosen = None if self.project is not None else {
+            "track_mode": self._track_mode, "track_all": self.act_track_all.isChecked(),
+            "point_backend": self._point_backend}
         self._leave_project()   # unsaved work -> recovery, where the user was -> view sidecar
         self._teardown_video()
         self._epi_probe = None
         self._wand_result = (None, None)      # a new project: no wand run belongs to it (I33)
         self.project = Project([TrackingSession(info.path, info.n_frames, info.fps,
                                                 info.width, info.height)])
+        if chosen is not None:
+            self.session.ui_state.update(chosen)   # a recovered / opened copy replaces it with its own
         self._views = [_ViewRuntime(info, DEFAULT_CACHE_BYTES)]
         self.grid.set_count(1)
         self.grid.set_active(0)
@@ -5554,6 +5614,11 @@ class MainWindow(QMainWindow):
         Every camera for this one run."""
         if self.state == TRACKING:
             self._pause_tracking()
+            return
+        self._update_track_button()                  # the reason must be about THIS frame
+        blocked = getattr(self, "_track_blocked", None)
+        if blocked is not None:
+            self.toast.show_message(blocked + ".", "warn", 7000)   # instead of a silent no-op (G34)
         elif self.state == READY:
             every = self.act_track_all.isChecked() if all_cameras is None else all_cameras
             jobs = self._multi_jobs(step=self._track_mode == "semi") if every else []
@@ -6013,8 +6078,6 @@ class MainWindow(QMainWindow):
         self._last_emit_t = 0.0
         self.state = TRACKING
         self._apply_state()
-        self.progress.setRange(0, self.n_frames - 1)
-        self.progress.setValue(self.current)
         self._track_label.setText("starting…")
         self.worker.start()
         if driver is not None:
@@ -6080,7 +6143,6 @@ class MainWindow(QMainWindow):
             inst = len(new_frames) / max(now - self._last_emit_t, 1e-6)
             self._fps_ema = inst if not self._fps_ema else 0.9 * self._fps_ema + 0.1 * inst
         self._last_emit_t = now
-        self.progress.setValue(head)
         if self._fps_ema and not self._step_run:  # a 1-frame step has no useful ETA
             remaining = (self.n_frames - 1 - head) / max(self._fps_ema, 1e-6)
             mins, secs = divmod(round(remaining), 60)

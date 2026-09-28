@@ -127,9 +127,31 @@ ends by printing a **system check**: what it found and what your computer can
 run. If the connection drops, just start it again — it carries on where it
 stopped. Later launches start in a few seconds. The first time you press the
 **Track** button, and the first time you click on an animal, it downloads one
-more piece each. After that you never need an internet connection again.
+more piece each. After that you never need an internet connection again,
+except to get a newer version when you ask for one.
 
 If it ever fails to start, see [section 15](#15-when-something-goes-wrong).
+
+### Getting a newer version
+
+Open **Help → Check for Updates…**. The program asks GitHub whether a newer
+version has been published. It sends nothing about you or your computer, and
+it never checks unless you ask. If there is one, you see what is new, and
+**Update now** installs it. Only the program's own files are replaced: your
+projects, downloaded models, unsaved-work copies, saved skeletons and settings
+are kept. **Restart now** then closes the program (asking first if you have
+unsaved work) and starts the new version. If the new version needs extra
+supporting software, that first start installs it, which takes a few minutes
+and needs the internet.
+
+If the program will not start at all, update it with the program closed:
+double-click `update.bat` (Windows) or `Update.command` (Mac), or type
+`bash update.sh` in a terminal in the program folder (Ubuntu). Then start it as
+usual.
+
+**Help → About Kinetrace** shows which version you have, the licence (free for
+any non-commercial use, such as research, teaching and study) and the models
+the program builds on. Kinetrace is developed at biomechLab@CMC.
 
 ---
 
@@ -501,9 +523,10 @@ are selected, only those get tracked — useful later, confusing now. The Track
 button tells you which it will do: **Track ▶** means everything, **Track 1 sel. ▶**
 means only the one selected point.
 
-Press the blue **Track ▶** button (or the **T** key). If it is greyed out,
-nothing has a position on the frame you are on — hover over it and it says
-what to do.
+Press the blue **Track ▶** button (or the **T** key). If it looks grey instead
+of blue, nothing has a position on the frame you are on. Press it anyway and a
+notice says what to do. Its **▾** menu (the run mode, Every camera, the point
+model) still opens, so you can set those before anything is placed.
 
 Now watch. The video plays forward frame by frame, the markers move with the
 animal, the outline follows it (if you made one), and the timeline fills in from
@@ -2648,8 +2671,8 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Ctrl+S** / **Ctrl+Shift+S** | save the project / save it under a new name |
 | **Ctrl+E** | export your results |
 | **Ctrl+,** | settings (also the last entry of the **Segment ▾** dropdown) |
-| **F1** | this manual |
 | **F1** | this manual (**Help → User Manual**) |
+| **Help → Check for Updates…** | install a newer version, keeping your projects and models ([section 3](#getting-a-newer-version)) |
 
 ### Editing on the timeline
 

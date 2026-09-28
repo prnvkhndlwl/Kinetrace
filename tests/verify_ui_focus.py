@@ -54,12 +54,29 @@ pump()
 assert not win.btn_pan.isChecked(), "H with no video armed the pan tool"
 print("H ignored without a video OK")
 
+# ---- G34: Track (and so Track ▾) is usable with no video: it says why, starts nothing ----
+assert win.btn_track.isEnabled() and win.btn_track.menu().isEnabled(), "Track ▾ must open with no video"
+assert win._track_blocked and "Open a video" in win._track_blocked and win.btn_track.property("idle") is True
+win.toast.hide()
+QTest.keyClick(win, Qt.Key_T)
+pump()
+assert win.toast.isVisible() and "Open a video" in win.toast.text(), "T with no video must say why"
+win.toast.hide()
+QTest.mouseClick(win.btn_track, Qt.LeftButton, pos=QPoint(12, win.btn_track.height() // 2))
+pump()
+assert win.toast.isVisible() and "Open a video" in win.toast.text(), "a Track click with no video must say why"
+win.toast.hide()
+win.act_mode_semi.trigger()                        # chosen with no video open ...
+print("Track with no video explains itself, its menu stays usable (G34) OK")
+
 win._open_video(VID)
 for _ in range(300):
     pump(0.05)
     if win.state == READY:
         break
 assert win.state == READY
+assert win._track_mode == "semi", "a Track ▾ choice made with no video open must carry into the video (G34)"
+win.act_mode_auto.trigger()
 app.setActiveWindow(win)
 pump()
 
@@ -83,6 +100,8 @@ pump(0.3)
 assert win._controls.width() < full_w and win._controls_compact
 assert win.btn_pan.toolButtonStyle() == Qt.ToolButtonIconOnly, "the least-needed label folds first"
 assert win.btn_track.text().startswith("Track"), "the Track button keeps its text"
+from PySide6.QtWidgets import QProgressBar  # noqa: E402
+assert not win._controls.findChildren(QProgressBar), "no run progress bar in the control bar (G35)"
 assert win.btn_follow.toolTip(), "an icon-only button must keep its tooltip"
 win.resize(full_w + 600, 900)
 pump(0.3)
@@ -388,16 +407,12 @@ def _watchdog():
 
 QTimer.singleShot(300, _choices_in_menu)
 QTimer.singleShot(3000, _watchdog)
-# a disabled Track button disables its menu too: give this frame something to track
-_pid = win.session.add_point(win.current, 60.0, 60.0)
-win._refresh_point_list()
+# nothing to track on this frame: Track is drawn quiet, but it and its menu stay enabled (G34)
 win._update_track_button()
-assert win.btn_track.isEnabled(), "Track is enabled with a point on this frame"
+assert win._track_blocked is not None and win.btn_track.property("idle") is True, win._track_blocked
+assert win.btn_track.isEnabled() and win.btn_track.menu().isEnabled(), "Track ▾ must open with nothing to track"
 win.btn_track.showMenu()                        # blocks until the menu closes
 pump()
-win.session.remove_point(_pid)
-win._refresh_point_list()
-win._update_track_button()
 for _a, _t in _texts.items():
     _a.setText(_t)
 assert _g32.get("open"), "the Track menu did not open"
@@ -409,6 +424,28 @@ win.act_track_all.setChecked(False)
 (win.act_pm_alltracker if _backend0 == "alltracker" else win.act_pm_cotracker).trigger()
 win.act_mode_auto.trigger()
 print("the Track menu stays open while you tick: mode, Every camera and point model combine (G32) OK")
+
+# ---- G34: with nothing on this frame a Track click / T says why and starts nothing ----
+app.setActiveWindow(win)
+win.toast.hide()
+QTest.mouseClick(win.btn_track, Qt.LeftButton, pos=QPoint(12, win.btn_track.height() // 2))
+pump()
+assert win.state == READY and win.toast.isVisible() and "No point has a position" in win.toast.text(), \
+    f"a Track click with nothing to track must say why: {win.state} {win.toast.text()!r}"
+win.toast.hide()
+QTest.keyClick(win, Qt.Key_T)
+pump()
+assert win.state == READY and win.toast.isVisible() and "No point has a position" in win.toast.text()
+win.toast.hide()
+_pid = win.session.add_point(win.current, 60.0, 60.0)
+win._refresh_point_list()
+win._update_track_button()
+assert win._track_blocked is None and win.btn_track.property("idle") is False, "a point here makes Track loud again"
+win.session.remove_point(_pid)
+win._refresh_point_list()
+win._update_track_button()
+assert win._track_blocked is not None
+print("Track with nothing on this frame says why instead of doing nothing (G34) OK")
 
 # ---- one canvas tool at a time: Pan / Add / Segment put each other down ----------
 for b in (win.btn_pan, win.btn_add, win.btn_animal):

@@ -28,6 +28,10 @@ logs/
 # skeletons a user saves from the app
 skeletons/
 
+# Help -> Check for Updates: the download folder and the list of installed files
+/update/
+.kinetrace-release.json
+
 # editor / assistant settings
 .claude/
 .vscode/

@@ -45,13 +45,14 @@ def pump(cond, timeout, what):
 win._open_video(VID)
 pump(lambda: win.state == READY, 20, "video open")
 assert win.n_frames == 600 and win.session is not None
-assert win.btn_track.isEnabled() is False, "Track must be disabled with no points"
+assert win._track_blocked is not None, "Track cannot start with no points (G34: said, not greyed out)"
+assert win.btn_track.isEnabled(), "Track ▾ stays reachable with no points (G34)"
 
 # ---- add 4 points at GT frame 0 ----
 for d in range(4):
     win._on_add(float(GT[0, d, 0]), float(GT[0, d, 1]))
 assert win.session.n_points == 4 and win.point_list.count() == 4
-assert win.btn_track.isEnabled(), "Track should enable once points exist"
+assert win._track_blocked is None, "Track can start once points exist"
 
 # ---- full tracking run ----
 win.point_list.clearSelection()   # run scope = panel selection; none = everything

@@ -115,8 +115,10 @@ if exist "%VENV_HOME%\python.exe" (
         >> ".venv\pyvenv.cfg" echo executable = %VENV_HOME%\python.exe
     )
 )
-".venv\Scripts\python.exe" -m kinetrace %*
-if errorlevel 1 pause
+rem ONE line on purpose (I142): cmd reads a batch file as it goes, and Help ->
+rem Check for Updates may replace this file while the app runs; the pause and
+rem the exit are read before the app starts, so nothing of the new file runs.
+".venv\Scripts\python.exe" -m kinetrace %* || pause & exit /b
 
 :done
 endlocal

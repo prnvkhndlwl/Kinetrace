@@ -109,6 +109,16 @@ def imports_ok() -> tuple[bool, str]:
     return False, (lines[-1] if lines else f"exit code {r.returncode}")
 
 
+def torch_matches() -> bool:
+    """Is the installed torch the version this install.py pins? (a newer
+    Kinetrace that moves the pin must reinstall it, I142)"""
+    try:
+        from importlib.metadata import version
+        return version("torch").split("+")[0] == TORCH
+    except Exception:
+        return False
+
+
 def write_marker(choice: str) -> None:
     info = {"torch_build": choice, "torch": TORCH, "python": platform.python_version(),
             "platform": f"{platform.system()} {platform.machine()}",
@@ -166,9 +176,15 @@ def main(force: bool = False) -> int:
     choice = torch_choice()
     if not force:
         ok, _ = imports_ok()
-        if ok and os.path.exists(os.path.join(ALLTRACKER_DIR, "nets", "alltracker.py")):
-            if not os.path.exists(MARKER):
-                write_marker(choice)
+        if ok and torch_matches():
+            # the launchers only come here when the marker is missing -- a fresh
+            # folder, or an update that changed requirements.txt / install.py and
+            # deleted it (I142): install what the new list adds (a no-op, and no
+            # network, when everything is already there) instead of stopping at
+            # "every package imports"
+            pip("-r", os.path.join(HERE, "requirements.txt"))
+            fetch_alltracker()
+            write_marker(choice)
             say("Kinetrace install: already complete (every package imports). "
                 "Run with --force to reinstall the packages.")
             hardware_report()
