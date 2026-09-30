@@ -14,7 +14,7 @@
 - [Human bodies](https://github.com/prnvkhndlwl/Kinetrace/wiki/Human-Bodies)
 - [Export formats](https://github.com/prnvkhndlwl/Kinetrace/wiki/Export-Formats)
 - [Working with other programs](https://github.com/prnvkhndlwl/Kinetrace/wiki/Working-with-Other-Programs) — DeepLabCut, SLEAP, DLTdv, Anipose, OpenCV, MATLAB, Blender; the command-line converter
-- [Projects & autosave](https://github.com/prnvkhndlwl/Kinetrace/wiki/Projects-and-Autosave) — the project file format: [docs/FORMAT.md](docs/FORMAT.md)
+- [Projects & autosave](https://github.com/prnvkhndlwl/Kinetrace/wiki/Projects-and-Autosave) — the project folder, file by file: [docs/FORMAT.md](docs/FORMAT.md)
 - [Keyboard & mouse](https://github.com/prnvkhndlwl/Kinetrace/wiki/Keyboard-and-Mouse)
 - [Accuracy](https://github.com/prnvkhndlwl/Kinetrace/wiki/Accuracy)
 - [Performance (4K)](https://github.com/prnvkhndlwl/Kinetrace/wiki/Performance)

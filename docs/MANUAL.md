@@ -1089,7 +1089,9 @@ the numbers just get measured from the new starting point.
    anything unmistakable. Then for each other camera, tap **◂** or **▸** to
    shift it a frame at a time until it shows that same moment. If it is
    already showing the right moment, just press **Align here** and the offset
-   is worked out for you.
+   is worked out for you. Align here works on the reference camera's row too:
+   the reference never moves (it is the clock), so it sets the offset of the
+   camera you are working in, and every other camera keeps its own.
 4. The panel then reports the **overlap** — the stretch of frames for which every
    camera has a picture. 3D needs only two cameras to see a landmark at the
    same instant, so it can reach a little beyond that stretch.
@@ -1733,23 +1735,31 @@ positions and the bands back.
 
 ## 11. Saving and coming back later
 
-**Your project file changes only when you save it.** Press **Ctrl+S**. The
-first time, it asks where to put the **project file** (ending in `.kinetrace`);
+**Your project changes only when you save it.** Press **Ctrl+S**. The first
+time, it asks where to put the project and what to call it: the program makes a
+**folder** of that name ending in `.kinetrace` — that folder *is* your project;
 **Ctrl+Shift+S** saves it under a new name. It contains everything — all
 positions, the silhouette, your landmark names, events and notes, every camera
 and its offset, the calibration and the 3D results, lens profiles, body poses —
 and exactly how you left the program: the frame you were looking at, how far you
 were zoomed in, the timeline zoom, the side panel, the camera you were working
-in and every toggle. Opening it (**File → Open Project…**, **Ctrl+Shift+O**)
-puts you back exactly where you were.
+in and every toggle. Opening it (**File → Open Project…**, **Ctrl+Shift+O**:
+go into the project folder and choose its `kinetrace.json`) puts you back
+exactly where you were.
 
-**The save before is kept.** Every Ctrl+S keeps the previous save beside the
-project as `name.kinetrace.bak`. To go back one save, rename that file so it ends
-in `.kinetrace` and open it.
+**Saving is quick, even for a big project:** a save writes only what changed
+since the last one — correct one point and only that point's file is written.
+
+**The save before is kept.** The files a save replaced are kept inside the
+project folder, in `.history`: that is your previous save. To go back to it,
+close the project and run `python -m kinetrace.convert previous name.kinetrace`
+(once: it goes back one save). If the program or the computer stops *while*
+saving, the next time you open the project it is put back as it was at the save
+before, and the program says so.
 
 **Unsaved work is kept safe every 30 seconds** — also while tracking is running
-and when you close the program — in a *recovery copy*, never in your project
-file. So your last Ctrl+S is always there to go back to, and if the program or
+and when you close the program — in a *recovery copy*, never in your project.
+So your last Ctrl+S is always there to go back to, and if the program or
 the computer crashes you lose at most half a minute. The status bar shows
 *Unsaved work kept safe ✓* with the time.
 
@@ -1762,8 +1772,8 @@ the computer crashes you lose at most half a minute. The status bar shows
   the video: **click the notice** to see the list and restore it. **File →
   Recover Unsaved Work…** shows the same list (everything waiting, newest
   first) at any time.
-* **Moving or renaming the project file does not matter:** its unsaved work is
-  found by the project itself, not by the file's name or folder.
+* **Moving or renaming the project folder does not matter:** its unsaved work
+  is found by the project itself, not by its name or where it is.
 * If you open an **older copy** of a project while a newer copy has unsaved
   work, the program offers that work as a separate, unsaved copy. It never mixes
   two versions of a project.
@@ -1773,7 +1783,12 @@ the computer crashes you lose at most half a minute. The status bar shows
   you chose not to restore is moved into `recovery/declined`, work that could not
   be read into `recovery/damaged`; nothing there is deleted automatically.
 
-**Closing with unsaved changes** asks *Save changes?*: **Save** writes the
+**Closing** — the window's × or **File → Quit** (**Ctrl+Q**). **With unsaved
+changes** it asks *Save changes?* and lists what changed since your last save
+(*cam1: P1 (positions)*, *the events* …), so a point a stray click moved is
+seen before it is saved (a click on the video with a point selected places that
+point). If what changed was put back (Ctrl+Z), it says nothing differs any
+more. **Save** writes the
 project, **Discard** drops the unsaved work, **Cancel** keeps the program open.
 Closing that question any other way keeps the unsaved work for File → Recover
 Unsaved Work…. Moving through the video, zooming and switching toggles are not
@@ -1781,30 +1796,52 @@ changes that need saving: close without saving and the project still opens where
 you left it.
 
 **If a save fails** — the folder is gone or read-only, the drive is
-disconnected, or the file is open in another program — the program says so
-(*Could not save the project*) and nothing is written there: the previous save is
-unchanged. Your work is still in the program and in its recovery copy: use
+disconnected, or one of the project's files is open in another program (a CSV
+in Excel, for example) — the program says so (*Could not save the project*) and
+the save undoes itself: the previous save is unchanged. Your work is still in the program and in its recovery copy: use
 **File → Save Project As…** to save it somewhere else.
 
-**The project file is readable without Kinetrace.** It is an ordinary zip
-archive: unzip it and you find spreadsheet-style CSV files (one row per tracked
-frame and point, pixel positions counted from 0) and small JSON text files.
-Silhouettes and body poses are stored as NumPy `.npy` arrays, which Python,
-MATLAB and R can read.
+**The project is readable without Kinetrace.** Open the folder: every table
+is a spreadsheet-style CSV file that Excel, MATLAB, R or Python open directly —
+nothing to unzip. Each camera has a folder (`cameras/cam1`), and in it one file
+per landmark (`tracks/snout.csv`: one row per frame that has a position, pixel
+positions counted from 0), the landmark list (`points.csv`), events and notes;
+the segment's area and position per frame are in `silhouette/summary.csv`, the
+3D result in `reconstruction/points`. Silhouette outlines and body poses are
+NumPy `.npy` arrays, which Python, MATLAB and R can read. The folder's
+`README.txt` says what every file is. If you edit a file by hand, close the
+project in Kinetrace first; the program reads your edit the next time it opens
+the project. (`.cache` holds copies for fast opening and can be deleted; leave
+`.history` alone.)
 
-A project file does **not** contain the video itself, only where the video is on
-disk. Keep the project and its videos together (the same folders relative to
-each other) and you can move them anywhere, even to another computer or
-operating system: the program finds each video again. If it cannot, it asks you
+**One file, to e-mail or archive:** **File → Export Project as One File…**
+writes the whole project as a single `.kinetrace` file; **File → Open
+Project…** opens it like the folder. A project saved before September 2026 is
+such a single file: the first time you save it, the program offers to turn it
+into a folder (the single file is kept beside it as `name.kinetrace.bak`), or to
+keep saving it as one file.
+
+**Files for other programs, kept up to date:** **File → Keep Exports Up to
+Date…** — tick DLTdv8 (one file per camera, or every camera in one file for
+3D), DeepLabCut, MATLAB, a wide CSV or the 3D points, and after every save the
+program writes them into the project folder's `exports` folder (only the files
+whose data changed, in the background). The files your analysis reads are
+then always the latest.
+
+A project does **not** contain the video itself, only where the video is on
+disk. Keep the videos beside the project folder, or put them inside it in a
+folder called `videos`, and move the whole lot together: you can move it
+anywhere, even to another computer or operating system, and the program finds
+each video again. If it cannot, it asks you
 to point it at each one (*Locate video*). If the video you pick has a different number of
 frames from the one the project remembers, it warns you: that is usually another
 cut or take, and the tracks would sit on the wrong frames.
 
 **A camera whose video you cannot find** (you press Cancel, or it will not open)
 is left out of this session, and the program says so (*Opened without some
-cameras*). Your project file is **not** changed: it still holds that camera with
+cameras*). Your project is **not** changed: it still holds that camera with
 every point, track and the calibration, and nothing is saved over it
-automatically — Save asks for a new file name. To work with every camera, close
+automatically — Save asks for a new name. To work with every camera, close
 the program, make the videos reachable (connect the drive, or move them next to
 the project) and open the project again. Without the video of the camera you
 were working in when you saved, the project does not open at all.
@@ -1913,8 +1950,9 @@ left out, like in the other exports.
 
 **File → Import → Tracks…** reads points tracked or clicked somewhere else into
 the camera you are working in: a **DeepLabCut** CSV (the one it writes when it
-analyses a video), a **SLEAP** CSV, a **DLTdv** or **Argus** xypts CSV, or the
-`tracks.csv` of another Kinetrace project. The program recognises the format from
+analyses a video), a **SLEAP** CSV, a **DLTdv** or **Argus** xypts CSV, or a
+landmark's file from another Kinetrace project (`cameras/cam1/tracks/snout.csv`;
+it arrives under the file's name) — or an older project's `tracks.csv`. The program recognises the format from
 the file itself. If no video is open yet, it asks for the video the tracks
 belong to first.
 
@@ -2532,16 +2570,18 @@ the last 30 seconds before a crash is offered (*Unsaved changes found* /
 waiting. Work you once declined is in the `recovery/declined` folder inside the
 Kinetrace folder, and work that could not be read in `recovery/damaged`: rename
 such a file to end in `.kinetrace` and open it with File → Open Project…. The
-save before your last Ctrl+S is beside the project as `name.kinetrace.bak`.
+save before your last Ctrl+S is kept in the project folder's `.history`:
+`python -m kinetrace.convert previous name.kinetrace` goes back to it.
 
-**"Could not save the project".** Nothing was written, the previous save is
+**"Could not save the project".** The save undid itself, the previous save is
 unchanged, and your work is still in the program (and in its recovery copy).
-The folder may not exist or may be read-only, or the file may be open elsewhere:
-use **File → Save Project As…** to save somewhere else.
+The folder may not exist or may be read-only, or one of its files may be open
+in another program (close it there and save again): or use **File → Save
+Project As…** to save somewhere else.
 
 **"Opened without some cameras".** A camera's video was not where the project
 remembers it, and it was not located. That camera is left out of this session
-only: the project file still holds it, with all its points, tracks and the
+only: the project still holds it, with all its points, tracks and the
 calibration, and nothing is saved over it automatically (**Save** asks for a
 new name). Close without saving, make the videos reachable (connect the
 drive, or move them next to the project), and open the project again.
@@ -2693,6 +2733,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Ctrl+O** / **Ctrl+Shift+O** | open a video / a project |
 | **File → Open Folder of Videos…** | several cameras in one folder: tick which to import, choose the base camera |
 | **Ctrl+S** / **Ctrl+Shift+S** | save the project / save it under a new name |
+| **Ctrl+Q** | quit (File → Quit); asks first when there are unsaved changes |
 | **Ctrl+E** | export your results |
 | **Ctrl+,** | settings (also the last entry of the **Segment ▾** dropdown) |
 | **F1** | this manual (**Help → User Manual**) |

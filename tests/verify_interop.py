@@ -212,15 +212,30 @@ for label, text in (("sleap-io 'sleap' (alphabetical columns, a user label besid
 ok, msg = refused(write("sleap_two.csv", v14 + "track_1,0,0.9,300,300,0.9,320,320,0.9\n"), ["2 tracks", "one animal"])
 check(ok, "two tracks are refused with the reason", msg)
 
-print("\n[1d] Kinetrace tracks.csv (the project file's own)")
+print("\n[1d] Kinetrace's own tracks: one landmark's file of a project folder, an older tracks.csv")
 kp = os.path.join(OUT, "src.kinetrace")
 src.save(kp)
-with zipfile.ZipFile(kp) as z:
-    name = next(n for n in z.namelist() if n.endswith("/tracks.csv"))
-    p = write("tracks.csv", z.read(name).decode("utf-8"))
-check(trackio.detect(p) == "kinetrace", "recognised from frame, point, x, y")
-s, imp, summ = imported_into(p)
+lm = os.path.join(kp, "cameras", "cam1", "tracks", "tail base.csv")
+check(trackio.detect(lm) == "kinetrace", "a project folder's tracks/<landmark>.csv is recognised (frame, x, y)")
+s, imp, summ = imported_into(lm)
 m = exp
+check([q.name for q in s.points] == ["tail base"] and np.array_equal(s.tracked[:, 0], src.tracked[:, 1])
+      and np.array_equal(s.tracks[:, 0][m[:, 1]], src.tracks[:, 1][m[:, 1]])
+      and np.array_equal(s.confidence[:, 0][m[:, 1]], src.confidence[:, 1][m[:, 1]]),
+      "... named by its file, bit-exact positions and confidence")
+import csv as _csv  # noqa: E402
+import io as _io  # noqa: E402
+buf = _io.StringIO()
+cw = _csv.writer(buf, lineterminator="\n")
+cw.writerow(["frame", "point", "x", "y", "confidence", "visible", "hand_placed", "hidden"])
+for f_, j_ in zip(*np.nonzero(src.tracked | src.manual | src.occluded | src.visibility | (src.confidence != 0))):
+    x_, y_ = src.tracks[f_, j_]
+    cw.writerow([f_, src.points[j_].name, "" if np.isnan(x_) else str(x_), "" if np.isnan(y_) else str(y_),
+                 str(src.confidence[f_, j_]), int(src.visibility[f_, j_]), int(src.manual[f_, j_]),
+                 int(src.occluded[f_, j_])])
+p = write("tracks.csv", buf.getvalue())             # the format-1 project's long table
+check(trackio.detect(p) == "kinetrace", "an older project's tracks.csv is recognised from frame, point, x, y")
+s, imp, summ = imported_into(p)
 check(np.array_equal(s.tracked[:, :3], src.tracked) and np.array_equal(s.tracks[:, :3][m], src.tracks[m])
       and np.array_equal(s.confidence[:, :3][m], src.confidence[m]), "bit-exact positions and confidence")
 
@@ -611,7 +626,7 @@ code, out = convert("info", kp2)
 check(code == 0 and "'top'" in out and "3 point(s)" in out, "info: says what the project holds", out)
 moved = os.path.join(OUT, "elsewhere")
 os.makedirs(moved, exist_ok=True)
-shutil.copy(kp2, os.path.join(moved, "p.kinetrace"))
+shutil.copytree(kp2, os.path.join(moved, "p.kinetrace"))
 code, out = convert("check", os.path.join(moved, "p.kinetrace"))
 check(code == 0, "check: a copy in another folder still finds its video (by the recorded absolute path)", out)
 os.rename(vid, vid + ".away")
@@ -627,16 +642,22 @@ got_p = projectfile.load(os.path.join(OUT, "cli_imported.kinetrace")) if code ==
 check(got_p is not None and got_p.sessions[0].n_points == 5 and os.path.exists(kp2),
       "import: SLEAP tracks into a project, written as a new file", out)
 code, out = convert("import", kp2, "--tracks", os.path.join(OUT, "sleap14.csv"))
-check(code == 0 and os.path.exists(kp2 + ".bak") and projectfile.load(kp2).sessions[0].n_points == 5,
-      "import: into the project itself, the previous version kept as .bak", out)
-folder = os.path.join(OUT, "unzipped")
-with zipfile.ZipFile(kp2) as z_:
-    z_.extractall(folder)
-code, out = convert("pack", folder, os.path.join(OUT, "cli_packed.kinetrace"))
+check(code == 0 and os.path.isfile(os.path.join(kp2, ".history", "kinetrace.json"))
+      and projectfile.load(kp2).sessions[0].n_points == 5,
+      "import: into the project folder itself, the previous save kept in .history", out)
+code, out = convert("previous", kp2)
+check(code == 0 and projectfile.load(kp2).sessions[0].n_points == 3, "previous: the folder back one save", out)
+code, out = convert("pack", kp2, os.path.join(OUT, "cli_packed.kinetrace"))
 pk = projectfile.load(os.path.join(OUT, "cli_packed.kinetrace")) if code == 0 else None
 ref_p = projectfile.load(kp2)
-check(pk is not None and np.array_equal(pk.sessions[0].tracks, ref_p.sessions[0].tracks, equal_nan=True),
-      "pack: an unzipped (hand-edited) folder back into one file, unchanged", out)
+check(pk is not None and os.path.isfile(os.path.join(OUT, "cli_packed.kinetrace"))
+      and np.array_equal(pk.sessions[0].tracks, ref_p.sessions[0].tracks, equal_nan=True),
+      "pack: a project folder into one file, unchanged", out)
+code, out = convert("unpack", os.path.join(OUT, "cli_packed.kinetrace"), os.path.join(OUT, "cli_unpacked.kinetrace"))
+up = projectfile.load(os.path.join(OUT, "cli_unpacked.kinetrace")) if code == 0 else None
+check(up is not None and os.path.isdir(os.path.join(OUT, "cli_unpacked.kinetrace"))
+      and np.array_equal(up.sessions[0].tracks, ref_p.sessions[0].tracks, equal_nan=True),
+      "unpack: one file back into a project folder, unchanged", out)
 code, out = convert("masks", kp2, os.path.join(OUT, "cli_masks.json"))
 check(code == 0 and len(_json.load(open(os.path.join(OUT, "cli_masks.json"), encoding="utf-8"))["frames"]) == 3,
       "masks: a project's silhouettes as polygons", out)
@@ -656,21 +677,22 @@ code, out = convert("tracks", os.path.join(OUT, "dlc_multi.csv"), os.path.join(O
                     "--frames", "10")
 check(code == 2 and "multi-animal" in out, "a refused file: exit 2 and the reason", out)
 # docs/FORMAT.md's "Writing a project for Kinetrace" example, exactly as printed there
-mine = os.path.join(OUT, "myproject")
-os.makedirs(os.path.join(mine, "cameras", "cam1"), exist_ok=True)
-write(os.path.join("myproject", "kinetrace.json"), '{"format": "kinetrace-project", "format_version": 1,\n'
+mine = os.path.join(OUT, "myproject.kinetrace")
+os.makedirs(os.path.join(mine, "cameras", "cam1", "tracks"), exist_ok=True)
+write(os.path.join("myproject.kinetrace", "kinetrace.json"), '{"format": "kinetrace-project", "format_version": 2,\n'
       ' "cameras": [{"folder": "cam1", "name": "cam1"}]}\n')
-write(os.path.join("myproject", "project.json"), '{"cameras": [{"name": "cam1", "folder": "cam1",\n'
+write(os.path.join("myproject.kinetrace", "project.json"), '{"cameras": [{"name": "cam1", "folder": "cam1",\n'
       ' "video": {"relative_path": "../v.mp4"},\n "n_frames": 120, "fps": 30, "width": 640, "height": 480}]}\n')
-write(os.path.join("myproject", "cameras", "cam1", "tracks.csv"), "frame,point,x,y\n0,snout,120.5,88.25\n"
-      "1,snout,121.0,88.0\n")
+write(os.path.join("myproject.kinetrace", "cameras", "cam1", "tracks", "snout.csv"), "frame,x,y\n0,120.5,88.25\n"
+      "1,121.0,88.0\n")
 fmt_doc = open(os.path.join(ROOT, "docs", "FORMAT.md"), encoding="utf-8").read()
-check('"video": {"relative_path": "../clip.mp4"}' in fmt_doc and "0,snout,120.5,88.25" in fmt_doc,
+check('"video": {"relative_path": "../clip.mp4"}' in fmt_doc and "0,120.5,88.25" in fmt_doc
+      and "tracks/snout.csv" in fmt_doc,
       "docs/FORMAT.md still prints this example (tested here with this suite's video instead of clip.mp4)")
 code, out = convert("check", mine)
 check(code == 0, "FORMAT.md's three-file project checks clean", out)
-code, out = convert("pack", mine, os.path.join(OUT, "myproject.kinetrace"))
-mp = projectfile.load(os.path.join(OUT, "myproject.kinetrace")) if code == 0 else None
+code, out = convert("pack", mine, os.path.join(OUT, "myproject-one.kinetrace"))
+mp = projectfile.load(os.path.join(OUT, "myproject-one.kinetrace")) if code == 0 else None
 check(mp is not None and mp.sessions[0].points[0].name == "snout"
       and np.allclose(mp.sessions[0].tracks[0, 0], (120.5, 88.25)) and mp.sessions[0].confidence[1, 0] == 1.0,
       "... and packs into a .kinetrace with its point and positions", out)
@@ -682,7 +704,7 @@ for _ in range(300):
     if w2.state == READY and w2.project is not None:
         break
 check(w2.project is not None and w2.session.n_points == 1 and w2.session.tracked[1, 0],
-      "the unzipped folder also opens in the app (choosing its kinetrace.json)")
+      "the hand-written folder opens in the app (choosing its kinetrace.json)")
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Discard)
 w2.close()
 pump(0.3)

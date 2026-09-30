@@ -267,7 +267,11 @@ s2 = TrackingSession(paths[1], N, FPS, W, H)
 s1.add_point(5, 100, 100, name="eye")
 s2.add_point(5, 200, 200, name="tail")
 OLD = os.path.join(OUT, "shared_landmarks_old.kinetrace")
-Project([s1, s2], ["camA", "camB"], [0, 0]).save(OLD)
+if os.path.isdir(OLD):
+    __import__("shutil").rmtree(OLD)
+from kinetrace import projectfile  # noqa: E402
+# an older project: saved as one file (the form before I145), which opening must not rewrite
+projectfile.save(Project([s1, s2], ["camA", "camB"], [0, 0]), OLD, single_file=True)
 before = open(OLD, "rb").read()
 win._open_project_from_path(OLD)
 for _ in range(200):

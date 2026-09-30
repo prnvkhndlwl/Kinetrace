@@ -79,44 +79,67 @@ assert s4.points[0].name != "mutated", "snapshot must not alias live metas"
 print("remove/restore isolation OK")
 
 # ---- 5. unknown members load; a newer format and odd view state are handled ----
-import zipfile
-from kinetrace import projectfile
+# (both forms: the single file, a zip, and the project folder, I145)
+import shutil  # noqa: E402
+import zipfile  # noqa: E402
+from kinetrace import projectfile  # noqa: E402
+from kinetrace.project import Project  # noqa: E402
 s5 = TrackingSession("x.mp4", 8, 30.0, 100, 100)
 s5.add_point(0, 1.0, 1.0)
-p99 = os.path.join(SCRATCH, "future.kinetrace")
-s5.save(p99)
-with zipfile.ZipFile(p99) as z:
-    members = {n: z.read(n) for n in z.namelist()}
+for form in ("single file", "folder"):
+    p99 = os.path.join(SCRATCH, "future.kinetrace" if form == "single file" else "future-folder.kinetrace")
+    if os.path.isdir(p99):
+        shutil.rmtree(p99)
+    elif os.path.exists(p99):
+        os.remove(p99)
+    projectfile.save(Project([s5]), p99, single_file=form == "single file")
+    if form == "single file":
+        with zipfile.ZipFile(p99) as z:
+            members = {n: z.read(n) for n in z.namelist()}
+    else:
+        members = {}
+        for d_, _dirs, fs in os.walk(p99):
+            if os.sep + "." in d_:
+                continue
+            for f_ in fs:
+                full = os.path.join(d_, f_)
+                members[os.path.relpath(full, p99).replace(os.sep, "/")] = open(full, "rb").read()
 
-
-def rezip(changes):
-    with zipfile.ZipFile(p99, "w") as z:
+    def rezip(changes, form=form, p99=p99, members=members):
+        if form == "single file":
+            with zipfile.ZipFile(p99, "w") as z:
+                for n, b in {**members, **changes}.items():
+                    z.writestr(n, b)
+            return
         for n, b in {**members, **changes}.items():
-            z.writestr(n, b)
+            full = os.path.join(p99, *n.split("/"))
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "wb") as fh:
+                fh.write(b)
 
 
-rezip({"mystery_folder/extra.csv": b"a,b\n1,2\n"})           # a member this version does not know
-assert TrackingSession.load(p99).n_points == 1
-meta = json.loads(members["kinetrace.json"])
-rezip({"kinetrace.json": json.dumps(dict(meta, format_version=99)).encode()})
-try:
-    TrackingSession.load(p99)
-    raise AssertionError("a newer format must be refused")
-except projectfile.ProjectFileError as e:
-    assert "newer" in str(e), e
-# hand-edited state / view files with odd values fall back to defaults instead of refusing
-view = next(n for n in members if n.endswith("/view.json"))
-for bad in (b'"just a string"', b"[1,2,3]", b'{"tools": "x"}', b'{"zoom": "big", "current_frame": "a"}'):
-    rezip({"state.json": bad, view: bad})
-    r = TrackingSession.load(p99)
-    assert r.n_points == 1 and isinstance(r.ui_state, dict) and r.current_frame == 0
-rezip({"state.json": b"{invalid json"})
-try:
-    TrackingSession.load(p99)
-    raise AssertionError("unreadable JSON must be refused with its file name")
-except projectfile.ProjectFileError as e:
-    assert "state.json" in str(e), e
-print("unknown members / newer format / odd view state OK")
+    rezip({"mystery_folder/extra.csv": b"a,b\n1,2\n"})           # a member this version does not know
+    assert TrackingSession.load(p99).n_points == 1
+    meta = json.loads(members["kinetrace.json"])
+    rezip({"kinetrace.json": json.dumps(dict(meta, format_version=99)).encode()})
+    try:
+        TrackingSession.load(p99)
+        raise AssertionError("a newer format must be refused")
+    except projectfile.ProjectFileError as e:
+        assert "newer" in str(e), e
+    # hand-edited state / view files with odd values fall back to defaults instead of refusing
+    view = next(n for n in members if n.endswith("/view.json"))
+    for bad in (b'"just a string"', b"[1,2,3]", b'{"tools": "x"}', b'{"zoom": "big", "current_frame": "a"}'):
+        rezip({"state.json": bad, view: bad})
+        r = TrackingSession.load(p99)
+        assert r.n_points == 1 and isinstance(r.ui_state, dict) and r.current_frame == 0
+    rezip({"state.json": b"{invalid json"})
+    try:
+        TrackingSession.load(p99)
+        raise AssertionError("unreadable JSON must be refused with its file name")
+    except projectfile.ProjectFileError as e:
+        assert "state.json" in str(e), e
+    print(f"unknown members / newer format / odd view state OK ({form})")
 
 # ---- 6. tracker geometry helpers under hostile inputs (no model needed) ----
 from kinetrace.tracker import sample_members, fit_group  # noqa: E402

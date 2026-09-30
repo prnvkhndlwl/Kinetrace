@@ -171,6 +171,7 @@ HOTKEYS_HTML = f"""
 <h3>Files</h3><table>
 <tr><td class=k>Ctrl+O / Ctrl+Shift+O</td><td>open video / project</td></tr>
 <tr><td class=k>Ctrl+S / Ctrl+Shift+S</td><td>save project / save as (projects restore the exact working state)</td></tr>
+<tr><td class=k>Ctrl+Q</td><td>quit (File → Quit; asks first when there are unsaved changes)</td></tr>
 <tr><td class=k>Ctrl+E</td><td>export tracks (CSV / TSV / MATLAB; events included)</td></tr>
 <tr><td class=k>Ctrl+,</td><td>Settings: segmentation model, access token, silhouette opacity (also the last entry of the Segment ▾ menu)</td></tr>
 </table>
@@ -430,18 +431,24 @@ def _retire(th) -> None:
 
 
 class _SaveWorker(QThread):
-    """Writes a frozen project off the GUI thread (projectfile.write: zip,
-    temp file, os.replace). Autosave does not wait for it; Save does, while
-    the window keeps repainting."""
+    """Writes a frozen project off the GUI thread: the project folder
+    (projectfile.write_folder_over: only the files that changed, I145) or a
+    single file (projectfile.write: the recovery copies, Export Project as One
+    File). Autosave does not wait for it; Save does, while the window keeps
+    repainting. `stats` = what the folder save wrote."""
     done = Signal(bool, str)
 
-    def __init__(self, frozen, path, **kw):
+    def __init__(self, frozen, path, folder: bool = False, **kw):
         super().__init__()
-        self._frozen, self._path, self._kw = frozen, path, kw
+        self._frozen, self._path, self._folder, self._kw = frozen, path, folder, kw
+        self.stats: dict | None = None
 
     def run(self):
         try:
-            projectfile.write(self._frozen, self._path, **self._kw)
+            if self._folder:
+                self.stats = projectfile.write_folder_over(self._frozen, self._path, **self._kw)
+            else:
+                projectfile.write(self._frozen, self._path, **self._kw)
             self.done.emit(True, "")
         except Exception as e:      # noqa: BLE001 - reported to the user, never silent
             self.done.emit(False, f"{type(e).__name__}: {e}")
@@ -495,6 +502,10 @@ class MainWindow(QMainWindow):
         self._saved_at: str | None = None
         self._save_worker: _SaveWorker | None = None
         self._saving = False
+        # an older single-file project the user chose to keep as one file (I145)
+        self._keep_single_file = False
+        self._video_dirs: list[Path] = []          # where a project's videos are looked for by name
+        self._exports_worker = None                # refreshes the project's exports/ after a save (G42)
         self._recovery_sig = None
         self._camera_entries: list = []
         self._project_dir: Path | None = None
@@ -1211,6 +1222,12 @@ class MainWindow(QMainWindow):
                                 triggered=self._save_project)
         self.act_save_as = QAction("Save Project &As…", self, shortcut=QKeySequence("Ctrl+Shift+S"),
                                    triggered=self._save_project_as)
+        self.act_export_one = QAction("Export Project as &One File…", self, triggered=self._export_single_file)
+        self.act_export_one.setToolTip("The whole project in one .kinetrace file, to e-mail or archive "
+                                       "(File → Open Project opens it); the project folder stays as it is")
+        self.act_exports = QAction("&Keep Exports Up to Date…", self, triggered=self._exports_dialog)
+        self.act_exports.setToolTip("Choose files for DeepLabCut, DLTdv or MATLAB that are written into the "
+                                    "project folder's exports/ at every save, whenever their data changed")
         self.act_recover = QAction("&Recover Unsaved Work…", self, triggered=self._recover_dialog)
         self.act_recover.setToolTip("Work that was never saved (the program closed, or you chose not to "
                                     "save) is kept in Kinetrace's recovery folder: open it from here")
@@ -1241,8 +1258,14 @@ class MainWindow(QMainWindow):
         self._m_import = m_import
         for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks):
             m_import.addAction(a)
-        for a in (self.act_export, self.act_overlay):
-            m_file.addAction(a)
+        # File → Quit (owner 2026-09-29): the same close as the window's ×, so unsaved
+        # changes are asked about first; Ctrl+Q (Cmd+Q on a Mac, where Qt moves it to the app menu)
+        self.act_quit = QAction("&Quit", self, shortcut=QKeySequence("Ctrl+Q"), triggered=self.close)
+        self.act_quit.setMenuRole(QAction.QuitRole)
+        self.act_quit.setToolTip("Close Kinetrace (asks first when there are unsaved changes)")
+        for a in (self.act_export, self.act_exports, self.act_overlay, None, self.act_export_one, None,
+                  self.act_quit):
+            m_file.addSeparator() if a is None else m_file.addAction(a)
 
         m_edit = self.menuBar().addMenu("&Edit")
         self.act_undo = QAction("&Undo Last Run / Edit", self,
@@ -1689,6 +1712,8 @@ class MainWindow(QMainWindow):
         self.act_body_clear.setEnabled(has_body and not tracking)
         self.act_save.setEnabled(has_video and not tracking)
         self.act_save_as.setEnabled(has_video and not tracking)
+        self.act_export_one.setEnabled(has_video and not tracking)
+        self.act_exports.setEnabled(has_video and not tracking)
         self.act_open.setEnabled(not tracking)
         self.act_open_folder.setEnabled(not tracking)
         self.act_open_proj.setEnabled(not tracking)
@@ -2295,7 +2320,7 @@ class MainWindow(QMainWindow):
             if save_to:
                 self._busy_step(f"Saving the project as {Path(save_to).name}…")
                 self.project_path = Path(save_to)
-                self._project_dir = self.project_path.resolve().parent
+                self._project_dir = self.project_path.resolve()     # a project folder (I145)
                 if self._save_project():
                     saved = f" Saved as {self.project_path.name}."
         except Exception:
@@ -2409,8 +2434,9 @@ class MainWindow(QMainWindow):
 
         if then is None:
             self.project_path = None
+            self._keep_single_file = False
             self._project_id, self._saved_at, self._recovery_sig = projectfile.new_id(), None, None
-            self._camera_entries, self._project_dir = [], None
+            self._camera_entries, self._project_dir, self._video_dirs = [], None, []
             earlier = recovery.for_video(info.path)
             if earlier is not None:
                 self._offer_video_recovery(earlier)
@@ -2760,10 +2786,13 @@ class MainWindow(QMainWindow):
         p = self.project
         if p is None or not (0 <= i < p.n_views) or i == p.active:
             return
+        # on the reference's row the WORKING camera is the one retimed (G13)
+        ref = i == REFERENCE_VIEW
         shown = self._views[i].want_frame
         if shown is None:
             self.statusBar().showMessage(
-                f"{p.name(i)} has no frame at this instant — nudge its offset first", 5000)
+                f"{p.name(i)} has no frame at this instant — nudge "
+                f"{p.name(p.active) + chr(39) + 's' if ref else 'its'} offset first", 5000)
             return
         had_3d = p.reconstruction is not None
         off = p.align_to(i, shown, self.current)
@@ -2771,6 +2800,8 @@ class MainWindow(QMainWindow):
         self._refresh_companions()
         self._refresh_cameras()
         self.statusBar().showMessage(
+            f"{p.name(p.active)} aligned to the reference {p.name(i)}: offset {off:+g} frames"
+            if ref else
             f"{p.name(i)} aligned: offset {off:+g} frames against {p.name(p.active)}", 6000)
 
     def _refresh_cameras(self):
@@ -6613,10 +6644,11 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             pass            # a hand-edited state.json with odd values: keep the defaults
 
-    def _start_writer(self, frozen, path, on_done=None, wait: bool = False, **kw):
-        """Run projectfile.write on a worker thread. wait=True returns (ok,
+    def _start_writer(self, frozen, path, on_done=None, wait: bool = False, folder: bool = False, **kw):
+        """Run projectfile.write (a single file) or write_folder_over (the
+        project folder, `folder`) on a worker thread. wait=True returns (ok,
         error) after it finished, the window repainting meanwhile."""
-        w = _SaveWorker(frozen, path, **kw)
+        w = _SaveWorker(frozen, path, folder, **kw)
         result = {}
 
         def finished(ok, err):
@@ -6654,7 +6686,8 @@ class MainWindow(QMainWindow):
         info = dict(base_saved_at=self._saved_at,
                     last_path=str(self.project_path) if self.project_path else None,
                     videos=[x.video_path for x in p.sessions], temporary=self._saved_at is None)
-        frozen = projectfile.freeze(p, self._ui_global_state(), pid, target=self.project_path, binary_tracks=True)
+        frozen = projectfile.freeze(p, self._ui_global_state(), pid, target=self.project_path, binary_tracks=True,
+                                    layout=self._project_layout())
 
         def done(ok, err):
             if ok:
@@ -6686,6 +6719,12 @@ class MainWindow(QMainWindow):
                                                                    "user_zoomed", "timeline")}}
                             for x in self.project.sessions]}, self._saved_at)
 
+    def _project_layout(self) -> str:
+        """"zip" while this project is an older single file the user chose to
+        keep as one (I145); "folder" otherwise."""
+        p = self.project_path
+        return "zip" if p is not None and p.is_file() and self._keep_single_file else "folder"
+
     def _save_project(self) -> bool:
         if self.project_path is None:
             return self._save_project_as()
@@ -6693,56 +6732,220 @@ class MainWindow(QMainWindow):
             return False
         if self._save_worker is not None and self._save_worker.isRunning():
             self._save_worker.wait()
+        if self._exports_worker is not None and self._exports_worker.isRunning():
+            self._exports_worker.wait()          # it reads the folder this save rewrites (G42)
+        path = self.project_path
+        if path.is_file() and not self._keep_single_file:
+            # a project saved before I145 is one zip: offer the folder (once per project)
+            ans = QMessageBox.question(
+                self, "Save as a project folder?",
+                f"{path.name} is a single-file project (the older form). Kinetrace now keeps a project as a "
+                "FOLDER of the same name: every table is a CSV you can open directly, and a save writes only "
+                f"what changed.\n\nSave it as a folder? The single file is kept beside it as {path.name}.bak.\n"
+                "(No keeps saving it as one file.)",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes)
+            if ans == QMessageBox.Cancel:
+                return False
+            self._keep_single_file = ans == QMessageBox.No
+        folder = self._project_layout() == "folder"
         self._saving = True
         try:
             self._sync_ui_state()
             sig = self._signature()
             saved_at = projectfile.timestamp()
             frozen = projectfile.freeze(self.project, self._ui_global_state(), self._project_id,
-                                        target=self.project_path, saved_at=saved_at)
+                                        target=path, saved_at=saved_at, layout="folder" if folder else "zip")
             self.statusBar().showMessage("Saving…")
-            ok, err = self._start_writer(frozen, self.project_path, wait=True)
+            ok, err = self._start_writer(frozen, path, wait=True, folder=folder)
         finally:
             self._saving = False
         if not ok:
             QMessageBox.critical(
                 self, "Could not save the project",
-                f"{self.project_path}\n\n{err}\n\nNothing was written there: the previous save is unchanged. "
-                "Check that the folder exists, that you may write to it and that the file is not open "
-                "elsewhere, then use File → Save Project As… to save somewhere else. Your work is still in "
-                "the program, and a recovery copy is kept.")
+                f"{path}\n\n{err}\n\nNothing was changed there: the previous save is as it was. "
+                "Check that the folder exists, that you may write to it and that none of its files is open in "
+                "another program (a CSV in Excel, for example), then save again or use File → Save Project "
+                "As… to save somewhere else. Your work is still in the program, and a recovery copy is kept.")
             return False
+        stats = self._save_worker.stats if folder else None
         self._saved_at = saved_at
-        self.project.path = str(self.project_path)
+        self.project.path = str(path)
+        if folder:
+            self._project_dir = path.resolve()        # videos are found relative to the folder itself
         if self._signature() == sig:          # nothing changed while it was writing
             self.project.dirty = False
         recovery.discard(self._project_id)
         self._recovery_sig = None
         extra = (f" ({self.project.n_views} cameras)" if self.project.n_views > 1 else "")
-        self.statusBar().showMessage(f"Project saved ✓  {self.project_path.name}{extra}", 4000)
+        what = ""
+        if stats is not None:
+            n = max(0, stats["written"] - 1) + stats["removed"]      # kinetrace.json changes every time
+            what = f" · {n} file{'s' if n != 1 else ''} updated" if n else " · nothing else changed"
+        self.statusBar().showMessage(f"Project saved ✓  {path.name}{extra}{what}", 5000)
+        if folder and self.project.exports:
+            self._refresh_exports()
         return True
+
+    def _changes_text(self, most: int = 8) -> str:
+        """For the close question (G44, owner 2026-09-29): what differs from
+        the last save, in words ("cam1: P1 (positions)") — a stray click that
+        moved a point is then seen before it is saved. '' when that cannot be
+        told (never saved, a single file)."""
+        p, path = self.project, self.project_path
+        if p is None or path is None or self._project_layout() != "folder":
+            return ""
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._sync_ui_state()
+            frozen = projectfile.freeze(p, self._ui_global_state(), self._project_id, target=path)
+            got = projectfile.changes_since_save(frozen, path)
+            if got is None:
+                return ""
+            folders = projectfile.camera_folders(p.names)
+            lm = {f: dict(zip(projectfile.landmark_files([q.name for q in s.points]), [q.name for q in s.points]))
+                  for f, s in zip(folders, p.sessions)}
+            lines = projectfile.describe_changes(*got, list(zip(folders, p.names)), lm)
+        except Exception:        # noqa: BLE001 - the question still works without the list
+            return ""
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not lines:
+            return ("Nothing differs from your last save any more (what changed was put back), so "
+                    "saving or not ends the same.\n\n")
+        more = f"\n  … and {len(lines) - most} more" if len(lines) > most else ""
+        return "Changed since your last save:\n" + "\n".join(f"  • {x}" for x in lines[:most]) + more + "\n\n"
+
+    def _project_target(self, path: str) -> Path | None:
+        """Where Save As may put a project folder (I145), or None after saying
+        why not: never inside another project's folder, never over a folder
+        that is not a project, and over another project only when asked."""
+        p = Path(path)
+        if p.name.lower() == projectfile.META:
+            p = p.parent
+        if not p.name.lower().endswith(PROJECT_SUFFIX):
+            p = p.with_name(p.name + PROJECT_SUFFIX)
+        inside = next((a for a in p.parents if projectfile.is_folder_project(a)), None)
+        if inside is not None:
+            QMessageBox.warning(self, "Save project",
+                                f"{p.name} would be inside the project folder\n{inside}\n\nChoose a place "
+                                "outside it (a project cannot hold another project).")
+            return None
+        if p.is_dir():
+            if projectfile.is_folder_project(p):
+                mine = self.project_path is not None and p.resolve() == self.project_path.resolve()
+                if not mine and QMessageBox.question(
+                        self, "Replace project?",
+                        f"{p.name} is already a Kinetrace project folder.\n\nReplace that project with this one? "
+                        "(Its last save stays in its .history folder until the next save.)",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                    return None
+            elif any(p.iterdir()):
+                QMessageBox.warning(self, "Save project",
+                                    f"{p}\n\nis a folder that is not a Kinetrace project. Choose another name.")
+                return None
+        return p
 
     def _save_project_as(self) -> bool:
         if self.session is None:
             return False
         base = self.project_path or (Path(self.info.path) if self.info else None)
         start = str(base.with_suffix(PROJECT_SUFFIX)) if base else ""
-        path, _ = QFileDialog.getSaveFileName(self, "Save project", start,
-                                              f"Kinetrace project (*{PROJECT_SUFFIX})")
+        path, _ = QFileDialog.getSaveFileName(self, "Save project (a folder of this name is made)", start,
+                                              f"Kinetrace project folder (*{PROJECT_SUFFIX})")
         if not path:
             return False
-        if not path.endswith(PROJECT_SUFFIX):
-            path += PROJECT_SUFFIX
-        before = (self.project_path, self._project_id, self._saved_at)
-        # a new file is a new project: its own id, so the two files never share
-        # unsaved work
-        self.project_path, self._project_id = Path(path), projectfile.new_id()
-        self._project_dir = Path(path).resolve().parent
+        target = self._project_target(path)
+        if target is None:
+            return False
+        before = (self.project_path, self._project_id, self._saved_at, self._keep_single_file, self._project_dir)
+        # a new project folder is a new project: its own id, so the two never
+        # share unsaved work
+        self.project_path, self._project_id = target, projectfile.new_id()
+        self._keep_single_file = False
+        self._project_dir = target.resolve()
         if not self._save_project():
-            self.project_path, self._project_id, self._saved_at = before
+            (self.project_path, self._project_id, self._saved_at, self._keep_single_file,
+             self._project_dir) = before
             return False
         recovery.discard(before[1])
         return True
+
+    def _export_single_file(self) -> None:
+        """File → Export Project as One File: the whole project (the folder's
+        files, not its .cache / .history / exports) in one .kinetrace zip, to
+        e-mail or archive. Kinetrace opens it like a folder (I145)."""
+        if self.project is None or self._saving:
+            return
+        base = self.project_path or Path(self.info.path)
+        start = str(base.with_name(base.name.removesuffix(PROJECT_SUFFIX).rsplit(".", 1)[0]
+                                   + " (one file)" + PROJECT_SUFFIX))
+        path, _ = QFileDialog.getSaveFileName(self, "Export project as one file", start,
+                                              f"Kinetrace project, one file (*{PROJECT_SUFFIX})")
+        if not path:
+            return
+        out = Path(path if path.lower().endswith(PROJECT_SUFFIX) else path + PROJECT_SUFFIX)
+        if out.is_dir():
+            QMessageBox.warning(self, "Export project as one file",
+                                f"{out}\n\nis a folder (a project folder, perhaps). Choose another name.")
+            return
+        if self._save_worker is not None and self._save_worker.isRunning():
+            self._save_worker.wait()
+        self._sync_ui_state()
+        frozen = projectfile.freeze(self.project, self._ui_global_state(), self._project_id, target=out,
+                                    layout="zip")
+        self.statusBar().showMessage("Writing the single file…")
+        ok, err = self._start_writer(frozen, out, wait=True, backup=False)
+        if not ok:
+            QMessageBox.critical(self, "Could not export the project", f"{out}\n\n{err}")
+            return
+        self.toast.show_message(f"Project written as one file: <b>{out.name}</b> "
+                                f"({out.stat().st_size / 1e6:.1f} MB). File → Open Project opens it; "
+                                "your project folder is unchanged.", "success", 9000)
+
+    def _exports_dialog(self) -> None:
+        """File → Keep Exports Up to Date… (G42): the formats written into the
+        project folder's exports/ at every save."""
+        from kinetrace.autoexport import ExportsDialog
+        p = self.project
+        if p is None:
+            return
+        dlg = ExportsDialog(self, p.exports, p.n_views, p.reconstruction is not None,
+                            self.project_path if self._project_layout() == "folder" else None)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        chosen = dlg.chosen()
+        if chosen == p.exports:
+            return
+        p.exports = chosen
+        p.sessions[p.active].dirty = True            # a project setting: saved with the project
+        if not chosen:
+            self.statusBar().showMessage("Exports on save switched off (files already in exports/ are kept)", 6000)
+            return
+        self.toast.show_message("These files are written into the project's <b>exports</b> folder at every "
+                                "save, only when their data changed. Save the project (Ctrl+S) to write them "
+                                "now.", "info", 9000)
+
+    def _refresh_exports(self) -> None:
+        """Bring exports/ up to date with the save just made, off the GUI
+        thread, from the saved folder itself (so they match it exactly)."""
+        from kinetrace.autoexport import ExportsWorker
+        if self._exports_worker is not None and self._exports_worker.isRunning():
+            self._exports_worker.wait()
+        scorer = "Kinetrace_" + {"alltracker": "AllTracker", "cotracker3": "CoTracker3"}.get(
+            self._point_backend, "Kinetrace")
+        w = ExportsWorker(self.project_path, list(self.project.exports), scorer)
+        w.done.connect(self._on_exports_done)
+        self._exports_worker = w
+        self.statusBar().showMessage("Updating exports/…", 3000)
+        w.start()
+
+    def _on_exports_done(self, written: list, errors: list) -> None:
+        if errors:
+            self.toast.show_message("Some exports could not be written:<br>" + "<br>".join(errors[:4]),
+                                    "warn", 12000)
+        elif written:
+            self.statusBar().showMessage(f"exports/ updated ✓  {', '.join(written[:4])}"
+                                         f"{' …' if len(written) > 4 else ''}", 6000)
 
     def _import_tracks_dialog(self, path: str | None = None):
         """File → Import Tracks: another program's 2D tracks into the camera on
@@ -6898,9 +7101,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Imported {Path(path).name}", 6000)
 
     def _open_project_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open project", "",
-                                              f"Kinetrace project (*{PROJECT_SUFFIX});;"
-                                              "Unzipped project folder (kinetrace.json)")
+        # a project is a FOLDER (I145): the user opens it and picks its kinetrace.json;
+        # a single-file project (*.kinetrace) is picked directly
+        path, _ = QFileDialog.getOpenFileName(self, "Open project — in a project folder, choose kinetrace.json",
+                                              str(self._project_dir or ""),
+                                              f"Kinetrace project (kinetrace.json *{PROJECT_SUFFIX})")
         if path:
             self._open_project_from_path(path)
 
@@ -6949,21 +7154,22 @@ class MainWindow(QMainWindow):
         return Path(vpath) if vpath else None
 
     def _find_video(self, i: int, proj: Project) -> Path | None:
-        """Camera i's video on THIS computer: the path relative to the project
-        file, its absolute path, the same file name next to the project or to
-        a camera found earlier (paths saved on another OS work) — only then
-        ask the user."""
+        """Camera i's video on THIS computer: the path relative to the project,
+        its absolute path, the same file name in the project folder, its
+        videos/ folder, beside it, or beside a camera found earlier (paths
+        saved on another OS work) — only then ask the user."""
         entries = self._camera_entries or []
         entry = entries[i] if i < len(entries) else {"video": {"path": proj.sessions[i].video_path}}
-        extra = [Path(x.video_path).parent for x in proj.sessions if x.video_path and Path(x.video_path).is_file()]
+        extra = list(self._video_dirs)
+        extra += [Path(x.video_path).parent for x in proj.sessions if x.video_path and Path(x.video_path).is_file()]
         got = projectfile.locate_video(entry, self._project_dir, extra)
         return got if got is not None else self._locate_video(Path(proj.sessions[i].video_path), proj.name(i))
 
     def _open_project_from_path(self, path: str, recovered: dict | None = None):
-        """Open a .kinetrace file (or an unzipped folder with the same layout).
-        `recovered`: the file is a recovery copy chosen in Recover Unsaved Work."""
-        if Path(path).name.lower() == "kinetrace.json":
-            path = str(Path(path).parent)            # an unzipped project: its folder is the project
+        """Open a project folder (given as the folder or its kinetrace.json) or
+        a single-file .kinetrace. `recovered`: the file is a recovery copy
+        chosen in Recover Unsaved Work."""
+        path = str(projectfile.project_root(path))   # kinetrace.json -> its folder, the project
         if self.state == TRACKING:
             return
         pname = Path(path).name
@@ -6994,11 +7200,11 @@ class MainWindow(QMainWindow):
             # a recovery copy: Save goes back to the project it came from when
             # that file is still the save the work started from
             last = recovered.get("last_path")
-            file_path = Path(last) if last and Path(last).is_file() else None
+            file_path = Path(last) if last and projectfile.is_project(last) else None
             saved_at = recovered.get("base_saved_at") if file_path is not None else None
             if file_path is not None:
-                try:
-                    if projectfile.read(file_path)[2].get("saved_at") != saved_at:
+                try:        # which save it is: kinetrace.json alone, not the whole project
+                    if projectfile.read_meta(file_path).get("saved_at") != saved_at:
                         file_path, saved_at = None, None      # saved elsewhere since: a separate copy
                 except projectfile.ProjectFileError:
                     file_path, saved_at = None, None
@@ -7045,7 +7251,21 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not open project", f"{path}\n\nNo camera views.")
             return
         self._camera_entries = list(meta.get("_cameras") or [])
-        self._project_dir = Path(path).resolve().parent if Path(path).is_file() else Path(path).resolve()
+        # relative video paths start at the project folder itself (format 2) or at
+        # the folder holding a single file; a recovery copy uses its project's
+        home = file_path if (recovered is not None and file_path is not None) else Path(path)
+        try:
+            home_meta = projectfile.read_meta(home) if home != Path(path) else meta
+        except projectfile.ProjectFileError:
+            home, home_meta = Path(path), meta
+        self._project_dir = projectfile.video_base(home, home_meta)
+        root = projectfile.project_root(home).resolve()
+        self._video_dirs = ([root, root / projectfile.VIDEOS_DIR] if root.is_dir() else []) + [root.parent]
+        if meta.get("_interrupted") == "undone":
+            self.toast.show_message("The last save of this project was cut short (the program or the computer "
+                                    "stopped while saving), so the project was put back as it was at the save "
+                                    "before. Anything since then is in File → Recover Unsaved Work….",
+                                    "warn", 15000)
         master = proj.sessions[proj.active]
         video = self._find_video(proj.active, proj)
         if video is None:
@@ -7073,6 +7293,7 @@ class MainWindow(QMainWindow):
                         "a different cut of the same recording, the tracks will sit on the wrong frames.")
             master.video_path = info.path
             self.project_path = file_path
+            self._keep_single_file = False
             self._project_id, self._saved_at, self._recovery_sig = pid, saved_at, None
             self._adopt_project(proj, info, located=located, infos=infos)
             if unsaved:
@@ -8336,8 +8557,9 @@ class MainWindow(QMainWindow):
             name = self.project_path.name if self.project_path else "this project"
             r = QMessageBox.question(
                 self, "Save changes?",
-                f"Save the changes to {name} before closing?\n\nIf you don't save, the unsaved work is "
-                "dropped. (Closing this dialog keeps it for File → Recover Unsaved Work….)",
+                f"Save the changes to {name} before closing?\n\n{self._changes_text()}If you don't save, "
+                "the unsaved work is dropped. (Closing this dialog keeps it for File → Recover Unsaved "
+                "Work….)",
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
             if r == QMessageBox.Cancel:
                 ev.ignore()
@@ -8356,6 +8578,9 @@ class MainWindow(QMainWindow):
             self._leave_project()
         if self._save_worker is not None and self._save_worker.isRunning():
             self._save_worker.wait()
+        if self._exports_worker is not None and self._exports_worker.isRunning():
+            self._exports_worker.cancel()            # stops between files (G42)
+            self._exports_worker.wait()
         # Every thread this window owns must be stopped before the interpreter
         # tears Qt down, or Qt aborts ("QThread: Destroyed while thread is
         # still running" = exit 0xC0000409 on Windows). Only the working
@@ -8426,7 +8651,7 @@ def main():
     win.show()
     if len(sys.argv) > 1 and Path(sys.argv[1]).exists():
         arg = sys.argv[1]
-        if arg.endswith(PROJECT_SUFFIX) or (Path(arg).is_dir() and (Path(arg) / "kinetrace.json").is_file()):
+        if arg.endswith(PROJECT_SUFFIX) or projectfile.is_project(arg):
             QTimer.singleShot(0, lambda: win._open_project_from_path(arg))
         elif arg.lower().endswith(".csv"):
             QTimer.singleShot(0, lambda: win._import_tracks_dialog(arg))

@@ -10,7 +10,9 @@ A row shows the camera name, a spin box for its **frame offset**, and a nudge
 pair. Raising the offset by one shows that camera one frame later against the
 same playhead — you nudge until the flash / clap / first contact lines up with
 the working view, and that is the whole alignment workflow. "Align here" does
-the same in one click once both views are parked on the same event.
+the same in one click once both views are parked on the same event. On the
+reference's row it sets the WORKING camera's offset instead (the reference is
+the clock and never moves; every other camera keeps its offset, G13).
 
 The active row is the camera being tracked; selecting another row switches to
 it (the playhead follows through the offsets, so the picture stays on the same
@@ -158,16 +160,18 @@ class _CameraRow(QWidget):
             "A camera switched on N frames AFTER the reference has offset -N;\n"
             "one switched on earlier has +N. Nudge with the arrows until the same\n"
             "moment shows in both views, or park it on that moment and press Align here.")
-        self.btn_align.setEnabled(not active and not reference)
+        # on the reference's row it sets the WORKING camera's offset (G13)
+        self.btn_align.setEnabled(not active)
         # a disabled button still shows its tooltip: say WHY it is off (G13)
         self.btn_align.setToolTip(
             "This is the working camera: Align here is on the OTHER cameras' rows.\n"
             "Park this camera on a moment, park another camera on the same moment,\n"
             "and press Align here on that camera's row."
             if active else
-            "This camera is the reference clock (offset 0), so it is not moved.\n"
-            "Work in it and press Align here on the other cameras' rows; or work in\n"
-            "another camera and nudge its own offset."
+            "Take the frame the reference is showing right now as the match for the\n"
+            "working camera's current frame. The reference is the clock (offset 0)\n"
+            "and does not move: the WORKING camera's offset is set, and every other\n"
+            "camera keeps its own."
             if reference else
             "Take the frame this camera is showing right now as the match for the\n"
             "working camera's current frame, and set the offset from that.")

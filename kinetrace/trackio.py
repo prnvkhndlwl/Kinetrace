@@ -27,6 +27,7 @@ from __future__ import annotations
 import csv
 import io
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -35,7 +36,7 @@ import numpy as np
 from kinetrace import projectfile
 
 KINDS = {"dlc": "DeepLabCut CSV", "dltdv": "DLTdv / Argus xypts CSV",
-         "sleap": "SLEAP analysis CSV", "kinetrace": "Kinetrace tracks.csv"}
+         "sleap": "SLEAP analysis CSV", "kinetrace": "Kinetrace tracks (tracks.csv, or one landmark's file)"}
 _XYPTS = re.compile(r"^pt(\d+)_cam(\d+)_([xy])$", re.IGNORECASE)
 
 
@@ -100,10 +101,13 @@ def detect(path) -> str:
         return "sleap"
     if first[:4] == ["frame", "point", "x", "y"]:
         return "kinetrace"
+    if first[:3] == ["frame", "x", "y"] and "point" not in first:
+        return "kinetrace"          # one landmark's file of a project folder: tracks/<name>.csv (I145)
     raise TrackImportError(
         f"{path.name}: not a tracks file Kinetrace recognises. It reads DeepLabCut CSV (header rows "
         "scorer / bodyparts / coords), DLTdv / Argus xypts CSV (pt1_cam1_X ...), SLEAP analysis CSV "
-        "(track, frame_idx, ...) and Kinetrace's tracks.csv (frame, point, x, y).")
+        "(track, frame_idx, ...) and Kinetrace's own tracks (a project folder's tracks/<landmark>.csv: "
+        "frame, x, y; or an older project's tracks.csv: frame, point, x, y).")
 
 
 def read(path) -> Imported:
@@ -324,13 +328,23 @@ def _read_sleap(path: Path) -> Imported:
 
 # ------------------------------------------------------------------ Kinetrace
 def _read_kinetrace(path: Path) -> Imported:
-    from kinetrace.session import PointMeta
+    from kinetrace.session import PALETTE, PointMeta
+    text = _text(path)
+    head = [c.strip().lower() for c in next(csv.reader([text.split("\n", 1)[0]]))] if text else []
     try:
-        cols, n = projectfile.parse_table(_text(path), path.name, ("frame", "point", "x", "y"),
-                                          projectfile.TRACK_COLS[4:])
-        points: list = []
-        T = (max(map(int, cols["frame"])) + 1) if n else 0
-        arr, points = projectfile.tracks_from_table(cols, n, points, T, path.name)
+        if "point" not in head:
+            # one landmark's file from a project folder (tracks/<name>.csv): named by the file
+            t = projectfile._parse_landmark(text, path.name)
+            T = int(t.data["frame"].max()) + 1 if t.n else 0
+            arr = projectfile._empty_tracks(T, 1)
+            projectfile._fill_landmark(arr, 0, t, T, path.name)
+            points = [PointMeta(unicodedata.normalize("NFC", path.stem), PALETTE[0])]
+        else:
+            cols, n = projectfile.parse_table(text, path.name, ("frame", "point", "x", "y"),
+                                              projectfile.TRACK_COLS[4:])
+            points: list = []
+            T = (max(map(int, cols["frame"])) + 1) if n else 0
+            arr, points = projectfile.tracks_from_table(cols, n, points, T, path.name)
     except (projectfile.ProjectFileError, ValueError) as e:
         raise TrackImportError(str(e)) from None
     assert all(isinstance(p, PointMeta) for p in points)

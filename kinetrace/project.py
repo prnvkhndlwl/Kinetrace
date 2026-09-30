@@ -103,6 +103,8 @@ class Project:
         self.calibration: Calibration | None = None    # DLT per view, view order
         self.reconstruction: Reconstruction | None = None   # last 3D result
         self.lenses: list = [None] * n                  # lens.LensProfile per view (or None)
+        # the formats written into the project's exports/ folder at every save (G42)
+        self.exports: list[str] = []
         self._normalize()
 
     # -------------------------------------------------------------- accessors
@@ -182,15 +184,26 @@ class Project:
         """Set view `i`'s offset so that `shown_frame` in it lines up with
         `active_frame` in the active view (the flash/clap alignment step).
         Whole frames only — the fractional part is a later, measured step.
-        Returns the new offset."""
-        t = self.reference_time(self.active, int(active_frame))
+
+        On the REFERENCE's row (another camera active) the reference cannot
+        move — it is the clock — so the ACTIVE camera's offset is set instead:
+        the same result as working in the reference and aligning the active
+        camera, and every other camera keeps its alignment to the reference
+        (G13, owner 2026-09-28). Returns the offset that changed."""
+        a = self.active
+        if i == REFERENCE_VIEW and a != REFERENCE_VIEW:
+            t = self.reference_time(REFERENCE_VIEW, int(shown_frame))
+            moved, frame = a, int(active_frame)
+        else:
+            t = self.reference_time(a, int(active_frame))
+            moved, frame = i, int(shown_frame)
         before = list(self.offsets)
-        self.offsets[i] = float(int(shown_frame)) - self.rates[i] * t
-        self._normalize()   # aligning the reference shifts everyone else instead
-        self.sessions[i].dirty = True
-        if any(abs(a - b) > 1e-12 for a, b in zip(before, self.offsets)):
+        self.offsets[moved] = float(frame) - self.rates[moved] * t
+        self._normalize()
+        self.sessions[moved].dirty = True
+        if any(abs(x - y) > 1e-12 for x, y in zip(before, self.offsets)):
             self.reconstruction = None          # triangulated under the old timing (I23)
-        return self.offsets[i]
+        return self.offsets[moved]
 
     def set_offset(self, i: int, offset: float) -> None:
         """Retime one camera against the reference. The reference itself has no

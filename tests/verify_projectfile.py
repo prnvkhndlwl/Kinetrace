@@ -222,20 +222,32 @@ def compare(p, q):
     return len(FAILS) == bad0
 
 
-# ----------------------------------------------------------------- 1. round trip, both encodings
+# ----------------------------------------------------------------- 1. round trip, every encoding
 print("\n[1] round trip")
 p = make_project()
+p.exports = ["dltdv_all", "dlc"]
 path = os.path.join(OUT, "kitchen.kinetrace")
 p.path = path
 pid = pf.new_id()
-pf.write(pf.freeze(p, STATE, pid), path)
+pf.write_folder(pf.freeze(p, STATE, pid, target=path), path)
+check(os.path.isdir(path) and os.path.isfile(os.path.join(path, "kinetrace.json"))
+      and os.path.isfile(os.path.join(path, "cameras", "cam1", "tracks", "snout.csv"))
+      and os.path.isfile(os.path.join(path, "README.txt")), "a project is a folder with one CSV per landmark")
 q, state, meta = pf.read(path)
 check(meta["project_id"] == pid and meta["format_version"] == pf.FORMAT_VERSION, "kinetrace.json id / version")
 check(state == STATE, "state.json comes back as written")
 tools = {k: v for k, v in STATE["tools"].items()}
 for s in p.sessions:                                 # the window-wide toggles land in every camera
     s.ui_state.update(tools)
-check(compare(p, q), "every field of a 3-camera project round-trips bit for bit (CSV encoding)")
+check(compare(p, q), "every field of a 3-camera project round-trips bit for bit (folder, tables from the cache)")
+check(q.exports == ["dltdv_all", "dlc"], "the exports kept up to date on save are remembered (G42)")
+shutil.rmtree(os.path.join(path, ".cache"))
+q1, _, _ = pf.read(path)
+check(compare(p, q1), "... and bit for bit from the CSV text alone (.cache deleted)")
+zpath = os.path.join(OUT, "kitchen-one.kinetrace")
+pf.write(pf.freeze(p, STATE, pid, target=zpath, layout="zip"), zpath)
+q3, _, meta3 = pf.read(zpath)
+check(compare(p, q3) and meta3["videos_relative_to"] == "container", "the single-file form (zip) round-trips too")
 rpath = os.path.join(OUT, "kitchen.recovery.kinetrace")
 pf.write(pf.freeze(p, STATE, pid, binary_tracks=True), rpath, compresslevel=0, fsync=False, backup=False)
 q2, _, _ = pf.read(rpath)
@@ -253,7 +265,8 @@ PERSISTED = {
     "TrackingSession": {"n_frames", "fps", "file_fps", "width", "height", "tracks", "visibility", "manual", "tracked",
                         "confidence", "occluded", "radius", "points", "events", "notes", "annotator", "animal",
                         "masks", "body", "skeleton", "current_frame", "ui_state", "_name_counter", "_event_counter"},
-    "Project": {"sessions", "names", "offsets", "rates", "active", "calibration", "reconstruction", "lenses"},
+    "Project": {"sessions", "names", "offsets", "rates", "active", "calibration", "reconstruction", "lenses",
+                "exports"},
     "MaskTrack": {"n_frames", "bbox", "area", "centroid", "score", "contours", "midline"},
     "BodyTrack": {"joints3d", "joints2d", "conf", "score", "bbox", "focal", "cam_t", "names", "backend", "runs",
                   "faces", "mesh", "rig", "n_frames", "n_people", "has_3d", "notes", "n_requested", "step"},
@@ -277,13 +290,296 @@ for f in (0, 10, 99, 20000, 39999):
     big.set_position(f, 3, 12.5, 7.25)
 bp = Project([big])
 sp = os.path.join(OUT, "sparse.kinetrace")
-pf.write(pf.freeze(bp, {}, "x" * 32, saved_at="2026-01-01T00:00:00"), sp)
-with zipfile.ZipFile(sp) as z:
-    rows = z.read("cameras/cam1/tracks.csv").decode().strip().splitlines()
+pf.write_folder(pf.freeze(bp, {}, "x" * 32, target=sp, saved_at="2026-01-01T00:00:00"), sp)
+lm = pf.landmark_files([x.name for x in big.points])[3]
+rows = open(os.path.join(sp, "cameras", "cam1", "tracks", lm), encoding="utf-8").read().strip().splitlines()
 check(len(rows) == 1 + 5, f"40,000 frames with 5 tracked cells -> exactly 5 data rows ({len(rows) - 1})")
+empty = open(os.path.join(sp, "cameras", "cam1", "tracks", pf.landmark_files([x.name for x in big.points])[0]),
+             encoding="utf-8").read()
+check(empty == ",".join(pf.LANDMARK_COLS[:-1]) + "\n", "a landmark with no data: the header alone, no radius column")
 sp2 = os.path.join(OUT, "sparse2.kinetrace")
-pf.write(pf.freeze(bp, {}, "x" * 32, saved_at="2026-01-01T00:00:00"), sp2)
-check(open(sp, "rb").read() == open(sp2, "rb").read(), "the same project always gives the same bytes")
+pf.write_folder(pf.freeze(bp, {}, "x" * 32, target=sp2, saved_at="2026-01-01T00:00:00"), sp2)
+
+
+def tree(d, skip=(".cache", ".history", "exports")):
+    out = {}
+    for dirpath, dirs, fnames in os.walk(d):
+        dirs[:] = [x for x in dirs if x not in skip]
+        for f in fnames:
+            fp = os.path.join(dirpath, f)
+            out[os.path.relpath(fp, d).replace("\\", "/")] = open(fp, "rb").read()
+    return out
+
+
+check(tree(sp) == tree(sp2), "the same project always gives the same bytes (every file of the folder)")
+zp1, zp2 = os.path.join(OUT, "sparse-1.kinetrace"), os.path.join(OUT, "sparse-2.kinetrace")
+for zp in (zp1, zp2):
+    pf.write(pf.freeze(bp, {}, "x" * 32, target=zp, saved_at="2026-01-01T00:00:00", layout="zip"), zp)
+check(open(zp1, "rb").read() == open(zp2, "rb").read(), "... and the single file too")
+with zipfile.ZipFile(zp1) as z:
+    check(sorted(z.namelist()) == sorted(tree(sp)), "the single file holds exactly the folder's files")
+
+# ----------------------------------------------------------------- 3b. a save writes only what changed
+print("\n[3b] incremental saves")
+ip = os.path.join(OUT, "incremental.kinetrace")
+inc = make_project()
+st = pf.save(inc, ip, STATE, "i" * 32)
+check(st["written"] == len(tree(ip)) and st["unchanged"] == 0 and st["removed"] == 0,
+      f"the first save writes every file of the folder ({st})")
+before = tree(ip)
+st = pf.save(inc, ip, STATE, "i" * 32)
+after = tree(ip)
+check(st["written"] == 1 and [k for k in after if after[k] != before.get(k)] == ["kinetrace.json"],
+      f"a save with nothing changed rewrites kinetrace.json alone ({st})")
+inc.sessions[0].tracks[7, 0] = (1.25, 2.5)
+inc.sessions[0].tracked[7, 0] = True
+got = pf.changes_since_save(pf.freeze(inc, STATE, "i" * 32, target=ip), ip)
+words = pf.describe_changes(*got, [("cam1", "cam1"), ("cam2", "cam2"), ("cam_3", "cam 3")],
+                            {"cam1": {"snout.csv": "snout"}})
+check(got == (["cameras/cam1/tracks/snout.csv"], []) and words == ["cam1: snout (positions)"],
+      f"before saving, what changed is named: {words}")
+check(pf.describe_changes(["project.json", "cameras/cam2/events.csv", "reconstruction/points/a.csv"],
+                          ["cameras/cam2/tracks/old.csv"], [("cam2", "side")], {})
+      == ["side: the events, old (removed)", "the cameras (videos, offsets, frame rates)", "the 3D result"],
+      "... in words for every kind of file")
+st = pf.save(inc, ip, STATE, "i" * 32)
+after2 = tree(ip)
+changed = sorted(k for k in after2 if after2[k] != after.get(k))
+check(changed == ["cameras/cam1/tracks/snout.csv", "kinetrace.json"], f"one point moved: its file alone ({changed})")
+check(sorted(os.listdir(os.path.join(ip, ".history", "cameras", "cam1", "tracks"))) == ["snout.csv"],
+      "the file it replaced is kept in .history")
+own = [os.path.join(ip, "notes-by-me.txt"), os.path.join(ip, "videos", "keep.txt"),
+       os.path.join(ip, "cameras", "cam1", "my own file.txt")]
+for f in own:
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    open(f, "w").write("mine")
+inc.rename_landmark("snout", "nose")
+inc.remove_view(2)
+st = pf.save(inc, ip, STATE, "i" * 32)
+t3 = tree(ip)
+check("cameras/cam1/tracks/nose.csv" in t3 and "cameras/cam1/tracks/snout.csv" not in t3
+      and not any(k.startswith("cameras/cam_3/") and k.endswith(".csv") for k in t3),
+      f"a renamed landmark moves to its new file, a removed camera's files go ({st})")
+check(all(os.path.isfile(f) and open(f).read() == "mine" for f in own),
+      "files that are not the project's own (videos/, notes, a user file in a camera folder) are never touched")
+q4, _, _ = pf.read(ip)
+check(q4.names == inc.names and q4.sessions[0].points[0].name == "nose", "... and the folder reads back as saved")
+
+# ----------------------------------------------------------------- 3c. the cache never wins over the CSV
+print("\n[3c] cache and hand edits")
+cp = os.path.join(OUT, "cache.kinetrace")
+cproj = Project([camera("solo", 50, 30.0, 640, 480, 11)])
+pf.save(cproj, cp, STATE, "c" * 32)
+rel = "cameras/cam1/tracks/snout.csv"
+cache_f = os.path.join(cp, ".cache", *rel.split("/")) + ".npy"
+arr = np.load(cache_f)
+r0 = arr["frame"][0]
+x0 = arr["x"][0]
+parsed = []
+real_parse = pf._parse_landmark
+pf._parse_landmark = lambda text, where: (parsed.append(where), real_parse(text, where))[1]
+qa, _, _ = pf.read(cp)
+check(not parsed and qa.sessions[0].tracks[r0, 0, 0] == x0, "an unchanged CSV is read from .cache (no CSV parsed)")
+arr["x"][0] = 777.0                                   # a cache copy damaged (a power cut: caches are not fsynced)
+np.save(cache_f, arr)
+qa, _, _ = pf.read(cp)
+check(parsed == [rel] and qa.sessions[0].tracks[r0, 0, 0] == x0,
+      f"a damaged cache copy is caught by its fingerprint: the CSV is read instead {parsed}")
+pf._parse_landmark = real_parse
+csvf = os.path.join(cp, *rel.split("/"))
+lines = open(csvf, encoding="utf-8").read().splitlines()
+cells = lines[1].split(",")
+cells[1] = "123.5"
+lines[1] = ",".join(cells)
+time.sleep(0.05)
+open(csvf, "w", encoding="utf-8", newline="").write("\r\n".join(lines) + "\r\n")    # edited in a spreadsheet
+qb, _, _ = pf.read(cp)
+check(qb.sessions[0].tracks[r0, 0, 0] == np.float32(123.5), "a CSV edited by hand is read from its text")
+check(pf.read(cp)[0].sessions[0].tracks[r0, 0, 0] == np.float32(123.5), "... every time it is opened")
+
+# ----------------------------------------------------------------- 3d. a save cut short
+print("\n[3d] crash safety")
+kp = os.path.join(OUT, "crash.kinetrace")
+kproj = Project([camera("solo", 50, 30.0, 640, 480, 12)])
+pf.save(kproj, kp, STATE, "k" * 32)
+saved = tree(kp)
+kproj.sessions[0].tracks[:, 0] += 1.0
+kproj.sessions[0].tracks[:, 1] += 2.0
+real_replace = pf._replace
+calls = {"n": 0}
+
+
+def failing(src, dst):
+    calls["n"] += 1
+    if calls["n"] == 3:
+        raise PermissionError("the file is open in another program")
+    return real_replace(src, dst)
+
+
+pf._replace = failing
+try:
+    pf.save(kproj, kp, STATE, "k" * 32)
+    check(False, "the failing save should raise")
+except PermissionError:
+    pass
+finally:
+    pf._replace = real_replace
+check(tree(kp) == saved and not os.path.exists(os.path.join(kp, ".saving")),
+      "a save that fails half-way is undone: every file as it was, nothing left aside")
+import subprocess  # noqa: E402
+CRASH = r'''
+import os, sys
+sys.path.insert(0, {root!r})
+from kinetrace import projectfile as pf
+from kinetrace.project import Project
+p = pf.load({path!r})
+p.sessions[0].tracks[:, 0] += 5.0
+real, n = pf._replace, [0]
+def crash(src, dst):
+    d = str(dst)
+    if os.path.basename(d) == "kinetrace.json" and {after!r}:
+        real(src, dst); os._exit(3)          # the power goes right AFTER the save counted
+    if ".cache" not in d and os.path.basename(d) != "pending.json":
+        n[0] += 1                            # a move of the project's own files
+        if n[0] == 2 and not {after!r}:
+            os._exit(3)                      # ... or in the middle, before it counted
+    real(src, dst)
+pf._replace = crash
+pf.save(p, {path!r}, project_id="k" * 32)
+'''
+for after in (False, True):
+    before_crash = tree(kp)
+    base = pf.load(kp).sessions[0].tracks[:, 0].copy()
+    rc = subprocess.run([sys.executable, "-c", CRASH.format(root=ROOT, path=kp, after=after)]).returncode
+    qc, _, mc = pf.read(kp)
+    if not after:
+        check(rc == 3 and mc["_interrupted"] == "undone" and tree(kp) == before_crash,
+              "a crash in the middle of a save: opening puts every file back as it was at the previous save")
+    else:
+        same = np.array_equal(qc.sessions[0].tracks[:, 0], base + np.float32(5.0), equal_nan=True)
+        check(rc == 3 and mc["_interrupted"] == "finished" and same and not os.path.exists(
+            os.path.join(kp, ".history", "pending.json")), "a crash right after the save counted: the new save stands")
+
+# ----------------------------------------------------------------- 3f. a big save's CSVs in helper processes
+print("\n[3f] helper processes format the CSVs of a big save")
+from kinetrace import csvpool  # noqa: E402
+hp_proj = make_project()
+fixed = "2026-01-01T00:00:00.000001+00:00"
+
+
+def save_to(name):
+    d = os.path.join(OUT, name)
+    shutil.rmtree(d, ignore_errors=True)
+    pf.write_folder(pf.freeze(hp_proj, STATE, "h" * 32, target=d, saved_at=fixed), d)
+    return tree(d)
+
+
+env_before, min_before, start_before = os.environ.get("KINETRACE_SAVE_WORKERS"), csvpool.MIN_ROWS, csvpool._start
+spy = {}
+real_fmt = csvpool.format_tables
+
+
+def spying(jobs, fsync=True, workers=None):
+    r = real_fmt(jobs, fsync, workers)
+    spy.update(jobs=len(jobs), done=len(r))
+    return r
+
+
+try:
+    os.environ["KINETRACE_SAVE_WORKERS"] = "0"
+    serial = save_to("helpers-none.kinetrace")
+    os.environ["KINETRACE_SAVE_WORKERS"] = "3"
+    csvpool.MIN_ROWS = 0                                   # use them even for this small project
+    csvpool.format_tables = spying
+    helped = save_to("helpers-three.kinetrace")
+    check(spy.get("jobs", 0) > 20 and spy.get("done") == spy.get("jobs") and helped == serial,
+          f"3 helpers wrote every table ({spy}) and the folder is byte for byte the serial one")
+    csvpool.format_tables = real_fmt
+
+    def no_start():
+        raise OSError("antivirus says no")
+    csvpool._start = no_start
+    check(save_to("helpers-refused.kinetrace") == serial, "helpers that cannot start: the save formats itself")
+
+    def dying():
+        return subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.buffer.read(8); sys.exit(1)"],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    csvpool._start = dying
+    check(save_to("helpers-dying.kinetrace") == serial, "helpers that die mid-job: the save formats itself")
+finally:
+    csvpool.format_tables, csvpool.MIN_ROWS, csvpool._start = real_fmt, min_before, start_before
+    if env_before is None:
+        os.environ.pop("KINETRACE_SAVE_WORKERS", None)
+    else:
+        os.environ["KINETRACE_SAVE_WORKERS"] = env_before
+
+# ----------------------------------------------------------------- 3g. one save at a time, room, durability
+print("\n[3g] the save lock, free space, a hung helper")
+import socket  # noqa: E402
+from pathlib import Path  # noqa: E402
+lp = os.path.join(OUT, "lock.kinetrace")
+lproj = Project([camera("solo", 50, 30.0, 640, 480, 14)])
+pf.save(lproj, lp, STATE, "l" * 32)
+lproj.sessions[0].tracks[:, 0] += 1.0
+open(os.path.join(lp, ".lock"), "w").write(json.dumps({"pid": os.getpid(), "host": socket.gethostname(),
+                                                       "time": time.time()}))
+lock_before = tree(lp)
+try:
+    pf.save(lproj, lp, STATE, "l" * 32)
+    check(False, "a second save while one runs should be refused")
+except pf.ProjectFileError as e:
+    check("being saved by another Kinetrace" in str(e) and tree(lp) == lock_before,
+          f"another save of the same project in progress: refused, nothing changed ('{str(e)[:60]}...')")
+open(os.path.join(lp, ".lock"), "w").write(json.dumps({"pid": 999999, "host": socket.gethostname(), "time": time.time()}))
+st_l = pf.save(lproj, lp, STATE, "l" * 32)
+check(st_l["written"] >= 2 and not os.path.exists(os.path.join(lp, ".lock")),
+      "a lock left by a process that is gone is taken over, and released after the save")
+real_free = pf._free_bytes
+pf._free_bytes = lambda root: 10 << 20
+lproj.sessions[0].tracks[:, 0] += 1.0
+lock_before = tree(lp)
+try:
+    pf.save(lproj, lp, STATE, "l" * 32)
+    check(False, "a save without room should be refused")
+except pf.ProjectFileError as e:
+    check("not enough free space" in str(e) and tree(lp) == lock_before and not os.path.exists(os.path.join(lp, ".saving")),
+          f"not enough room on the drive: said before anything is replaced ('{str(e)[:70]}...')")
+finally:
+    pf._free_bytes = real_free
+csvpool._start = lambda: subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+try:
+    t_h = time.perf_counter()
+    hung = csvpool.format_tables([(pf._landmark_table(dict(tracks=np.zeros((10, 1, 2), np.float32),
+                                                           confidence=np.ones((10, 1), np.float32),
+                                                           visibility=np.ones((10, 1), bool),
+                                                           manual=np.zeros((10, 1), bool), tracked=np.ones((10, 1), bool),
+                                                           occluded=np.zeros((10, 1), bool),
+                                                           radius=np.full((10, 1), np.nan, np.float32)), 0, False),
+                                   Path(OUT) / "hung.csv")], workers=2, timeout=2.0)
+    t_h = time.perf_counter() - t_h
+finally:
+    csvpool._start = start_before
+check(hung == set() and t_h < 15, f"a helper that hangs is killed at its deadline ({t_h:.1f} s); the job is the saver's")
+pf._fsync_dir(Path(OUT))                               # POSIX: renames made durable (a no-op on Windows)
+check(True, "directory fsync runs (POSIX) or is skipped (Windows)")
+
+# ----------------------------------------------------------------- 3e. back one save
+print("\n[3e] the previous save")
+bp2 = os.path.join(OUT, "previous.kinetrace")
+bproj = Project([camera("solo", 50, 30.0, 640, 480, 13)])
+pf.save(bproj, bp2, STATE, "b" * 32)
+first_save = tree(bp2)
+bproj.sessions[0].tracks[:, 0] = 1.0
+bproj.sessions[0].add_point(0, 5.0, 5.0, name="late")
+pf.save(bproj, bp2, STATE, "b" * 32)
+pf.restore_previous(bp2)
+check(tree(bp2) == first_save, "restore_previous puts the folder back at the save before the last one")
+try:
+    pf.restore_previous(bp2)
+    check(False, "a second restore should be refused")
+except pf.ProjectFileError as e:
+    check("no earlier save" in str(e), f"... once: a second one is refused ('{e}')")
 
 # ----------------------------------------------------------------- 4. a project written by another program
 print("\n[4] hand-written and edited files")
@@ -323,8 +619,30 @@ refused(lambda d: open(os.path.join(d, tp), "w").write("frame,point,x,y\n0,a,1,2
 refused(lambda d: open(os.path.join(d, tp), "w").write("frame,point,x,y\n0,a,one,2\n"), "not a number",
         "text where a number belongs")
 refused(lambda d: os.remove(os.path.join(d, "kinetrace.json")), "no kinetrace.json", "no kinetrace.json")
-refused(lambda d: json.dump({"format": "kinetrace-project", "format_version": 2},
+refused(lambda d: json.dump({"format": "kinetrace-project", "format_version": pf.FORMAT_VERSION + 1},
                             open(os.path.join(d, "kinetrace.json"), "w")), "newer", "a newer format version")
+# a format-2 folder written by hand: the minimum is kinetrace.json + project.json + one landmark file
+hand2 = os.path.join(OUT, "hand2.kinetrace")
+os.makedirs(os.path.join(hand2, "cameras", "top", "tracks"), exist_ok=True)
+json.dump({"format": "kinetrace-project", "format_version": 2}, open(os.path.join(hand2, "kinetrace.json"), "w"))
+json.dump({"cameras": [{"name": "top", "folder": "top", "video": {"relative_path": "../top.mp4"}, "n_frames": 100,
+                        "fps": 30, "width": 640, "height": 480}]}, open(os.path.join(hand2, "project.json"), "w"))
+open(os.path.join(hand2, "cameras", "top", "tracks", "snout.csv"), "w", encoding="utf-8", newline="").write(
+    "﻿frame,x,y\r\n0,10.5,20.25\r\n5,11,21\r\n")
+open(os.path.join(hand2, "cameras", "top", "tracks", "tail tip.csv"), "w", newline="").write(
+    "frame,x,y,hidden\n7,1,2,1\n")
+h2 = pf.load(os.path.join(hand2, "kinetrace.json"))           # opened through its kinetrace.json
+s2 = h2.sessions[0]
+check([x.name for x in s2.points] == ["snout", "tail tip"] and s2.tracked.sum() == 3 and s2.occluded[7, 1]
+      and s2.confidence[0, 0] == 1.0 and s2.visibility[5, 0], "a hand-written format-2 folder: a landmark per "
+      "file (named by the file), missing columns take their defaults")
+bad2 = os.path.join(hand2, "cameras", "top", "tracks", "snout.csv")
+open(bad2, "w").write("frame,x,y\n0,1,2\n100,3,4\n")
+try:
+    pf.read(hand2)
+    check(False, "a frame beyond the video in a landmark file should be refused")
+except pf.ProjectFileError as e:
+    check("snout.csv" in str(e) and "row 3" in str(e), f"a landmark file's bad row is named: '{e}'")
 open(os.path.join(OUT, "garbage.kinetrace"), "wb").write(b"PK\x03\x04 not really a zip")
 try:
     pf.read(os.path.join(OUT, "garbage.kinetrace"))
@@ -346,6 +664,14 @@ got = pf.locate_video({"video": {"path": r"D:\lab\cam1.mp4"}}, Path(vdir), [Path
 check(got is not None and got.name == "cam1.mp4", "only a foreign absolute path: found by its file name")
 got = pf.locate_video({"video": {"path": "/Volumes/lab/\u00e9tude.mp4"}}, Path(vdir))
 check(got is not None, "a composed name finds the decomposed file (macOS)")
+here = Path(OUT).resolve()
+check(pf.video_base(path, pf.read_meta(path)) == Path(path).resolve()
+      and pf.video_base(zpath, pf.read_meta(zpath)) == here
+      and pf.video_base(hand, {"format_version": 1}) == here,
+      "relative video paths start at the project folder (format 2), beside a single file, and beside an "
+      "unzipped format-1 folder (they were written relative to the zip's folder)")
+check(json.load(open(os.path.join(path, "project.json")))["cameras"][0]["video"]["relative_path"]
+      == "../videos/cam1.mp4", "a folder project stores its videos relative to itself")
 
 # ----------------------------------------------------------------- 6. speed budgets
 print("\n[6] speed (40,000 frames x 10 points, silhouette on every frame)")
@@ -371,15 +697,26 @@ rp = os.path.join(OUT, "perf.recovery.kinetrace")
 t = time.perf_counter(); pf.write(fz, rp, compresslevel=0, fsync=False, backup=False); t_rw = time.perf_counter() - t
 t = time.perf_counter(); pf.read(rp); t_rr = time.perf_counter() - t
 pp = os.path.join(OUT, "perf.kinetrace")
-t = time.perf_counter(); pf.write(pf.freeze(perf, {}, "p" * 32), pp); t_sw = time.perf_counter() - t
+t = time.perf_counter(); pf.save(perf, pp, {}, "p" * 32); t_sw = time.perf_counter() - t
 t = time.perf_counter(); pf.read(pp); t_sr = time.perf_counter() - t
-mb = os.path.getsize(pp) / 1e6
+t = time.perf_counter(); pf.save(perf, pp, {}, "p" * 32); t_s0 = time.perf_counter() - t
+s.tracks[5, 3] = (7.5, 8.5)
+t = time.perf_counter(); pf.changes_since_save(pf.freeze(perf, {}, "p" * 32, target=pp), pp); t_cq = time.perf_counter() - t
+check(t_cq <= 0.5 * float(os.environ.get("KINETRACE_PERF_SCALE", "1")),
+      f"what changed since the save, for the close question: {t_cq:.2f} s")
+t = time.perf_counter(); pf.save(perf, pp, {}, "p" * 32); t_s1 = time.perf_counter() - t
+shutil.rmtree(os.path.join(pp, ".cache"))
+t = time.perf_counter(); pf.read(pp); t_sc = time.perf_counter() - t
+mb = sum(os.path.getsize(os.path.join(d_, f_)) for d_, _, fs in os.walk(pp) for f_ in fs if ".history" not in d_) / 1e6
 print(f"  freeze {t_fz * 1000:.0f} ms | recovery write {t_rw * 1000:.0f} ms, read {t_rr * 1000:.0f} ms | "
-      f"project write {t_sw:.2f} s, read {t_sr:.2f} s, {mb:.1f} MB")
+      f"project first save {t_sw:.2f} s, open {t_sr:.2f} s (from CSV alone {t_sc:.2f} s), save unchanged "
+      f"{t_s0:.2f} s, after one edit {t_s1:.2f} s, {mb:.1f} MB")
 SLOW = float(os.environ.get("KINETRACE_PERF_SCALE", "1"))
 check(t_fz <= 0.08 * SLOW, "freeze (GUI thread) within budget")
 check(t_rw <= 0.2 * SLOW and t_rr <= 0.1 * SLOW, "recovery write / read within budget")
-check(t_sw <= 1.5 * SLOW and t_sr <= 1.0 * SLOW, "project write / read within budget")
+check(t_sw <= 1.5 * SLOW and t_sr <= 0.5 * SLOW and t_sc <= 1.0 * SLOW,
+      "project folder: first save / open / open from the CSVs alone within budget")
+check(t_s0 <= 0.5 * SLOW and t_s1 <= 0.5 * SLOW, "a save with nothing / one point changed within budget")
 
 # ----------------------------------------------------------------- 7. atomic write, backup
 print("\n[7] atomic save, .bak")
@@ -402,6 +739,47 @@ except Boom:
     pass
 check(open(ap, "rb").read() == before and not any(f.endswith(".tmp") for f in os.listdir(OUT)),
       "a write that fails half-way leaves the file untouched and no temp file")
+fp_ = os.path.join(OUT, "atomic-folder.kinetrace")
+pf.save(bp, fp_, {}, "a" * 32)
+bp.sessions[0].tracks[1, 3] = (1.0, 1.0)
+before_f = tree(fp_)
+try:
+    pf.write_folder(pf.freeze(bp, {}, "a" * 32, target=fp_), fp_, yield_gil=lambda: (_ for _ in ()).throw(Boom()))
+except Boom:
+    pass
+check(tree(fp_) == before_f, "a folder save that fails half-way leaves every file untouched")
+
+# ----------------------------------------------------------------- 8. older single files, wrong folders
+print("\n[8] a single file becomes a folder")
+sf = os.path.join(OUT, "older.kinetrace")
+pf.save(bp, sf, {}, "o" * 32, single_file=True)
+one = open(sf, "rb").read()
+pf.save(pf.load(sf), sf, {}, "o" * 32)
+check(os.path.isdir(sf) and open(sf + ".bak", "rb").read() == one and pf.load(sf).sessions[0].n_points == 10,
+      "saving a single-file project as a folder keeps the file as .bak")
+junk = os.path.join(OUT, "not-a-project")
+os.makedirs(junk, exist_ok=True)
+open(os.path.join(junk, "thesis.docx"), "w").write("x")
+try:
+    pf.save(bp, junk, {}, "j" * 32)
+    check(False, "saving into a folder that is not a project should be refused")
+except pf.ProjectFileError as e:
+    check("not a Kinetrace project" in str(e) and os.listdir(junk) == ["thesis.docx"],
+          f"a folder that is not a project is left alone ('{e}')")
+
+# ----------------------------------------------------------------- 9. text helpers
+print("\n[9] exact text")
+ints = np.concatenate([np.array([0, -1, 9, 10, 99, 100, 12345678901]), rng.integers(-99, 10 ** 9, 20000)])
+check(pf._join_rows([pf._int_codes(ints), pf._bool_codes(ints % 2 == 0)])
+      == "".join(f"{int(v)},{int(v % 2 == 0)}\n" for v in ints), "whole numbers and 0 / 1 written as str() writes them")
+f64 = np.concatenate([rng.normal(size=5000) * 10.0 ** rng.integers(-8, 8, 5000), [0.1, 1 / 3, -0.0, 1e300]])
+back = np.array([float(x) for x in pf.f64_text(f64)])
+check(np.array_equal(back.view(np.uint64), f64.view(np.uint64)), "float64 text reads back bit for bit")
+names = ["snout", "Snout", "a/b", "CON", "nul.x", "...", "", "頭 (head)", "tail: tip?"]
+files = pf.landmark_files(names)
+check(len({f.casefold() for f in files}) == len(files) and all(not any(c in f for c in '<>:"/\\|?*') for f in files)
+      and files[0] == "snout.csv" and files[3] == "CON_.csv" and files[7] == "頭 (head).csv",
+      f"landmark file names are safe on every OS and unique ignoring case {files}")
 
 print()
 if FAILS:

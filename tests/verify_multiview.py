@@ -476,8 +476,8 @@ dlg._base.button(1).setChecked(True)
 dlg._accept()
 assert [os.path.basename(x) for x in dlg.result_paths] == ["cam2.mp4", "cam1.MP4"], dlg.result_paths
 assert dlg.result_project == str(default_project_path(FOLD)) and dlg.result_project.endswith("multiview_folder.kinetrace")
-if os.path.exists(dlg.result_project):
-    os.remove(dlg.result_project)
+if os.path.exists(dlg.result_project):          # a project folder (I145)
+    __import__('shutil').rmtree(dlg.result_project) if os.path.isdir(dlg.result_project) else os.remove(dlg.result_project)
 win._import_folder(dlg.result_paths, dlg.result_project)
 for _ in range(200):
     pump(0.05)

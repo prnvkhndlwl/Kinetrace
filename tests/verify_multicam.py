@@ -50,8 +50,8 @@ def build_pair():
 
 PATH_A, PATH_B = build_pair()
 PROJ = os.path.join(SCRATCH, "multicam.kinetrace")
-if os.path.exists(PROJ):
-    os.remove(PROJ)
+if os.path.exists(PROJ):          # a project folder (I145), or a single file from before
+    __import__('shutil').rmtree(PROJ) if os.path.isdir(PROJ) else os.remove(PROJ)
 
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -172,10 +172,28 @@ p.set_active(1)                          # switching cameras must not renumber
 assert p.offsets[0] == 0 and p.offsets == [0, -SHIFT], \
     f"switching the working camera must not move any offset: {p.offsets}"
 assert [p.map_frame(0, j, 40) for j in range(p.n_views)] == _before
-# aligning the reference against another camera shifts the OTHERS, keeping it 0
+# aligning the reference against another camera moves the WORKING camera, keeping it 0
 p.align_to(0, 20, 40)                    # cam1 frame 20 == cam2 frame 40
 assert p.offsets[0] == 0, "the reference stays 0 even when it is what you aligned"
 assert p.map_frame(0, 1, 20) == 40, "...and the alignment it expressed still holds"
+# G13: with three cameras only the working one moves; the third keeps its alignment
+from kinetrace.session import TrackingSession as _TS  # noqa: E402
+_p3 = Project([_TS(f"{c}.mp4", 100, 30.0, W, H) for c in "abc"], ["a", "b", "c"], [0, -5, 7])
+_p3.set_rate(2, 2.0)
+for _s in _p3.sessions:
+    _s.dirty = False
+_p3.set_active(1)
+_p3.reconstruction = object()
+assert _p3.align_to(0, 30, 50) == 20.0 and _p3.offsets == [0, 20.0, 7], _p3.offsets
+assert _p3.map_frame(0, 1, 30) == 50 and _p3.map_frame(1, 0, 50) == 30
+assert _p3.sessions[1].dirty and not _p3.sessions[2].dirty and _p3.reconstruction is None
+_p3.set_active(2)                         # a 2x working camera: its offset in its own frames
+assert _p3.align_to(0, 30, 70) == 10.0 and _p3.offsets == [0, 20.0, 10.0], _p3.offsets
+assert _p3.map_frame(0, 2, 30) == 70
+_p3.set_active(1)                         # an ordinary row is unchanged: the camera aligned moves
+assert _p3.align_to(2, 40, 50) == -20.0 and _p3.offsets == [0, 20.0, -20.0], _p3.offsets
+assert _p3.map_frame(1, 2, 50) == 40
+print("Align here on the reference moves only the working camera (G13) OK")
 p.set_active(0)
 p.set_offset(1, -SHIFT)                  # back to the known-good alignment
 assert p.offsets == [0, -SHIFT]
@@ -435,9 +453,29 @@ assert not _rows[0].spin.isEnabled(), "the reference camera's offset must not be
 assert "reference" in _rows[0].name.text(), \
     f"the reference row must say so: {_rows[0].name.text()!r}"
 assert _rows[1].spin.isEnabled(), "every other camera's offset stays editable"
-assert not _rows[0].btn_align.isEnabled(), "there is nothing to align the reference to"
+assert not _rows[0].btn_align.isEnabled() and not win.project.active, \
+    "the working camera's own row has nothing to align"
 win._set_active_view(1)
 settle()
+win._refresh_cameras()
+app.processEvents()
+# G13: from another camera the reference row's Align here is live and sets THIS camera
+from PySide6.QtCore import Qt as _Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+_rows = win.cameras._rows
+assert _rows[0].btn_align.isEnabled() and not _rows[1].btn_align.isEnabled()
+assert "does not move" in _rows[0].btn_align.toolTip(), _rows[0].btn_align.toolTip()
+_off = list(win.project.offsets)
+win.project.set_offset(1, 0)
+win._goto(30, force=True)
+settle(0.5)
+win._views[0].want_frame = 30 + SHIFT     # the reference parked on the matching moment
+QTest.mouseClick(_rows[0].btn_align, _Qt.LeftButton)
+app.processEvents()
+assert win.project.offsets == [0, -SHIFT], f"Align here on the reference: {win.project.offsets}"
+assert win.project.active == 1 and win.current == 30, "the working camera stays where it was"
+assert "aligned to the reference" in win.statusBar().currentMessage(), win.statusBar().currentMessage()
+win.project.set_offset(1, _off[1])
 win._refresh_cameras()
 app.processEvents()
 assert not _rows[0].spin.isEnabled(), \

@@ -431,6 +431,7 @@ ASK["warned"] = []
 crit = []
 QMessageBox.critical = staticmethod(lambda *a, **k: (crit.append(a[1] if len(a) > 1 else ""), QMessageBox.Ok)[1])
 bad = os.path.join(OUT, "no_such_dir", "x.kinetrace")
+__import__("shutil").rmtree(os.path.dirname(bad), ignore_errors=True)   # truly absent, whatever ran before
 from PySide6.QtWidgets import QFileDialog  # noqa: E402
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (bad, ""))
 win.project_path = None
@@ -769,7 +770,7 @@ print("the lens wizard opens without a video (G9) OK")
 pj_path = os.path.join(OUT, "saved_once.kinetrace")
 for f in (pj_path, pj_path + ".bak"):
     if os.path.exists(f):
-        os.remove(f)
+        __import__('shutil').rmtree(f) if os.path.isdir(f) else os.remove(f)
 win6 = MainWindow()
 win6.show()
 win6._open_video(VA)
@@ -813,7 +814,7 @@ win7.close()
 pump(0.3)
 for f in (pj_path, pj_path + ".bak"):
     if os.path.exists(f):
-        os.remove(f)
+        __import__('shutil').rmtree(f) if os.path.isdir(f) else os.remove(f)
 print("autosave keeps the project file as saved; Save retires it; a declined one is kept aside (I129) OK")
 forget_recovery(VA)
 

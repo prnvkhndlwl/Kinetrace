@@ -10,7 +10,9 @@ no window, no Qt widgets.
     python -m kinetrace.convert masks    PROJECT OUT [--camera NAME] [--to json|png]
     python -m kinetrace.convert offsets  PROJECT OUT
     python -m kinetrace.convert import   PROJECT --tracks FILE [--camera NAME] [--out NEW.kinetrace]
-    python -m kinetrace.convert pack     FOLDER OUT.kinetrace
+    python -m kinetrace.convert pack     PROJECT OUT.kinetrace       (a project folder -> one file)
+    python -m kinetrace.convert unpack   FILE.kinetrace FOLDER.kinetrace   (one file -> a project folder)
+    python -m kinetrace.convert previous PROJECT                     (a project folder back one save)
 
 On Windows run it with .venv\\Scripts\\python, on Linux / macOS with
 .venv/bin/python. Formats are chosen from --to or else from OUT's name.
@@ -194,21 +196,51 @@ def cmd_import(a) -> int:
     f_of_row = None if imp.rows == "frames" else (lambda r: proj.map_frame(0, view, r))
     summ = trackio.apply(proj.sessions[view], imp, col, f_of_row)
     proj.sync_landmarks()               # one landmark list for every camera (G19), as the app does
-    out = a.out or a.project
-    projectfile.write(projectfile.freeze(proj, state, meta.get("project_id") or projectfile.new_id(), target=out),
-                      out)
+    out = str(projectfile.project_root(a.out or a.project))
+    pid = meta.get("project_id") or projectfile.new_id()
+    if a.out is None and not projectfile.is_folder_project(out):
+        # a single-file project stays one file (its previous version kept as .bak)
+        projectfile.write(projectfile.freeze(proj, state, pid, target=out, layout="zip"), out)
+        where = " (the previous version is kept as .bak)"
+    else:
+        st = projectfile.write_folder_over(projectfile.freeze(proj, state, pid, target=out), out)
+        where = (f" ({st['written'] - 1} file(s) updated; the previous save is kept in .history)"
+                 if a.out is None else "")
     _say(f"{proj.name(view)}: {summ['sentence']}")
-    _say(f"wrote {out}" + (" (the previous version is kept as .bak)" if out == a.project else ""))
+    _say(f"wrote {out}{where}")
     return 0
 
 
 def cmd_pack(a) -> int:
     from kinetrace import projectfile
+    out = Path(a.output)
+    if out.is_dir():
+        raise Failure(f"{out} is a folder; give the single file a name of its own")
     proj, state, meta = projectfile.read(a.folder)
     projectfile.write(projectfile.freeze(proj, state, meta.get("project_id") or projectfile.new_id(),
-                                         target=a.output), a.output)
-    _say(f"wrote {a.output}: {proj.n_views} camera(s), "
+                                         target=out, layout="zip"), out, backup=False)
+    _say(f"wrote {out}: {proj.n_views} camera(s), "
          f"{sum(s.n_points for s in proj.sessions)} point(s)")
+    return 0
+
+
+def cmd_unpack(a) -> int:
+    from kinetrace import projectfile
+    out = Path(a.folder)
+    if projectfile.project_root(a.file).resolve() == out.resolve():
+        raise Failure("the folder must have another name than the file (or use the app: Save turns a "
+                      "single-file project into a folder of the same name)")
+    proj, state, meta = projectfile.read(a.file)
+    st = projectfile.write_folder_over(projectfile.freeze(proj, state, meta.get("project_id") or projectfile.new_id(),
+                                                          target=out), out)
+    _say(f"wrote {out}: {proj.n_views} camera(s), {st['written']} file(s)")
+    return 0
+
+
+def cmd_previous(a) -> int:
+    from kinetrace import projectfile
+    back_to = projectfile.restore_previous(a.project)
+    _say(f"{projectfile.project_root(a.project).name} is back at its save of {back_to or 'before the last save'}")
     return 0
 
 
@@ -220,7 +252,9 @@ def _project_lines(path) -> tuple[list[str], list[str]]:
     lines = [f"Kinetrace project, format {meta.get('format_version')}, saved {meta.get('saved_at', '?')} "
              f"by Kinetrace {meta.get('app_version', '?')}"]
     warn = []
-    pdir = Path(path).resolve().parent if Path(path).is_file() else Path(path).resolve()
+    pdir = projectfile.video_base(path, meta)
+    root = projectfile.project_root(path).resolve()
+    extra = ([root, root / projectfile.VIDEOS_DIR] if root.is_dir() else []) + [root.parent]
     entries = meta.get("_cameras") or []
     for i, s in enumerate(proj.sessions):
         cells = int(s.tracked.sum())
@@ -230,7 +264,7 @@ def _project_lines(path) -> tuple[list[str], list[str]]:
                      + (f", silhouette on {s.masks.n_masked()} frame(s)" if s.masks is not None else "")
                      + (" [active]" if i == proj.active else ""))
         entry = entries[i] if i < len(entries) else {"video": {"path": s.video_path}}
-        if projectfile.locate_video(entry, pdir) is None:
+        if projectfile.locate_video(entry, pdir, extra) is None:
             warn.append(f"camera {i + 1} {proj.name(i)!r}: its video is not found "
                         f"({(entry.get('video') or {}).get('relative_path') or s.video_path})")
     if proj.calibration is not None:
@@ -248,7 +282,7 @@ def _describe(path: str) -> tuple[list[str], list[str]]:
     from kinetrace import calibio, trackio
     p = Path(path)
     low = p.name.lower()
-    if low.endswith(".kinetrace") or (p.is_dir() and (p / "kinetrace.json").is_file()):
+    if low.endswith(".kinetrace") or low == "kinetrace.json" or (p.is_dir() and (p / "kinetrace.json").is_file()):
         return _project_lines(path)
     if low.endswith(".csv"):
         try:
@@ -346,15 +380,20 @@ def main(argv=None) -> int:
     s.add_argument("--tracks", required=True)
     s.add_argument("--camera", help="camera name or number (default: the active one)")
     s.add_argument("--out", help="write a new project instead of updating this one")
-    s = sub.add_parser("pack", help="an unzipped project folder into one .kinetrace file")
+    s = sub.add_parser("pack", help="a project folder into one .kinetrace file (to e-mail or archive)")
     s.add_argument("folder")
     s.add_argument("output")
+    s = sub.add_parser("unpack", help="a single-file .kinetrace into a project folder")
+    s.add_argument("file")
+    s.add_argument("folder")
+    s = sub.add_parser("previous", help="put a project folder back as it was at the save before the last one")
+    s.add_argument("project")
     a = ap.parse_args(argv)
     from kinetrace import calibio, projectfile, trackio
     try:
         return {"info": cmd_info, "check": cmd_check, "calibration": cmd_calibration, "tracks": cmd_tracks,
                 "points3d": cmd_points3d, "masks": cmd_masks, "offsets": cmd_offsets, "import": cmd_import,
-                "pack": cmd_pack}[a.cmd](a)
+                "pack": cmd_pack, "unpack": cmd_unpack, "previous": cmd_previous}[a.cmd](a)
     except (Failure, projectfile.ProjectFileError, trackio.TrackImportError, calibio.CalibFormatError,
             ValueError, OSError) as e:
         _say("error:", e)
