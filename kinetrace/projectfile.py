@@ -13,7 +13,7 @@ programs can read and write (format 2, I145). See docs/FORMAT.md.
     cameras/<folder>/points.csv       one row per landmark (its tracks file in `file`)
     cameras/<folder>/tracks/<landmark>.csv   frame,x,y,confidence,visible,hand_placed,hidden
                                       (+ radius for ball markers); only frames with data
-    cameras/<folder>/events.csv, notes.csv, ball_prompts.json, skeleton.json, segment.json
+    cameras/<folder>/events.csv, notes.csv, ball_prompts.json, spots.json, skeleton.json, segment.json
     cameras/<folder>/silhouette/summary.csv + *.npy   per-frame area / centroid / box
                                       (readable), outlines and midline (binary)
     cameras/<folder>/body/*.npy + meta.json  body poses and mesh (binary)
@@ -460,6 +460,9 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
     balls = {p.name: {str(f): cs for f, cs in (p.ball_prompts or {}).items()} for p in s.points if p.is_ball}
     if balls:
         files[f"{d}/ball_prompts.json"] = _json(_clean_json(balls))
+    spot = {p.name: dict(p.spot) for p in s.points if p.spot}
+    if spot:            # the Moving spot settings the test found (I161)
+        files[f"{d}/spots.json"] = _json(_clean_json(spot))
     if s.skeleton:
         files[f"{d}/skeleton.json"] = _json(_clean_json(s.skeleton))
     if s.animal is not None:
@@ -670,7 +673,7 @@ def _replace(src: Path, dst: Path) -> None:
 
 # ------------------------------------------------------------------ the project folder (I145)
 _TOP_FILES = {META, "project.json", "state.json", "calibration.json", "lenses.json", "README.txt"}
-_CAM_FILES = {"view.json", "points.csv", "tracks.csv", "events.csv", "notes.csv", "ball_prompts.json",
+_CAM_FILES = {"view.json", "points.csv", "tracks.csv", "events.csv", "notes.csv", "ball_prompts.json", "spots.json",
               "skeleton.json", "segment.json", "tracks.npy", "confidence.npy", "visibility.npy", "manual.npy",
               "tracked.npy", "occluded.npy", "radius.npy"}
 _CAM_DIRS = ("tracks", "silhouette", "body")
@@ -758,6 +761,9 @@ def _fsync_dir(d: Path) -> None:
 
 
 LOCK = ".lock"
+# the largest video a project may describe: every T x N array is sized from it (I157)
+MAX_FRAMES = 20_000_000                 # 18 h at 300 fps
+MAX_SIDE = 65_536
 LOCK_STALE_S = 6 * 3600                  # a lock this old is a crash's leftover, whoever wrote it
 
 
@@ -787,11 +793,11 @@ def _lock_stale(lk: Path) -> bool:
     import socket
     try:
         other = json.loads(lk.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return True
-    if time.time() - float(other.get("time") or 0) > LOCK_STALE_S:
-        return True
-    return other.get("host") == socket.gethostname() and not _pid_alive(int(other.get("pid") or 0))
+        if time.time() - float(other.get("time") or 0) > LOCK_STALE_S:
+            return True
+        return other.get("host") == socket.gethostname() and not _pid_alive(int(other.get("pid") or 0))
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+        return True                                  # not a lock Kinetrace wrote (I157)
 
 
 def clear_stale_lock(root: str | Path) -> None:
@@ -890,9 +896,54 @@ def _managed(root: Path) -> set[str]:
     return out
 
 
+def _layout_rel(rel) -> bool:
+    """True for a relative path of the project layout (what a save writes):
+    a top file, reconstruction/..., cameras/<folder>/<camera file or folder>/...
+    -- never absolute, a drive, a backslash, '.' / '..' or a hidden part."""
+    if not isinstance(rel, str) or not rel or "\\" in rel or ":" in rel or "\0" in rel:
+        return False
+    parts = PurePosixPath(rel).parts
+    if not parts or rel.startswith("/") or any(p in (".", "..") or p.startswith(".") for p in parts):
+        return False
+    if len(parts) == 1:
+        return parts[0] in _TOP_FILES
+    if parts[0] == "reconstruction":
+        return True
+    return (parts[0] == "cameras" and len(parts) >= 3 and re.fullmatch(r"[A-Za-z0-9._-]+", parts[1]) is not None
+            and ((len(parts) == 3 and parts[2] in _CAM_FILES) or (len(parts) >= 4 and parts[2] in _CAM_DIRS)))
+
+
+def _history_paths(root: Path, record: dict, what: str) -> dict:
+    """The file lists of a .history record (pending.json / previous.json),
+    each path checked to be one of the project's own files (I147): the record
+    is read from a folder someone else may have made, and a rollback deletes
+    and moves what it names. One unsafe entry refuses the whole record."""
+    if not isinstance(record, dict):
+        record = {}
+    out = {}
+    base = root.resolve()
+    for key in ("added", "replaced", "removed"):
+        items = record.get(key, [])
+        if not isinstance(items, list):
+            items = [items]
+        for rel in items:
+            ok = _layout_rel(rel)
+            if ok:
+                try:
+                    ok = (root / rel).resolve().is_relative_to(base)
+                except (OSError, ValueError):
+                    ok = False
+            if not ok:
+                raise ProjectFileError(f"{root.name}: .history/{what} names {str(rel)[:80]!r}, which is not a file "
+                                       f"of this project. Nothing was changed; delete the .history folder to open it.")
+        out[key] = items
+    return out
+
+
 def _rollback(root: Path, pending: dict) -> None:
     """Undo a save that did not finish: every file back as it was."""
     hist = root / HISTORY_DIR
+    pending = _history_paths(root, pending, "pending.json")
     for rel in pending.get("added", []):
         try:
             (root / rel).unlink()
@@ -922,6 +973,8 @@ def finish_interrupted(root: str | Path) -> str | None:
         try:
             p = json.loads(pend.read_text(encoding="utf-8"))
         except ValueError:
+            p = {}
+        if not isinstance(p, dict):
             p = {}
         if p.get("saved_at") and _saved_at(root) == p.get("saved_at"):
             _replace(pend, pend.with_name("previous.json"))
@@ -1107,7 +1160,8 @@ def describe_changes(changed: list[str], removed: list[str], cameras: list[tuple
     top = {"project.json": "the cameras (videos, offsets, frame rates)", "calibration.json": "the calibration",
            "lenses.json": "the lens profiles"}
     part = {"points.csv": "the landmark list", "events.csv": "the events", "notes.csv": "the notes",
-            "ball_prompts.json": "the ball markers' clicks", "skeleton.json": "the skeleton",
+            "ball_prompts.json": "the ball markers' clicks", "spots.json": "the Moving spot settings",
+            "skeleton.json": "the skeleton",
             "segment.json": "the segment's clicks"}
     names = dict(cameras)
     lines, per_cam, rest = [], {}, []
@@ -1153,6 +1207,8 @@ def restore_previous(path: str | Path) -> str:
         raise ProjectFileError(f"{root.name}: no earlier save is kept") from None
     if not (hist / META).is_file():
         raise ProjectFileError(f"{root.name}: the last save was the first one; there is nothing earlier")
+    saved_before = p.get("saved_at_before") if isinstance(p, dict) else None
+    p = _history_paths(root, p, "previous.json")
     for rel in p.get("added", []):
         (root / rel).unlink(missing_ok=True)
     for rel in p.get("replaced", []) + p.get("removed", []):
@@ -1162,7 +1218,7 @@ def restore_previous(path: str | Path) -> str:
     _replace(hist / META, root / META)
     (hist / "previous.json").unlink()
     (root / CACHE_DIR / "index.json").unlink(missing_ok=True)
-    return str(p.get("saved_at_before") or "")
+    return str(saved_before or "")
 
 
 # ------------------------------------------------------------------ read
@@ -1364,6 +1420,8 @@ def read(path: str | Path):
     if int(meta.get("format_version", 0)) > FORMAT_VERSION:
         raise ProjectFileError(f"kinetrace.json: made by a newer Kinetrace (format "
                                f"{meta.get('format_version')}); update Kinetrace to open it")
+    if not safe_id(meta.get("project_id")):
+        meta["project_id"] = new_id()             # a file name in the recovery folder: never a path (I148)
     pj = src.json("project.json") if src.has("project.json") else None
     if not pj or not pj.get("cameras"):
         raise ProjectFileError("project.json: missing, or no cameras listed")
@@ -1383,6 +1441,8 @@ def read(path: str | Path):
             w, h = int(cam["width"]), int(cam["height"])
         except (KeyError, TypeError, ValueError):
             raise ProjectFileError(f"{where}: needs n_frames, fps, width and height") from None
+        if not (1 <= T <= MAX_FRAMES and 1 <= w <= MAX_SIDE and 1 <= h <= MAX_SIDE):   # sizes every array (I157)
+            raise ProjectFileError(f"{where}: {T} frames of {w} x {h} pixels is not a video Kinetrace can hold")
         s = TrackingSession(str((cam.get("video") or {}).get("path", "")), T, fps, w, h)
         try:                                     # a project from before G38 has no file_fps: the same rate
             s.file_fps = float(cam.get("file_fps", fps)) or fps
@@ -1444,6 +1504,8 @@ def _read_points3d(src: _Source):
         cams_px = [str(c) for c in (m.get("per_camera_columns") or [])]
     except (KeyError, TypeError, ValueError):
         raise ProjectFileError("reconstruction/meta.json: needs t0, n_frames and points") from None
+    if not 0 <= R <= MAX_FRAMES:
+        raise ProjectFileError(f"reconstruction/meta.json: {R} frames is not a length Kinetrace can hold")
     N, C = len(names), len(cams_px)
     xyz = np.full((R, N, 3), np.nan)
     res = np.full((R, N), np.nan)
@@ -1468,7 +1530,10 @@ def _read_points3d(src: _Source):
 def _read_camera(src: _Source, d: str, s) -> None:
     from kinetrace.body import BodyTrack
     from kinetrace.segmenter import MIDLINE_SAMPLES, MaskTrack
-    from kinetrace.session import SOURCES, AnimalMeta, Event, PointMeta
+    from kinetrace.session import SOURCES, AnimalMeta, Event, PointMeta, formula_safe, starts_formula
+
+    def _name(n):         # names from a file lose what a spreadsheet takes for a formula (M7)
+        return formula_safe(n) if starts_formula(n) else n
 
     T = s.n_frames
     # ---- points
@@ -1481,7 +1546,7 @@ def _read_camera(src: _Source, d: str, s) -> None:
             where = f"{d}/points.csv row {i + 2}"
             outline = g("outline").split()
             points.append(PointMeta(
-                g("name"), _rgb(g("color", "#ffffff"), where), g("shown", "1") != "0", g("kind", "point") or "point",
+                _name(g("name")), _rgb(g("color", "#ffffff"), where), g("shown", "1") != "0", g("kind", "point") or "point",
                 float(g("radius", "0") or 0), g("anchor", "0") == "1",
                 g("source", "track") if g("source", "track") in SOURCES else "track", g("spec"),
                 g("free", "0") == "1", g("shape", "circle") or "circle",
@@ -1502,7 +1567,7 @@ def _read_camera(src: _Source, d: str, s) -> None:
                  for j in range(len(points))]
         for rel in src.files_in(f"{d}/tracks"):     # a file points.csv does not name: a new landmark
             if rel.lower().endswith(".csv") and rel not in named:
-                points.append(PointMeta(unicodedata.normalize("NFC", PurePosixPath(rel).stem),
+                points.append(PointMeta(_name(unicodedata.normalize("NFC", PurePosixPath(rel).stem)),
                                         _PALETTE[len(points) % len(_PALETTE)]))
                 named.append(rel)
         arr = _empty_tracks(T, len(points))
@@ -1526,7 +1591,7 @@ def _read_camera(src: _Source, d: str, s) -> None:
                 a, b = int(cols["start"][i]), int(cols["end"][i])
             except ValueError:
                 raise ProjectFileError(f"{where}: start / end must be whole numbers") from None
-            s.events.append(Event(cols["name"][i], min(a, b), max(a, b),
+            s.events.append(Event(_name(cols["name"][i]), min(a, b), max(a, b),
                                   _rgb(cols["color"][i], where) if cols.get("color") else (255, 200, 0),
                                   (cols.get("note") or [""] * n)[i], (cols.get("author") or [""] * n)[i]))
     if src.has(f"{d}/notes.csv"):
@@ -1541,6 +1606,12 @@ def _read_camera(src: _Source, d: str, s) -> None:
             if nm in index and s.points[index[nm]].is_ball:
                 s.points[index[nm]].ball_prompts = {int(f): [[float(c[0]), float(c[1]), int(c[2])] for c in cs]
                                                     for f, cs in per.items()}
+    if src.has(f"{d}/spots.json"):
+        from kinetrace.spots import SpotSettings
+        per = src.json(f"{d}/spots.json")
+        for nm, st in (per.items() if isinstance(per, dict) else ()):
+            if nm in index and isinstance(st, dict):       # odd values fall back to automatic
+                s.points[index[nm]].spot = SpotSettings.from_dict(st).to_dict()
     if src.has(f"{d}/skeleton.json"):
         sk = src.json(f"{d}/skeleton.json")
         if isinstance(sk, dict) and sk.get("landmarks"):
@@ -1654,6 +1725,12 @@ _PALETTE = [(255, 77, 77), (77, 210, 255), (255, 210, 77), (140, 255, 120), (220
 # ------------------------------------------------------------------ conveniences (tests, CLI)
 def new_id() -> str:
     return uuid.uuid4().hex
+
+
+def safe_id(project_id) -> bool:
+    """A project id is a file name in the recovery folder (I148): letters,
+    digits, '-' and '_' only (new_id() gives 32 hex digits)."""
+    return isinstance(project_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", project_id) is not None
 
 
 def timestamp() -> str:

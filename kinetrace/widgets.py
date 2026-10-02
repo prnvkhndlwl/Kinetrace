@@ -136,8 +136,8 @@ class _Spinner(QWidget):
 
 
 class LoadingOverlay(QWidget):
-    """A card over the whole window while videos / a project open (owner,
-    2026-09-26: the wait "seems like the app is frozen"): a turning spinner,
+    """A card over the whole window while videos / a project open (G31:
+    without it the wait looked like a frozen app): a turning spinner,
     what is being opened, the step it is on, a progress bar (counted when the
     number of steps is known, moving otherwise), a helpful hint, and Cancel where
     stopping is safe. Clicks on the window underneath are blocked (the app also
@@ -554,6 +554,16 @@ class ManualDialog(QDialog):
         pos = self._anchors.get(_slug(frag))
         if pos is not None:
             self._scroll_to(pos)
+
+    def go_to_heading(self, title: str) -> bool:
+        """Scroll to the heading whose text (numbering aside) is `title`, e.g.
+        Help -> Which Point Model Should I Use?. False when there is none."""
+        want = _slug(title)
+        for slug, pos in self._anchors.items():
+            if slug == want or slug.split("-", 1)[-1] == want or slug.endswith("-" + want):
+                self._scroll_to(pos)
+                return True
+        return False
 
     def _find_next(self) -> None:
         needle = self.find.text().strip()

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -70,6 +71,9 @@ def folder() -> tuple[Path, bool]:
 
 
 def paths(project_id: str) -> tuple[Path, Path, Path]:
+    # the id comes from a project file: it must stay a plain name in this folder (I148)
+    if not isinstance(project_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", project_id):
+        raise ValueError(f"not a project id: {str(project_id)[:80]!r}")
     d = folder()[0]
     return d / f"{project_id}.kinetrace", d / f"{project_id}.json", d / f"{project_id}.view.json"
 
@@ -87,13 +91,20 @@ def write_info(project_id: str, *, base_saved_at: str | None, last_path: str | N
 
 def find(project_id: str) -> dict | None:
     """The recovery of this project, if its data file exists."""
-    zp, jp, _ = paths(project_id)
+    try:
+        zp, jp, _ = paths(project_id)
+    except ValueError:
+        return None
     if not (zp.exists() and jp.exists()):
         return None
     try:
-        return json.loads(jp.read_text(encoding="utf-8"))
+        info = json.loads(jp.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"project_id": project_id, "damaged": True}
+    if not isinstance(info, dict):
+        return {"project_id": project_id, "damaged": True}
+    info["project_id"] = project_id              # the file's own name, never a path written inside it
+    return info
 
 
 def scan() -> list[dict]:

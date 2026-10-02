@@ -3,7 +3,7 @@ a point clicked in one camera shows its epipolar line in the others (G19).
 
 A calibrated 2-camera synthetic rig (known DLT cameras, a dot at a known 3D
 path) is opened through the real MainWindow with no points at all, and the
-owner's workflow is driven with real key and mouse events:
+digitizing workflow is driven with real key and mouse events:
   import the calibration -> the guides switch on;
   N + click in camera A -> the point exists in camera B too (no data there), and
   B's picture shows the line it must lie on, through the true position;
@@ -218,7 +218,7 @@ n_before = (sa.n_points, sb.n_points)
 spot = world(F) + [0.12, -0.05, 0.08]               # an empty spot, away from every marker
 click(win.canvas, *cams[1].project(spot)[0])
 assert (sa.n_points, sb.n_points) == n_before, "nothing edited"
-# (G21) the owner took the look-here cross this click used to draw for a point that
+# (G21) the look-here cross this click used to draw was taken for a point that
 # "changed into a crosshair" and never reached the POINTS list
 assert win._epi_probe is None and not win.canvas._guides.lines, "a plain click draws no look-here cross"
 assert win.toast.isVisible() and "Nothing was placed" in win.toast.text(), "the notice is on the video"

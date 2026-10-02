@@ -26,7 +26,7 @@ a hand covers part of it.
   slow running reference from the first accepted fit), measured in OpenCV's
   8-bit Lab units (L* x 2.55, a* b* + 128), NOT true CIELAB: a lightness step
   weighs 2.55x a chroma step. SAM's mask of a red ball migrated onto a
-  red-shirted man's FACE for 3000 frames of real footage with every shape
+  person's FACE (red clothing) for 3000 frames of test footage with every shape
   guard satisfied, and the lit forehead differs from that ball by 54 in these
   units but by only 29 in true CIELAB (I60, sampled from the footage) - a
   true-CIELAB 35 would have let it through. The price: an abrupt lightness

@@ -305,8 +305,10 @@ class _PersonDetector:
         self._torch = torch
         local = MODELS_DIR / "rtdetr"
         path = str(local) if local.is_dir() and (local / "config.json").exists() else DETECTOR_REPO
-        self.proc = AutoImageProcessor.from_pretrained(path)
-        self.model = RTDetrV2ForObjectDetection.from_pretrained(path).to(device).eval()
+        from kinetrace.downloads import hf_load_args
+        kw = {} if path != DETECTOR_REPO else hf_load_args(DETECTOR_REPO)   # the pinned commit (I154)
+        self.proc = AutoImageProcessor.from_pretrained(path, **kw)
+        self.model = RTDetrV2ForObjectDetection.from_pretrained(path, **kw).to(device).eval()
         self.device = device
         self.threshold = float(threshold)
 
@@ -346,8 +348,10 @@ class ViTPoseEstimator(BodyEstimator):
         self._torch = torch
         self.backend = spec.key
         path = str(local_dir(spec.key) or spec.repo)
-        self.proc = AutoProcessor.from_pretrained(path)
-        self.model = VitPoseForPoseEstimation.from_pretrained(path).to(device).eval()
+        from kinetrace.downloads import hf_load_args
+        kw = {} if path != spec.repo else hf_load_args(spec.repo)       # the pinned commit (I154)
+        self.proc = AutoProcessor.from_pretrained(path, **kw)
+        self.model = VitPoseForPoseEstimation.from_pretrained(path, **kw).to(device).eval()
         self.device = device
         self.max_people = max(1, int(max_people))
         self.detector = _PersonDetector(device, detector_threshold) if use_detector else None
@@ -547,9 +551,10 @@ class Sam3DBodyEstimator(BodyEstimator):
 def make_estimator(backend: str, device=None, max_people: int = 1,
                    use_detector: bool = True, detector_threshold: float = 0.4,
                    intrinsics: np.ndarray | None = None,
-                   allow_full_frame: bool = False) -> BodyEstimator:
+                   allow_full_frame: bool = False, progress=None, cancel=lambda: False) -> BodyEstimator:
     """Build the estimator for `backend`. Raises RuntimeError with the same
-    plain-English text `backend_status` gives when it cannot."""
+    plain-English text `backend_status` gives when it cannot. A first use
+    downloads the weights with progress(label, done_bytes, total_bytes) (G45)."""
     spec = BACKENDS.get(backend)
     if spec is None:
         raise RuntimeError(f"unknown body backend {backend!r}")
@@ -561,6 +566,11 @@ def make_estimator(backend: str, device=None, max_people: int = 1,
     if state in ("needs-code", "needs-weights", "needs-gpu"):
         raise RuntimeError(why)
     torch.hub.set_dir(str(MODELS_DIR))
+    from kinetrace import downloads
+    if use_detector and not ((MODELS_DIR / "rtdetr") / "config.json").exists():
+        downloads.hf_snapshot(DETECTOR_REPO, "the person detector (RT-DETR v2, 81 MB)", progress, cancel)
+    if spec.kind != "sam3d_body" and local_dir(spec.key) is None:
+        downloads.hf_snapshot(spec.repo, f"the pose model ({spec.label})", progress, cancel)
     with _lock:
         if spec.kind == "sam3d_body":
             return Sam3DBodyEstimator(spec, device, max_people, detector_threshold,

@@ -913,6 +913,17 @@ for m, k in kids.items():
         f"I133 {m}: exit {k.returncode & 0xFFFFFFFF:#x} -- a thread was dropped while running\n{out[-800:]}"
 print("a thread still running after its result is kept alive, not destroyed (I133) OK")
 
+# M7: a typed name that a spreadsheet would run as a formula is refused, with a word why
+if win.session is not None and win.session.n_points:
+    said = []
+    real_toast = win.toast.show_message
+    win.toast.show_message = lambda text, *a, **k: said.append(text)
+    before = win.session.points[0].name
+    got = win._apply_rename(0, "=HYPERLINK(\"x\")")
+    win.toast.show_message = real_toast
+    assert got == before and win.session.points[0].name == before and said and "formula" in said[-1], (got, said)
+    print("a typed name starting with = is refused and the user is told why (M7) OK")
+
 win.close()
 pump(0.3)
 for v in (VA, VB, VC):

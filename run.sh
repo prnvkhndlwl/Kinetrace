@@ -55,10 +55,15 @@ download() {   # url, destination
 bootstrap_python() {
     TAG=20260901
     VER=3.12.14
+    # the sha256 of each file, from the release's own SHA256SUMS (I153): a download
+    # that is not exactly this file is deleted, never run
     case "$OS-$ARCH" in
-        Linux-x86_64)               TRIPLE=x86_64-unknown-linux-gnu ;;
-        Linux-aarch64|Linux-arm64)  TRIPLE=aarch64-unknown-linux-gnu ;;
-        Darwin-arm64)               TRIPLE=aarch64-apple-darwin ;;
+        Linux-x86_64)               TRIPLE=x86_64-unknown-linux-gnu
+                                    SUM=72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e47008e7faba4c ;;
+        Linux-aarch64|Linux-arm64)  TRIPLE=aarch64-unknown-linux-gnu
+                                    SUM=577b4bec0793ad1ff0cbff9adbd0df078eddde38a4c41bf5d83ad381a85ee39d ;;
+        Darwin-arm64)               TRIPLE=aarch64-apple-darwin
+                                    SUM=81a359f1cfadd4da11766534c5913791cea55f26e1bb902cacd2a531bb1e4b2b ;;
         *) say "No private Python build exists for $OS on $ARCH."; return 1 ;;
     esac
     URL="https://github.com/astral-sh/python-build-standalone/releases/download/$TAG/cpython-$VER+$TAG-$TRIPLE-install_only_stripped.tar.gz"
@@ -66,6 +71,16 @@ bootstrap_python() {
     rm -rf .venv/base .venv/_python_dl
     mkdir -p .venv/_python_dl
     download "$URL" .venv/_python_dl/python.tar.gz || { rm -rf .venv/_python_dl; return 1; }
+    if command -v sha256sum >/dev/null 2>&1; then
+        GOT=$(sha256sum .venv/_python_dl/python.tar.gz | cut -d' ' -f1)
+    else
+        GOT=$(shasum -a 256 .venv/_python_dl/python.tar.gz | cut -d' ' -f1)       # macOS
+    fi
+    if [ "$GOT" != "$SUM" ]; then
+        say "The downloaded Python is not the expected file (its checksum differs); it was deleted, not used."
+        rm -rf .venv/_python_dl
+        return 1
+    fi
     tar -xzf .venv/_python_dl/python.tar.gz -C .venv/_python_dl
     mv .venv/_python_dl/python .venv/base
     rm -rf .venv/_python_dl

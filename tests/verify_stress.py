@@ -60,6 +60,42 @@ r3.export_mat(os.path.join(SCRATCH, "weird.mat"))
 r3.export_events_csv(os.path.join(SCRATCH, "weird_ev.csv"))
 print("weird names OK")
 
+# ---- 3b. no name reaches a CSV as a spreadsheet formula (M7, CSV injection) ----
+from kinetrace.project import Project  # noqa: E402
+from kinetrace import projectfile  # noqa: E402
+
+sf = TrackingSession("x.mp4", 5, 30.0, 640, 480)
+pa = sf.add_point(0, 1.0, 1.0, name="=HYPERLINK(\"http://x\",\"y\")")
+pb = sf.add_point(0, 2.0, 1.0)
+sf.rename_point(pb, "+cmd|' /C calc'!A0")
+pc = sf.add_point(0, 3.0, 1.0, name="@SUM(1)")
+pd_ = sf.add_point(0, 4.0, 1.0, name="-2+3")
+sf.add_point(0, 5.0, 1.0, name="\t=x")
+sf.add_event("=evil()", 0, 1)
+sf.add_event("walk", 1, 2)
+sf.update_event(1, name="@run")
+sf.apply_skeleton({"name": "t", "landmarks": ["=snout", "tail"], "bones": [["=snout", "tail"]], "head": "=snout"})
+names = [p.name for p in sf.points] + [e.name for e in sf.events]
+assert not any(n.strip()[:1] in "=+-@" for n in names), names
+assert "snout" in names and sf.skeleton["head"] == "snout" and ["snout", "tail"] in sf.skeleton["bones"], sf.skeleton
+assert [p.name for p in sf.points][:2] == ['HYPERLINK("http://x","y")', "cmd|' /C calc'!A0"], names
+pf_path = os.path.join(SCRATCH, "formula.kinetrace")
+projectfile.save(Project([sf]), pf_path)
+pcsv = os.path.join(pf_path, "cameras", "cam1", "points.csv")
+text = open(pcsv, encoding="utf-8").read()
+open(pcsv, "w", encoding="utf-8", newline="").write(text.replace("\ntail,", "\n=tail,", 1))
+back = projectfile.load(pf_path)
+assert "tail" in [p.name for p in back.sessions[0].points] and not any(
+    p.name.startswith("=") for p in back.sessions[0].points), [p.name for p in back.sessions[0].points]
+pr = Project([sf])
+assert pr.rename_landmark("tail", "=tail2") == "tail2"
+sf.export_csv(os.path.join(SCRATCH, "formula.csv"))
+sf.export_events_csv(os.path.join(SCRATCH, "formula_ev.csv"))
+for f in ("formula.csv", "formula_ev.csv"):
+    for cell in open(os.path.join(SCRATCH, f), encoding="utf-8").read().replace("\n", ",").split(","):
+        assert not cell.strip().strip('"')[:1] in ("=", "+", "@"), (f, cell)
+print("formula-safe names OK")
+
 # ---- 4. remove points/events in every order; snapshot isolation ----
 s4 = TrackingSession("x.mp4", 20, 30.0, 640, 480)
 for i in range(5):

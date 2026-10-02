@@ -1,4 +1,4 @@
-"""File → Open Folder of Videos… (G30, owner 2026-09-26): pick a folder, see every
+"""File → Open Folder of Videos… (G30): pick a folder, see every
 video in it, tick the ones to import, pick the BASE (reference) camera, and they
 become one multi-camera project -- saved at once if asked.
 
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QDialog, QDialogButtonBo
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from kinetrace import theme
+from kinetrace.errors import plain_error
 from kinetrace.project import MAX_VIEWS
 
 VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".m4v", ".wmv", ".webm", ".mpg", ".mpeg")
@@ -77,7 +78,7 @@ class _HeaderProbe(QThread):
                 cap.release()
                 self.got.emit(row, info)
             except Exception as e:      # noqa: BLE001 -- one odd file must not stop the list
-                self.got.emit(row, f"{type(e).__name__}: {e}")
+                self.got.emit(row, plain_error(e, "could not be read", short=True))      # (G54)
 
 
 class VideoFolderDialog(QDialog):

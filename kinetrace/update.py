@@ -219,8 +219,26 @@ def _replace(src: Path, dst: Path, tries: int = 10) -> None:
             time.sleep(0.2)
 
 
+GITHUB_HOSTS = ("api.github.com", "codeload.github.com", "github.com")
+
+
+def trusted_url(url: str) -> bool:
+    """A release archive may come from GitHub over https only -- or from the
+    test server `KINETRACE_UPDATE_API` names (I155): the link is read from an
+    answer, and an answer is not a reason to download from anywhere else."""
+    from urllib.parse import urlsplit
+    u = urlsplit(url)
+    if u.scheme == "https" and (u.hostname or "").lower() in GITHUB_HOSTS:
+        return True
+    api = urlsplit(api_base())
+    return bool(os.environ.get("KINETRACE_UPDATE_API")) and (u.scheme, u.netloc) == (api.scheme, api.netloc)
+
+
 def download(url: str, dest: Path, progress=None, timeout: float = 60) -> Path:
     """Stream `url` into `dest`; progress(done_bytes, total_bytes or 0)."""
+    if not trusted_url(url):
+        raise UpdateError(f"The release's download link does not point to GitHub ({url[:80]}), so it was not "
+                          f"used. Download the new version from {PAGE} instead.")
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
     with _open(url, timeout) as r, open(tmp, "wb") as fh:
@@ -369,8 +387,11 @@ def relaunch(root: Path = ROOT) -> None:
     install.py first when the update asked for it."""
     root = Path(root)
     if sys.platform == "win32":
-        subprocess.Popen(["cmd", "/c", "start", "Kinetrace", str(root / "run.bat")], cwd=str(root),
-                         creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS)
+        # run.bat in a console of its own, as a double click would. Not `start "title" x`: an
+        # unquoted first argument of start is the program, so "start Kinetrace run.bat" ran
+        # nothing (I156). `cmd /c ""path""` takes the quoted path literally (& ^ in a folder name).
+        subprocess.Popen(f'cmd /c ""{root / "run.bat"}""', cwd=str(root),
+                         creationflags=subprocess.CREATE_NEW_CONSOLE)
     elif sys.platform == "darwin":
         subprocess.Popen(["open", str(root / "Kinetrace.command")], cwd=str(root))
     else:

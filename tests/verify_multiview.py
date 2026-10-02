@@ -336,7 +336,7 @@ assert {k for k, _tt in got} == {0, 1, 2}
 print("G24: a step shows every camera's new picture at once (lockstep) OK")
 
 # ---- 7. (G27) Active view only: ONLY the working camera reads its video -----------------
-# (the owner: "it still syncs all cameras even when Sync all is off" -- the first
+# (G27: the other cameras still followed with Sync all off -- the first
 # version let the others catch up when the playhead stopped, and a lone step updated all)
 requests = {0: 0, 1: 0}
 for k in (0, 1):

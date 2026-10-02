@@ -183,6 +183,52 @@ assert sorted(s2.manual_frames(1).tolist()) == [50, 120, 400], s2.manual_frames(
 assert np.allclose(s2.tracks[50, 1], (320, 210), atol=0.6)
 print("timeline paint + project round trip: OK")
 
+# ---- G59: hold-and-move pans (from a marker too), right click clears this frame,
+# a long right press opens the point's menu -- all with real mouse events ----
+cv = win.canvas
+vp_w = cv.viewport()
+win._goto(150)
+win._on_select(0)
+app.processEvents()
+for _ in range(4):
+    cv.zoom_step(1.5)
+app.processEvents()
+on = cv.mapFromScene(QPointF(*s.tracks[150, 0]))
+h0, v0 = cv.horizontalScrollBar().value(), cv.verticalScrollBar().value()
+before = s.tracks[150, 0].copy()
+man_before = bool(s.manual[150, 0])
+QTest.mousePress(vp_w, Qt.LeftButton, Qt.NoModifier, on)
+for k in range(1, 6):
+    QTest.mouseMove(vp_w, on + QPoint(12 * k, 8 * k))
+QTest.mouseRelease(vp_w, Qt.LeftButton, Qt.NoModifier, on + QPoint(60, 40))
+app.processEvents()
+assert (cv.horizontalScrollBar().value(), cv.verticalScrollBar().value()) != (h0, v0), "hold and move must pan"
+assert np.array_equal(s.tracks[150, 0], before) and bool(s.manual[150, 0]) == man_before, (
+    "a pan from a marker moved the point", before, s.tracks[150, 0], man_before, s.manual[150, 0])
+win._deselect()
+app.processEvents()
+on = cv.mapFromScene(QPointF(*s.tracks[150, 0]))
+QTest.mouseClick(vp_w, Qt.RightButton, Qt.NoModifier, on)
+app.processEvents()
+assert win.selected == 0 and not s.tracked[150, 0], "a right click clears the marker on this frame"
+assert s.tracked[149, 0] and s.tracked[151, 0], "only this frame"
+win._undo_run()
+assert s.tracked[150, 0], "Ctrl+Z brings it back"
+menus = []
+_real_menu = cv._context_menu
+cv._context_menu = lambda pid, pos: menus.append(pid)
+QTest.mousePress(vp_w, Qt.RightButton, Qt.NoModifier, on)
+t_end = time.time() + 0.8
+while time.time() < t_end:
+    app.processEvents()
+    time.sleep(0.01)
+QTest.mouseRelease(vp_w, Qt.RightButton, Qt.NoModifier, on)
+app.processEvents()
+cv._context_menu = _real_menu
+assert menus == [0] and s.tracked[150, 0], "a long right press opens the menu and clears nothing"
+cv.fit()
+print("hold-and-move pans, right click clears one frame (+ undo), long right press = menu: OK")
+
 win._dev_probe.wait(30000)
 win.close()
 app.processEvents()

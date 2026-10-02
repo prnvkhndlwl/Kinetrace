@@ -83,10 +83,8 @@ def model_is_cached(backend: str = DEFAULT_BACKEND) -> bool:
     """True if the weights are already inside the tool folder (no internet needed)."""
     if local_dir(backend) is not None:
         return True
-    snaps = HF_DIR / "hub" / ("models--" + repo_of(backend).replace("/", "--")) / "snapshots"
-    if not snaps.exists():
-        return False
-    return any(list(p.glob("*.safetensors")) for p in snaps.iterdir() if p.is_dir())
+    from kinetrace.downloads import hf_cached
+    return hf_cached(repo_of(backend))
 
 
 def load_path(backend: str) -> str:
@@ -110,6 +108,8 @@ def save_token(token: str) -> None:
     HF_DIR.mkdir(parents=True, exist_ok=True)
     if token:
         token_path().write_text(token, encoding="utf-8")
+        if os.name != "nt":
+            os.chmod(token_path(), 0o600)       # a secret: readable by this user only (I158)
     elif token_path().exists():
         token_path().unlink()
 
@@ -126,11 +126,17 @@ def backend_status(backend: str) -> tuple[str, str]:
     return "download", f"{label}: first use downloads {size} into models/hf (internet needed once)"
 
 
-def get_segmenter(backend: str = DEFAULT_BACKEND) -> "Segmenter":
-    """Process-wide singleton per backend. Safe to call from any thread."""
+def get_segmenter(backend: str = DEFAULT_BACKEND, progress=None, cancel=lambda: False) -> "Segmenter":
+    """Process-wide singleton per backend. Safe to call from any thread.
+    A first use downloads the weights with progress(label, done_bytes, total_bytes)
+    (`downloads.hf_snapshot`, at the pinned commit; G45, I154)."""
     with _lock:
         eng = _engines.get(backend)
         if eng is None:
+            if local_dir(backend) is None:
+                from kinetrace import downloads
+                downloads.hf_snapshot(repo_of(backend), f"the segmentation model ({BACKENDS[backend][2]})",
+                                      progress, cancel)
             eng = Segmenter(backend)
             _engines[backend] = eng
         return eng
@@ -219,8 +225,12 @@ class Segmenter:
         else:
             from transformers import Sam2VideoModel as M, Sam2VideoProcessor as P
         src = load_path(backend)
-        self.model = M.from_pretrained(src, dtype=self.dtype).to(self.device).eval()
-        self.proc = P.from_pretrained(src)
+        from kinetrace.downloads import hf_load_args
+        # a local folder, or the Hub repo at the commit every test ran against (I154): with
+        # that commit's files in models/hf nothing is asked of the Hub
+        rev = {} if local_dir(backend) is not None else hf_load_args(src)
+        self.model = M.from_pretrained(src, dtype=self.dtype, **rev).to(self.device).eval()
+        self.proc = P.from_pretrained(src, **rev)
         self._torch = torch
         self.lock = threading.Lock()   # one inference at a time per model
 

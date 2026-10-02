@@ -5,16 +5,18 @@ construction (the pixmap item fills the scene rect at native size), so
 mapToScene() of a mouse event yields video pixels directly — there is no
 manual coordinate mapping anywhere.
 
-Gestures (modeless, active only when interaction is enabled):
-    click near a point   -> select it
-    drag a point         -> move it (live preview; committed on release)
-    click empty area     -> add a new point there (fires on release)
-    drag from empty area -> draw a circle region -> tracked as a group
-                            (Add ▾ picks circle / rectangle / polygon: a rectangle
-                            is a drag, a polygon is click-click-click + Enter)
+Gestures (active only when interaction is enabled; G59, owner 2026-10-02):
+    click                -> place the SELECTED point here (on a marker too);
+                            nothing selected: a click on a marker selects it
+    hold left + move     -> pan (starting on a marker too: points are never dragged)
+    right click a marker -> select it and clear it on THIS frame only
+    hold right on marker -> (LONG_PRESS_MS) its menu: rename / delete / ...
     Ctrl+click anywhere  -> reposition the selected point there
-    right-click a point  -> rename / delete menu
+    Alt+click            -> look here (where this spot can be in the other cameras)
     wheel                -> zoom (anchored under cursor); R fits, middle-drag pans
+Add (N) armed: click = a new point (or continue the selected one), drag = a
+circle region tracked as a group (Add ▾ picks circle / rectangle / polygon: a
+rectangle is a drag, a polygon is click-click-click + Enter).
 Segment tool (A, armed): click = "this is the segment", Shift+click = "not the
 segment", drag = box around it; right-click a prompt marker to remove it.
 Overlays: the segment's silhouette (translucent fill + outline), its midline,
@@ -31,7 +33,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QCursor, QImage, QPainter, QPainterPath, QPen,
                            QPixmap, QPolygonF, QTransform)
 from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem,
@@ -42,7 +44,8 @@ HIT_RADIUS_PX = 14      # screen px within which a click grabs a point
 MARKER_RADIUS = 3.0     # screen px (3 by default, was 7)
 TRAIL_FRAMES = 10          # View -> Trails' preset ("Last 10 frames") and the default (G33)
 TRAIL_MAX = 1000          # the longest Custom... trail
-DRAG_CIRCLE_PX = 6      # screen px of movement before a press becomes a circle drag
+DRAG_CIRCLE_PX = 6      # screen px of movement before a press becomes a drag (a pan, a circle)
+LONG_PRESS_MS = 500     # a right press held this long opens the point's menu (G59)
 MIN_GROUP_RADIUS = 8.0  # native px; a smaller circle is treated as a plain click
 MIN_BOX_PX = 10.0       # native px; a smaller animal box is treated as a click
 ZOOM_STEP = 1.25       # video zoom factor per keypress / wheel notch
@@ -405,6 +408,7 @@ class VideoCanvas(QGraphicsView):
     point_moved = Signal(int, float, float)        # live while dragging
     move_committed = Signal(int, float, float)     # on release
     reposition_requested = Signal(float, float)    # Ctrl+click
+    clear_frame_requested = Signal(int)            # right click on a marker: clear it on this frame (G59)
     delete_requested = Signal(int)
     rename_requested = Signal(int)
     anchor_toggled = Signal(int, bool)             # appearance re-anchor opt-in
@@ -476,7 +480,14 @@ class VideoCanvas(QGraphicsView):
         self._pan_mode = False   # ✋: left-drag pans instead of editing points
         self._place_mode = False  # N: next click places a point (crosshair)
         self._click_only = False  # ball marker: armed clicks ignore the region shape
-        self._plain_press = False  # unarmed left press on the video (annotate on release)
+        self._plain_press = False  # unarmed left press on the video (annotate on release, pan on a move)
+        self._press_hit: int | None = None   # the marker under an unarmed left press, if any
+        # right press on a marker: a click clears it on this frame, a long press opens its menu (G59)
+        self._rpress: tuple | None = None    # (pid, global pos) while the right button is down
+        self._rpress_timer = QTimer(self)
+        self._rpress_timer.setSingleShot(True)
+        self._rpress_timer.setInterval(LONG_PRESS_MS)
+        self._rpress_timer.timeout.connect(self._on_long_right_press)
         self._animal_mode = False  # A: clicks/boxes prompt the animal segmentation
         self._pan_last = QPointF()
         self._positions = np.zeros((0, 2), np.float32)
@@ -1145,6 +1156,9 @@ class VideoCanvas(QGraphicsView):
         self._box_active = False
         self._box_preview.setVisible(False)
         self._plain_press = False
+        self._press_hit = None
+        self._rpress = None
+        self._rpress_timer.stop()
         self._rect_active = False
         self._rect_preview.setVisible(False)
         self._poly_pts = []
@@ -1208,10 +1222,17 @@ class VideoCanvas(QGraphicsView):
                     sp = self._onpic(sp)
                     self.reposition_requested.emit(sp.x(), sp.y())
                 return
-            if hit is not None:
-                self._dragging = hit
-                self._drag_moved = False
-                self.point_selected.emit(hit)
+            if not self._place_mode:
+                # unarmed (G59): the release decides -- a click places the
+                # selected point (on a marker too), a press held and moved
+                # pans the view, starting on a marker as anywhere else
+                # (markers are no longer dragged: a click places the point)
+                self._press_scene = self._onpic(sp) if self._in_video(sp) else None
+                self._press_view = ev.position()
+                self._press_hit = hit
+                self._plain_press = True
+                self._circle_active = False
+                self._rect_active = False
                 return
             if self._in_video(sp):
                 if self._place_mode and self._region_shape == "polygon" and not self._click_only:
@@ -1232,13 +1253,25 @@ class VideoCanvas(QGraphicsView):
                 self._plain_press = not self._place_mode
                 return
         if ev.button() == Qt.RightButton and self._interactive and self._native_size:
-            # never during a left-drag: the menu's popup grab would swallow the
-            # release and leave the drag armed forever
-            hit = self._hit_test(sp) if self._dragging is None else None
+            # never during a left press / pan: the menu's popup grab would swallow
+            # the release and leave the gesture armed forever
+            busy = self._dragging is not None or self._plain_press or self._panning
+            hit = self._hit_test(sp) if not busy else None
             if hit is not None:
-                self._context_menu(hit, ev.globalPosition().toPoint())
+                # G59: a click clears this point on this frame, a long press opens its menu
+                self._rpress = (hit, ev.globalPosition().toPoint())
+                self._rpress_timer.start()
                 return
         super().mousePressEvent(ev)
+
+    def _on_long_right_press(self) -> None:
+        """The right button has been held on a marker: its menu (G59)."""
+        if self._rpress is None:
+            return
+        pid, pos = self._rpress
+        self._rpress = None
+        if self._interactive:
+            self._context_menu(pid, pos)
 
     def mouseMoveEvent(self, ev):
         if self._panning:
@@ -1273,9 +1306,16 @@ class VideoCanvas(QGraphicsView):
                 sp = self.mapToScene(ev.position().toPoint())
                 self._box_preview.setRect(QRectF(self._press_scene, sp).normalized())
             return
-        if self._press_scene is not None and self._plain_press:
+        if self._plain_press:
             if (ev.position() - self._press_view).manhattanLength() > DRAG_CIRCLE_PX:
-                self.cancel_gesture()   # a drag is not a click: no annotation
+                # press, hold and move = pan (G59); a drag is never a placement
+                start = self._press_view
+                self.cancel_gesture()
+                self._panning = True
+                self._pan_button = Qt.LeftButton
+                self._pan_last = start
+                self.setCursor(Qt.ClosedHandCursor)
+                self.mouseMoveEvent(ev)
             return
         if self._press_scene is not None and self._click_only:
             return                   # a ball marker: a click, never a region gesture (I48)
@@ -1303,6 +1343,14 @@ class VideoCanvas(QGraphicsView):
         super().mouseMoveEvent(ev)
 
     def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.RightButton and self._rpress is not None:
+            pid = self._rpress[0]
+            self._rpress = None
+            self._rpress_timer.stop()
+            if self._interactive:              # a short right click: clear it on this frame (G59)
+                self.point_selected.emit(pid)
+                self.clear_frame_requested.emit(pid)
+            return
         if self._panning and ev.button() == getattr(self, "_pan_button", Qt.MiddleButton):
             self._panning = False
             self._update_cursor()
@@ -1333,10 +1381,13 @@ class VideoCanvas(QGraphicsView):
             positive = not bool(ev.modifiers() & Qt.ShiftModifier)
             self.animal_click.emit(press.x(), press.y(), positive)
             return
-        if ev.button() == Qt.LeftButton and self._press_scene is not None and self._plain_press:
-            press = self._press_scene
+        if ev.button() == Qt.LeftButton and self._plain_press:
+            press, hit = self._press_scene, self._press_hit
             self.cancel_gesture()
-            self.annotate_requested.emit(press.x(), press.y())
+            if self._selected is None and hit is not None:
+                self.point_selected.emit(hit)       # nothing to place: the click picks the point
+            elif press is not None:
+                self.annotate_requested.emit(press.x(), press.y())
             return
         if ev.button() == Qt.LeftButton and self._press_scene is not None and self._rect_active:
             press = self._press_scene

@@ -709,11 +709,17 @@ class BodyPoseWorker(QThread):
         from kinetrace.video_source import open_capture
         cap = None
         try:
+            self.progress.emit(0, 0, "Loading the pose model…")
             est = bodypose.make_estimator(
                 self.opts.backend, max_people=self.opts.max_people,
                 use_detector=self.opts.use_detector and not self.opts.use_masks,
                 detector_threshold=self.opts.detector_threshold,
-                intrinsics=self.opts.intrinsics)
+                intrinsics=self.opts.intrinsics,
+                progress=lambda label, done, total: self.progress.emit(
+                    int(done // 1e6), int(total // 1e6),
+                    f"{label}: {done / 1e6:.0f} of {total / 1e6:.0f} MB (first use only)" if total
+                    else f"{label} (first use only)…"),
+                cancel=lambda: self._cancel)
             track = BodyTrack(self.n_frames, est.rig, self.opts.max_people)
             track.backend = bodypose.BACKENDS[self.opts.backend].label
             track.examined = np.zeros(0, np.int64)

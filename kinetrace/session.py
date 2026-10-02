@@ -24,11 +24,14 @@ The segment layer:
 - ONE segment per project (`AnimalMeta`): the user's click/box prompts per
   frame, and its per-frame silhouette in a compact `MaskTrack` (outlines,
   midline, bbox, area, centroid, presence score).
-- Points carry a `source`: "track" (appearance-tracked by CoTracker3, the
-  user seeds it) or "silhouette" (derived from the segment's mask by `spec`,
-  e.g. "tip", "midline:0.5", "ext:FL"). Derived points are written into the
-  same (T, N) arrays by the tracking run, so exports, timeline, undo and
-  corrections work unchanged; they simply cannot be seeded by hand.
+- Points carry a `source`: "track" (tracked by the point model chosen in
+  Track ▾ -- AllTracker, CoTracker3 or Moving spot; the user seeds it),
+  "silhouette" (derived from the segment's mask by `spec`, e.g. "tip",
+  "midline:0.5", "ext:FL") or "ball" (a ball marker: SAM + a fitted circle).
+  Derived points are written into the same (T, N) arrays by the tracking run,
+  so exports, timeline, undo and corrections work unchanged; they simply
+  cannot be seeded by hand. `spot` = the point's Moving spot settings found by
+  the test on the user's clicks (None = automatic; spots.py).
 - A named `skeleton` (landmark names, bones, head landmark, derived defaults)
   from a template; landmarks are ordinary points matched by name.
 """
@@ -97,6 +100,38 @@ def in_frame(pts, w: float, h: float):
     return np.isfinite(pts).all(axis=-1) & (x >= 0) & (x < w) & (y >= 0) & (y < h)
 
 
+# a spreadsheet runs a cell that starts with one of these as a FORMULA (CSV
+# injection): no landmark, event or segment name may start with one (M7, owner
+# 2026-09-30: typed names are refused, names from files lose them)
+FORMULA_START = ("=", "+", "-", "@", chr(9), chr(13))       # tab and carriage return too
+
+
+def starts_formula(name: str) -> bool:
+    return (name or "").strip().startswith(FORMULA_START)
+
+
+def formula_safe(name: str, fallback: str = "point") -> str:
+    """`name` without the leading characters a spreadsheet takes for a formula."""
+    s = (name or "").strip()
+    while s.startswith(FORMULA_START):
+        s = s[1:].strip()
+    return s or fallback
+
+
+def _formula_safe_template(t: dict) -> dict:
+    """A skeleton template with every landmark name made formula-safe."""
+    f = formula_safe
+    out = dict(t)
+    out["landmarks"] = [f(n) for n in t.get("landmarks", [])]
+    if "bones" in t:
+        out["bones"] = [[f(n) for n in b] for b in t["bones"]]
+    if t.get("head"):
+        out["head"] = f(t["head"])
+    if "derived" in t:
+        out["derived"] = {f(k): v for k, v in t["derived"].items()}
+    return out
+
+
 def _sanitize(name: str) -> str:
     """Make a point/event name safe for CSV/TSV headers and cells."""
     return name.replace(",", "_").replace("\t", "_").replace("\n", " ").strip() or "point"
@@ -127,6 +162,10 @@ class PointMeta:
     # ball markers (source "ball"): the user's SAM clicks per frame,
     # {frame: [[x, y, label], ...]} native px, label 1 = the ball / 0 = not it
     ball_prompts: dict | None = None
+    # the Moving spot point model's settings for this point (spots.SpotSettings
+    # as a dict, from Track ▾ -> Test the point models on my clicks); None =
+    # automatic. Per camera: each camera sees the spot differently (I161)
+    spot: dict | None = None
 
     @property
     def derived(self) -> bool:
@@ -143,7 +182,8 @@ class PointMeta:
                          self.free, self.shape,
                          None if self.outline is None else [list(v) for v in self.outline],
                          None if self.ball_prompts is None
-                         else {int(f): [list(c) for c in cs] for f, cs in self.ball_prompts.items()})
+                         else {int(f): [list(c) for c in cs] for f, cs in self.ball_prompts.items()},
+                         None if self.spot is None else dict(self.spot))
 
     def outline_at(self, center) -> np.ndarray | None:
         """The region outline translated to `center` (its fitted position on a
@@ -309,7 +349,7 @@ class TrackingSession:
         can never shadow another point's data. Compared through the export
         sanitizer too — "a,b" and "a_b" would otherwise merge into one CSV
         column even though the raw names differ."""
-        desired = desired.strip() or "point"
+        desired = formula_safe(desired)
         taken = {_sanitize(p.name) for i, p in enumerate(self.points) if i != exclude_pid}
         if _sanitize(desired) not in taken:
             return desired
@@ -718,7 +758,7 @@ class TrackingSession:
         Returns the name actually applied; empty falls back to "segment"."""
         if self.animal is None:
             return ""
-        self.animal.name = (name or "").strip() or "segment"
+        self.animal.name = formula_safe(name, "segment")
         self._touch()
         return self.animal.name
 
@@ -769,6 +809,7 @@ class TrackingSession:
         points without data; derived ones carry their spec). Existing points
         with the same name are kept — their data is never touched. Returns the
         new point ids."""
+        template = _formula_safe_template(template)
         self.skeleton = {k: json.loads(json.dumps(template[k]))
                          for k in ("name", "head", "landmarks", "bones", "derived", "note")
                          if k in template}
@@ -829,7 +870,7 @@ class TrackingSession:
         start = max(0, min(self.n_frames - 1, int(start)))
         end = max(0, min(self.n_frames - 1, int(end)))
         self._event_counter += 1
-        name = name.strip() or f"event {self._event_counter}"
+        name = formula_safe(name, f"event {self._event_counter}")
         color = next((e.color for e in self.events if e.name == name),
                      PALETTE[len({e.name for e in self.events}) % len(PALETTE)])
         self.events.append(Event(name, start, end, color, (note or "").strip(),
@@ -846,7 +887,7 @@ class TrackingSession:
                      note: str | None = None) -> None:
         ev = self.events[index]
         if name is not None and name.strip():
-            ev.name = name.strip()
+            ev.name = formula_safe(name, ev.name)
         if note is not None:
             ev.note = note.strip()
             if ev.note and not ev.author:

@@ -11,6 +11,9 @@ scipy
 # no CUDA extension build). Weights download into models/hf on first use.
 transformers>=5.0
 pillow
+# AllTracker (the default point model; its code is fetched by install.py) imports
+# einops, and nothing else here depends on it (MIT, pure Python).
+einops
 # Sound (clap) sync of hand-started cameras (3D -> Sync Cameras): ffmpeg decodes the
 # audio tracks. imageio-ffmpeg ships a static ffmpeg binary INSIDE the venv (31 MB,
 # BSD-2 package around a GPL gyan.dev build); OpenCV's own FFmpeg cannot decode audio.

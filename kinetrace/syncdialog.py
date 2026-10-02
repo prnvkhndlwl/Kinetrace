@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from kinetrace import audiosync, sync, theme
+from kinetrace.errors import plain_error
 
 VERDICT_WORDS = {"clear": "CLEAR - use it", "weak": "WEAK - check by eye first",
                  "none": "NONE - do not apply"}
@@ -56,7 +57,7 @@ class _SyncThread(QThread):
                     band=self.audio["band"], whiten=self.audio["whiten"], progress=self.progress.emit,
                     should_cancel=lambda: self._cancel)
         except Exception as e:      # noqa: BLE001
-            self.error.emit(str(e))
+            self.error.emit(plain_error(e, "The videos could not be compared", short=True))    # (G54)
             return
         self.done.emit(res)
 
@@ -279,7 +280,7 @@ class SyncDialog(QDialog):
 
     def _fail(self, msg: str):
         self.btn_run.setEnabled(True)
-        self.status.setText("Could not read the videos: " + msg)
+        self.status.setText(msg)
 
     def _done(self, results):
         self.results = list(results)

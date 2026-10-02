@@ -214,6 +214,28 @@ check(res_d.how == "zip" and read(inst_d, "kinetrace/__init__.py").endswith('"1.
 check(seen and seen[-1][0] == seen[-1][1] == len(SERVED["zip"]), f"download progress: {seen[-1:]}")
 check(not (inst_d / update.STAGING).exists(), "the download is removed")
 print("  download + apply end to end, with progress OK")
+bad_rel = update.check("1.0.0")[0]
+for url in ("https://evil.example/kinetrace.zip", "http://github.com/x.zip", "file:///C:/x.zip",
+            "https://github.com.evil.example/x.zip"):
+    try:
+        update.apply(update.Release(**{**bad_rel.__dict__, "zip_url": url}), make_install("zip_host"))
+        raise AssertionError(f"{url}: must be refused")
+    except update.UpdateError as e:
+        check("does not point to GitHub" in str(e), f"a download link off GitHub is refused: {url} (I155)")
+check(all(update.trusted_url(u) for u in ("https://api.github.com/repos/a/b/zipball/v1",
+                                          "https://codeload.github.com/a/b/legacy.zip/v1")), "GitHub's own links pass")
+if sys.platform == "win32":
+    # the relaunch really starts the launcher (it started nothing: I156) -- in a folder
+    # with a space and an ampersand in its name
+    rl = TMP / "relaunch & test"
+    rl.mkdir(parents=True, exist_ok=True)
+    (rl / "run.bat").write_bytes(b'@echo started> "%~dp0marker.txt"\r\nexit\r\n')
+    (rl / "marker.txt").unlink(missing_ok=True)
+    update.relaunch(rl)
+    t_end = time.time() + 15
+    while not (rl / "marker.txt").exists() and time.time() < t_end:
+        time.sleep(0.2)
+    check((rl / "marker.txt").exists(), "Restart now starts run.bat (a folder named 'relaunch & test')")
 
 
 # ---------------------------------------------------------------- [4] git checkout

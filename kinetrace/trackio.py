@@ -328,7 +328,7 @@ def _read_sleap(path: Path) -> Imported:
 
 # ------------------------------------------------------------------ Kinetrace
 def _read_kinetrace(path: Path) -> Imported:
-    from kinetrace.session import PALETTE, PointMeta
+    from kinetrace.session import PALETTE, PointMeta, formula_safe
     text = _text(path)
     head = [c.strip().lower() for c in next(csv.reader([text.split("\n", 1)[0]]))] if text else []
     try:
@@ -338,7 +338,7 @@ def _read_kinetrace(path: Path) -> Imported:
             T = int(t.data["frame"].max()) + 1 if t.n else 0
             arr = projectfile._empty_tracks(T, 1)
             projectfile._fill_landmark(arr, 0, t, T, path.name)
-            points = [PointMeta(unicodedata.normalize("NFC", path.stem), PALETTE[0])]
+            points = [PointMeta(formula_safe(unicodedata.normalize("NFC", path.stem)), PALETTE[0])]
         else:
             cols, n = projectfile.parse_table(text, path.name, ("frame", "point", "x", "y"),
                                               projectfile.TRACK_COLS[4:])
@@ -445,10 +445,11 @@ def export_masks_png(session, folder, progress=None) -> int:
     return len(frames)
 
 
-def import_masks_png(session, folder) -> dict:
+def import_masks_png(session, folder, progress=None) -> dict:
     """PNG masks (any image; nonzero = the segment) named with their frame
     number (the last number in the name: mask_000012.png, frame12.png) ->
-    the camera's segment. They must be the video's size. -> {frames, sentence}."""
+    the camera's segment. They must be the video's size. -> {frames, sentence}.
+    `progress(done, total)` after each file (G52)."""
     import cv2
     folder = Path(folder)
     files = []
@@ -475,6 +476,8 @@ def import_masks_png(session, folder) -> dict:
                                    "Masks must be the size of the video.")
         session.masks.set(f, img > 0)
         n += 1
+        if progress is not None:
+            progress(n + beyond, len(files))
     session._touch()
     sentence = f"{n} silhouette(s) imported from {folder.name}"
     if beyond:

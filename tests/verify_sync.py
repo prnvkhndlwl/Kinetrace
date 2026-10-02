@@ -97,9 +97,9 @@ print(f"D (no overlap): verdict {res[0].result.verdict}: {res[0].result.why[:90]
 assert res[0].result.verdict == "none"
 
 # ---- a prior from the recording clocks in the file names (GoPro style) ---------------------
-pri = sync.offsets_from_filenames([r"E:\x\CAM1_20260620_152151_GX018667.MP4",
-                                   r"E:\x\CAM7_20260620_152153_GX019838.MP4",
-                                   r"E:\x\CAM2_20260620_152147_GX019832.MP4",
+pri = sync.offsets_from_filenames([r"E:\x\CAM1_20250101_120004_GX010001.MP4",
+                                   r"E:\x\CAM7_20250101_120006_GX010002.MP4",
+                                   r"E:\x\CAM2_20250101_120000_GX010003.MP4",
                                    r"D:\no_stamp_here.mp4"], 239.76)
 assert pri[0] == 0.0 and pri[3] is None
 assert abs(pri[1] - (-2 * 239.76)) < 1e-6, pri      # started 2 s later -> its frame is 480 lower at t=0

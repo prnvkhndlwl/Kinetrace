@@ -1,6 +1,6 @@
 # Licences of everything Kinetrace uses
 
-Last checked: 2026-09-22, from the licence files of the packages installed in
+Last checked: 2026-09-30, from the licence files of the packages installed in
 `.venv` (the table below is generated from their metadata) and of the model
 folders in `models/`, and from the model cards on Hugging Face.
 
@@ -30,14 +30,14 @@ in the repository: the tests generate their synthetic videos with
 
 | Model / code | What Kinetrace uses it for | How it gets onto a computer | Licence | Commercial use | What the licence asks of you |
 |---|---|---|---|---|---|
-| **CoTracker3** (Meta; code via `torch.hub` + weights) | point tracking (the second point model) | downloaded on first Track into `models/` | **CC BY-NC 4.0** | **No** | attribution; non-commercial use only; share the licence notice |
-| **AllTracker** (Harley et al., ICCV 2025) | point tracking (the default model) | code fetched by `install.py` from `github.com/aharley/alltracker` at a pinned commit into `models/alltracker`, 63 MB checkpoint downloaded from `huggingface.co/aharley/alltracker` on the first Track | **MIT** (code; the README gives no separate licence for the weights) | yes | keep the copyright and licence notice |
-| **SAM 2.1** hiera-base-plus (Meta) | silhouettes, ball markers (fallback) | downloaded on first use into `models/hf` | **Apache-2.0** | yes | keep the licence and NOTICE; state changes |
+| **CoTracker3** (Meta; code + weights) | point tracking (the second point model) | code (`github.com/facebookresearch/co-tracker`) and weights downloaded on the first Track with it into `models/`, each at a pinned commit and checked (checksum) before use | **CC BY-NC 4.0** | **No** | attribution; non-commercial use only; share the licence notice |
+| **AllTracker** (Harley et al., ICCV 2025) | point tracking (the default model) | code fetched by `install.py` from `github.com/aharley/alltracker` at a pinned commit into `models/alltracker`, 66 MB checkpoint downloaded from `huggingface.co/aharley/alltracker` on the first Track (pinned commit, checksum checked) | **MIT** (code; the README gives no separate licence for the weights) | yes | keep the copyright and licence notice |
+| **SAM 2.1** hiera-base-plus, or hiera-large when chosen in Settings (Meta) | silhouettes, ball markers (fallback) | downloaded on first use into `models/hf` (pinned commit) | **Apache-2.0** | yes | keep the licence and NOTICE; state changes |
 | **SAM 3 / SAM 3.1** (Meta, gated) | silhouettes, ball markers (preferred) | the user requests access on Hugging Face and places the weights in `models/sam3` | **SAM License** (Meta, 19 Nov 2025) | yes | pass on a copy of the SAM License with the weights or any derivative; **acknowledge SAM in publications**; comply with trade controls — no military, weapons, nuclear or espionage use; no reverse engineering |
 | **SAM 3D Body** (Meta, gated; code + ViT-H or DINOv3 weights, incl. the MHR rig asset) | 3D human body pose + mesh | the user places Meta's repo in `models/sam-3d-body` and the weights in `models/sam-3d-body-*` | **SAM License** | yes | as for SAM 3 |
 | **DINOv3** (Meta) | backbone of the SAM 3D Body DINOv3 variant | fetched with that variant into `models/` | **DINOv3 License** (19 Aug 2025) | yes | same terms as the SAM License: pass on a copy, acknowledge in publications, trade controls |
-| **ViTPose** base-simple (`usyd-community`) | 2D human joints | downloaded on first use into `models/hf` | **Apache-2.0** | yes | keep the licence notice |
-| **RT-DETR v2** r18vd (`PekingU`) | finding people for both body backends | downloaded on first use into `models/hf` | **Apache-2.0** | yes | keep the licence notice |
+| **ViTPose** base-simple (`usyd-community`) | 2D human joints | downloaded on first use into `models/hf` (pinned commit) | **Apache-2.0** | yes | keep the licence notice |
+| **RT-DETR v2** r18vd (`PekingU`) | finding people for both body backends | downloaded on first use into `models/hf` (pinned commit) | **Apache-2.0** | yes | keep the licence notice |
 
 The full texts of the non-standard licences are in [`LICENSES/`](LICENSES/):
 the SAM License, the DINOv3 License, CC BY-NC 4.0 (as shipped with CoTracker3)
@@ -46,10 +46,13 @@ and AllTracker's MIT licence.
 **What this means in practice:**
 
 - **Academic, non-commercial research can use every part of Kinetrace.**
-- **Commercial use cannot use CoTracker3.** AllTracker (MIT), the default point
-  model, and every other model allow commercial use, so the app still works
-  without CoTracker3 — but whoever uses it commercially must make sure
-  CoTracker3 is never selected (Track ▾ → point model).
+- **Kinetrace itself is non-commercial** (its PolyForm Noncommercial licence,
+  section 1), so commercial use is not licensed whatever the models allow.
+  Separately, CoTracker3 is non-commercial too (CC BY-NC 4.0); the other
+  models' licences allow commercial use.
+- **SAM's licence applies to non-commercial users too**: its trade-control
+  terms and its ban on military, weapons, nuclear and espionage uses (see
+  `LICENSES/SAM-License.txt`) bind anyone who uses SAM 3 or SAM 3D Body.
 - **Papers that use silhouettes, ball markers made with SAM 3, or SAM 3D Body
   must acknowledge SAM** (and DINOv3 for that SAM 3D Body variant). Cite
   CoTracker3 / AllTracker for point tracks as good practice.
@@ -102,9 +105,9 @@ user's computer; none of them is in this repository.
 | pillow | 12.3.0 | MIT-CMU | images for the SAM processor |
 | propcache | 0.5.4 | Apache-2.0 | indirect dependency |
 | Pygments | 2.21.0 | BSD-2-Clause | indirect dependency |
-| PySide6 | 6.11.1 | see the package's LICENSE file | the user interface (Qt 6) |
-| PySide6_Addons | 6.11.1 | see the package's LICENSE file | Qt 6 modules |
-| PySide6_Essentials | 6.11.1 | see the package's LICENSE file | Qt 6 modules |
+| PySide6 | 6.11.1 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | the user interface (Qt 6) |
+| PySide6_Addons | 6.11.1 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Qt 6 modules |
+| PySide6_Essentials | 6.11.1 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Qt 6 modules |
 | pytorch-lightning | 2.6.6 | Apache-2.0 | SAM 3D Body checkpoint loading |
 | PyYAML | 6.0.3 | MIT | indirect dependency |
 | regex | 2026.9.10 | Apache-2.0 AND CNRI-Python | indirect dependency |
@@ -113,7 +116,7 @@ user's computer; none of them is in this repository.
 | safetensors | 0.8.0 | Apache Software License | weight files |
 | scipy | 1.18.0 | BSD License | optimisation, filtering, splines |
 | shellingham | 1.5.4 | ISC License | indirect dependency |
-| shiboken6 | 6.11.1 | see the package's LICENSE file | Qt binding runtime |
+| shiboken6 | 6.11.1 | LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only | Qt binding runtime |
 | sympy | 1.14.0 | BSD | indirect dependency |
 | termcolor | 3.3.0 | MIT | SAM 3D Body logging |
 | timm | 1.0.29 | Apache-2.0 | SAM 3D Body backbone |
@@ -138,13 +141,19 @@ user's computer; none of them is in this repository.
   similar), the bundle must keep the Qt libraries replaceable and include the
   LGPL text and Qt's notices.
 - **ffmpeg inside `imageio-ffmpeg`** — the Python wrapper is BSD-2-Clause, but
-  the ffmpeg executable it carries is a **GPL** build (gyan.dev, ffmpeg 7.1).
+  the ffmpeg executable it carries is a **GPL-3.0-or-later** build (on Windows
+  gyan.dev's ffmpeg 7.1; the Linux and macOS wheels carry other static GPL
+  builds).
   Kinetrace runs it as a separate program through a pipe (no linking), which
   does not bring the GPL onto Kinetrace's code. Whoever redistributes that
   executable itself must follow the GPL (licence text + source offer); a user
   who installs it with pip gets it from PyPI directly.
 - The PyTorch CUDA wheel bundles NVIDIA CUDA runtime libraries, redistributed
-  by PyTorch under NVIDIA's CUDA EULA; nothing extra is needed to use them.
+  by PyTorch under NVIDIA's CUDA EULA (on Linux as separate `nvidia-*` wheels,
+  plus `triton`, MIT); nothing extra is needed to use them.
+- **opencv-python** (Apache-2.0) bundles FFmpeg (LGPL-2.1) and other libraries
+  inside its wheel, each listed in the wheel's `cv2/LICENSE-3RD-PARTY.txt`;
+  Kinetrace uses them unmodified through OpenCV.
 - `certifi` and `tqdm` are MPL-2.0 (file-level copyleft); used unmodified, no
   obligation beyond keeping their notices.
 - **The private Python** the launchers fetch into `.venv/base` when the
@@ -195,9 +204,3 @@ app itself. It is "source-available", not "open source" by the OSI
 definition — the price of the non-commercial rule. Nothing in sections 2 and 3
 conflicts with it: the repository carries no third-party code, and every
 package licence allows Kinetrace's own code under any licence.
-
-**Still to do before a wide release:** check the institution's policy on
-software written there (it may want the College named as the copyright
-holder in the `Required Notice:` line) and any grant's software-sharing terms,
-and add a `CITATION.cff` so other labs can cite Kinetrace alongside the model
-papers.

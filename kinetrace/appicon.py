@@ -52,8 +52,8 @@ AIR, WATER, LAND = PALETTE[3], PALETTE[5], PALETTE[2]     # amber, cyan, blue: l
 
 # ------------------------------------------------------------------ the paths
 def _air(t: np.ndarray) -> np.ndarray:
-    """A glide: from high on the right, descending to the lower left (the owner:
-    gliding goes from high to low), so the head is at the low end."""
+    """A glide: from high on the right, descending to the lower left (gliding
+    goes from high to low), so the head is at the low end."""
     t = 1.0 - t
     x = 0.21 + 0.55 * t
     y = 0.46 - 0.24 * np.sin(0.5 * np.pi * t) ** 1.3 + 0.03 * t

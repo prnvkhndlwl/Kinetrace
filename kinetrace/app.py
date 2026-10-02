@@ -36,6 +36,7 @@ from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_
                                      model_is_cached as seg_is_cached, preferred_backend,
                                      save_token, working_size)
 from kinetrace import projectfile, recovery, trackio
+from kinetrace.errors import plain_error as _plain_error
 from kinetrace.session import TrackingSession
 
 PROJECT_SUFFIX = projectfile.SUFFIX
@@ -48,7 +49,6 @@ from kinetrace import icons
 from kinetrace.widgets import LoadingOverlay, ManualDialog, OnboardingStrip, SettingsDialog, Toast
 
 # duplicated from tracker.py so the GUI can check without importing torch
-_CHECKPOINT = Path(__file__).resolve().parent.parent / "models" / "checkpoints" / "scaled_online.pth"
 
 IDLE, READY, TRACKING = range(3)
 VIDEO_FILTER = "Videos (*.mp4 *.avi *.mov *.mkv *.m4v *.wmv *.webm *.mpg *.mpeg);;All files (*)"
@@ -89,22 +89,25 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>T</td><td>start tracking / pause (semi-automatic mode: one step)</td></tr>
 <tr><td class=k>Shift+T</td><td>several cameras: this run in <b>every camera</b> that has the point(s) here, all at the same time (Track ▾ → <i>Every camera</i> makes T and F always do that)</td></tr>
 <tr><td class=k>X / Space</td><td>pause a running track (during 3D → Re-track Disagreeing Stretches: stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run: stops every camera at once)</td></tr>
-<tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>Every camera</b> (several cameras: the selected points — or all — tracked in each camera that has them at this instant, ball markers included, all at the same time, each live in its own view; the button says "· 3 cams"; X stops them all; one Ctrl+Z undoes all; the menu stays open while you tick, so mode, Every camera and point model combine); <b>point model</b>: AllTracker (default, holds points on animals) or CoTracker3 (faster, sub-pixel on high-contrast markers)</td></tr>
+<tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>Every camera</b> (several cameras: the selected points — or all — tracked in each camera that has them at this instant, ball markers included, all at the same time, each live in its own view; the button says "· 3 cams"; X stops them all; one Ctrl+Z undoes all; the menu stays open while you tick, so mode, Every camera and point model combine); <b>point model</b>: AllTracker (default: animals and objects with a visible shape), CoTracker3 (faster, sub-pixel on high-contrast markers) or Moving spot (only a target small enough to be ONE point — a dot up to about 20 px with no visible shape; no model, stops where it loses the spot); <b>Test the point models on my clicks</b> (place a point by hand on 20 frames in a row first) recommends one; the choice is saved with the project</td></tr>
 <tr><td class=k>Auto-pause</td><td>stop the run when the model loses a point (a brief occlusion doesn't trigger it); the point's track is <b>cut</b> at the first unreliable frame and the playhead goes there</td></tr>
 <tr><td class=k>ROI</td><td>track inside a crop around the points when it clearly helps</td></tr>
-<tr><td class=k>Ctrl+Z</td><td>undo the last tracking run, bulk edit or hand edit (a click, drag, Ctrl+click, deleted point, Shift+X) — one step</td></tr>
+<tr><td class=k>Ctrl+Z</td><td>undo the last tracking run, bulk edit or hand edit (a click, a right-click clear, Ctrl+click, deleted point, Shift+X) — one step</td></tr>
 </table>
 <h3>Points &amp; regions (on the video)</h3><table>
 <tr><td class=k>Body</td><td>keep tracked points on the segment: a point a few pixels off the silhouette is nudged back onto it; a point that <b>leaves</b> it stops the run at that frame and its track ends there — click it where it really is and Track again (right-click a point → "May leave the segment (free point)" to exempt it)</td></tr>
 <tr><td class=k>N (or Add)</td><td>arm the crosshair: the next click places a point — stray clicks never edit</td></tr>
 <tr><td class=k>click (armed)</td><td>place a new point — or continue the selected point where it has no data</td></tr>
+<tr><td class=k>hold left + move</td><td>pan the view (from a marker too: points are never dragged — a click places them)</td></tr>
+<tr><td class=k>right-click a marker</td><td>clear that point on <b>this frame only</b> and select it (one Ctrl+Z step)</td></tr>
+<tr><td class=k>hold right on a marker</td><td>(half a second) the point's menu — the same menu as a right click on its name in POINTS</td></tr>
 <tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing is placed (a notice on the video says so). One Ctrl+Z step. A click on or right beside the ◇ places it exactly there. A landmark derived from the silhouette cannot be placed by hand (right-click → Data source → Track by appearance first)</td></tr>
 <tr><td class=k>＋ New point</td><td>POINTS panel: a named point with no position yet, selected (and in every camera's list) — then click it on the video</td></tr>
 <tr><td class=k>A</td><td>with a calibration: place the selected point at the <b>◇</b> — where two or more other cameras put it — exactly (one Ctrl+Z step)</td></tr>
 <tr><td class=k>Alt+click</td><td>with a calibration: <b>look here</b> — where this spot can be in the other cameras (a dashed line there, a "?" ring here). Nothing is edited; Esc clears it</td></tr>
 <tr><td class=k>Shift+&lt; / Shift+&gt;</td><td>jump to the selected point's <b>first / last frame with data</b>; with nothing selected, the segment's first / last silhouette</td></tr>
-<tr><td class=k>right-click a point (curve)</td><td><b>Fill its gaps between hand placements</b> / <b>Replace everything between its hand placements with that curve</b>: keyframe digitizing — a smooth curve through the frames you placed by hand fills the frames between (confidence 0.6); frames you marked hidden are left alone; Ctrl+Z undoes</td></tr>
-<tr><td class=k>right-click a point</td><td>also: go to its first / last frame, its first / last hand-placed frame, its first doubtful stretch; clear its position on this frame, in the selected frame window, or its whole track; with a calibration, <b>Snap to the other cameras' rays here</b> and <b>Place it where the other cameras put it (◇)</b></td></tr>
+<tr><td class=k>point menu (curve)</td><td><b>Fill its gaps between hand placements</b> / <b>Replace everything between its hand placements with that curve</b>: keyframe digitizing — a smooth curve through the frames you placed by hand fills the frames between (confidence 0.6); frames you marked hidden are left alone; Ctrl+Z undoes</td></tr>
+<tr><td class=k>point menu</td><td>also: go to its first / last frame, its first / last hand-placed frame, its first doubtful stretch; clear its position on this frame, in the selected frame window, or its whole track; with a calibration, <b>Snap to the other cameras' rays here</b> and <b>Place it where the other cameras put it (◇)</b></td></tr>
 <tr><td class=k>, / .</td><td>previous / next hand-placed frame of the selected point</td></tr>
 <tr><td class=k>J / Shift+J</td><td>next / previous low-confidence stretch (the red runs) — of the selected points, or of all</td></tr>
 <tr><td class=k>Shift+X</td><td>mark the selected point <b>hidden</b> on this frame (kept, not exported, not used for 3D); again to unmark. On the timeline: Shift+drag a window, right-click → Mark hidden</td></tr>
@@ -178,6 +181,24 @@ HOTKEYS_HTML = f"""
 """
 
 
+class _Job(QThread):
+    """One piece of work off the GUI thread for `MainWindow._in_background`: the
+    function gets `report(detail, value, total)` and `cancelled()` when it takes
+    them (keyword arguments), and must not touch a widget."""
+    step = Signal(str, int, int)
+
+    def __init__(self, fn, kwargs: dict):
+        super().__init__()
+        self._fn, self._kw = fn, kwargs
+        self.result, self.exc, self.cancel_requested = None, None, False
+
+    def run(self):
+        try:
+            self.result = self._fn(**self._kw)
+        except BaseException as e:  # noqa: BLE001 - handed back to the GUI thread
+            self.exc = e
+
+
 class _VideoProbe(QThread):
     done = Signal(object)  # VideoInfo | str(error)
     step = Signal(str, object)  # probe_video's stage + facts, for the loading card
@@ -232,8 +253,11 @@ class _MaskPreviewWorker(QThread):
     after a click (a tracking run re-segments every frame). Loads the model on
     first use — which downloads the weights once."""
     loading = Signal(str)
+    progress = Signal(str, float, float)   # a first-use download: label, bytes done, bytes in all (G45)
     done = Signal(object)      # mask summary dict (see segmenter.summarize_mask) + "frame"
     error = Signal(str)
+    plain = False              # True when `error` carries a sentence (a download), not a traceback
+    cancelled = False
 
     def __init__(self, video_path: str, frame: int, rgb, size: tuple[int, int],
                  clicks: list, box, backend: str, head_xy):
@@ -253,7 +277,8 @@ class _MaskPreviewWorker(QThread):
                                                  summarize_mask)
             from kinetrace.silhouette import midline as silhouette_midline, resample
             self.loading.emit(self._backend)
-            seg = get_segmenter(self._backend)
+            seg = get_segmenter(self._backend, progress=lambda label, d, t: self.progress.emit(label, float(d), float(t)),
+                                cancel=lambda: self.cancelled)
             rgb = self._rgb
             if rgb is None:
                 from kinetrace.video_source import VideoSource
@@ -285,8 +310,56 @@ class _MaskPreviewWorker(QThread):
                     summ["midline"] = ((resample(ml.path, MIDLINE_SAMPLES) + 0.5)
                                        * np.array([sx, sy], np.float32) - 0.5)
             self.done.emit(summ)
-        except Exception:  # noqa: BLE001 — reported to the user with guidance
-            self.error.emit(traceback.format_exc())
+        except Exception as e:  # noqa: BLE001 — reported to the user with guidance
+            from kinetrace.downloads import DownloadError
+            if isinstance(e, DownloadError):
+                self.plain = True
+                self.error.emit(str(e))
+            else:
+                self.error.emit(traceback.format_exc())
+
+
+def _quiet_close(dlg) -> None:
+    """Close a progress dialog WITHOUT its canceled signal: QProgressDialog emits
+    canceled when it is closed, and the download dialogs' Cancel pauses the run --
+    closing one at the run's start stopped every run that first loaded SAM."""
+    if dlg is None:
+        return
+    try:
+        dlg.canceled.disconnect()
+    except (RuntimeError, TypeError):
+        pass
+    dlg.close()
+    dlg.deleteLater()
+
+
+def _download_status(clock: dict, label: str, done: float, total: float) -> tuple[int, int, str]:
+    """A download's progress for a QProgressDialog: (maximum, value, text) --
+    how far and about how long, from the rate since this file began (G45)."""
+    now = time.monotonic()
+    if clock.get("label") != label:
+        clock.update(label=label, t0=now, d0=done)
+    rate = (done - clock["d0"]) / max(1e-3, now - clock["t0"])
+    if total > 0:
+        left = (total - done) / rate if rate > 1e3 else None
+        eta = "" if left is None else (f", about {left / 60:.0f} min left" if left >= 90 else
+                                       f", about {max(1.0, left):.0f} s left")
+        line, mx, val = f"{done / 1e6:.0f} of {total / 1e6:.0f} MB{eta}", 1000, int(1000 * min(1.0, done / total))
+    else:
+        line, mx, val = f"{done / 1e6:.0f} MB so far", 0, 0
+    return mx, val, (f"{label} (first use only)\n{line}\n\nThe file is kept inside the Kinetrace folder "
+                     "(models/). Cancel stops it; the next try goes on from where it stopped.")
+
+
+def _crash_text(tb: str, hint: str, fallback: str) -> str:
+    """A worker's traceback for the user (G54): the hint (or `fallback`) first, the
+    last line in the program's words, the full traceback to the error log --
+    Help > Error Report shows it -- instead of 1500 characters of it in a dialog."""
+    import logging
+    logging.getLogger("kinetrace.errors").warning("handled worker error:\n%s", tb.rstrip())
+    last = next((ln.strip() for ln in reversed(tb.strip().splitlines()) if ln.strip()), "")
+    return ((hint or fallback) + (f"\n\nIn the program's words: {last[:300]}" if last else "")
+            + "\n\nHelp > Error Report shows the full details (nothing is sent anywhere).")
 
 
 def _model_error_hint(tb: str) -> str:
@@ -314,7 +387,7 @@ def _model_error_hint(tb: str) -> str:
 class _ChoiceMenu(QMenu):
     """A menu of settings (Track ▾): ticking an entry leaves the menu open, so the
     run mode, Every camera and the point model -- independent choices -- can all be
-    set in one visit (owner 2026-09-27, G32). Esc or a click outside closes it."""
+    set in one visit (G32). Esc or a click outside closes it."""
 
     def _toggle(self, act) -> bool:
         if act is None or not act.isEnabled() or not act.isCheckable():
@@ -451,7 +524,7 @@ class _SaveWorker(QThread):
                 projectfile.write(self._frozen, self._path, **self._kw)
             self.done.emit(True, "")
         except Exception as e:      # noqa: BLE001 - reported to the user, never silent
-            self.done.emit(False, f"{type(e).__name__}: {e}")
+            self.done.emit(False, _plain_error(e, "The save did not finish"))      # in words (G54)
 
 
 # ui_state entries that belong to the USER (tools, display), not to one camera:
@@ -526,6 +599,8 @@ class MainWindow(QMainWindow):
         self._last_emit_t = 0.0
         self._probe: _VideoProbe | None = None
         self._model_dialog: QProgressDialog | None = None
+        self._model_worker = None           # the worker whose models are being prepared (G45)
+        self._model_dl: dict = {}
         self._pending_event: int | None = None      # E pressed once: start frame
         self._autopause_info: tuple[int, int] | None = None  # (frame, pid)
         self._member_frames: dict[int, dict] = {}   # frame -> {pid: (M,2)} overlay
@@ -534,6 +609,8 @@ class MainWindow(QMainWindow):
         self._track_blocked: str | None = None      # why Track cannot start here (G34)
         self._seg_backend = preferred_backend()     # segmentation model (Settings)
         self._point_backend = self._preferred_point_backend()   # Track dropdown
+        self._spot_hints: set = set()          # the one-time Moving spot hints already shown (G58)
+        self._spot_corrections: dict = {}      # (project, camera, point) -> frames corrected by hand
         self._mask_opacity = 0.35
         self._region_shape = "circle"               # Add ▾: circle | rect | polygon
         self._overlay = None                        # running OverlayRenderer, if any
@@ -637,7 +714,7 @@ class MainWindow(QMainWindow):
         self.toast = Toast(self.grid)   # important notices float over the video
         self._build_ui_rest()
         # opening videos / a project: a card over the window says what is happening
-        # (the owner: the wait "seems like the app is frozen")
+        # (G31: without it the wait looked like a frozen app)
         self.overlay = LoadingOverlay(self)
         self._busy_stack: list[dict] = []
         self._busy_next = 0
@@ -656,6 +733,7 @@ class MainWindow(QMainWindow):
         canvas.point_moved.connect(lambda pid, x, y: None)  # live marker already moves
         canvas.move_committed.connect(self._on_place)
         canvas.reposition_requested.connect(self._on_reposition)
+        canvas.clear_frame_requested.connect(self._on_clear_frame)
         canvas.delete_requested.connect(self._on_delete)
         canvas.rename_requested.connect(self._on_rename)
         canvas.anchor_toggled.connect(self._on_anchor_toggled)
@@ -940,7 +1018,7 @@ class MainWindow(QMainWindow):
         menu_track.addSeparator()
         self._point_group = QActionGroup(self)
         self.act_pm_alltracker = QAction(
-            "Point model: AllTracker — holds points on animals (default)", self, checkable=True)
+            "Point model: AllTracker — animals and objects with a visible shape (default)", self, checkable=True)
         self.act_pm_cotracker = QAction(
             "Point model: CoTracker3 — faster; sub-pixel on high-contrast markers", self,
             checkable=True)
@@ -951,10 +1029,37 @@ class MainWindow(QMainWindow):
         self.act_pm_cotracker.setToolTip(
             "Meta's online point tracker with the app's LK sub-pixel refinement: 0.74 px at 4K on "
             "high-contrast dots; drifts along textureless bodies.")
-        for act, key in ((self.act_pm_alltracker, "alltracker"), (self.act_pm_cotracker, "cotracker3")):
+        # a third point model for small, fast, featureless targets (I160, G56)
+        self.act_pm_spot = QAction(
+            "Point model: Moving spot — a target small enough to be one point (a dot, no visible shape)", self,
+            checkable=True)
+        from kinetrace.spots import WHICH_MODEL
+        self.act_pm_spot.setToolTip(
+            WHICH_MODEL + " It needs no model and no graphics card: on every frame the dot is searched where its "
+            "speed puts it — the brightest or darkest small blob there, or what changes much more than that "
+            "background usually does — and it STOPS where it cannot find the dot or sees two alike, instead of "
+            "drifting. Click the dot on two frames in a row before you track (that gives its speed). Regions "
+            "are left out of a Moving spot run. Saved with the project; switch back at any time.")
+        self._pm_acts = {"alltracker": self.act_pm_alltracker, "cotracker3": self.act_pm_cotracker,
+                         "spot": self.act_pm_spot}
+        for key, act in self._pm_acts.items():
             self._point_group.addAction(act)
             menu_track.addAction(act)
             act.triggered.connect(lambda _=False, k=key: self._set_point_backend(k))
+        self.act_test_models = QAction("Test the point models on my clicks…", self,
+                                       triggered=lambda: self._test_point_models())
+        self.act_test_models.setToolTip(
+            "Which point model suits this footage? Place the selected point by hand on at least 20 frames in a "
+            "row (select it, click it, F, click it…), then this starts AllTracker, CoTracker3 and Moving spot "
+            "from your first click, counts how often each one has to be put back on your clicks, and "
+            "recommends one. Nothing is changed unless you press Use.")
+        menu_track.addAction(self.act_test_models)
+        self.act_which_model = QAction("Which point model should I use?", self,
+                                       triggered=lambda: self._show_manual("Which point model should I use?"))
+        self.act_which_model.setToolTip("The manual's short guide: a visible shape (an animal, an object) -> "
+                                        "AllTracker + Segment; a target small enough to be one point -> Moving "
+                                        "spot; a round marker -> Ball marker")
+        menu_track.addAction(self.act_which_model)
         self.act_pm_alltracker.setEnabled(alltracker_backend.available())
         if not alltracker_backend.available():
             # the installer fetches AllTracker's code; say how to get it instead of a silent grey entry
@@ -962,8 +1067,7 @@ class MainWindow(QMainWindow):
                 "AllTracker is not installed yet, so CoTracker3 is used. Start Kinetrace with run.bat / "
                 "run.sh while connected to the internet: the launcher fetches AllTracker's code (277 KB) "
                 "into models/alltracker, and its 63 MB checkpoint downloads on the first Track.")
-        (self.act_pm_alltracker if self._point_backend == "alltracker"
-         else self.act_pm_cotracker).setChecked(True)
+        self._pm_acts.get(self._point_backend, self.act_pm_cotracker).setChecked(True)
         self.btn_track.setMenu(menu_track)
 
         # no run progress bar: it only repeated the timeline playhead; the status
@@ -1258,7 +1362,7 @@ class MainWindow(QMainWindow):
         self._m_import = m_import
         for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks):
             m_import.addAction(a)
-        # File → Quit (owner 2026-09-29): the same close as the window's ×, so unsaved
+        # File → Quit (G43): the same close as the window's ×, so unsaved
         # changes are asked about first; Ctrl+Q (Cmd+Q on a Mac, where Qt moves it to the app menu)
         self.act_quit = QAction("&Quit", self, shortcut=QKeySequence("Ctrl+Q"), triggered=self.close)
         self.act_quit.setMenuRole(QAction.QuitRole)
@@ -1344,7 +1448,7 @@ class MainWindow(QMainWindow):
         m_trails = m_view.addMenu("&Trails")
         self._trail_group = QActionGroup(self)
         self._trail_acts: dict[int, QAction] = {}
-        # three choices (owner 2026-09-27, G33): off, the preset, or a length you type
+        # three choices (G33): off, the preset, or a length you type
         for n in (0, TRAIL_FRAMES):
             act = QAction("Off" if n == 0 else f"Last {n} frames", self, checkable=True)
             act.triggered.connect(lambda _=False, k=n: self._set_trail_len(k))
@@ -1514,6 +1618,13 @@ class MainWindow(QMainWindow):
                                   triggered=self._show_manual)
         self.act_manual.setToolTip("The full manual, written for someone new to tracking")
         m_help.addAction(self.act_manual)
+        self.act_help_models = QAction("Which &Point Model Should I Use?", self,
+                                       triggered=lambda: self._show_manual("Which point model should I use?"))
+        self.act_help_models.setToolTip("A visible shape (an animal, an object) -> AllTracker + Segment, no extra "
+                                        "clicks; a target small enough to be one point (a dot up to ~20 px) -> "
+                                        "Moving spot; a round marker -> Ball marker -- and the test that decides "
+                                        "on your own footage")
+        m_help.addAction(self.act_help_models)
         self.act_syscheck = QAction("System &Check… (GPU, memory, what runs here)", self,
                                     triggered=self._show_system_check)
         self.act_syscheck.setToolTip("What this computer has (graphics card, memory, PyTorch build) and "
@@ -1879,12 +1990,23 @@ class MainWindow(QMainWindow):
         return "alltracker" if alltracker_backend.available() else "cotracker3"
 
     def _set_point_backend(self, key: str):
+        """Track ▾ -> Point model (or the test's Use): applies to the next run, at
+        any time, and is the PROJECT's point model -- saved with it and restored
+        when it is opened (owner, 2026-10-01; G56)."""
+        if key not in self._pm_acts:
+            return
+        changed = key != self._point_backend
         self._point_backend = key
+        self._pm_acts[key].setChecked(True)
         if self.session is not None:
             self.session.ui_state["point_backend"] = key
+            if changed:
+                self.session.dirty = True        # a project setting: saved with the project
         self.statusBar().showMessage(
-            "Point model: AllTracker — applies to the next Track run" if key == "alltracker"
-            else "Point model: CoTracker3 — applies to the next Track run", 5000)
+            {"alltracker": "Point model: AllTracker — applies to the next Track run",
+             "cotracker3": "Point model: CoTracker3 — applies to the next Track run",
+             "spot": "Point model: Moving spot, for single-point targets — applies to the next Track run (click "
+                     "the dot on two frames in a row first; it stops where it loses it)"}[key], 7000)
         self._update_track_button()
 
     @property
@@ -1997,6 +2119,11 @@ class MainWindow(QMainWindow):
         dlg.setWindowTitle("Error report")
         dlg.setMinimumSize(760, 480)
         lay = QVBoxLayout(dlg)
+        note = QLabel("Nothing is sent anywhere. The report contains file and folder names from this computer "
+                      "(which can include your user name and your video names): read it before you post it "
+                      "somewhere public.")        # (I158)
+        note.setWordWrap(True)
+        lay.addWidget(note)
         view = QPlainTextEdit(text)
         view.setReadOnly(True)
         view.setLineWrapMode(QPlainTextEdit.NoWrap)
@@ -2068,9 +2195,9 @@ class MainWindow(QMainWindow):
         the log keeps every error)."""
         self.toast.show_message(text, "error", 12000)
 
-    def _show_manual(self):
+    def _show_manual(self, section: str | None = None):
         """Help → User Manual (F1). Non-modal and reused, so it can stay open
-        beside the video while you follow it."""
+        beside the video while you follow it. `section` = a heading to open at."""
         dlg = getattr(self, "_manual_dlg", None)
         if dlg is None:
             dlg = ManualDialog(self)
@@ -2078,6 +2205,8 @@ class MainWindow(QMainWindow):
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
+        if section:
+            QTimer.singleShot(0, lambda: dlg.go_to_heading(section))
 
     def _show_hotkeys(self):
         dlg = getattr(self, "_hotkeys_dlg", None)
@@ -2203,6 +2332,42 @@ class MainWindow(QMainWindow):
             return (prefix + f"Checking that all {n:,} frames can be read"
                     + (" (a 4K file takes a few seconds)" if big else "") + "…")
         return prefix + "Reading…"
+
+    def _in_background(self, title: str, fn, *, detail: str = "", hint: str = "", total: int = 0,
+                       cancellable: bool = False, progress: bool = False):
+        """Run `fn` on a worker thread with the loading card up and the window
+        repainting (a local event loop; input held back by the card) -> its result,
+        or its exception raised here. G46-G52: saving, opening, exports, 3D and
+        imports used to run on the GUI thread, a frozen window with a wait cursor.
+        `progress` passes report(detail, value, total); `cancellable` adds Cancel to
+        the card and passes cancelled() -- the work stops at its next check."""
+        job = None
+
+        def cancel():
+            if job is not None:
+                job.cancel_requested = True
+                self._busy_step("Stopping after the current step…")
+
+        kw = {}
+        if progress:
+            kw["report"] = lambda d="", v=0, n=0: job.step.emit(str(d), int(v), int(n))
+        if cancellable:
+            kw["cancelled"] = lambda: job.cancel_requested
+        job = _Job(fn, kw)
+        loop = QEventLoop()
+        job.finished.connect(loop.quit)
+        job.step.connect(lambda d, v, n: self._busy_step(d or None, v if n else None, n or None))
+        tok = self._busy_push(title, detail, total or None, hint, on_cancel=cancel if cancellable else None)
+        try:
+            job.start()
+            if not job.isFinished():
+                loop.exec()
+            job.wait()
+        finally:
+            self._busy_pop(tok)
+        if job.exc is not None:
+            raise job.exc
+        return job.result
 
     def _probe_many(self, paths: list[str], title: str, hint: str | None = None) -> dict:
         """Probe several videos off the GUI thread, `PROBE_PARALLEL` at a time,
@@ -2927,9 +3092,8 @@ class MainWindow(QMainWindow):
             self._preview.wait(15000)
             _retire(self._preview)
             self._preview = None
-        if self._loading_dialog is not None:
-            self._loading_dialog.close()
-            self._loading_dialog = None
+        _quiet_close(self._loading_dialog)
+        self._loading_dialog = None
         for rt in self._views:
             rt.stop()
         self._views = []
@@ -3514,6 +3678,7 @@ class MainWindow(QMainWindow):
         self._refresh_point_list()
         self._refresh_overlay()
         self._apply_state()
+        self._hint_small_spot(pid, x, y)
         self.statusBar().showMessage(
             f"Added {s.points[pid].name} at ({x:.0f}, {y:.0f}) on frame {self.current}"
             + (" — the landmark that was selected is derived from the silhouette and cannot be placed by "
@@ -3816,6 +3981,7 @@ class MainWindow(QMainWindow):
                                self._seg_backend, head)
         w.target_session = s            # the camera may change while SAM works (I66)
         w.loading.connect(self._on_seg_loading)
+        w.progress.connect(self._on_seg_progress)
         w.done.connect(self._on_preview_done)
         w.error.connect(self._on_preview_error)
         self._preview = w
@@ -3833,18 +3999,32 @@ class MainWindow(QMainWindow):
         else:
             text = (f"Downloading the segmentation model ({label}) — first use only.\n"
                     "It is stored inside the tool folder (models/hf).")
-        dlg = QProgressDialog(text, None, 0, 0, self)
-        dlg.setWindowTitle("Preparing model")
+        dlg = QProgressDialog(text, "Cancel", 0, 0, self)
+        dlg.setWindowTitle("Preparing the model")
         dlg.setWindowModality(Qt.WindowModal)
-        dlg.setCancelButton(None)
-        dlg.setMinimumDuration(300)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setMinimumDuration(0 if not seg_is_cached(backend) else 300)
+        dlg.canceled.connect(self._cancel_seg_download)
         dlg.setValue(0)
         self._loading_dialog = dlg
+        self._seg_clock = {}
+
+    def _on_seg_progress(self, label: str, done: float, total: float):
+        if self._loading_dialog is None:
+            return
+        mx, val, text = _download_status(self._seg_clock, label, done, total)
+        self._loading_dialog.setRange(0, mx)
+        self._loading_dialog.setValue(val)
+        self._loading_dialog.setLabelText(text)
+
+    def _cancel_seg_download(self):
+        if self._preview is not None:
+            self._preview.cancelled = True          # between chunks: the worker ends with a sentence
 
     def _close_loading_dialog(self):
-        if self._loading_dialog is not None:
-            self._loading_dialog.close()
-            self._loading_dialog = None
+        _quiet_close(self._loading_dialog)
+        self._loading_dialog = None
 
     def _on_preview_done(self, summ: dict):
         QApplication.restoreOverrideCursor()
@@ -3881,15 +4061,23 @@ class MainWindow(QMainWindow):
     def _on_preview_error(self, tb: str):
         QApplication.restoreOverrideCursor()
         self._close_loading_dialog()
+        w = self._preview
         if self._preview is not None:
             self._preview.wait(2000)
             _retire(self._preview)      # (I133)
         self._preview = None
+        if w is not None and w.plain:                   # a download: its sentence, no traceback (G45)
+            if w.cancelled:
+                self.statusBar().showMessage(tb + " Click the segment again to go on with it.", 9000)
+            else:
+                self.toast.show_message(tb, "error", 12000)
+                QMessageBox.warning(self, "The segmentation model could not be downloaded", tb)
+            return
         hint = _model_error_hint(tb)
-        self.toast.show_message("Segmentation failed. " + (hint or "See the details dialog."),
+        self.toast.show_message("Segmentation failed. " + (hint or "Try the click again, or drag a box."),
                                 "error", 10000)
-        QMessageBox.critical(self, "Segmentation failed",
-                             (hint + "\n\nDetails:\n\n" if hint else "") + tb[-1500:])
+        QMessageBox.critical(self, "Segmentation failed", _crash_text(
+            tb, hint, "The segment could not be found on this frame because of an unexpected error."))
 
     def _clear_animal(self):
         s = self.session
@@ -3989,7 +4177,7 @@ class MainWindow(QMainWindow):
 
     def _companion_trails(self, s, f: int):
         """The other cameras draw their trails only while Track ▾ → Every camera is
-        ticked -- the cameras being tracked together (owner 2026-09-27, G33)."""
+        ticked -- the cameras being tracked together (G33)."""
         return self._trails_for(s, f) if self.act_track_all.isChecked() else (None, None)
 
     def _on_trail_future(self, on: bool):
@@ -4379,6 +4567,11 @@ class MainWindow(QMainWindow):
         if not ok:
             self.statusBar().showMessage("Event cancelled", 3000)
             return
+        from kinetrace.session import starts_formula
+        if starts_formula(name):              # (M7) a spreadsheet would run it as a formula
+            self.toast.show_message(f"“{name.strip()}”: a name may not start with = + - or @ (a spreadsheet "
+                                    "opening the events export would run it as a formula), so those "
+                                    "characters were left out.", "warn", 8000)
         s.add_event(name, start, end)
         self._on_events_changed()
         e = s.events[-1]
@@ -4465,7 +4658,10 @@ class MainWindow(QMainWindow):
         # without it Ctrl+Z threw away the whole previous tracking run (I64)
         self._undo_snap = self.session.snapshot()
         self.act_undo.setEnabled(True)
+        corrected = bool(self.session.tracked[self.current, pid] and not self.session.manual[self.current, pid])
         self.session.set_position(self.current, pid, x, y)
+        if corrected:
+            self._hint_corrections(pid)
         self._refresh_overlay()
         self._update_track_button()
         name = self.session.points[pid].name
@@ -4512,7 +4708,10 @@ class MainWindow(QMainWindow):
             return
         x, y = self._snap_to_prediction(pid, x, y)
         self._undo_snap = s.snapshot()   # Ctrl+Z takes the click back
+        corrected = bool(s.tracked[self.current, pid] and not s.manual[self.current, pid])
         s.set_position(self.current, pid, x, y)
+        if corrected:
+            self._hint_corrections(pid)
         self._refresh_overlay()
         self._update_track_button()
         self.act_undo.setEnabled(True)
@@ -4744,6 +4943,21 @@ class MainWindow(QMainWindow):
         """Blank the tracked data inside [f0, f1] (timeline clear_requested)."""
         self._clear_window(f0, f1, pids, do_points=True, do_masks=False)
 
+    def _on_clear_frame(self, pid: int) -> None:
+        """Right click on a marker (G59): that point -- now the selected one -- loses
+        its position on THIS frame only; one Ctrl+Z step."""
+        s = self.session
+        if s is None or self.state != READY or not (0 <= pid < s.n_points):
+            return
+        name = s.points[pid].name
+        if not s.tracked[self.current, pid]:
+            self.statusBar().showMessage(f"{name} has no position on frame {self.current}", 4000)
+            return
+        self._clear_tracked_window(self.current, self.current, [pid])
+        self.statusBar().showMessage(
+            f"{name} cleared on frame {self.current} (this frame only; Ctrl+Z brings it back). "
+            "A long right press opens its menu", 6000)
+
     def _clear_window_both(self, f0: int, f1: int, pids=None):
         """Points AND silhouettes inside [f0, f1], as one undo step."""
         self._clear_window(f0, f1, pids, do_points=True, do_masks=True)
@@ -4766,6 +4980,13 @@ class MainWindow(QMainWindow):
         UX for both the dialog and the in-list editor. With several cameras the
         landmark is renamed in all of them, to a name free in every camera: they
         are joined by name for 3D (G19)."""
+        from kinetrace.session import starts_formula
+        if starts_formula(desired):
+            # a spreadsheet would run it as a formula when an export is opened (M7, owner decision)
+            self.toast.show_message(f"“{desired}” was not used: a name may not start with = + - or @, "
+                                    "because a spreadsheet opening an export would run it as a formula.",
+                                    "warn", 8000)
+            return self.session.points[pid].name
         p = self.project
         if p is not None and p.n_views > 1:
             applied = p.rename_landmark(self.session.points[pid].name, desired)
@@ -4881,7 +5102,7 @@ class MainWindow(QMainWindow):
                           "through those frames fill the frames between them that have no data. Filled frames "
                           "show at confidence 0.6 on the timeline. Ctrl+Z undoes it."
                           if len(mf) >= 2 else "Place this part by hand on at least two frames first (click it "
-                          "while it is selected, or drag its marker)")
+                          "while it is selected)")
         acts["interp_fill"] = a_fill
         a_repl = menu.addAction("Replace everything between its hand placements with that curve")
         a_repl.setEnabled(len(mf) >= 2 and not s.points[pid].derived)
@@ -4916,6 +5137,15 @@ class MainWindow(QMainWindow):
             f"No ◇ here: {pr['why']}" if pr is not None else
             "Needs this landmark placed in at least two other calibrated cameras at this instant")
         acts["accept_prediction"] = a_pred
+        # which point model suits this point (G57)
+        menu.addSeparator()
+        q = s.points[pid]
+        a_test = menu.addAction(f"Test the point models on its clicks…  ({len(manual)} hand-placed frame"
+                                f"{'' if len(manual) == 1 else 's'})")
+        a_test.setEnabled(q.kind == "point" and not q.derived and not q.is_ball)
+        a_test.setToolTip("Compares AllTracker, CoTracker3 and Moving spot on the frames where you placed this "
+                          "point by hand (at least 20 in a row) and recommends one")
+        acts["test_models"] = a_test
 
     def _point_menu_extra_action(self, chosen, acts: dict, pid: int) -> bool:
         """Apply one of the frame-aware point entries. Returns True when it
@@ -4924,6 +5154,9 @@ class MainWindow(QMainWindow):
         if chosen is None or s is None or not (0 <= pid < s.n_points):
             return False
         name = s.points[pid].name
+        if chosen is acts.get("test_models"):
+            self._test_point_models(pid)
+            return True
         if chosen is acts.get("snap_epipolar"):
             self._snap_to_epipolar(pid)
             return True
@@ -5746,6 +5979,21 @@ class MainWindow(QMainWindow):
                          "stop": int(fv) + 1 if step else None})
         return jobs
 
+    def _tracking_engine_ready(self) -> bool:
+        """The tracking code (and PyTorch) imported -- off the GUI thread with the
+        card when it is not yet (G46): the first Track after a start used to wait
+        on the device probe's torch import with the window frozen and no word."""
+        if "kinetrace.tracker" in sys.modules:
+            return True
+        import importlib
+        try:
+            self._in_background("Starting the tracking engine", lambda: importlib.import_module("kinetrace.tracker"),
+                                detail="Loading PyTorch; the first start after installing takes the longest…")
+        except Exception as e:      # noqa: BLE001
+            QMessageBox.critical(self, "Tracking cannot start", _plain_error(e, "The tracking code could not be loaded"))
+            return False
+        return True
+
     def _start_multi_tracking(self, step: bool = False) -> None:
         """Track in every camera that has the points, ALL AT ONCE (I141): one worker
         per camera, advanced together on one thread (tracker.MultiTrackingWorker),
@@ -5754,6 +6002,8 @@ class MainWindow(QMainWindow):
         live in its own view; X stops them all at once; one Ctrl+Z undoes it in every
         camera. (Before I141 the cameras ran one after another, and a pause during
         the first left the others untracked -- "only the active camera tracks".)"""
+        if not self._tracking_engine_ready():
+            return
         p = self.project
         jobs = self._multi_jobs(step)
         if self.state != READY or len(jobs) < 2:
@@ -6011,6 +6261,8 @@ class MainWindow(QMainWindow):
         skips the overwrite guard and keeps the caller's undo snapshot;
         `build_only` returns the worker, unstarted (None when nothing can start),
         for a simultaneous every-camera run (I141)."""
+        if not self._tracking_engine_ready():
+            return None
         s = self.session
         scope, _n_sel = self._run_scope()   # panel selection limits the run
         if only_pids is not None:
@@ -6071,6 +6323,25 @@ class MainWindow(QMainWindow):
             return o - o.mean(axis=0)
         ball_pids = [pid for pid in pids if s.points[pid].is_ball]
         pids = [pid for pid in pids if not s.points[pid].is_ball]
+        # Point model: Moving spot (I160, G56): plain points are searched as
+        # spots (spots.py, no model); a region needs AllTracker / CoTracker3
+        spot_specs, left_out = [], []
+        if self._point_backend == "spot":
+            from kinetrace.tracker import SpotSpec
+            for pid in pids:
+                q = s.points[pid]
+                if q.kind != "point" or q.derived:
+                    if not q.derived:
+                        left_out.append(q.name)
+                    continue
+                spot_specs.append(SpotSpec(pid, seeds[pid], self._spot_velocity(pid, self.current), q.spot))
+            pids = [pid for pid in pids if s.points[pid].derived]
+        if left_out and not quiet:
+            self.toast.show_message(
+                "Point model <b>Moving spot</b> follows plain points only, so "
+                + ", ".join(f"<b>{n}</b>" for n in left_out)
+                + " (a region) is left out of this run. Track it with Track ▾ → Point model: AllTracker or "
+                "CoTracker3.", "info", 9000)
         specs = [PointSpec(pid, seeds[pid].astype(np.float32).copy(),
                            s.points[pid].kind, s.points[pid].radius,
                            s.points[pid].anchor, _offsets(s.points[pid]))
@@ -6106,7 +6377,7 @@ class MainWindow(QMainWindow):
                 on_body = [p for p in pids if s.points[p].name in s.skeleton.get("landmarks", [])]
             if self.btn_onbody.isChecked():
                 constrain = [p for p in pids if not s.points[p].free]
-        if not specs and not balls and animal is None:
+        if not specs and not balls and not spot_specs and animal is None:
             self.toast.show_message(
                 f"Nothing to start from on frame {self.current}: place a point with <b>N</b>, a ball "
                 "with Add ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
@@ -6119,10 +6390,131 @@ class MainWindow(QMainWindow):
                            autopause=self.btn_autopause.isChecked(),
                            animal=animal, derived=derived, head_pid=head_pid,
                            on_body_pids=on_body, constrain_pids=constrain,
-                           point_backend=self._point_backend, balls=balls)
+                           point_backend=self._point_backend, balls=balls, spots=spot_specs)
         if build_only:
             return w                    # one camera of a simultaneous run (I141)
         self._launch_run(w)
+
+    def _spot_velocity(self, pid: int, f: int):
+        """A Moving spot run's starting speed (px / frame): from the frame before
+        when the point has data there, else from the frame after when it was
+        placed there by hand (click two frames in a row, track from the first).
+        None = unknown: the first search is wider."""
+        s = self.session
+        p = s.tracks[f, pid].astype(np.float64)
+        if f - 1 >= 0 and s.tracked[f - 1, pid] and np.isfinite(s.tracks[f - 1, pid]).all():
+            return p - s.tracks[f - 1, pid].astype(np.float64)
+        if f + 1 < s.n_frames and s.manual[f + 1, pid] and np.isfinite(s.tracks[f + 1, pid]).all():
+            return s.tracks[f + 1, pid].astype(np.float64) - p
+        return None
+
+    # ------------------------------------------------ which point model (G57, G58)
+
+    def _test_point_models(self, pid: int | None = None) -> None:
+        """Track ▾ / the point menu -> Test the point models on my clicks: the
+        selected point (else the one with the most hand-placed frames)."""
+        s = self.session
+        if s is None or self.state != READY:
+            if self.state == TRACKING:
+                self.statusBar().showMessage("Pause the run first (X): the test uses the same video", 6000)
+            elif s is None:
+                self.toast.show_message(
+                    "Open a video first. Then place the point you want to follow by hand on 20 frames in a row "
+                    "(<b>N</b>, click it; <b>F</b>, click it…) and run the test again.", "info", 8000)
+            return
+        from kinetrace import spots
+        from kinetrace.pointtest import PointModelTest
+        plain = [i for i in range(s.n_points) if s.points[i].kind == "point" and not s.points[i].derived
+                 and not s.points[i].is_ball]
+        if pid is None:
+            pid = self.selected if self.selected in plain else None
+        if pid is None and plain:
+            pid = max(plain, key=lambda i: len(spots.clicked_stretch(s.manual_frames(i))))
+        if pid is None:
+            self.toast.show_message(
+                "The test needs a point placed by hand: press <b>N</b>, click the spot, then click it on 20 "
+                "frames in a row (F steps one frame) and run the test again.", "info", 9000)
+            return
+        q = s.points[pid]
+        if q.kind != "point" or q.derived or q.is_ball:
+            self.toast.show_message(f"<b>{q.name}</b> is a {'region' if q.kind != 'point' else 'ball marker' if q.is_ball else 'silhouette landmark'}"
+                                    ": the test compares point models on a plain point.", "info", 7000)
+            return
+        mf = [int(f) for f in s.manual_frames(pid) if np.isfinite(s.tracks[f, pid]).all()]
+        clicks = {f: s.tracks[f, pid].astype(np.float64) for f in mf}
+        models = [("alltracker", alltracker_backend.available(),
+                   "" if alltracker_backend.available() else "not installed yet (see the Track ▾ menu)"),
+                  ("cotracker3", True, "")]
+        dlg = PointModelTest(self, q.name, self.info.path, self.cache, self.n_frames,
+                             (self.info.width, self.info.height), clicks, models, self.btn_roi.isChecked(),
+                             gpu=getattr(self, "_device_kind", "") == "GPU",
+                             on_use=lambda r, pid=pid: self._apply_test_choice(pid, r))
+        self._test_dlg = dlg
+        dlg.exec()
+        self._test_dlg = None
+        dlg.deleteLater()
+
+    def _apply_test_choice(self, pid: int, result) -> None:
+        """The test's Use: the project's point model, and for Moving spot the
+        settings it found on this point (one undo step)."""
+        s = self.session
+        if s is None or not (0 <= pid < s.n_points):
+            return
+        if result.model == "spot" and result.settings is not None:
+            self._undo_snap = s.snapshot()
+            self.act_undo.setEnabled(True)
+            s.points[pid].spot = result.settings.to_dict()
+            s.dirty = True
+        self._set_point_backend(result.model)
+        self.toast.show_message(
+            f"Point model: <b>{result.label}</b> for this project"
+            + (f" ({s.points[pid].name}'s settings: {result.settings.describe()})" if result.model == "spot" else "")
+            + ". Track ▾ switches it back at any time.", "success", 8000)
+
+    def _hint_corrections(self, pid: int) -> None:
+        """G58: once per point, when it has been corrected by hand on 5 of the last
+        20 frames while AllTracker / CoTracker3 tracks it -- the squid pattern."""
+        s = self.session
+        if s is None or self._point_backend == "spot" or s.points[pid].kind != "point":
+            return
+        key = ("corr", id(self.project), self.project.active if self.project else 0, s.points[pid].name)
+        hist = self._spot_corrections.setdefault(key[1:], [])
+        hist.append(self.current)
+        recent = [f for f in hist if abs(f - self.current) < 20]
+        if len(recent) < 5 or key in self._spot_hints:
+            return
+        self._spot_hints.add(key)
+        name = s.points[pid].name
+        self.toast.show_message(
+            f"You have corrected <b>{name}</b> by hand on {len(recent)} of the last 20 frames. If it is a target "
+            "small enough to be one point (a dot, no visible shape), <b>Point model: Moving spot</b> may follow "
+            "it better; if you can see its shape, stay with AllTracker. <b>Click here</b> to test the point models "
+            "on your clicks (it needs 20 hand-placed frames in a row).", "info", 15000, on_click=lambda pid=pid: self._test_point_models(pid))
+
+    def _hint_small_spot(self, pid: int, x: float, y: float) -> None:
+        """G58: once per project, when a new point sits on a small isolated spot
+        and nothing says it is an animal (no segment in this camera)."""
+        s = self.session
+        if s is None or self._point_backend == "spot" or s.animal is not None:
+            return
+        key = ("tiny", id(self.project))
+        if key in self._spot_hints:
+            return
+        rgb = self.cache.get(self.current) if self.cache is not None else None
+        if rgb is None:
+            return
+        from kinetrace import spots
+        look = spots.looks_like_small_spot(rgb, (x, y))
+        if look is None:
+            return
+        self._spot_hints.add(key)
+        self.toast.show_message(
+            f"<b>{s.points[pid].name}</b> sits on a dot about {look.diameter:.0f} px across. If the whole target "
+            "is that dot — small enough to be one point, no visible shape — <b>Track ▾ → Point model: Moving "
+            "spot</b> often follows it better than AllTracker. If it is a mark on an animal you can see, stay with "
+            "AllTracker. To find out, click it on 20 frames in a row, then <b>Track ▾ → Test the point models on "
+            "my clicks</b>. <b>Click here</b> to read when to use which.", "info", 15000,
+            on_click=lambda: self._show_manual("Which point model should I use?"))
 
     def _launch_run(self, w, driver=None) -> None:
         """Wire a built worker to the working camera's live display and start it.
@@ -6130,8 +6522,10 @@ class MainWindow(QMainWindow):
         and the worker's end goes to the every-camera coordinator, not straight to
         the end-of-run handling."""
         self.worker = driver if driver is not None else w
+        self._model_worker = w
         w.balls_ready.connect(self._on_ball_radii)
         w.model_loading.connect(self._on_model_loading)
+        w.model_progress.connect(self._on_model_progress)
         w.started_ok.connect(self._on_track_started)
         w.masks_ready.connect(self._on_masks)
         w.chunk_ready.connect(self._on_chunk)
@@ -6153,28 +6547,73 @@ class MainWindow(QMainWindow):
         if driver is not None:
             self._render_timer.start()          # the other cameras draw from the start
 
+    def _models_needed(self, w) -> tuple[list[str], bool]:
+        """What a run's start will load: (sentences, anything to download). The
+        point model the run really uses (AllTracker by default -- the old check
+        looked at CoTracker3's file whatever the choice, G45) and SAM for a
+        segment OR ball markers."""
+        from kinetrace import downloads
+        from kinetrace.segmenter import loaded_backends, preferred_backend
+        parts, download = [], False
+        if getattr(w, "specs", None):
+            key = "alltracker" if getattr(w, "point_backend", "") == "alltracker" else "cotracker3"
+            f = downloads.FILES[key]
+            if not (f.dest.is_file() and downloads.code_present(key)):
+                parts.append(f"Downloading {f.label} ({f.size / 1e6:.0f} MB)")
+                download = True
+        backend = None
+        if getattr(w, "animal", None) is not None:
+            backend = w.animal.backend
+        elif getattr(w, "balls", None):
+            backend = w.balls[0].backend or preferred_backend()
+        if backend and backend not in loaded_backends():
+            label = BACKENDS.get(backend, BACKENDS[DEFAULT_BACKEND])[2]
+            if seg_is_cached(backend):
+                parts.append(f"Loading the segmentation model ({label})")
+            else:
+                parts.append(f"Downloading the segmentation model ({label})")
+                download = True
+        return parts, download
+
     def _on_model_loading(self):
-        from kinetrace.segmenter import loaded_backends
-        parts = []
-        if self._track_pids and any(not self.session.points[p].derived for p in self._track_pids
-                                    if p < self.session.n_points):
-            parts.append("Downloading the CoTracker3 model (~100 MB, first run only)"
-                         if not _CHECKPOINT.exists() else "")
-        if getattr(self, "_run_had_animal", False) and self._seg_backend not in loaded_backends():
-            label = BACKENDS.get(self._seg_backend, BACKENDS[DEFAULT_BACKEND])[2]
-            parts.append(f"Loading the segmentation model ({label})" if seg_is_cached(self._seg_backend)
-                         else f"Downloading the segmentation model ({label}) — first use only")
-        parts = [p for p in parts if p]
-        if parts:
-            self._model_dialog = QProgressDialog(
-                "\n".join(parts) + "\n\nModels are stored inside the tool folder.", None, 0, 0, self)
-            self._model_dialog.setWindowTitle("Preparing models")
-            self._model_dialog.setWindowModality(Qt.WindowModal)
-            self._model_dialog.setCancelButton(None)
-            self._model_dialog.setMinimumDuration(200)
-            self._model_dialog.setValue(0)
+        parts, download = self._models_needed(self._model_worker)
+        if not parts:
+            w = self._model_worker
+            spot_only = (w is not None and getattr(w, "spots", None) and not w.specs and w.animal is None
+                         and not w.balls)
+            self.statusBar().showMessage("Starting Moving spot (no model to load)…" if spot_only
+                                         else "Starting the tracking models…", 8000)
+            return
+        text = "\n".join(parts) + ("\n\nThis happens only the first time: the files are kept inside the Kinetrace "
+                                   "folder (models/)." if download else "")
+        self._open_model_dialog(text, 0 if download else 800)
+
+    def _open_model_dialog(self, text: str, delay_ms: int) -> None:
+        if self._model_dialog is None:
+            dlg = QProgressDialog(text, "Cancel", 0, 0, self)
+            dlg.setWindowTitle("Preparing the models")
+            dlg.setWindowModality(Qt.NonModal)              # X / Space still stop the run
+            dlg.setMinimumDuration(delay_ms)
+            dlg.setAutoClose(False)
+            dlg.setAutoReset(False)
+            dlg.canceled.connect(self._cancel_model_download)
+            dlg.setValue(0)
+            self._model_dialog = dlg
+            self._model_dl = {}
         else:
-            self.statusBar().showMessage("Loading the models…", 8000)
+            self._model_dialog.setLabelText(text)
+
+    def _on_model_progress(self, label: str, done: float, total: float):
+        """A first-use download: what, how far, about how long (G45)."""
+        self._open_model_dialog(label, 0)
+        mx, val, text = _download_status(self._model_dl, label, done, total)
+        self._model_dialog.setRange(0, mx)
+        self._model_dialog.setValue(val)
+        self._model_dialog.setLabelText(text)
+
+    def _cancel_model_download(self):
+        if self.worker is not None and self.state == TRACKING:
+            self.worker.request_pause()
 
     def _on_masks(self, summaries: list):
         if self.session is not None:
@@ -6185,9 +6624,8 @@ class MainWindow(QMainWindow):
             self.session.write_ball_radii(rows)
 
     def _on_track_started(self):
-        if self._model_dialog is not None:
-            self._model_dialog.close()
-            self._model_dialog = None
+        _quiet_close(self._model_dialog)
+        self._model_dialog = None
         self.statusBar().showMessage(f"Tracking from frame {self.current}… press X or the "
                                      "Pause button to stop at any time", 5000)
         self._render_timer.start()
@@ -6217,7 +6655,10 @@ class MainWindow(QMainWindow):
             remaining = (self.n_frames - 1 - head) / max(self._fps_ema, 1e-6)
             mins, secs = divmod(round(remaining), 60)
             eta = f"{mins} min {secs:02d} s" if mins else f"{secs} s"
-            kind = f"{self._device_kind} · " if getattr(self, "_device_kind", "") else ""
+            mw = self._model_worker
+            kind = ("Moving spot · " if mw is not None and getattr(mw, "spots", None) and not mw.specs
+                    and mw.animal is None and not mw.balls
+                    else f"{self._device_kind} · " if getattr(self, "_device_kind", "") else "")
             self._track_label.setText(f"{kind}tracking {self._fps_ema:.1f} fps · ETA {eta}")
 
     def _render_tick(self):
@@ -6270,7 +6711,8 @@ class MainWindow(QMainWindow):
                 nm = (s.points[pid].name if s is not None and 0 <= pid < s.n_points
                       else "the segment" if pid < 0 else f"point {pid}")
                 res.update(fail=fail, pid=pid, why={"exit": f"{nm} left the segment",
-                                                    "apart": f"{nm} too far from the other balls"}
+                                                    "apart": f"{nm} too far from the other balls",
+                                                    "spot": f"{nm} was not found (Moving spot)"}
                            .get(reason, f"{nm} was lost"))
             st["results"].append(res)
             if user_pause and was_paused:
@@ -6294,6 +6736,7 @@ class MainWindow(QMainWindow):
         self.worker.wait(2000)
         reason = getattr(self.worker, "_autopause_reason", "")
         ball_ended = dict(getattr(self.worker, "_ball_ended", {}) or {})
+        spot_ended = dict(getattr(self.worker, "_spot_ended", {}) or {})
         # the result can arrive while the thread still releases its capture (a
         # network share can stall that past the wait): keep it until it ends --
         # dropping the last reference to a running QThread aborts the app (I133)
@@ -6352,6 +6795,23 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Stopped: the ball {name} is too far from the others at frame "
                                              f"{fail_frame}", 12000)
                 return
+            if reason == "spot" and self.session and pid < self.session.n_points:
+                why = spot_ended.get(pid, (fail_frame, "missing"))[1]
+                if why == "ambiguous":
+                    said = (f"two spots look equally like <b>{name}</b> here (another spot or a glint right "
+                            "beside it, or two crossing)")
+                else:
+                    said = (f"<b>{name}</b> was not found where its speed put it (it faded, was hidden, or "
+                            "turned sharply)")
+                self.toast.show_message(
+                    f"Stopped at frame {fail_frame}: {said}, so its track ends at frame {fail_frame - 1}. "
+                    "Moving spot stops instead of guessing. If you can see it here, click it (it is selected) "
+                    "and press Track; clicking it on the next frame too gives it its speed. If it is not a "
+                    "small spot, switch Track ▾ → Point model.", "warn", 15000)
+                self.statusBar().showMessage(
+                    f"Stopped: Moving spot {'saw two candidates for' if why == 'ambiguous' else 'lost'} "
+                    f"{name} at frame {fail_frame}", 12000)
+                return
             if reason == "exit":
                 self.toast.show_message(
                     f"Stopped at frame {fail_frame}: <b>{name}</b> left the segment's silhouette, so its "
@@ -6387,7 +6847,7 @@ class MainWindow(QMainWindow):
                 "point first (each step re-seeds from what you see; Ctrl+Z undoes it)",
                 6000)
             return
-        msg = (f"Paused at frame {last} — drag or Ctrl+click points to correct them, then press "
+        msg = (f"Paused at frame {last} — select a point and click where it is to correct it, then press "
                "Track to re-track from here"
                if was_paused else f"Tracking complete (through frame {last})")
         self.statusBar().showMessage(msg, 8000)
@@ -6403,9 +6863,18 @@ class MainWindow(QMainWindow):
                 "Ball markers lost inside the picture (auto-pause is off, so the run went on): "
                 + ", ".join(parts) + ". Their tracks end there. Select one, Add ▾ → Ball marker, click it "
                 "where it is and press Track.", "warn", 15000)
+        stopped = [(pid, f, why) for pid, (f, why) in sorted(spot_ended.items()) if s is not None and pid < s.n_points]
+        if stopped:
+            # auto-pause off: Moving spot still stops a spot it cannot find; say which, and where
+            parts = [f"<b>{s.points[pid].name}</b> at frame {f}"
+                     + (" (two alike)" if why == "ambiguous" else " (not found)") for pid, f, why in stopped]
+            self.toast.show_message(
+                "Moving spot stopped (auto-pause is off, so the run went on for the rest): " + ", ".join(parts)
+                + ". Their tracks end there. Select one, click it where it is and press Track.", "warn", 15000)
 
     def _on_track_error(self, tb: str):
         decode_at = getattr(self.worker, "decode_failed_at", None) if self.worker is not None else None
+        dl_failed = getattr(self._model_worker, "download_failed", None)
         if self._multi is not None:
             # every camera run so far is kept (one Ctrl+Z still undoes them all);
             # the run stops where the error happened
@@ -6422,9 +6891,8 @@ class MainWindow(QMainWindow):
             self._retrack = None
             self._retrack_restore(st)
             self.statusBar().showMessage("Re-tracking stopped on an error; everything was put back", 8000)
-        if self._model_dialog is not None:
-            self._model_dialog.close()
-            self._model_dialog = None
+        _quiet_close(self._model_dialog)
+        self._model_dialog = None
         if self.worker is not None:
             self.worker.wait(2000)
             _retire(self.worker)        # (I133)
@@ -6445,11 +6913,22 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Stopped: frame {decode_at} could not be decoded", 12000)
             QMessageBox.warning(self, "Damaged frame in the video", tb[-1500:])
             return
+        if dl_failed is not None:
+            # a model could not be fetched (G45): the worker's sentence, no traceback
+            from kinetrace.downloads import DownloadCancelled
+            if isinstance(dl_failed, DownloadCancelled):
+                self.toast.show_message(f"{dl_failed} Nothing was tracked; press Track to go on with the "
+                                        "download from where it stopped.", "info", 9000)
+            else:
+                self.toast.show_message("Tracking could not start: " + str(dl_failed), "error", 12000)
+                QMessageBox.warning(self, "A model could not be downloaded", str(dl_failed))
+            return
         hint = _model_error_hint(tb)
-        self.toast.show_message("Tracking stopped. " + (hint or "See the details dialog."),
+        self.toast.show_message("Tracking stopped. " + (hint or "Everything tracked before it is kept."),
                                 "error", 10000)
-        QMessageBox.critical(self, "Tracking failed",
-                             (hint + "\n\n" if hint else "") + "Details:\n\n" + tb[-1500:])
+        QMessageBox.critical(self, "Tracking stopped", _crash_text(
+            tb, hint, "Tracking stopped on an unexpected error. Everything tracked before it is kept "
+                      "(Ctrl+Z undoes the whole run)."))
 
     # The undo point is ONE camera's snapshot, plus -- when an edit also changed
     # the other cameras (a landmark added, renamed or deleted in all of them, G19)
@@ -6551,9 +7030,8 @@ class MainWindow(QMainWindow):
         pb = str(st.get("point_backend", "") or "")
         if pb == "alltracker" and not alltracker_backend.available():
             pb = "cotracker3"
-        self._point_backend = pb if pb in ("alltracker", "cotracker3") else self._preferred_point_backend()
-        (self.act_pm_alltracker if self._point_backend == "alltracker"
-         else self.act_pm_cotracker).setChecked(True)
+        self._point_backend = pb if pb in self._pm_acts else self._preferred_point_backend()
+        self._pm_acts[self._point_backend].setChecked(True)
         self._mask_opacity = float(np.clip(st.get("mask_opacity", 0.35), 0.05, 0.9))
         self.act_show_midline.setChecked(bool(st.get("show_midline", True)))
         self.act_show_bones.setChecked(bool(st.get("show_bones", True)))
@@ -6644,10 +7122,12 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             pass            # a hand-edited state.json with odd values: keep the defaults
 
-    def _start_writer(self, frozen, path, on_done=None, wait: bool = False, folder: bool = False, **kw):
+    def _start_writer(self, frozen, path, on_done=None, wait: bool = False, folder: bool = False,
+                      title: str | None = None, detail: str = "", **kw):
         """Run projectfile.write (a single file) or write_folder_over (the
         project folder, `folder`) on a worker thread. wait=True returns (ok,
-        error) after it finished, the window repainting meanwhile."""
+        error) after it finished, the window repainting meanwhile -- with the
+        loading card (`title`) once it takes longer than a blink (G48)."""
         w = _SaveWorker(frozen, path, folder, **kw)
         result = {}
 
@@ -6659,12 +7139,24 @@ class MainWindow(QMainWindow):
         self._save_worker = w
         w.start()
         if wait:
-            while w.isRunning() or "ok" not in result:
-                QApplication.processEvents(QEventLoop.AllEvents, 50)
-                w.wait(10)
-            QApplication.processEvents()
+            tok = self._busy_push(title, detail) if title else None
+            try:
+                while w.isRunning() or "ok" not in result:
+                    QApplication.processEvents(QEventLoop.AllEvents, 50)
+                    w.wait(10)
+                QApplication.processEvents()
+            finally:
+                self._busy_pop(tok)
             return result["ok"], result["err"]
         return None, None
+
+    def _wait_for_exports(self) -> None:
+        """A save rewrites the folder the exports/ refresh reads: let it finish
+        first -- with the card, the window live (it waited on the GUI thread, G48)."""
+        w = self._exports_worker
+        if w is not None and w.isRunning():
+            self._in_background("Finishing the exports", lambda: w.wait(),
+                                detail="Bringing exports/ up to date before the next save…")
 
     def _autosave(self, wait: bool = False):
         """Unsaved work -> the recovery folder, every 30 s and after runs. The
@@ -6732,8 +7224,7 @@ class MainWindow(QMainWindow):
             return False
         if self._save_worker is not None and self._save_worker.isRunning():
             self._save_worker.wait()
-        if self._exports_worker is not None and self._exports_worker.isRunning():
-            self._exports_worker.wait()          # it reads the folder this save rewrites (G42)
+        self._wait_for_exports()                 # it reads the folder this save rewrites (G42)
         path = self.project_path
         if path.is_file() and not self._keep_single_file:
             # a project saved before I145 is one zip: offer the folder (once per project)
@@ -6756,7 +7247,8 @@ class MainWindow(QMainWindow):
             frozen = projectfile.freeze(self.project, self._ui_global_state(), self._project_id,
                                         target=path, saved_at=saved_at, layout="folder" if folder else "zip")
             self.statusBar().showMessage("Saving…")
-            ok, err = self._start_writer(frozen, path, wait=True, folder=folder)
+            ok, err = self._start_writer(frozen, path, wait=True, folder=folder, title=f"Saving {path.name}",
+                                         detail="Writing the files that changed since the last save…")
         finally:
             self._saving = False
         if not ok:
@@ -6787,7 +7279,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _changes_text(self, most: int = 8) -> str:
-        """For the close question (G44, owner 2026-09-29): what differs from
+        """For the close question (G44): what differs from
         the last save, in words ("cam1: P1 (positions)") — a stray click that
         moved a point is then seen before it is saved. '' when that cannot be
         told (never saved, a single file)."""
@@ -6826,10 +7318,20 @@ class MainWindow(QMainWindow):
             p = p.with_name(p.name + PROJECT_SUFFIX)
         inside = next((a for a in p.parents if projectfile.is_folder_project(a)), None)
         if inside is not None:
-            QMessageBox.warning(self, "Save project",
-                                f"{p.name} would be inside the project folder\n{inside}\n\nChoose a place "
-                                "outside it (a project cannot hold another project).")
-            return None
+            # a project is a folder, and the save dialog OPENS a folder whose name is chosen
+            # (Windows does) -- so choosing an existing project, e.g. the proposed
+            # <video>.kinetrace, came back as a path INSIDE it and was refused: the owner had
+            # to invent a new name (G55). Inside a project = that project was meant.
+            if self.project_path is not None and inside.resolve() == self.project_path.resolve():
+                return inside                                   # this very project: just save it
+            if QMessageBox.question(
+                    self, "Save as this project?",
+                    f"You chose the project folder\n{inside}\n\nSave this work as {inside.name}, replacing "
+                    "what that project holds now? (Its last save stays in its .history folder until the next "
+                    "save.)\n\nNo: choose another place or name (a project cannot be put inside another "
+                    "project).", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return None
+            return inside
         if p.is_dir():
             if projectfile.is_folder_project(p):
                 mine = self.project_path is not None and p.resolve() == self.project_path.resolve()
@@ -6857,6 +7359,8 @@ class MainWindow(QMainWindow):
         target = self._project_target(path)
         if target is None:
             return False
+        if self.project_path is not None and target.resolve() == self.project_path.resolve() and target.is_dir():
+            return self._save_project()                 # the open project itself: a save, same id (G55)
         before = (self.project_path, self._project_id, self._saved_at, self._keep_single_file, self._project_dir)
         # a new project folder is a new project: its own id, so the two never
         # share unsaved work
@@ -6894,7 +7398,13 @@ class MainWindow(QMainWindow):
         frozen = projectfile.freeze(self.project, self._ui_global_state(), self._project_id, target=out,
                                     layout="zip")
         self.statusBar().showMessage("Writing the single file…")
-        ok, err = self._start_writer(frozen, out, wait=True, backup=False)
+        self._saving = True                      # no Save / autosave write meanwhile (G48)
+        try:
+            ok, err = self._start_writer(frozen, out, wait=True, backup=False, title=f"Writing {out.name}",
+                                         detail="The whole project into one file (the larger the project, "
+                                                "the longer: about 2 s per million tracked rows)…")
+        finally:
+            self._saving = False
         if not ok:
             QMessageBox.critical(self, "Could not export the project", f"{out}\n\n{err}")
             return
@@ -6929,14 +7439,13 @@ class MainWindow(QMainWindow):
         """Bring exports/ up to date with the save just made, off the GUI
         thread, from the saved folder itself (so they match it exactly)."""
         from kinetrace.autoexport import ExportsWorker
-        if self._exports_worker is not None and self._exports_worker.isRunning():
-            self._exports_worker.wait()
-        scorer = "Kinetrace_" + {"alltracker": "AllTracker", "cotracker3": "CoTracker3"}.get(
-            self._point_backend, "Kinetrace")
+        self._wait_for_exports()
+        scorer = "Kinetrace_" + {"alltracker": "AllTracker", "cotracker3": "CoTracker3",
+                                 "spot": "MovingSpot"}.get(self._point_backend, "Kinetrace")
         w = ExportsWorker(self.project_path, list(self.project.exports), scorer)
         w.done.connect(self._on_exports_done)
         self._exports_worker = w
-        self.statusBar().showMessage("Updating exports/…", 3000)
+        self.statusBar().showMessage("Updating exports/…")      # until it is done (it said 3 s, G48)
         w.start()
 
     def _on_exports_done(self, written: list, errors: list) -> None:
@@ -6946,6 +7455,8 @@ class MainWindow(QMainWindow):
         elif written:
             self.statusBar().showMessage(f"exports/ updated ✓  {', '.join(written[:4])}"
                                          f"{' …' if len(written) > 4 else ''}", 6000)
+        else:
+            self.statusBar().showMessage("exports/ already up to date ✓", 4000)
 
     def _import_tracks_dialog(self, path: str | None = None):
         """File → Import Tracks: another program's 2D tracks into the camera on
@@ -6954,8 +7465,8 @@ class MainWindow(QMainWindow):
             path, _ = QFileDialog.getOpenFileName(self, "Import tracks", "", TRACKS_FILTER)
             if not path:
                 return
-        try:
-            imp = trackio.read(path)
+        try:           # a long DeepLabCut / SLEAP file: off the GUI thread (G52)
+            imp = self._in_background("Reading the tracks", lambda: trackio.read(path), detail=Path(path).name)
         except trackio.TrackImportError as e:
             QMessageBox.warning(self, "Cannot import these tracks", str(e))
             return
@@ -7044,8 +7555,11 @@ class MainWindow(QMainWindow):
         # by Ctrl+Z (the undo keeps segments made after it, like removing one, I124)
         had_segment = s.animal is not None
         snap = s.snapshot() if had_segment else None
-        try:
-            summ = trackio.import_masks_png(s, folder)
+        try:           # thousands of 4K images: off the GUI thread, counted (G52)
+            summ = self._in_background(
+                "Importing silhouettes",
+                lambda report: trackio.import_masks_png(s, folder, lambda d, n: report(f"{d} of {n} images", d, n)),
+                detail=Path(folder).name, progress=True)
         except trackio.TrackImportError as e:
             QMessageBox.warning(self, "Cannot import these silhouettes", str(e))
             return
@@ -7184,13 +7698,14 @@ class MainWindow(QMainWindow):
 
     def _open_project_impl(self, path: str, recovered: dict | None, pname: str):
         self._leave_project()
-        try:
-            proj, state, meta = projectfile.read(path)
+        try:           # off the GUI thread: the card's spinner keeps turning (G47)
+            proj, state, meta = self._in_background(f"Opening {pname}", lambda: projectfile.read(path),
+                                                    detail="Reading the project file…")
         except projectfile.ProjectFileError as e:
             QMessageBox.critical(self, "Could not open project", f"{path}\n\n{e}")
             return
         except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "Could not open project", f"{path}\n\n{type(e).__name__}: {e}")
+            QMessageBox.critical(self, "Could not open project", _plain_error(e, f"{path} could not be read"))
             return
         pid = str(meta.get("project_id") or projectfile.new_id())
         saved_at = meta.get("saved_at")
@@ -7223,7 +7738,9 @@ class MainWindow(QMainWindow):
                 if QMessageBox.question(self, "Unsaved changes found", ask, QMessageBox.Yes | QMessageBox.No,
                                         QMessageBox.Yes if same else QMessageBox.No) == QMessageBox.Yes:
                     try:
-                        proj, state, meta = projectfile.read(recovery.paths(pid)[0])
+                        proj, state, meta = self._in_background(
+                            f"Opening {pname}", lambda: projectfile.read(recovery.paths(pid)[0]),
+                            detail="Reading the unsaved changes…")
                         unsaved = True
                         if not same:
                             # it lives on as a new copy (its own id); the old recovery
@@ -7596,7 +8113,7 @@ class MainWindow(QMainWindow):
                 written.append(stem + "_offsets.csv")
         except Exception as e:      # noqa: BLE001
             QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "Export calibration", str(e))
+            QMessageBox.critical(self, "Export calibration", _plain_error(e, "The calibration could not be written"))
             return
         QApplication.restoreOverrideCursor()
         names = ", ".join(Path(w).name for w in written)
@@ -7670,16 +8187,15 @@ class MainWindow(QMainWindow):
         if t1 < t0:
             self.toast.show_message("Nothing tracked in the overlap yet — track the cameras first.", "warn", 6000)
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         rep: dict = {}
-        try:
-            offs, before, after = estimate_offsets(p.sessions, p.calibration, p.rates, p.offsets, (t0, t1),
-                                                   report=rep)
+        try:           # a joint search over every camera: off the GUI thread (G50)
+            offs, before, after = self._in_background(
+                "Estimating sub-frame offsets",
+                lambda: estimate_offsets(p.sessions, p.calibration, p.rates, p.offsets, (t0, t1), report=rep),
+                detail=f"Testing offsets of every camera against the tracks of frames {t0}-{t1}…")
         except Exception as e:      # noqa: BLE001
-            QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "Sub-frame offsets", str(e))
+            QMessageBox.critical(self, "Sub-frame offsets", _plain_error(e, "The offsets could not be estimated"))
             return
-        QApplication.restoreOverrideCursor()
         if not np.isfinite(before) or not np.isfinite(after):
             QMessageBox.information(self, "Sub-frame offsets",
                                     "No landmark is seen by two cameras at the same instant, so there is "
@@ -7724,14 +8240,14 @@ class MainWindow(QMainWindow):
         if t1 < t0:
             self.toast.show_message("Nothing tracked in the overlap yet — track the cameras first.", "warn", 6000)
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            p.reconstruction = reconstruct(p.sessions, p.calibration, p.rates, p.offsets, (t0, t1))
+        try:           # off the GUI thread (G50)
+            p.reconstruction = self._in_background(
+                "Reconstructing the 3D landmarks",
+                lambda: reconstruct(p.sessions, p.calibration, p.rates, p.offsets, (t0, t1)),
+                detail=f"Triangulating frames {t0}-{t1} of every camera…")
         except Exception as e:      # noqa: BLE001
-            QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "3D reconstruction", str(e))
+            QMessageBox.critical(self, "3D reconstruction", _plain_error(e, "The 3D landmarks could not be made"))
             return
-        QApplication.restoreOverrideCursor()
         p.dirty = True
         r = p.reconstruction
         solved = int(np.isfinite(r.residual).sum())
@@ -7821,8 +8337,7 @@ class MainWindow(QMainWindow):
                 "Reconstruct the landmarks first (Ctrl+3): they tell the carver where in space "
                 "to look.", "warn", 7000)
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
+        def work():
             cams = p.calibration.cameras
             span = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) if len(pts) > 1 else 0.0
             margin = max(2.0 * span, 0.05)
@@ -7844,11 +8359,14 @@ class MainWindow(QMainWindow):
             voxel = max(float(np.linalg.norm(ext[1] - ext[0])) / 120.0, 1e-6)
             h = carve(cams, masks, ext[0] - 8 * voxel, ext[1] + 8 * voxel, voxel, dilate_px=2)
             verts, faces = hull_mesh(h)
+            return verts, faces, h, cut_off, voxel
+
+        try:           # coarse carves + a 120^3 one: off the GUI thread (G50)
+            verts, faces, h, cut_off, voxel = self._in_background(
+                "Carving the volume", work, detail=f"From {n_masks} silhouettes at frame {t}…")
         except Exception as e:      # noqa: BLE001
-            QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "Volume hull", str(e))
+            QMessageBox.critical(self, "Volume hull", _plain_error(e, "The volume could not be carved"))
             return
-        QApplication.restoreOverrideCursor()
         if cut_off:
             QMessageBox.warning(
                 self, "Volume hull cut off",
@@ -7972,7 +8490,10 @@ class MainWindow(QMainWindow):
         if self._body_progress is not None:
             self._body_progress.setMaximum(max(1, total))
             self._body_progress.setValue(done)
-            self._body_progress.setLabelText(f"Looking for people…  {note}")
+            loading = note.startswith(("Loading", "Downloading", "the "))
+            if loading and total <= 1:
+                self._body_progress.setMaximum(0)           # moving: how long is not known
+            self._body_progress.setLabelText(note if loading else f"Looking for people…  {note}")
 
     def _on_body_done(self, track):
         from kinetrace.body import merge_run
@@ -8013,7 +8534,8 @@ class MainWindow(QMainWindow):
         self._refresh_body_view(force=True)
 
     def _on_body_error(self, msg: str):
-        QMessageBox.warning(self, "Body pose", msg)
+        hint = _model_error_hint(msg)                     # no internet / memory / gated weights (G54)
+        QMessageBox.warning(self, "Body pose", (hint + "\n\n" + msg[-600:]) if hint and hint not in msg else msg)
 
     def _end_body_run(self):
         if self._body_progress is not None:
@@ -8194,7 +8716,7 @@ class MainWindow(QMainWindow):
                 unit = p.calibration.unit if p.calibration else ""
                 save_obj(path, verts, faces, f"Kinetrace visual hull, reference frame {t}, unit {unit}")
         except OSError as e:
-            QMessageBox.critical(self, "Export failed", str(e))
+            QMessageBox.critical(self, "Export failed", _plain_error(e, "The mesh could not be written"))
             return
         self.toast.show_message(f"Mesh written: {Path(path).name} ({len(faces)} triangles)", "info", 6000)
 
@@ -8220,16 +8742,18 @@ class MainWindow(QMainWindow):
         ("Everything — all of the above with one base name (*.csv)", ".csv", "all"),
     ]
 
-    def _export_one(self, key: str, path: str) -> list[str]:
-        """Write one format; returns the files written (sidecars included)."""
+    def _export_one(self, key: str, path: str, cutoff="ask") -> list[str]:
+        """Write one format; returns the files written (sidecars included).
+        `cutoff`: the kinematics smoothing ("ask" = the question; `_export_dialog`
+        asks first and passes the answer, since the writing runs off the GUI thread)."""
         s = self.session
         written = [path]
         if key == "wide":
             s.export_csv(path)
         elif key == "dlc":
-            s.export_dlc_csv(path, scorer="Kinetrace_" + {"alltracker": "AllTracker",
-                                                          "cotracker3": "CoTracker3"}.get(self._point_backend,
-                                                                                          "Kinetrace"))
+            s.export_dlc_csv(path, scorer="Kinetrace_" + {"alltracker": "AllTracker", "cotracker3": "CoTracker3",
+                                                          "spot": "MovingSpot"}.get(self._point_backend,
+                                                                                    "Kinetrace"))
         elif key in ("dltdv", "dltdv_bl"):
             s.export_dltdv_csv(path, flip_y=(key == "dltdv_bl"))
             written.append(str(Path(path).with_name(Path(path).stem + "_pointnames.csv")))
@@ -8292,7 +8816,8 @@ class MainWindow(QMainWindow):
                 self.toast.show_message("No 3D reconstruction yet: run 3D -> Reconstruct 3D "
                                         "Landmarks (Ctrl+3) first.", "warn", 7000)
                 return []
-            cutoff = self._ask_smoothing() if not getattr(self, "_export_all_running", False) else "auto"
+            if cutoff == "ask":
+                cutoff = self._ask_smoothing() if not getattr(self, "_export_all_running", False) else "auto"
             if cutoff is False:
                 return []
             fps = float(p.sessions[0].fps) if p.sessions else float(self.info.fps)
@@ -8351,11 +8876,12 @@ class MainWindow(QMainWindow):
             return
         label, suffix, key = next((f for f in self.EXPORT_FORMATS if f[0] == chosen),
                                   self.EXPORT_FORMATS[0])
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         written: list[str] = []
+        stopped = {"at": None}
         try:
             if key == "all":
                 stem = str(Path(path).with_suffix(""))
+                jobs = []
                 for lab, suf, k in self.EXPORT_FORMATS:
                     if k == "all" or (k == "multi" and self.project.n_views < 2):
                         continue    # the all-cameras file is meaningless for one camera
@@ -8369,21 +8895,44 @@ class MainWindow(QMainWindow):
                     tag = {"wide": "", "dlc": "_dlc", "dltdv": "_dltdv", "sparse": "",
                            "mat": "", "multi": "_allcams", "xyz": "_xyz", "kin": "_kinematics",
                            "xyz_anipose": "_points3d_anipose", "xyz_dltdv": "_xyzpts", "sil_json": "_silhouette"}[k]
-                    self._export_all_running = True       # kinematics: automatic smoothing, no question
-                    try:
-                        written += self._export_one(k, stem + tag + suf)
-                    finally:
-                        self._export_all_running = False
+                    jobs.append((lab.split(" (")[0], k, stem + tag + suf))
+
+                def write_all(report, cancelled):
+                    out = []
+                    for i, (lab, k, dest) in enumerate(jobs):
+                        if cancelled():
+                            stopped["at"] = i
+                            break
+                        report(f"File {i + 1} of {len(jobs)}: {lab}", i, len(jobs))
+                        out += self._export_one(k, dest, cutoff="auto")   # kinematics: automatic smoothing
+                    return out
+                # every format in turn, off the GUI thread, counted and stoppable (G49)
+                written = self._in_background("Exporting everything", write_all, total=len(jobs),
+                                              progress=True, cancellable=True)
             else:
                 if not path.lower().endswith(suffix):
                     path += suffix
-                written = self._export_one(key, path)
+                needs_3d = key in ("xyz", "kin", "xyz_anipose", "xyz_dltdv")
+                no_data = ((needs_3d and (self.project is None or self.project.reconstruction is None))
+                           or (key == "sil_json" and (self.session.masks is None or not self.session.masks.n_masked())))
+                if key == "sil_png" or no_data:
+                    written = self._export_one(key, path)     # its own progress dialog / its sentence
+                else:
+                    cutoff = self._ask_smoothing() if key == "kin" else "auto"
+                    if cutoff is False:
+                        return
+                    written = self._in_background(f"Exporting {Path(path).name}",      # off the GUI thread (G49)
+                                                  lambda: self._export_one(key, path, cutoff=cutoff),
+                                                  detail=label.split(" (")[0])
         except Exception as e:  # noqa: BLE001
-            QApplication.restoreOverrideCursor()
-            self.toast.show_message(f"Export failed: {e}", "error", 8000)
-            QMessageBox.critical(self, "Export failed", str(e))
+            msg = _plain_error(e, "The export could not be written")
+            self.toast.show_message("Export failed: " + msg.split("\n")[0], "error", 8000)
+            QMessageBox.critical(self, "Export failed", msg)
             return
-        QApplication.restoreOverrideCursor()
+        if stopped["at"] is not None:
+            self.toast.show_message(f"Export stopped: {len(dict.fromkeys(written))} file(s) written before Cancel.",
+                                    "warn", 8000)
+            return
         n = int(self.session.tracked.any(axis=1).sum())
         names = ", ".join(dict.fromkeys(Path(w).name for w in written))
         which = (f" (2D files: camera {self.project.name(self.project.active)})"

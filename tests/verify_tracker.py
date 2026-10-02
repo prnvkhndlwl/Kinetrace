@@ -166,8 +166,8 @@ from kinetrace.tracker import BallSpec, PointSpec  # noqa: E402
 
 calls = {}
 saved = (trk.get_model, trk.get_segmenter, balls_mod.BallTracker)
-trk.get_model = lambda: (None, "cpu")               # no model: the segment itself is stubbed
-trk.get_segmenter = lambda backend: None
+trk.get_model = lambda **kw: (None, "cpu")               # no model: the segment itself is stubbed
+trk.get_segmenter = lambda backend, **kw: None
 balls_mod.BallTracker = lambda seg, wh: object()
 try:
     wH = TrackingWorker(VID, 0, None, None, FrameCache(64 * 1024 * 1024), 600, autopause=False,

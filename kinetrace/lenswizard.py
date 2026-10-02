@@ -15,7 +15,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QEventLoop, Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QProgressBar, QPushButton, QRadioButton,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QWizardPage)
 
 from kinetrace import lens, theme
+from kinetrace.errors import plain_error
 from kinetrace.boardreview import BoardReview
 
 VERDICT_COLORS = {"good": theme.GREEN, "ok": "#FFD60A", "poor": theme.RED}
@@ -33,6 +34,41 @@ LENS_FILTER = ("Lens profiles (*.klens.json *.json *.yml *.yaml *.txt);;Kinetrac
                "OpenCV lens (*.yml *.yaml *.json);;Argus / DLTdv camera profile (*.txt);;All files (*)")
 UNITS = [("millimetres (mm)", 0.001), ("centimetres (cm)", 0.01), ("metres (m)", 1.0), ("inches (in)", 0.0254)]
 ID_INTRO, ID_VIDEO, ID_REVIEW, ID_RESULT = range(4)
+
+
+class _Call(QThread):
+    def __init__(self, fn):
+        super().__init__()
+        self._fn, self.result, self.exc = fn, None, None
+
+    def run(self):
+        try:
+            self.result = self._fn()
+        except BaseException as e:  # noqa: BLE001 - raised again on the GUI thread
+            self.exc = e
+
+
+def _off_thread(owner: QWidget, fn):
+    """`fn()` on a worker thread while the wizard keeps repainting (a local event
+    loop; the wizard is disabled meanwhile, so nothing is clicked twice) -> its
+    result. The fits of the review page ran on the GUI thread: seconds of a
+    frozen wizard with a status line that never repainted (G51)."""
+    th = _Call(fn)
+    loop = QEventLoop()
+    th.finished.connect(loop.quit)
+    owner.setEnabled(False)
+    QApplication.setOverrideCursor(Qt.BusyCursor)
+    try:
+        th.start()
+        if not th.isFinished():
+            loop.exec()
+        th.wait()
+    finally:
+        QApplication.restoreOverrideCursor()
+        owner.setEnabled(True)
+    if th.exc is not None:
+        raise th.exc
+    return th.result
 
 
 def _dim(label: QLabel) -> QLabel:
@@ -480,17 +516,21 @@ class ReviewPage(QWizardPage):
         self._fitted = None
         if scan is None:
             return
-        self.status.setText("Choosing a good spread…")
-        QApplication.processEvents()
-        idx, err, why = lens.auto_select(scan.corners, self.wiz.pattern, self.wiz.square,
-                                         scan.size, self.wiz.model)
-        prof = None
-        if idx:
-            try:
-                prof = lens.calibrate_lens([scan.corners[i] for i in idx], self.wiz.pattern,
-                                           self.wiz.square, scan.size, self.wiz.model)
-            except Exception:                                   # noqa: BLE001
-                prof = None
+        self.status.setText(f"Choosing a good spread of the {len(scan.corners)} boards and fitting the lens "
+                            "(a few seconds)…")
+
+        def work():
+            idx, err, why = lens.auto_select(scan.corners, self.wiz.pattern, self.wiz.square,
+                                             scan.size, self.wiz.model)
+            prof = None
+            if idx:
+                try:
+                    prof = lens.calibrate_lens([scan.corners[i] for i in idx], self.wiz.pattern,
+                                               self.wiz.square, scan.size, self.wiz.model)
+                except Exception:                               # noqa: BLE001
+                    prof = None
+            return idx, err, why, prof
+        idx, err, why, prof = _off_thread(self.wiz, work)
         self.review.set_scan(scan, self.wiz.pattern, self.wiz.square, prof, idx, err,
                              model=self.wiz.model)
         if prof is not None:
@@ -510,15 +550,17 @@ class ReviewPage(QWizardPage):
             return
         self.btn_fit.setEnabled(False)
         self.status.setText(f"Fitting from {len(idx)} boards…")
-        QApplication.processEvents()
-        try:
+
+        def work():
             prof = lens.calibrate_lens([scan.corners[i] for i in idx], self.wiz.pattern,
                                        self.wiz.square, scan.size, self.wiz.model)
+            return prof, lens.per_view_errors(scan.corners, self.wiz.pattern, self.wiz.square, prof)
+        try:
+            prof, err = _off_thread(self.wiz, work)
         except Exception as exc:                                # noqa: BLE001
             self.btn_fit.setEnabled(True)
-            self.status.setText(f"Could not fit: {exc}")
+            self.status.setText(plain_error(exc, "The lens could not be fitted from these boards", short=True))
             return
-        err = lens.per_view_errors(scan.corners, self.wiz.pattern, self.wiz.square, prof)
         self.review.prof = prof
         self.review.errors = err
         for i, tile in enumerate(self.review._tiles):

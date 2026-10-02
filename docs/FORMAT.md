@@ -57,6 +57,10 @@ cameras/<folder>/tracks/<landmark>.csv   one landmark's positions: one row per f
 cameras/<folder>/events.csv          marked events
 cameras/<folder>/notes.csv           notes on frames
 cameras/<folder>/ball_prompts.json   ball markers' SAM clicks (only with ball markers)
+cameras/<folder>/spots.json          per landmark, the Moving spot point model's settings that
+                                     Test the point models on my clicks chose: {"P1": {"cue":
+                                     "bright", "radius": 6.0, "speed_gain": 0.0, "sigma": 1.5}}
+                                     (only when a test chose them; a landmark not listed is automatic)
 cameras/<folder>/skeleton.json       the named skeleton (only with one)
 cameras/<folder>/segment.json        the segment's name, colour and SAM clicks / boxes (only with a segment)
 cameras/<folder>/silhouette/summary.csv   the segment per frame: area, score, centroid, box
@@ -78,7 +82,7 @@ the file).
 ### `kinetrace.json`
 
 ```json
-{"format": "kinetrace-project", "format_version": 2, "app_version": "0.2.0",
+{"format": "kinetrace-project", "format_version": 2, "app_version": "0.3.0",
  "project_id": "5f0c…", "saved_at": "2026-09-29T21:04:11.482113+00:00",
  "cameras": [{"folder": "cam1", "name": "cam1"}], "videos_relative_to": "project"}
 ```

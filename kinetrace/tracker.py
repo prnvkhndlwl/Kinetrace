@@ -60,6 +60,7 @@ import torch.nn.functional as F
 from PySide6.QtCore import QThread, Signal
 
 from kinetrace import alltracker_backend as at_backend
+from kinetrace.downloads import DownloadError
 from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, get_segmenter,
                                      score_to_confidence, summarize_mask)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
@@ -160,6 +161,22 @@ class BallSpec:
         self.backend = backend
 
 
+class SpotSpec:
+    """A point tracked by the Moving spot point model (spots.py, I160): `seed` =
+    its position on the run's first frame, `vel` = its speed there in px /
+    frame (from the frame before -- or after -- when that one has data; None =
+    unknown, and the first search is wider), `settings` = the point's
+    SpotSettings as a dict, from the test on the user's clicks (None / {} =
+    automatic)."""
+
+    def __init__(self, pid: int, seed, vel=None, settings: dict | None = None):
+        self.pid = int(pid)
+        self.seed = np.asarray(seed, np.float32).reshape(2)
+        v = None if vel is None else np.asarray(vel, np.float64).reshape(2)
+        self.vel = v if v is not None and np.isfinite(v).all() else None
+        self.settings = dict(settings or {})
+
+
 @dataclass
 class DerivedSpec:
     """An output column computed from the segment's silhouette, not tracked."""
@@ -225,23 +242,31 @@ def pick_device() -> tuple[str, str]:
     return _pick()
 
 
-def get_model():
-    """Process-wide CoTracker3 online predictor singleton. Safe to call from any thread."""
+def get_model(progress=None, cancel=lambda: False):
+    """Process-wide CoTracker3 online predictor singleton. Safe to call from any thread.
+    Its code and checkpoint come from `downloads` (pinned commits, checked; I152):
+    the code folder is loaded as a local torch.hub repo -- nothing is asked of
+    GitHub once it is there -- and the weights as tensors only (weights_only).
+    progress(label, done_bytes, total_bytes) while something downloads."""
     global _model, _device
     with _model_lock:
         if _model is None:
+            from kinetrace import downloads
             device, _ = pick_device()
             torch.hub.set_dir(str(MODELS_DIR))  # keep downloads inside the tool folder
-            model = torch.hub.load("facebookresearch/co-tracker", "cotracker3_online",
-                                   trust_repo=True)
+            repo = downloads.ensure_code("cotracker3", progress, cancel)
+            ckpt = downloads.ensure_file("cotracker3", progress, cancel)
+            model = torch.hub.load(str(repo), "cotracker3_online", source="local", pretrained=False)
+            model.model.load_state_dict(downloads.load_weights(ckpt))    # what hubconf's pretrained=True does
             _model = model.to(device).eval()
             _device = device
         return _model, _device
 
 
 def model_is_cached() -> bool:
-    """True if the repo+checkpoint are already on disk (first run needs internet)."""
-    return (MODELS_DIR / "checkpoints" / "scaled_online.pth").exists()
+    """True if the code + checkpoint are already on disk (first run needs internet)."""
+    from kinetrace import downloads
+    return downloads.code_present("cotracker3") and downloads.FILES["cotracker3"].dest.is_file()
 
 
 def sample_members(center: np.ndarray, radius: float, w: int, h: int,
@@ -336,8 +361,8 @@ def _drain(gen):
 
 
 class MultiTrackingWorker(QThread):
-    """Several cameras' TrackingWorkers tracked AT THE SAME TIME (I141, owner
-    2026-09-27: "only the current active camera tracks"). They are advanced in
+    """Several cameras' TrackingWorkers tracked AT THE SAME TIME (I141: they
+    used to run one after another). They are advanced in
     turn on this ONE thread, a frame each (`TrackingWorker.steps`): every camera
     moves on together and draws live, each worker decodes on its own read-ahead
     thread, one model step runs on the GPU at a time (so the memory of ONE run,
@@ -374,6 +399,8 @@ class TrackingWorker(QThread):
     """Tracks all seeded points forward from start_frame until EOF or pause."""
 
     model_loading = Signal()
+    # (what is being downloaded, bytes done, bytes in all -- 0 when unknown), first use only (G45)
+    model_progress = Signal(str, float, float)
     started_ok = Signal()
     # (window start abs frame, tracks (L,K,2) float32 native px, vis (L,K) bool,
     #  conf (L,K) float32, members {out_index: (L,M,2) native} for live overlay,
@@ -396,7 +423,8 @@ class TrackingWorker(QThread):
                  animal: AnimalSpec | None = None,
                  derived: list[DerivedSpec] | None = None,
                  head_pid: int | None = None, on_body_pids=None, constrain_pids=None,
-                 point_backend: str = "cotracker3", balls: list[BallSpec] | None = None):
+                 point_backend: str = "cotracker3", balls: list[BallSpec] | None = None,
+                 spots: list[SpotSpec] | None = None):
         super().__init__()
         self.video_path = video_path
         self.start_frame = start_frame
@@ -407,10 +435,11 @@ class TrackingWorker(QThread):
         self.specs = list(specs)
         self.derived = list(derived or [])
         self.balls = list(balls or [])
+        self.spots = list(spots or [])
         # emitted columns: tracked specs first, then silhouette-derived outputs,
-        # then the ball markers (SAM circle centres)
+        # then the ball markers (SAM circle centres), then the moving spots
         self.point_ids = ([sp.pid for sp in self.specs] + [d.pid for d in self.derived]
-                          + [b.pid for b in self.balls])
+                          + [b.pid for b in self.balls] + [sp.pid for sp in self.spots])
         self.n_cols = len(self.point_ids)
         self.seed_xy = (np.stack([sp.seed for sp in self.specs]).astype(np.float32)
                         if self.specs else np.zeros((0, 2), np.float32))
@@ -428,11 +457,11 @@ class TrackingWorker(QThread):
         self.constrain = set(constrain_pids or [])
         if self.animal is None and self.derived:
             raise ValueError("silhouette-derived points need a segment to derive from")
-        if not self.specs and self.animal is None and not self.balls:
-            raise ValueError("nothing to track: no seeded points, no balls and no segment")
+        if not self.specs and self.animal is None and not self.balls and not self.spots:
+            raise ValueError("nothing to track: no seeded points, no balls, no spots and no segment")
         self._pause = False
         self._autopause_hit: tuple[int, int] | None = None
-        self._autopause_reason = ""          # "exit" | "lowconf" | "lost": what the app tells the user
+        self._autopause_reason = ""          # "exit" | "lowconf" | "lost" | "apart" | "spot": what the app says
         self._exit_hit: tuple[int, int] | None = None   # (frame, pid) of the first landmark to leave the segment
         # animal layer state (per run)
         self._seg = None
@@ -468,6 +497,13 @@ class TrackingWorker(QThread):
         self._ball_obj = {b.pid: 1000 + k for k, b in enumerate(self.balls)}   # pid -> SAM object id
         self._ball_gone: set[int] = set()             # balls dropped inside the picture (data ends)
         self._ball_ended: dict[int, tuple[int, str]] = {}  # pid -> (first frame without it, "lost"|"apart")
+        # moving spots (spots.py): model-free, one tracker per spot
+        self._spot_run = None
+        self._spot_last = start_frame - 1
+        self._spot_res: dict[int, dict] = {}          # frame -> {pid: SpotFix}
+        self._spot_gone: set[int] = set()             # spots that stopped (data ends)
+        self._spot_ended: dict[int, tuple[int, str]] = {}  # pid -> (frame it stopped, "missing"|"ambiguous")
+        self.download_failed = None     # the DownloadError that ended the run, if one did (G45)
 
     def request_pause(self) -> None:
         self._pause = True
@@ -494,6 +530,9 @@ class TrackingWorker(QThread):
             yield from self._run_steps(src)
         except VideoDecodeError as e:
             self.error.emit(str(e))     # a sentence for the user, not a traceback
+        except DownloadError as e:
+            self.download_failed = e    # a model could not be fetched: a sentence too (G45)
+            self.error.emit(str(e))
         except Exception:
             self.error.emit(traceback.format_exc())
         finally:
@@ -511,11 +550,13 @@ class TrackingWorker(QThread):
     def _run_steps(self, src: VideoSource):
         self.model_loading.emit()
         model = device = None
+        dl = dict(progress=lambda label, done, total: self.model_progress.emit(label, float(done), float(total)),
+                  cancel=lambda: self._pause)
         if self.specs:
             if self.point_backend == "alltracker":
-                model, device = at_backend.get_alltracker()
+                model, device = at_backend.get_alltracker(**dl)
             else:
-                model, device = get_model()
+                model, device = get_model(**dl)
                 if self.private_model:
                     # CoTracker3's online wrapper keeps the run's queries and window
                     # state on the model object: runs interleaved on one thread each
@@ -529,16 +570,24 @@ class TrackingWorker(QThread):
         nh, nw = probe.shape[:2]
         self._frame_wh = (nw, nh)
         if self.animal is not None:
-            engine = get_segmenter(self.animal.backend)
+            engine = get_segmenter(self.animal.backend, **dl)
             self._seg = engine.new_session(self.start_frame, (nw, nh))
         if self.balls:
             from kinetrace.balls import BallTracker
             from kinetrace.segmenter import preferred_backend
             backend = (self.balls[0].backend or (self.animal.backend if self.animal is not None else "")
                        or preferred_backend())
-            self._ball_trk = BallTracker(get_segmenter(backend), (nw, nh))
+            self._ball_trk = BallTracker(get_segmenter(backend, **dl), (nw, nh))
+        if self.spots:
+            from kinetrace.spots import SpotRun
+            self._spot_run = SpotRun([(sp.pid, sp.seed, sp.vel, sp.settings) for sp in self.spots],
+                                     (nw, nh), self.start_frame)
+            self._spot_run.resolve(probe)
+            # the unusual-change cue's background: the frames before the start
+            # (read here, before the read loops seek back to the start frame)
+            self._spot_run.prefill(src.get_frame, self.n_frames)
         if not self.specs:
-            # animal / balls only: no point tracker — segment every frame, derive landmarks
+            # animal / balls / spots only: no point tracker — segment every frame, derive landmarks
             self.started_ok.emit()
             last = yield from self._animal_only_steps(src, self.start_frame)
             if self._autopause_hit is not None:
@@ -593,7 +642,7 @@ class TrackingWorker(QThread):
                                                sp.kind, sp.radius, sp.anchor, sp.outline))
                     new_cols.append(k)
             if not new_specs:
-                if (self.animal is not None or self.balls) and last_emitted + 1 < self.n_frames:
+                if (self.animal is not None or self.balls or self.spots) and last_emitted + 1 < self.n_frames:
                     # every tracked point was dropped, but the animal / the
                     # ball markers go on: continue with masks + derived
                     # landmarks + balls only (balls without a segment used to
@@ -862,6 +911,7 @@ class TrackingWorker(QThread):
             self._demote_merged(w0, out_cf)
             self._fill_derived(w0, out_tr, out_vi, out_cf)
             self._fill_balls(w0, out_tr, out_vi, out_cf)
+            self._fill_spots(w0, out_tr, out_vi, out_cf)
             self._check_autopause(w0, out_tr, out_vi, out_cf, specs, col_idx)
             self._check_animal_lost(w0, L)
             self._emit_masks(w0, L)
@@ -931,6 +981,8 @@ class TrackingWorker(QThread):
                     self._seg_step(abs_idx, native)
                 if self._ball_trk is not None and abs_idx > self._ball_last:
                     self._ball_step(abs_idx, native)
+                if self._spot_run is not None and abs_idx > self._spot_last:
+                    self._spot_step(abs_idx, native)
                 model_frame = model_input_of(native)
                 window.append(model_frame)
                 if need_gray:
@@ -985,6 +1037,7 @@ class TrackingWorker(QThread):
                         out_tr[0, :n_track] = self.seed_xy
                         self._fill_derived(seg_start, out_tr, out_vi, out_cf)
                         self._fill_balls(seg_start, out_tr, out_vi, out_cf)
+                        self._fill_spots(seg_start, out_tr, out_vi, out_cf)
                         self._emit_masks(seg_start, 1)
                         self.chunk_ready.emit(seg_start, out_tr, out_vi, out_cf,
                                               {}, list(pending))
@@ -1543,6 +1596,7 @@ class TrackingWorker(QThread):
             out_cf = np.zeros((L, K), np.float32)
             self._fill_derived(w0, out_tr, out_vi, out_cf)
             self._fill_balls(w0, out_tr, out_vi, out_cf)
+            self._fill_spots(w0, out_tr, out_vi, out_cf)
             self._check_animal_lost(w0, L)
             self._emit_masks(w0, L)
             self.chunk_ready.emit(w0, out_tr, out_vi, out_cf, {}, list(pending))
@@ -1565,11 +1619,16 @@ class TrackingWorker(QThread):
                     self._seg_step(abs_idx, native)
                 if self._ball_trk is not None and abs_idx > self._ball_last:
                     self._ball_step(abs_idx, native)
+                if self._spot_run is not None and abs_idx > self._spot_last:
+                    self._spot_step(abs_idx, native)
                 pending.append((abs_idx, native if disp_scale >= 1.0
                                 else cv2.resize(native, (dw, dh), interpolation=cv2.INTER_AREA)))
                 buf.append(abs_idx)
                 if len(buf) >= step:
                     flush()
+                if (self._spot_run is not None and self.animal is None and not self.balls
+                        and len(self._spot_gone) == len(self.spots)):
+                    break                       # every spot stopped or left: nothing is tracked any more
                 yield                           # (I141)
         finally:
             reader.stop()
@@ -1658,6 +1717,47 @@ class TrackingWorker(QThread):
                 radii.append((int(f), int(b.pid), float(fit.r)))
         if radii:
             self.balls_ready.emit(radii)
+
+    # ----------------------------------------------------------- moving spots
+
+    def _spot_step(self, abs_idx: int, native: np.ndarray) -> None:
+        """Search every moving spot on one frame (spots.py). A spot that is not
+        found, or has two equally likely candidates, STOPS there: its data ends
+        on the frame before and the run pauses so the user can click it again
+        (owner, 2026-10-01: no bridging); one whose prediction leaves the
+        picture simply ends (the out-of-frame invariant, no pause)."""
+        run = self._spot_run
+        self._spot_res[abs_idx] = run.step(abs_idx, native)
+        self._spot_last = abs_idx
+        for pid, trk in run.trackers.items():
+            if trk.stopped is None or pid in self._spot_gone:
+                continue
+            self._spot_gone.add(pid)
+            frame, why = trk.stopped
+            if why == "left":
+                continue
+            # kept with auto-pause OFF too, so the app can say which spot ended where
+            self._spot_ended[int(pid)] = (int(frame), why)
+            if self.autopause and self._autopause_hit is None:
+                self._autopause_hit = (int(frame), int(pid))
+                self._autopause_reason = "spot"
+        for k in [k for k in self._spot_res if k < abs_idx - 4 * MASK_HIST]:
+            del self._spot_res[k]
+
+    def _fill_spots(self, w0: int, out_tr: np.ndarray, out_vi: np.ndarray, out_cf: np.ndarray) -> None:
+        """Spot columns of a window from the per-frame fixes (they follow the balls')."""
+        if not self.spots:
+            return
+        k0 = len(self.specs) + len(self.derived) + len(self.balls)
+        for i in range(out_tr.shape[0]):
+            res = self._spot_res.get(w0 + i, {})
+            for j, sp in enumerate(self.spots):
+                fix = res.get(sp.pid)
+                if fix is None:
+                    continue
+                out_tr[i, k0 + j] = (fix.x, fix.y)
+                out_vi[i, k0 + j] = True
+                out_cf[i, k0 + j] = fix.confidence
 
     # -------------------------------------------------------------- detectors
 

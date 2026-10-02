@@ -477,10 +477,25 @@ ASK["answer"] = QMessageBox.Yes
 close(w, None)
 # Save As guards
 w = window(project=OLD)
-ASK["warned"] = []
-SAVE_TO["path"] = os.path.join(OLD, "inner.kinetrace")
-check(not w._save_project_as() and any("Save project" in x for x in ASK["warned"])
-      and not os.path.exists(SAVE_TO["path"]), "Save As refuses a place inside another project's folder")
+ASK["warned"], ASK["asked"] = [], []
+# G55: a project is a folder, and Windows' save dialog OPENS a folder whose name is chosen, so
+# choosing an existing project comes back as a path inside it. Inside the open project = save it
+SAVE_TO["path"] = os.path.join(OLD, os.path.basename(OLD))
+pid_before = w._project_id
+w.session.add_point(0, 12.0, 12.0)
+check(w._save_project_as() and str(w.project_path) == OLD and w._project_id == pid_before
+      and not os.path.exists(SAVE_TO["path"]) and not ASK["asked"] and not w.project.dirty,
+      "Save As into the open project's own folder saves that project (same id, nothing nested, no question)")
+OTHER = os.path.join(OUT, "other-project.kinetrace")
+projectfile.save(projectfile.load(OLD), OTHER)
+other_before = projectfile.load(OTHER).sessions[0].n_points
+w.session.add_point(0, 13.0, 13.0)
+SAVE_TO["path"] = os.path.join(OTHER, "other-project.kinetrace")      # what the dialog returns after opening it
+ASK["answer"], ASK["asked"] = QMessageBox.No, []
+check(not w._save_project_as() and "Save as this project?" in ASK["asked"] and str(w.project_path) == OLD
+      and projectfile.load(OTHER).sessions[0].n_points == other_before and not os.path.exists(SAVE_TO["path"]),
+      "another project's folder: asked first; No changes nothing and nests nothing", str(ASK["asked"]))
+ASK["answer"] = QMessageBox.Yes
 junk = os.path.join(OUT, "thesis.kinetrace")
 os.makedirs(junk, exist_ok=True)
 open(os.path.join(junk, "chapter1.docx"), "w").write("x")
@@ -498,6 +513,14 @@ check(os.path.isfile(sent) and zipfile.is_zipfile(sent) and "one file" in w.toas
       "File -> Export Project as One File writes one .kinetrace (a zip) and says so", w.toast.text())
 check(projectfile.load(sent).sessions[0].n_points == w.session.n_points and str(w.project_path) == OLD,
       "... that opens with the same data, and the project folder stays the project")
+SAVE_TO["path"] = os.path.join(OTHER, "other-project.kinetrace")
+ASK["answer"], ASK["asked"] = QMessageBox.Yes, []
+n_now = w.session.n_points
+check(w._save_project_as() and str(w.project_path) == OTHER and projectfile.load(OTHER).sessions[0].n_points == n_now
+      and not os.path.exists(SAVE_TO["path"]),
+      "... Yes saves the work AS that project (no folder made inside it) (G55)")
+close(w, None)
+w = window(project=OLD)                                  # the exports below work on the first project
 # exports on save, chosen by real clicks in File -> Keep Exports Up to Date...
 from kinetrace import autoexport  # noqa: E402
 
@@ -581,7 +604,7 @@ pump(0.3)
 said = ASK["texts"][-1] if ASK["texts"] else ""
 check(w.isVisible() and "Nothing differs from your last save" in said,
       "... and says so when the change was undone (Ctrl+Z)", said[:200])
-# File -> Quit (owner 2026-09-29): the same close as the window's x, by a real Ctrl+Q
+# File -> Quit (G43): the same close as the window's x, by a real Ctrl+Q
 from PySide6.QtWidgets import QMenu  # noqa: E402
 file_menu = next(m for m in w.menuBar().findChildren(QMenu) if m.title().replace("&", "") == "File")
 entries = [a for a in file_menu.actions() if not a.isSeparator()]

@@ -279,6 +279,11 @@ assert re.search(r"^\s*TAG=\d{8}\s*$", sh, re.M) and re.search(r"^\s*VER=3\.12\.
     "Unix bootstrap: a pinned python-build-standalone release"
 for triple in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "aarch64-apple-darwin"):
     assert triple in sh, triple
+    # each private-Python download is checked against its release checksum (I153)
+    assert re.search(re.escape(triple) + r"\s*\n\s*SUM=[0-9a-f]{64}\s*;;", sh), f"run.sh: no checksum for {triple}"
+assert '[ "$GOT" != "$SUM" ]' in sh and "sha256sum" in sh and "shasum -a 256" in sh, "run.sh compares the checksum"
+assert re.search(r"\$want = '[0-9a-f]{128}'", bat) and "Get-FileHash $zip -Algorithm SHA512" in bat, \
+    "run.bat checks the NuGet Python's SHA-512"
 assert "xcode-select" in sh, "the macOS python3 stub must not be poked without the developer tools"
 assert "libxcb-cursor0" in sh and "apt-get" in sh, "Ubuntu's Qt libraries"
 assert "exec ./run.sh" in cmd
@@ -286,7 +291,68 @@ assert "windows-2022" in ci and "macos-14" in ci and "ubuntu-22.04" in ci
 if os.name != "nt":
     r = subprocess.run(["bash", "-n", os.path.join(ROOT, "run.sh")], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+for wf in ("install-check.yml", "release.yml"):        # third-party actions by commit, not a movable tag (I159)
+    for line in open(os.path.join(ROOT, ".github", "workflows", wf), encoding="utf-8"):
+        if "uses:" in line:
+            assert re.search(r"uses:\s*[\w.-]+/[\w.-]+@[0-9a-f]{40}\b", line), f"{wf}: not pinned: {line.strip()}"
+from kinetrace import downloads as _dl  # noqa: E402
+assert inst.ALLTRACKER_SHA == _dl.CODE["alltracker"].commit, "install.py and downloads.py pin the same AllTracker commit"
 ok("torch choice, marker, bootstrap URLs, launchers and CI consistent")
+
+# every third-party module the app (and AllTracker's code path) imports is installed by
+# the installer: named in requirements.txt / by install.py, or required by one of those.
+# einops was imported by AllTracker, required by nothing, and here only by hand (I150).
+import ast  # noqa: E402
+import importlib.metadata as md  # noqa: E402
+
+
+def _norm(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+declared = {"torch", "torchvision"}
+for line in open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8"):
+    m = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", line.split("#", 1)[0])
+    if m:
+        declared.add(_norm(m.group(1)))
+closure, todo = set(), list(declared)
+while todo:
+    d = todo.pop()
+    if d in closure:
+        continue
+    closure.add(d)
+    try:
+        reqs = md.requires(d) or []
+    except md.PackageNotFoundError:
+        continue
+    for r in reqs:
+        if "extra ==" in r.replace("extra==", "extra =="):
+            continue
+        m = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", r)
+        if m:
+            todo.append(_norm(m.group(1)))
+sources = [os.path.join(ROOT, "kinetrace", f) for f in os.listdir(os.path.join(ROOT, "kinetrace")) if f.endswith(".py")]
+at_dir = os.path.join(ROOT, "models", "alltracker")
+sources += [os.path.join(at_dir, *p) for p in (("nets", "alltracker.py"), ("nets", "blocks.py"), ("utils", "misc.py"))
+            if os.path.isfile(os.path.join(at_dir, *p))]
+LOCAL_OR_OPTIONAL = {"nets", "utils",       # AllTracker's own packages (models/alltracker)
+                     "sam_3d_body",          # Meta's code, cloned by the user (bodypose explains it)
+                     "tomli"}                # requirements.txt, Python 3.10 only
+pdist = md.packages_distributions()
+missing = []
+for src in sources:
+    for node in ast.walk(ast.parse(open(src, encoding="utf-8").read())):
+        names = ([a.name for a in node.names] if isinstance(node, ast.Import) else
+                 [node.module] if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module else [])
+        for n in names:
+            top = n.split(".")[0]
+            if top in sys.stdlib_module_names or top == "kinetrace" or top in LOCAL_OR_OPTIONAL:
+                continue
+            dists = {_norm(x) for x in pdist.get(top, [])}
+            if not dists & closure:
+                missing.append(f"{top} ({os.path.basename(src)}; distribution {sorted(dists) or 'not installed'})")
+assert not missing, "imported but not installed by install.py / requirements.txt: " + ", ".join(sorted(set(missing)))
+ok(f"every third-party import is installed by the installer ({len(declared)} requirements, {len(closure)} with theirs)")
 
 # ---------------------------------------------------- [5] AllTracker on CPU
 print("[5] AllTracker on the CPU")

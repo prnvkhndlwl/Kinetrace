@@ -189,7 +189,7 @@ class Project:
         move — it is the clock — so the ACTIVE camera's offset is set instead:
         the same result as working in the reference and aligning the active
         camera, and every other camera keeps its alignment to the reference
-        (G13, owner 2026-09-28). Returns the offset that changed."""
+        (G13). Returns the offset that changed."""
         a = self.active
         if i == REFERENCE_VIEW and a != REFERENCE_VIEW:
             t = self.reference_time(REFERENCE_VIEW, int(shown_frame))
@@ -425,7 +425,8 @@ class Project:
         them (a per-camera suffix would split one landmark into two for 3D).
         Returns the name applied."""
         where = self.landmark_views(old)
-        base = desired.strip() or "point"
+        from kinetrace.session import formula_safe
+        base = formula_safe(desired)
         cand, k = base, 2
         while any(s.unique_name(cand, exclude_pid=s.pid_by_name(old)) != cand for s in self.sessions):
             cand, k = f"{base} ({k})", k + 1

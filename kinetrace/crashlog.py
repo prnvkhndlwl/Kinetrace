@@ -1,4 +1,4 @@
-"""The error log (2026-09-27, I140; owner: "log the crash behaviour").
+"""The error log (2026-09-27, I140).
 
 Started without a console (a double-clicked launcher, pythonw) the program has
 nowhere to print an error: `main()` points stderr at devnull, so an exception in

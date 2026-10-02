@@ -58,6 +58,7 @@ def camera(name, T, fps, w, h, seed):
     s.points[tip].source, s.points[tip].spec = "silhouette", "tip"
     s.points[0].anchor = True
     s.points[1].free = True
+    s.points[1].spot = {"cue": "bright", "radius": 6.4, "speed_gain": 0.5, "sigma": 1.5}   # spots.json (I161)
     s.points[2].display = False
     N = s.n_points
     s.tracks[:] = r.uniform(0, w, (T, N, 2)).astype(np.float32)
@@ -580,6 +581,92 @@ try:
     check(False, "a second restore should be refused")
 except pf.ProjectFileError as e:
     check("no earlier save" in str(e), f"... once: a second one is refused ('{e}')")
+
+# ----------------------------------------------------------------- 3h. a project someone else made
+print("\n[3h] a project from someone else cannot touch files outside it (I147-I149, I157)")
+from kinetrace import autoexport, recovery  # noqa: E402
+
+frozen_k = pf.freeze(p, STATE, pid, target=path)
+bad_names = [r for r in frozen_k.files if not pf._layout_rel(r)]
+check(not bad_names, f"every file a save writes is one a rollback accepts ({bad_names[:3]})")
+refused = [r for r in ("../x.txt", "/etc/x", "C:/Users/x/thesis.docx", "cameras\\cam1\\points.csv", "",
+                       "cameras/../../x", ".history/x", "cameras/cam1/../../x", "cameras/cam1/other.txt",
+                       "exports/a.csv", "videos/cam1.mp4", "notes.txt", "cameras/cam1/tracks") if pf._layout_rel(r)]
+check(not refused, f"paths outside the layout are refused ({refused})")
+hostile = os.path.join(OUT, "hostile.kinetrace")
+shutil.rmtree(hostile, ignore_errors=True)
+shutil.copytree(path, hostile)
+victim = os.path.join(OUT, "victim.txt")
+open(victim, "w").write("the user's own file")
+os.makedirs(os.path.join(hostile, ".history"), exist_ok=True)
+open(os.path.join(hostile, ".history", "victim.txt"), "w").write("shipped by the attacker")
+for record in ({"saved_at": "not this save", "added": [os.path.abspath(victim)]},
+               {"saved_at": "not this save", "added": ["../victim.txt"]},
+               {"saved_at": "not this save", "replaced": ["../victim.txt"]},
+               {"saved_at": "not this save", "removed": "../victim.txt"}):
+    json.dump(record, open(os.path.join(hostile, ".history", "pending.json"), "w"))
+    before = tree(hostile)
+    try:
+        pf.read(hostile)
+        check(False, f"a pending.json naming {record} should refuse the open")
+    except pf.ProjectFileError as e:
+        check(open(victim).read() == "the user's own file" and tree(hostile) == before and "Nothing was changed" in str(e),
+              f"open refused, nothing outside or inside touched: {list(record)[1]} {str(list(record.values())[1])[-24:]!r}")
+os.remove(os.path.join(hostile, ".history", "pending.json"))
+open(os.path.join(hostile, ".history", "kinetrace.json"), "w").write("{}")
+json.dump({"added": [os.path.abspath(victim)], "replaced": ["../victim.txt"]},
+          open(os.path.join(hostile, ".history", "previous.json"), "w"))
+try:
+    pf.restore_previous(hostile)
+    check(False, "a previous.json naming files outside should be refused")
+except pf.ProjectFileError:
+    check(open(victim).read() == "the user's own file", "restore_previous (convert previous) refuses it too")
+shutil.rmtree(os.path.join(hostile, ".history"))
+meta_p = os.path.join(hostile, "kinetrace.json")
+km = json.load(open(meta_p, encoding="utf-8"))
+km["project_id"] = "../../victim"
+json.dump(km, open(meta_p, "w", encoding="utf-8"))
+_, _, mh = pf.read(hostile)
+check(pf.safe_id(mh["project_id"]) and mh["project_id"] != "../../victim",
+      f"a project id that is a path is replaced by a new one ({mh['project_id'][:8]}...) (I148)")
+try:
+    recovery.paths("../../victim")
+    check(False, "recovery.paths must refuse a path")
+except ValueError:
+    check(recovery.find("../victim") is None, "recovery.paths refuses an id with a path in it; find() ignores it")
+open(os.path.join(hostile, pf.LOCK), "w").write('{"pid": "x", "time": [1], "host": 5}')
+q_lock, _, _ = pf.read(hostile)
+pf.write_folder(pf.freeze(q_lock, STATE, pid, target=hostile), hostile)
+check(not os.path.exists(os.path.join(hostile, pf.LOCK)), "a lock Kinetrace did not write neither stops the open nor the save (I157)")
+pj_p = os.path.join(hostile, "project.json")
+pj_saved = open(pj_p, "rb").read()
+pjh = json.loads(pj_saved)
+pjh["cameras"][0]["n_frames"] = 10 ** 12
+json.dump(pjh, open(pj_p, "w"))
+try:
+    pf.read(hostile)
+    check(False, "a trillion-frame camera should be refused")
+except pf.ProjectFileError as e:
+    check("can hold" in str(e), f"a camera of 10^12 frames is refused, not allocated ('{str(e)[:60]}...')")
+open(pj_p, "wb").write(pj_saved)
+# exports/: exports.json names what a refresh may delete (I149)
+ex = os.path.join(hostile, "exports")
+os.makedirs(ex, exist_ok=True)
+ours = os.path.join(ex, "cam1_DLC.csv")
+open(ours, "w").write("made by an earlier refresh")
+json.dump({"files": {os.path.abspath(victim): "x", "../../victim.txt": "x", "../victim.txt": "x",
+                     "cam1_DLC.csv": "x", "notes.txt": "x"}}, open(os.path.join(ex, "exports.json"), "w"))
+open(os.path.join(ex, "notes.txt"), "w").write("the user's")
+written, problems = autoexport.refresh(hostile, ["wide"])
+check(open(victim).read() == "the user's own file" and os.path.isfile(os.path.join(ex, "notes.txt"))
+      and not os.path.exists(ours) and written and not problems,
+      "a refresh removes only files it made (cam1_DLC.csv unticked), never a path exports.json names")
+km = json.load(open(meta_p, encoding="utf-8"))
+km["cameras"][0]["folder"] = "../../escape"
+json.dump(km, open(meta_p, "w", encoding="utf-8"))
+written, problems = autoexport.refresh(hostile, ["wide", "dlc"])
+check(not written and problems and not os.path.exists(os.path.join(OUT, "escape_tracks.csv")),
+      "a camera folder that is a path makes the refresh write nothing")
 
 # ----------------------------------------------------------------- 4. a project written by another program
 print("\n[4] hand-written and edited files")

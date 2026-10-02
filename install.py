@@ -3,7 +3,7 @@ folder's own .venv - run.bat / run.sh create it and call this script; they
 also fetch a private Python into .venv/base first when the computer has none).
 
 Runs without any input. Safe to run again at any time: a finished environment
-is recognised in a second, an interrupted one resumes where it stopped.
+is recognised in a second, an interrupted one keeps what it installed and goes on.
 
 The only platform-specific part is PyTorch:
 
@@ -31,7 +31,6 @@ launchers start the app only when it is there. Standard library only.
     install.py --force           reinstall the packages even if they import
     install.py --alltracker-only fetch AllTracker's code only (the launchers retry a missed fetch)
 """
-import io
 import json
 import os
 import platform
@@ -39,19 +38,21 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.request
-import zipfile
 
 TORCH = "2.12.1"
 TORCHVISION = "0.27.1"
 DRIVER_MIN = 580            # NVIDIA driver branch the CUDA 13 build needs
 HERE = os.path.dirname(os.path.abspath(__file__))
 # the AllTracker commit Kinetrace's alltracker_backend.py was verified against
-ALLTRACKER_SHA = "e7553135e7b361590dbccd10e2b274b024f41cd6"
+ALLTRACKER_SHA = "e7553135e7b361590dbccd10e2b274b024f41cd6"      # = kinetrace/downloads.py CODE["alltracker"]
 ALLTRACKER_DIR = os.path.join(HERE, "models", "alltracker")
 MARKER = os.path.join(sys.prefix, "kinetrace-install.json")
 # what a working environment must be able to import (checked in a fresh process)
 IMPORTS = "import PySide6.QtWidgets, cv2, numpy, scipy, torch, torchvision, transformers, PIL, imageio_ffmpeg"
+
+
+AGAIN = ("run the launcher again: what is already installed is kept and the install goes on from "
+         "there (a package cut off half-way downloads again).")
 
 
 def say(msg: str) -> None:
@@ -128,23 +129,17 @@ def write_marker(choice: str) -> None:
 
 
 def fetch_alltracker() -> None:
-    """AllTracker's code into models/alltracker (skipped when already there)."""
+    """AllTracker's code into models/alltracker (skipped when already there):
+    the pinned commit's zip, used only when its Python files have the pinned
+    digest and every member stays inside the folder (kinetrace/downloads.py, I153)."""
     if os.path.exists(os.path.join(ALLTRACKER_DIR, "nets", "alltracker.py")):
         return
-    url = f"https://github.com/aharley/alltracker/archive/{ALLTRACKER_SHA}.zip"
-    say(f"+ fetching AllTracker (MIT licence) from {url}")
+    sys.path.insert(0, HERE)
+    from kinetrace import downloads
+    c = downloads.CODE["alltracker"]
+    say(f"+ fetching AllTracker (MIT licence), commit {c.commit[:12]}, from github.com/{c.repo}")
     try:
-        data = urllib.request.urlopen(url, timeout=120).read()
-        z = zipfile.ZipFile(io.BytesIO(data))
-        prefix = z.namelist()[0]
-        for name in z.namelist():
-            rel = name[len(prefix):]
-            if not rel or name.endswith("/"):
-                continue
-            dest = os.path.join(ALLTRACKER_DIR, *rel.split("/"))
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(dest, "wb") as fh:
-                fh.write(z.read(name))
+        downloads.ensure_code("alltracker")
     except Exception as e:  # noqa: BLE001 - the app still works with CoTracker3
         say(f"  could not fetch AllTracker ({e}); the app uses CoTracker3 for now and tries again "
             "the next time it is started with an internet connection.")
@@ -202,15 +197,20 @@ def main(force: bool = False) -> int:
         say("")
     if sys.platform == "win32" and platform.machine().upper() in ("ARM64", "AARCH64"):
         say("Note: Windows on ARM - PyTorch and Qt for this machine come from PyPI (CPU only).")
+    say("Step 1 of 4: the package installer (pip)")
     pip("--upgrade", "pip")
     wheels = [f"torch=={TORCH}", f"torchvision=={TORCHVISION}"]
+    say("Step 2 of 4: PyTorch, the deep-learning engine (" + ("about 3 GB with the CUDA libraries: the longest "
+        "step" if choice == "cuda" else "a few hundred MB") + ")")
     if choice == "cuda":
         pip(*wheels, "--index-url", "https://download.pytorch.org/whl/cu130")
     elif choice == "cpu" and sys.platform != "darwin" and platform.machine().upper() not in ("ARM64", "AARCH64"):
         pip(*wheels, "--index-url", "https://download.pytorch.org/whl/cpu")
     else:
         pip(*wheels)
+    say("Step 3 of 4: the other packages (Qt for the window, OpenCV, transformers, ...: about 500 MB)")
     pip("-r", os.path.join(HERE, "requirements.txt"))
+    say("Step 4 of 4: AllTracker's code (1 MB)")
     fetch_alltracker()
 
     ok, why = imports_ok()
@@ -221,7 +221,8 @@ def main(force: bool = False) -> int:
             "with your question.")
         return 1
     write_marker(choice)
-    say("Kinetrace install: done.")
+    say("Kinetrace install: done. The tracking and segmentation models (66 MB - 620 MB each) are downloaded "
+        "the first time each is used, with a progress window in the app; they stay in models/.")
     hardware_report()
     return 0
 
@@ -233,9 +234,8 @@ if __name__ == "__main__":
     try:
         sys.exit(main(force="--force" in sys.argv))
     except subprocess.CalledProcessError as e:
-        say(f"\nInstallation failed ({e}). Check the internet connection and run the launcher again: "
-            "it resumes where it stopped.")
+        say(f"\nInstallation failed ({e}). Check the internet connection and " + AGAIN)
         sys.exit(1)
     except KeyboardInterrupt:
-        say("\nInstallation interrupted. Run the launcher again: it resumes where it stopped.")
+        say("\nInstallation interrupted. To finish it, " + AGAIN)
         sys.exit(1)

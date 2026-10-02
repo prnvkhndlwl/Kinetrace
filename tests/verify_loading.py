@@ -1,6 +1,5 @@
-"""Offscreen GUI: opening videos / projects never looks frozen (owner 2026-09-26:
-"there is usually a wait time before everything is loaded ... this seems like the
-app is frozen").
+"""Offscreen GUI: opening videos / projects never looks frozen (G31: the
+wait before everything was loaded looked like a frozen app).
 
 Reading a 4K file takes ~2.3 s (measured on a real clip); these small clips read
 in a blink, so `probe_video` is slowed down here (same result, same progress

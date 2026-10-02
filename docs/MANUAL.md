@@ -52,8 +52,7 @@ thing, in this picture?* Everything else is your analysis, downstream.
 
 **You stay in charge.** The program never runs off on its own. You watch it work
 picture by picture, you can stop it at any moment, and wherever it gets something
-wrong you drag the marker to the right place and carry on. Your corrections
-always win.
+wrong you click the right place and carry on. Your corrections always win.
 
 ---
 
@@ -129,13 +128,52 @@ matching version of its supporting software. Nothing is asked.
 supporting software into its own folder (and, if the computer has no Python of
 its own, a private copy of that too, about 20 MB). That happens once, and it
 ends by printing a **system check**: what it found and what your computer can
-run. If the connection drops, just start it again — it carries on where it
-stopped. Later launches start in a few seconds. The first time you press the
-**Track** button, and the first time you click on an animal, it downloads one
-more piece each. After that you never need an internet connection again,
-except to get a newer version when you ask for one.
+run. If the connection drops, just start it again — it keeps what it already
+installed and carries on from there. Later launches start in a few seconds.
+The first time you press the **Track** button, and the first time you click on
+an animal, it downloads one more piece each (a tracking model of 66 MB, a
+segmentation model of 617 MB): a window says what is downloading, how far it
+has got and about how long is left, and **Cancel** stops it — the next try
+carries on where it stopped. Every piece is checked before it is used (a file
+that is not exactly the expected one is thrown away, never run). After that you
+never need an internet connection again, except to get a newer version when you
+ask for one.
 
 If it ever fails to start, see [section 15](#15-when-something-goes-wrong).
+
+### Optional: the two models that need Meta's permission
+
+Everything above downloads by itself. Two **optional** models are released by
+Meta only to people who ask, so the program cannot fetch them for you. You do
+not need either to track animals: without them the program uses **SAM 2.1** for
+outlines and **ViTPose** for human joints.
+
+**SAM 3** — the best outlines (Segment, **S**), about half the speed, 3.4 GB:
+
+1. Make a free account at `huggingface.co`, open
+   `huggingface.co/facebook/sam3`, and press the button to request access.
+   Wait for the e-mail saying you were granted it (often minutes, sometimes
+   days).
+2. In your Hugging Face account: *Settings → Access Tokens → Create new token*,
+   type **Read**, and copy it.
+3. In Kinetrace: **Ctrl+,** (Settings, also the last entry of the **Segment ▾**
+   menu) → paste the token → **Save token**. It is kept inside the program's
+   folder (`models/hf/token`) and sent only to Hugging Face.
+4. Choose **SAM 3** in the **Segment ▾** menu. The first outline downloads it
+   (3.4 GB, with a progress window); after that it works offline.
+
+Or, without a token in the program: download the whole `facebook/sam3` repository
+on a computer that has access (for example `hf download facebook/sam3 --local-dir
+models/sam3`) and put it in the program's folder as `models/sam3/`. A copy there
+is used first, and SAM 3 becomes the default.
+
+**SAM 3D Body** — joints of a person in 3D from one camera (section 13): ask for
+access at `huggingface.co/facebook/sam-3d-body-dinov3` the same way, then
+follow the three steps in section 13, *The two models, and which to pick*. It
+needs an NVIDIA graphics card.
+
+**Body → Find People & Measure Joints…** and the **Segment ▾** menu say for each model whether it is
+ready, needs downloading, or still needs access or a token.
 
 ### Getting a newer version
 
@@ -379,7 +417,11 @@ to bring the names back. The Track button always keeps its words.
   and **Clear segment** buttons.
 - **POINTS** — every body part, each with a checkbox (show / hide) and a small
   symbol saying how it is found (Step 4 below). Double-click a name to rename
-  it; right-click it for everything else.
+  it; right-click it for everything else (on the video, hold the right button
+  on its marker instead: a short right click there clears it on that frame).
+  A name may not start with **= + -**
+  or **@**: a spreadsheet opening an export would run it as a formula, so such
+  a name is refused (and taken off a name that arrives in a file).
 
 Hide the panel with **Ctrl+1** (**View → Segment & Points panel**) if you want
 more room.
@@ -575,6 +617,13 @@ result is always placed at the **first** unreliable frame:
 
 A brief hidden object does *not* trigger this — only a real loss.
 
+With the **Moving spot** point model (Track ▾; see *Which point model should I
+use?* in section 14) the stop comes on the very frame where the spot is not
+where its speed put it, or where two spots look alike: it does not wait and it
+never guesses. The track ends on the frame before. Click the spot where it is
+and press **Track ▶** again; clicking it on the next frame too gives it its
+speed. A spot that flies out of the picture simply ends, without a stop.
+
 While an outline is on, the program also watches for these, and stops or turns
 the body part red rather than quietly exporting a wrong position:
 
@@ -610,9 +659,11 @@ the body part red rather than quietly exporting a wrong position:
 
 ### What right-clicking a body part offers
 
-Right-click a body part — its marker on the video, or its name in the POINTS
-list — and besides **Rename point** and **Delete point** you get (hover an entry
-to see what it does):
+Right-click its name in the POINTS list, or **hold the right mouse button** on
+its marker on the video for half a second (a short right click on the marker
+clears it on that frame only — see below), and besides **Rename point** and
+**Delete point** you get (hover an entry to see what it does). Wherever this
+manual says *right-click a point*, either way works:
 
 - **go to its first or last frame**, and to its first or last hand-placed
   frame, with the frame numbers shown in the menu;
@@ -675,9 +726,13 @@ and silhouettes go, while your body parts and their tracks stay.
 Go to the first frame where it looks wrong (the red stretch shows you where), and
 then either:
 
-- **drag the marker** to the correct place, or
 - **select the point in the POINTS list, then click** where it should be
-  (Ctrl+click does the same).
+  (Ctrl+click does the same), or
+- **right-click its marker** to clear it on this frame only, when it is not
+  really there (the right click also selects it).
+
+To look around while zoomed in, **hold the left button and move** the mouse:
+that pans the view, and never moves a point (starting on a marker too).
 
 Each correction is one **Ctrl+Z** step. A body part that comes from the
 silhouette (a dotted marker: tail tip, midline, feet) cannot be moved by hand:
@@ -1738,7 +1793,11 @@ positions and the bands back.
 **Your project changes only when you save it.** Press **Ctrl+S**. The first
 time, it asks where to put the project and what to call it: the program makes a
 **folder** of that name ending in `.kinetrace` — that folder *is* your project;
-**Ctrl+Shift+S** saves it under a new name. It contains everything — all
+**Ctrl+Shift+S** saves it under a new name. If you choose a project folder that
+already exists (the save window opens a folder when you pick its name), the
+program asks whether to save your work *as* that project — **Yes** replaces what
+it holds (its last save is kept in its `.history`), **No** lets you choose
+another name; the project that is already open is simply saved. It contains everything — all
 positions, the silhouette, your landmark names, events and notes, every camera
 and its offset, the calibration and the 3D results, lens profiles, body poses —
 and exactly how you left the program: the frame you were looking at, how far you
@@ -2310,7 +2369,7 @@ switching cameras leaves them as they are, and a project remembers them.
 genuinely lost (an ordinary moment behind something does not trigger it). The
 program jumps to the frame where it happened, selects the point, and **cuts its
 track at the first unreliable frame** (red on the timeline), so the data ends
-exactly where the tracking stopped being trustworthy. Drag the point to where it
+exactly where the tracking stopped being trustworthy. Click the point where it
 really is and press Track. Leave it on while you are learning. Turn it off for
 footage with a lot of hiding-behind-things, where you would rather review
 afterwards than be interrupted.
@@ -2340,9 +2399,12 @@ frames everything being tracked, including the silhouette, and re-frames as the
 animal moves.
 
 **Point model** (the **▾** arrow on the Track button) — which method follows the
-patches you clicked. **AllTracker** is the default and holds on to body parts
+points you clicked. **AllTracker** is the default and holds on to body parts
 better over long stretches. **CoTracker3** is about twice as fast and slightly
-sharper on high-contrast marks. If a track keeps drifting, try the other one.
+sharper on high-contrast marks. **Moving spot** is only for a target small
+enough to be one point — a dot with no visible shape (see *Which point model
+should I use?* at the end of this section). If a track keeps drifting, try another one. The choice applies to the
+next run, can be changed at any time, and is saved with the project.
 
 **Segmentation model** (the **▾** arrow on the Segment button) — which method
 draws the outline: **SAM 2.1 base+** (fast, a 617 MB download), **SAM 2.1
@@ -2373,6 +2435,82 @@ drawn). The token is needed only for SAM 3, whose files Meta releases on
 request: ask for access at `huggingface.co/facebook/sam3`, create a *read* token
 in your Hugging Face account settings, paste it and press *Save token*. It is
 stored inside the program's folder.
+
+### Which point model should I use?
+
+**The rule in one line: can you see its shape?** If you can see a body, a
+head, legs, wings or an outline — anything you could put more than one landmark
+on — use **AllTracker** (with **Segment** for the outline). If the whole target
+is a **dot small enough to be one point** (a few pixels to about 20 across, no
+visible shape), use **Moving spot**.
+
+Three point models follow the points you click. The choice is in **Track ▾**
+(and **Help → Which Point Model Should I Use?** brings you here). It applies to
+the next run, you can change it at any time, and it is saved with the project:
+the next time you open the project it is already chosen.
+
+| Your footage | Use | Clicking needed |
+|---|---|---|
+| An animal, a person or an object whose shape you can see — even a small one, if you can make out its body | **AllTracker** (the default), with **Segment** (SAM 3) for the outline | one click per body part to start |
+| Painted dots or stickers on a body, with strong contrast, when speed matters | **CoTracker3** | one click per point |
+| A target that is only a dot — small enough to be one point (a few pixels to about 20 across), with no shape of its own — often over a background that moves (waves, ripples, sky, leaves): a squid's head spot from a ship, a distant bat, bird or insect | **Moving spot** | the dot on two frames in a row to start; 20 frames in a row for the test below |
+| A round marker such as a wand ball | **Add ▾ → Ball marker** (whatever the point model) | one click per ball |
+
+Moving spot follows **one point per target**. On anything bigger it would
+follow only the centre of a blob — if you want the head *and* the tail, or the
+outline, that is AllTracker's job. The test below says so when the target
+measures more than about 20 pixels across.
+
+**Why AllTracker can lose a small spot.** AllTracker and CoTracker3 follow the
+*texture* around what you clicked. A squid's white head spot filmed from a ship
+is a few pixels across and has no texture of its own; the water around it has
+plenty, so they follow the water. Their confidence stays high, so nothing warns
+you: on two flying squid both were off within 2 frames.
+
+**How Moving spot works.** On every frame it looks for the spot where its speed
+says it should be, with one of three detectors: the brightest small blob there
+(*bright spot*: white or pale on water, sky or leaves), the darkest (*dark
+spot*: a bird or bat against the sky), or what changes much more than that
+background usually does (*unusual change*: a bat over a river). It never
+guesses: when the spot is not where it should be, or two candidates look alike,
+it **stops on that frame**, the track ends on the frame before, the point is
+selected, and you click it again and press Track. A spot that flies out of the
+picture simply ends. It needs no graphics card. Regions are left out of a
+Moving spot run (they need AllTracker or CoTracker3).
+
+**Before you track with it**, click the spot on two frames in a row (select
+it, click it, press **F**, click it) and go back to the first: that gives it
+its speed. With a single click its first search is wider, and it stops if two
+spots there look alike.
+
+**Let the test decide** — **Track ▾ → Test the point models on my clicks…**, or
+right-click the point → *Test the point models on its clicks*:
+
+1. Select the point (or press **N** and click it), then on each frame click it
+   where it is; **F** steps one frame. The test needs at least **20 frames in a
+   row** (skipping one or two is fine); 30 is better. A Track run over those
+   frames replaces them, so click them where you will not track over them, or
+   test before you track.
+2. Press **Run the test**. It starts every point model from your first click
+   and follows your clicks; wherever one drifts away from a click, or stops, it
+   is put back on that click (what you would have had to do) and that counts as
+   one **correction**. Moving spot is tried at several settings: the search
+   widths come from the spot's size and from how much it turns between your
+   clicks, so a dodging animal is offered a wide enough search. They take
+   seconds. A target measuring about 60 pixels across or more is told that
+   AllTracker with a Segment suits it better. Ticking
+   AllTracker and CoTracker3 re-tracks them from every correction: a minute or
+   two.
+3. Read the table and the sentence under it. *Silent drifts* are corrections
+   where a model was off without saying so; the rest are stops, where it said
+   so. Fewer corrections win; on a tie AllTracker is recommended, because it
+   needs no extra clicking.
+4. **Use** makes the winner this project's point model. For Moving spot it also
+   keeps the settings it found on that point (Ctrl+Z takes them back).
+
+The program suggests this in two situations: when you have corrected a point
+by hand on 5 of the last 20 frames, and when a new point sits on a small,
+isolated spot in a camera that has no segment. Click the notice to act on it.
 
 ---
 
@@ -2409,6 +2547,16 @@ program's PyTorch (update the driver at nvidia.com/drivers, then restart the
 computer) or whether the CPU version was installed (delete the `.venv` folder
 and start the launcher again with the driver up to date). The same report
 prints in a terminal with `run.bat --check` / `./run.sh --check`.
+
+**"… could not be downloaded" when you press Track or click an animal.** The
+first use of a model downloads it (see section 2). The message says why: no
+connection to the server, the connection stalled (the download gives up after
+30 seconds without data instead of waiting for ever), or the server refused. Check
+the connection (a university network may need its proxy settings), then press
+Track again: what already arrived is kept. **"… is not the expected one (its
+checksum differs)"** means the file that arrived was not the exact file this
+version of Kinetrace was tested with; it was deleted, not used. Try again later,
+and if it keeps happening, update Kinetrace (Help → Check for Updates…).
 
 **A model entry is greyed out with "needs an NVIDIA GPU".** That model
 (SAM 3D Body) cannot run on this computer; use the 2D model next to it. Nothing
@@ -2620,12 +2768,24 @@ left blank in every export and out of 3D. Drawn as a ring with a cross.
 
 **Landmark** — a named body part being measured.
 
+**Moving spot** — the point model for a target small enough to be **one
+point**: a dot with no visible shape (a squid's head spot on water, a distant
+bat against the sky). Anything whose shape you can see goes to AllTracker. It looks for the
+spot where its speed puts it — the brightest or darkest small blob there, or
+what changes much more than that background usually does — and stops where it
+cannot tell. Chosen in **Track ▾**; *Test the point models on my clicks* says
+whether it suits your footage.
+
 **Offset** — for several cameras: the frame a camera shows when the reference
 camera is at its frame 0. A camera switched on 12 frames after the reference
 has offset −12; one switched on earlier has a positive offset. The first camera
 loaded is the reference and its offset is always 0.
 
 **Point** — something being tracked. Each landmark is a point.
+
+**Point model** — the method that follows the points you click: AllTracker (the
+default), CoTracker3 or Moving spot. Chosen in **Track ▾** and saved with the
+project.
 
 **Project (`.kinetrace`)** — a file holding all your work on a video, or on all
 the cameras of one recording, and how you left the program. Not the videos
@@ -2667,6 +2827,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Home** / **End** | first / last frame |
 | **Space** | play / pause the preview |
 | click or drag the timeline | go to that frame |
+| hold the left button and move (on the video) | pan the zoomed-in view — also when you start on a marker; a point is never dragged |
 | type in the frame box | go to that frame number |
 | **O** | onion skin: ghosts of the previous / next frame |
 | **L** | loupe: magnifier under the cursor |
@@ -2687,12 +2848,13 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Ctrl+click** | move the selected point here |
 | **Shift+<** / **Shift+>** | first / last frame the selected point has data on (nothing selected: the silhouette's) |
 | **,** / **.** | previous / next frame placed by hand for the selected point |
-| right-click a point | go to its first / last / hand-placed / doubtful frames; clear it on this frame, in the selected window, or entirely; fill its gaps between hand placements with a curve; with a calibration, snap it to the other cameras' rays, or place it at the ◇ |
+| right-click a marker | clear that point on this frame only, and select it (one Ctrl+Z step) |
+| hold the right button on a marker (half a second), or right-click its name in POINTS | its menu: go to its first / last / hand-placed / doubtful frames; clear it on this frame, in the selected window, or entirely; fill its gaps between hand placements with a curve; with a calibration, snap it to the other cameras' rays, or place it at the ◇ |
 | **J** / **Shift+J** | next / previous low-confidence (red) stretch |
 | **Shift+X** | mark the selected point hidden on this frame (again to unmark) |
 | **Shift+N** | note on this frame |
 | Add **▾** | region shape: circle, rectangle, polygon (click the corners, then Enter or a double-click); **Ball marker** — click a ball, SAM outlines it every frame and the fitted circle's centre is the point (balls far apart get a window each, so any spacing works) |
-| right-click a marker | rename, delete, lock it to its look, change how it is found (appearance or silhouette), hidden on this frame, may leave the segment |
+| (the same menu) | also: rename, delete, lock it to its look, change how it is found (appearance or silhouette), hidden on this frame, may leave the segment |
 | **S** (the Segment button) | the outlining tool — click the animal (Shift+click = not the animal, drag = a box around it, right-click a click to remove it); **S** or **Esc** when done |
 | **Esc** | cancel whatever you just started: a drag or polygon, the segment tool, the armed crosshair, the pan tool, a half-marked event, a selected stretch of the timeline, the look-here line of an Alt+click — and, with nothing left to cancel, deselect the point |
 

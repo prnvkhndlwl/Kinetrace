@@ -3,4 +3,4 @@ landmarks and silhouette geometry, export kinematics-ready tracks."""
 
 APP_NAME = "Kinetrace"
 APP_TAGLINE = "animal motion tracking"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"

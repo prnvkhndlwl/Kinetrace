@@ -56,6 +56,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$zip = Join-Path $env:TEMP 'kinetrace-python.zip'; $tmp = Join-Path $env:TEMP 'kinetrace-python';" ^
   "if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp };" ^
   "Invoke-WebRequest -UseBasicParsing -Uri 'https://www.nuget.org/api/v2/package/python/3.12.10' -OutFile $zip;" ^
+  "$want = 'bbda4dcf688a94211b62d50968a91b38f305d0b8d1ecd90269f74a86f8a0a4fcebb7ca162a0753a47691eb3df0c964009bd3d8194c6fd19afae8d5fd01e1cc0f';" ^
+  "if ((Get-FileHash $zip -Algorithm SHA512).Hash -ne $want) { Remove-Item -Force $zip; throw 'The downloaded Python is not the expected file (its checksum differs); it was deleted, not used.' };" ^
   "Expand-Archive -Path $zip -DestinationPath $tmp -Force;" ^
   "New-Item -ItemType Directory -Force '.venv' | Out-Null;" ^
   "if (Test-Path '.venv\base') { Remove-Item -Recurse -Force '.venv\base' };" ^
@@ -63,7 +65,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "Remove-Item -Recurse -Force $tmp; Remove-Item -Force $zip"
 if not exist ".venv\base\python.exe" (
     echo.
-    echo ERROR: could not download Python. Check the internet connection and
+    echo ERROR: could not download Python ^(the line above says why: no connection,
+    echo or a download that was not the expected file^). Check the internet connection and
     echo double-click run.bat again. ^(Or install Python 3.12 from python.org
     echo - tick "Add python.exe to PATH" - and run it again.^)
     pause

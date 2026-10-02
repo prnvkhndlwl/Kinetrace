@@ -28,8 +28,7 @@ import numpy as np
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 REPO_DIR = MODELS_DIR / "alltracker"
-CHECKPOINT = MODELS_DIR / "checkpoints" / "alltracker.pth"
-CHECKPOINT_URL = "https://huggingface.co/aharley/alltracker/resolve/main/alltracker.pth"
+CHECKPOINT = MODELS_DIR / "checkpoints" / "alltracker.pth"     # downloads.FILES["alltracker"] (pinned, checked)
 WINDOW = 16
 STRIDE = 8
 
@@ -45,23 +44,23 @@ def is_cached() -> bool:
     return CHECKPOINT.exists()
 
 
-def get_alltracker():
-    """Process-wide singleton (model, device). Downloads the 63 MB checkpoint once."""
+def get_alltracker(progress=None, cancel=lambda: False):
+    """Process-wide singleton (model, device). Downloads the 66 MB checkpoint once
+    (and the code, when install.py could not), both pinned and checked; the
+    weights are read as tensors only (I151). progress(label, done, total)."""
     global _model, _device
     if _model is not None:
         return _model, _device
     import torch
+    from kinetrace import downloads
+    downloads.ensure_code("alltracker", progress, cancel)
     if str(REPO_DIR) not in sys.path:
         sys.path.insert(0, str(REPO_DIR))
     from nets.alltracker import Net  # noqa: E402  (vendored repo)
     from kinetrace.device import pick_device
     device = pick_device()[0]            # CUDA, else Apple's GPU, else the CPU (one rule for every model)
     torch.hub.set_dir(str(MODELS_DIR))   # nothing may be written outside the tool folder
-    if not CHECKPOINT.exists():
-        CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
-        torch.hub.load_state_dict_from_url(CHECKPOINT_URL, model_dir=str(CHECKPOINT.parent),
-                                           map_location="cpu")
-    state = torch.load(str(CHECKPOINT), map_location="cpu", weights_only=False)
+    state = downloads.load_weights(downloads.ensure_file("alltracker", progress, cancel))
     # init_weights=False: the constructor would otherwise download ImageNet
     # ConvNeXt weights that the checkpoint overwrites anyway (strict load)
     model = Net(seqlen=WINDOW, init_weights=False)

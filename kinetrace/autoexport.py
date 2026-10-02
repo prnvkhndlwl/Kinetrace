@@ -1,5 +1,5 @@
 """The project folder's exports/: files for other programs, refreshed at every
-save (G42, owner 2026-09-29).
+save (G42).
 
 File -> Keep Exports Up to Date... ticks the formats (saved in project.json as
 `exports_on_save`). After a save of the project folder, `refresh` brings
@@ -20,9 +20,11 @@ Ctrl+E uses (session.py / project.py / calibio.py).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from kinetrace import projectfile
+from kinetrace.errors import plain_error
 
 # (key, label, file name pattern ({cam} = the camera's folder name), per camera)
 FORMATS = (
@@ -35,6 +37,25 @@ FORMATS = (
 )
 KEYS = tuple(f[0] for f in FORMATS)
 STATE = "exports.json"
+
+
+_FOLDER = re.compile(r"[A-Za-z0-9._-]+")
+_MADE = [re.compile(_FOLDER.pattern.join(map(re.escape, p.split("{cam}")))) for _k, _l, p, _c in FORMATS]
+
+
+def _ours(out: Path, name) -> bool:
+    """True for a file name this module can have written into `out` (I149):
+    exports.json is read from a folder someone else may have made, and every
+    name in it that is no longer made is DELETED -- so never a path, never
+    anything but one of FORMATS' file names."""
+    if not isinstance(name, str) or not _FOLDER.fullmatch(name) or name.startswith("."):
+        return False
+    if not any(m.fullmatch(name) for m in _MADE):
+        return False
+    try:
+        return (out / name).resolve().parent == out.resolve()
+    except (OSError, ValueError):
+        return False
 
 
 def _sidecars(name: str) -> list[str]:
@@ -65,9 +86,14 @@ def refresh(root: str | Path, formats: list[str], scorer: str = "Kinetrace", can
         prev = json.loads((out / STATE).read_text(encoding="utf-8")).get("files", {})
     except (OSError, ValueError, AttributeError):
         prev = {}
+    if not isinstance(prev, dict):
+        prev = {}
+    prev = {k: v for k, v in prev.items() if _ours(out, k)}
     index = projectfile._read_index(root)
     meta = projectfile.read_meta(root)
     cams = [(c.get("folder"), c.get("name")) for c in meta.get("cameras") or []]
+    if not all(isinstance(f, str) and _FOLDER.fullmatch(f) and not f.startswith(".") for f, _n in cams):
+        return [], ["kinetrace.json names a camera folder that is not a plain name: exports/ was not refreshed"]
     has_3d = (root / "reconstruction" / "meta.json").is_file()
     jobs = []
     for key, _label, pattern, per_cam in FORMATS:
@@ -109,7 +135,7 @@ def refresh(root: str | Path, formats: list[str], scorer: str = "Kinetrace", can
             made[name] = fp
             written.append(name)
         except Exception as e:      # noqa: BLE001 - one format failing never stops the others
-            problems.append(f"{name}: {type(e).__name__}: {e}")
+            problems.append(plain_error(e, f"{name} not written", short=True))      # in words (G54)
     for name in set(prev) - set(made):
         for f in [name, *_sidecars(name)]:
             (out / f).unlink(missing_ok=True)
@@ -137,7 +163,7 @@ class ExportsWorker(QThread):
         try:
             w, p = refresh(self._root, self._formats, self._scorer, cancel=lambda: self._stop)
         except Exception as e:      # noqa: BLE001 - said to the user
-            w, p = [], [f"{type(e).__name__}: {e}"]
+            w, p = [], [plain_error(e, "exports/ could not be refreshed", short=True)]
         self.done.emit(w, p)
 
 
