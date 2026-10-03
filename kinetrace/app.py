@@ -772,6 +772,16 @@ class MainWindow(QMainWindow):
         self._preview_again = False                 # prompts changed while a preview ran
         self._loading_dialog: QProgressDialog | None = None
         self._animal_hint_shown = False
+        # what the UI builders used to create and the rest of the window reads (R7)
+        self._place_kind = "point"          # what the next armed click creates: "point" | "ball"
+        self._retrack = None                # an automatic epipolar re-track in progress (see _retrack_start)
+        self._stopping_for_close = False    # `_stop_runs_for_close` is running: no window opens meanwhile
+        self._retrack_last = None
+        self._trail_custom = 30             # the last length typed into View → Trails → Custom…
+        # the loading card's levels (G31, see `_busy_push`) and the wait for the first picture
+        self._busy_stack: list[dict] = []
+        self._busy_next = 0
+        self._first_frame_token: int | None = None
 
         self._build_ui()
         self._apply_state()
@@ -862,9 +872,6 @@ class MainWindow(QMainWindow):
         # opening videos / a project: a card over the window says what is happening
         # (G31: without it the wait looked like a frozen app)
         self.overlay = LoadingOverlay(self)
-        self._busy_stack: list[dict] = []
-        self._busy_next = 0
-        self._first_frame_token: int | None = None
         self._first_frame_timer = QTimer(self, singleShot=True, interval=FIRST_FRAME_WAIT_MS)
         self._first_frame_timer.timeout.connect(self._first_frame_arrived)
 
@@ -913,11 +920,36 @@ class MainWindow(QMainWindow):
             canvas.set_display_filter(self._display_filter_key())
 
     def _build_ui_rest(self):
-        # (no shortcut strip: the full reference lives in Help → Keyboard &
-        # Mouse Reference; chrome stays out of the content's way)
+        """The window's widgets and menus, section by section in the order they depend on each other:
+        the View menu needs the tool buttons, 3D adds to File's Import submenu. (No shortcut strip: the
+        full reference lives in Help → Keyboard & Mouse Reference; chrome stays out of the content's way.)
+        """
+        self._build_transport()
+        self._build_tool_buttons()
+        self._build_track_menu()
+        self._build_control_bar()
+        self._build_centre()
+        self._build_side_panel()
+        self._build_file_menu()
+        self._build_edit_menu()
+        self._build_view_menu()
+        self._build_skeleton_events_menus()
+        self._build_3d_menu()
+        self._build_body_menu()
+        self._build_help_menu()
+        # QMenu hides action tooltips unless told otherwise: every explanation
+        # written on a menu entry (what a wizard needs, what an export holds)
+        # was invisible until this (release sweep G1, 2026-09-22)
+        for m in self.findChildren(QMenu):
+            m.setToolTipsVisible(True)
+        self._build_nav_shortcuts()
+        self._set_focus_policies()
+        self._build_status_bar()
 
-        # transport bar — text glyphs, not QStyle bitmap icons: those ignore
-        # the dark palette and vanish black-on-black
+    def _build_transport(self) -> None:
+        """Transport bar and the frame / step / marker boxes: previous / play / next, the timeline's zoom
+        buttons -- text glyphs, not QStyle bitmap icons: those ignore the dark palette and vanish
+        black-on-black."""
         self.btn_prev = QToolButton()
         self.btn_prev.setIcon(icons.prev())
         self.btn_next = QToolButton()
@@ -972,52 +1004,39 @@ class MainWindow(QMainWindow):
         self.marker_spin.valueChanged.connect(
             lambda px: [cv.set_marker_size(px) for cv in self.grid.canvases])
 
-        self.btn_follow = QToolButton()
-        self.btn_follow.setText("Follow")
-        self.btn_follow.setIcon(icons.follow())
-        self.btn_follow.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.btn_follow.setCheckable(True)
-        self.btn_follow.setChecked(False)      # OFF by default: the view moves only when asked
-        self.btn_follow.setToolTip(
+    def _build_tool_buttons(self) -> None:
+        """The labelled tool buttons of the control bar (Follow, Auto-pause, ROI, Add ▾, Segment ▾, Mask, Body,
+        Pan), each from `_tool_button`."""
+        self.btn_follow = self._tool_button(
+            "Follow", icons.follow(),
             "Follow (off by default). When on, keeps tracked points in view while zoomed in: pans to\n"
             "follow the selected point (holds still where its track has a gap); with nothing\n"
-            "selected, re-frames ALL points automatically. R always fits the whole frame.")
+            "selected, re-frames ALL points automatically. R always fits the whole frame.",
+            checked=False)      # OFF by default: the view moves only when asked
         self.btn_follow.toggled.connect(
             lambda on: [cv.set_follow(on) for cv in self.grid.canvases])
         self.canvas.set_follow(self.btn_follow.isChecked())
 
-        self.btn_autopause = QToolButton()
-        self.btn_autopause.setText("Auto-pause")
-        self.btn_autopause.setIcon(icons.autopause())
-        self.btn_autopause.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.btn_autopause.setCheckable(True)
-        self.btn_autopause.setChecked(True)
-        self.btn_autopause.setToolTip(
+        self.btn_autopause = self._tool_button(
+            "Auto-pause", icons.autopause(),
             "Auto-pause: stop the run when the model has lost a point: its confidence stays low\n"
             "for 16 frames in a row (a point hidden for a moment keeps its confidence, so ordinary\n"
             "occlusion does not trigger this). Its track is cut back to the first unreliable frame,\n"
             "the playhead jumps there and the point is selected: click where it really is, then\n"
             "Track. Also stops when the segment is lost for 16 frames, or a ball marker is lost\n"
             "inside the picture. Uncheck to always run to the end. (With Body on, a landmark that\n"
-            "leaves the segment stops the run either way.)")
+            "leaves the segment stops the run either way.)",
+            checked=True)
 
-        self.btn_roi = QToolButton()
-        self.btn_roi.setText("ROI")
-        self.btn_roi.setIcon(icons.roi())
-        self.btn_roi.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.btn_roi.setCheckable(True)
-        self.btn_roi.setChecked(True)
-        self.btn_roi.setToolTip(
+        self.btn_roi = self._tool_button(
+            "ROI", icons.roi(),
             "ROI zoom: when the tracked points sit in a small part of a high-res frame,\n"
             "track inside a crop around them so small objects keep real detail at the\n"
-            "model's internal resolution. Engages only when it clearly helps (≥2× zoom).")
+            "model's internal resolution. Engages only when it clearly helps (≥2× zoom).",
+            checked=True)
 
-        self.btn_add = QToolButton()
-        self.btn_add.setText("Add")
-        self.btn_add.setIcon(icons.add())
-        self.btn_add.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.btn_add.setCheckable(True)
-        self.btn_add.setToolTip(
+        self.btn_add = self._tool_button(
+            "Add", icons.add(),
             "Add a point (N): arms the crosshair — the next click places a point\n"
             "(drag instead to outline a region: the ▾ picks circle / rectangle / polygon).\n"
             "Stray clicks never edit anything. One placement per press; Esc cancels.")
@@ -1050,18 +1069,10 @@ class MainWindow(QMainWindow):
             "Choosing this arms the crosshair like N.")
         self.act_add_ball.triggered.connect(self._arm_ball)
         menu_add.addAction(self.act_add_ball)
-        self._place_kind = "point"          # what the next armed click creates: "point" | "ball"
-        self._retrack = None                # an automatic epipolar re-track in progress (see _retrack_start)
-        self._stopping_for_close = False    # `_stop_runs_for_close` is running: no window opens meanwhile
-        self._retrack_last = None
         self.btn_add.setMenu(menu_add)
 
-        self.btn_animal = QToolButton()
-        self.btn_animal.setText("Segment")
-        self.btn_animal.setIcon(icons.segment())
-        self.btn_animal.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.btn_animal.setCheckable(True)
-        self.btn_animal.setToolTip(
+        self.btn_animal = self._tool_button(
+            "Segment", icons.segment(),
             "Segment tool (S): click the segment and its silhouette appears. Shift+click = "
             "\"not the segment\", drag = box around it. Tracking then follows the silhouette "
             "and derives tail tip / midline / feet from it. S or Esc when done.\n"
@@ -1084,42 +1095,33 @@ class MainWindow(QMainWindow):
         self._seg_menu.aboutToShow.connect(self._refresh_seg_menu)
         self.btn_animal.setMenu(self._seg_menu)
 
-        self.btn_mask = QToolButton()
-        self.btn_mask.setText("Mask")
-        self.btn_mask.setIcon(icons.mask())
-        self.btn_mask.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.btn_mask.setCheckable(True)
-        self.btn_mask.setChecked(True)
-        self.btn_mask.setToolTip("Mask: show / hide the segment's silhouette overlay")
+        self.btn_mask = self._tool_button(
+            "Mask", icons.mask(),
+            "Mask: show / hide the segment's silhouette overlay",
+            checked=True)
         self.btn_mask.toggled.connect(lambda _on: (self._refresh_overlay(),
                                                    self._refresh_animal_panel()))
 
-        self.btn_onbody = QToolButton()
-        self.btn_onbody.setText("Body")
-        self.btn_onbody.setIcon(icons.body())
-        self.btn_onbody.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.btn_onbody.setCheckable(True)
-        self.btn_onbody.setChecked(True)
-        self.btn_onbody.setToolTip(
+        self.btn_onbody = self._tool_button(
+            "Body", icons.body(),
             "Body: keep tracked points ON the segment (only when there is a segment, S). A point\n"
             "that strays a few pixels past the silhouette's edge is nudged back onto it.\n"
             "A point that clearly LEAVES the silhouette stops the run at that frame and its\n"
             "track ends there: it is never pulled onto some other spot of the animal.\n"
             "Right-click a point → \"May leave the segment\" to exempt it (markers on\n"
-            "the ground, reference objects).")
+            "the ground, reference objects).",
+            checked=True)
         self.btn_onbody.toggled.connect(self._on_onbody_toggled)
 
-        self.btn_pan = QToolButton()
-        self.btn_pan.setText("Pan")
-        self.btn_pan.setIcon(icons.pan())
-        self.btn_pan.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.btn_pan.setCheckable(True)
-        self.btn_pan.setToolTip(
+        self.btn_pan = self._tool_button(
+            "Pan", icons.pan(),
             "Pan tool (H): left-drag moves the view instead of editing points.\n"
             "H or Esc ends it, and so does picking Add or Segment (one tool at a time).\n"
             "Middle-drag always pans, in any mode — even while tracking runs.")
         self.btn_pan.toggled.connect(self._on_pan_mode)
 
+    def _build_track_menu(self) -> None:
+        """The Track button and its ▾ menu: run mode, Every camera, point model, the test."""
         # Track button with a mode dropdown: automatic (run to end) or
         # semi-automatic (each F tracks exactly one frame, then pauses)
         self.btn_track = QToolButton()
@@ -1212,6 +1214,9 @@ class MainWindow(QMainWindow):
         # no run progress bar: it only repeated the timeline playhead; the status
         # bar carries fps / ETA (G35)
 
+    def _build_control_bar(self) -> None:
+        """The control bar under the timeline: frame box + transport | tools | toggles ... Track, folded to
+        icons one button at a time when the window is narrow (G2, G16)."""
         # The timeline panel IS the scrubber (click/drag it to seek): a separate
         # QSlider can never align with the lanes — its handle center is inset
         # from the groove edge by half the handle width, so frame 0 lands at
@@ -1314,6 +1319,9 @@ class MainWindow(QMainWindow):
         self._controls_hook = _ResizeHook(self._fit_controls)
         controls.installEventFilter(self._controls_hook)
 
+    def _build_centre(self) -> None:
+        """The centre: the video grid above the timeline in a vertical splitter, the onboarding strip over
+        the video, the control bar under the timeline."""
         self.timeline = TimelinePanel()
         self.timeline.seek_requested.connect(self._goto)
         self.timeline.point_selected.connect(self._on_select)
@@ -1331,7 +1339,7 @@ class MainWindow(QMainWindow):
         bl.setContentsMargins(0, 0, 0, 0)
         bl.setSpacing(0)
         bl.addWidget(self.timeline, 1)
-        bl.addWidget(controls)
+        bl.addWidget(self._controls)
         split = QSplitter(Qt.Vertical)
         self.onboarding = OnboardingStrip(self._onboarding_step)
         top = QWidget()
@@ -1350,6 +1358,8 @@ class MainWindow(QMainWindow):
         self._split = split
         self._bottom = bottom
 
+    def _build_side_panel(self) -> None:
+        """The right dock: cameras, the segment's row, the points list."""
         # point list dock
         self.point_list = QListWidget()
         self.point_list.setToolTip(
@@ -1460,6 +1470,8 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self.dock = dock
 
+    def _build_file_menu(self) -> None:
+        """File menu (and its Import submenu)."""
         # menu / toolbar actions
         m_file = self.menuBar().addMenu("&File")
         self.act_open = QAction("Open &Video…", self, shortcut=QKeySequence("Ctrl+O"),
@@ -1519,6 +1531,8 @@ class MainWindow(QMainWindow):
                   self.act_quit):
             m_file.addSeparator() if a is None else m_file.addAction(a)
 
+    def _build_edit_menu(self) -> None:
+        """Edit menu."""
         m_edit = self.menuBar().addMenu("&Edit")
         self.act_undo = QAction("&Undo Last Run / Edit", self,
                                 shortcut=QKeySequence("Ctrl+Z"),
@@ -1543,6 +1557,8 @@ class MainWindow(QMainWindow):
         for a in (self.act_note, self.act_hidden, self.act_annotator):
             m_edit.addAction(a)
 
+    def _build_view_menu(self) -> None:
+        """View menu: panel, other cameras, overlays, trails, display filters."""
         m_view = self.menuBar().addMenu("&View")
         act_panel = self.dock.toggleViewAction()
         act_panel.setText("Segment && Points panel")
@@ -1608,7 +1624,6 @@ class MainWindow(QMainWindow):
             self._trail_group.addAction(act)
             m_trails.addAction(act)
             self._trail_acts[n] = act
-        self._trail_custom = 30                     # the last length typed into Custom…
         self.act_trail_custom = QAction("Custom…", self, checkable=True)
         self.act_trail_custom.setToolTip(f"Type how many frames of trail to draw behind each point "
                                          f"(1–{TRAIL_MAX})")
@@ -1670,6 +1685,8 @@ class MainWindow(QMainWindow):
         # action so Ctrl+, still works from anywhere.
         self.addAction(self.act_settings)
 
+    def _build_skeleton_events_menus(self) -> None:
+        """Skeleton and Events menus."""
         # skeleton templates (also under the panel's Skeleton ▾ button)
         self.m_skeleton = self.menuBar().addMenu("&Skeleton")
         self._refresh_skeleton_menu()
@@ -1681,6 +1698,8 @@ class MainWindow(QMainWindow):
                                       triggered=self._mark_event)
         self._refresh_events_ui()
 
+    def _build_3d_menu(self) -> None:
+        """3D menu: calibration -> sub-frame sync -> triangulation -> volume hull."""
         # 3D: calibration -> sub-frame sync -> triangulation -> volume hull
         m_3d = self.menuBar().addMenu("&3D")
         self.act_lens = QAction("Calibrate a &Lens (checkerboard)…", self, triggered=self._lens_wizard)
@@ -1744,6 +1763,8 @@ class MainWindow(QMainWindow):
                   self.act_export_mesh):
             m_3d.addSeparator() if a is None else m_3d.addAction(a)
 
+    def _build_body_menu(self) -> None:
+        """Body menu: human joints and joint angles from the footage itself."""
         # Body: human joints and joint angles from the footage itself
         m_body = self.menuBar().addMenu("&Body")
         self.act_body_run = QAction("Find People && Measure &Joints…", self,
@@ -1772,6 +1793,8 @@ class MainWindow(QMainWindow):
                   self.act_body_joints, self.act_body_angles, None, self.act_body_clear):
             m_body.addSeparator() if a is None else m_body.addAction(a)
 
+    def _build_help_menu(self) -> None:
+        """Help menu."""
         m_help = self.menuBar().addMenu("&Help")
         self.act_manual = QAction("&User Manual…", self, shortcut=QKeySequence("F1"),
                                   triggered=self._show_manual)
@@ -1806,12 +1829,9 @@ class MainWindow(QMainWindow):
         self.act_about = QAction(f"&About {APP_NAME}…", self, triggered=self._show_about)
         self.act_about.setToolTip("Version, licence, where Kinetrace comes from, and the models it builds on")
         m_help.addAction(self.act_about)
-        # QMenu hides action tooltips unless told otherwise: every explanation
-        # written on a menu entry (what a wizard needs, what an export holds)
-        # was invisible until this (release sweep G1, 2026-09-22)
-        for m in self.findChildren(QMenu):
-            m.setToolTipsVisible(True)
 
+    def _build_nav_shortcuts(self) -> None:
+        """The Left / Right / Home / End shortcuts (single-letter keys go through `_hotkey`)."""
         # combo shortcuts only — single-letter keys (F/B/N/T/X/E/R/H/Space/
         # Delete/Esc/±) are handled in keyPressEvent so they never steal
         # keystrokes from the point-rename editor or other text fields
@@ -1826,6 +1846,8 @@ class MainWindow(QMainWindow):
             QShortcut(QKeySequence("Home"), self, lambda: self._goto(0)),
             QShortcut(QKeySequence("End"), self, lambda: self._goto(self.n_frames - 1))]
 
+    def _set_focus_policies(self) -> None:
+        """Keyboard focus discipline: tool buttons never take the focus, spin boxes only by click."""
         # Keyboard focus discipline. Toolbar buttons never
         # take the focus: a click is a click, not a place for Space to land.
         # Spin boxes take it only by click and give it back the moment an edit
@@ -1838,6 +1860,8 @@ class MainWindow(QMainWindow):
             if sb is not self.spin:           # the frame box seeks on Enter, then clears itself
                 sb.editingFinished.connect(sb.clearFocus)
 
+    def _build_status_bar(self) -> None:
+        """Status bar: frame, device and run labels."""
         # status bar
         # eliding labels: a plain QLabel's minimum width is its whole text, so a
         # longer frame / fps / ETA text widened the WINDOW (it can be as narrow
@@ -1849,6 +1873,21 @@ class MainWindow(QMainWindow):
         for w in (self._frame_label, self._device_label, self._track_label):
             self.statusBar().addPermanentWidget(w)
             w.setStyleSheet("padding: 0 8px;")
+
+    @staticmethod
+    def _tool_button(text: str, icon, tip: str, checked: bool | None = None) -> QToolButton:
+        """A labelled, checkable tool button of the control bar: icon + text, ticked or not from the
+        start (`checked` None = leave it), with its tooltip (R7). The caller connects its signal
+        afterwards, so the initial state never fires a handler."""
+        b = QToolButton()
+        b.setText(text)
+        b.setIcon(icon)
+        b.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        b.setCheckable(True)
+        if checked is not None:
+            b.setChecked(checked)
+        b.setToolTip(tip)
+        return b
 
     def _need_calibration(self, what: str) -> bool:
         """True when 3D can run; otherwise explain the missing step and return
