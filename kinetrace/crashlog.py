@@ -13,7 +13,9 @@ never by the test suites) keeps a record instead:
                                       a line when a session starts and when it
                                       ends normally -- a start without an end is
                                       a session that died; rotated at 1 MB with
-                                      2 older copies
+                                      2 older copies; shared by every Kinetrace
+                                      window (entries are written under a lock
+                                      shared by the processes, I245)
     <log folder>/kinetrace-crash.log  Python's faulthandler: the stack of every
                                       thread when the process dies of a native
                                       fault (an access violation, a segfault)
@@ -36,17 +38,19 @@ from __future__ import annotations
 import atexit
 import faulthandler
 import logging
-import logging.handlers
 import os
 import platform
+import re
 import sys
 import threading
 import time
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 
 ENV = "KINETRACE_LOG_DIR"
-_INSTALL = Path(__file__).resolve().parent.parent / "logs"
+_PKG = Path(__file__).resolve().parent               # Kinetrace's own code (G141)
+_INSTALL = _PKG.parent / "logs"
 LOG_NAME = "kinetrace.log"
 CRASH_NAME = "kinetrace-crash.log"
 MAX_BYTES = 1_000_000          # per log file; LOG_BACKUPS older copies are kept
@@ -105,6 +109,95 @@ def _versions() -> str:
     return " | ".join(parts)
 
 
+@contextmanager
+def _shared_lock(path: Path):
+    """An exclusive lock between Kinetrace windows (processes) on `path`: held
+    while a log entry is written or the log rotated. Best effort: a lock that
+    cannot be had in ten seconds is gone without (a stuck window must not
+    silence this one)."""
+    fd = None
+    got = False
+    try:
+        fd = os.open(str(path), os.O_RDWR | os.O_CREAT)
+        if os.name == "nt":
+            import msvcrt
+            for _ in range(200):
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    got = True
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            got = True
+    except OSError:
+        pass
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                if got and os.name == "nt":
+                    import msvcrt
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                elif got:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+
+
+class _SharedLogHandler(logging.Handler):
+    """A rotating log that several Kinetrace windows can write at once (I245).
+    The old rotating handler kept the file open: two windows then dropped
+    entries (Windows will not rename a file another process holds open, and
+    both shifted the `.1`, `.2` copies over each other, deleting one's file).
+    This one opens the file for each entry, under a lock shared by the windows,
+    and rotates under the same lock, so neither can happen; an entry is rare, so
+    the cost does not matter. Same file names and sizes as before."""
+
+    def __init__(self, path: Path, max_bytes: int, backups: int):
+        super().__init__()
+        self._path, self._max, self._backups = Path(path), max_bytes, backups
+        self._lock_path = self._path.with_name("kinetrace-log.lock")      # (not a name the rotation counts)
+
+    def _rotate(self) -> None:
+        base = str(self._path)
+        try:
+            for i in range(self._backups - 1, 0, -1):
+                src, dst = f"{base}.{i}", f"{base}.{i + 1}"
+                if os.path.exists(src):
+                    if os.path.exists(dst):
+                        os.remove(dst)
+                    os.rename(src, dst)
+            dst = f"{base}.1"
+            if os.path.exists(dst):
+                os.remove(dst)
+            os.rename(base, dst)
+        except OSError:          # a reader has it open right now: the next entry tries again
+            pass
+
+    def emit(self, record) -> None:
+        try:
+            text = self.format(record) + "\n"
+            with _shared_lock(self._lock_path):
+                try:
+                    size = self._path.stat().st_size
+                except OSError:
+                    size = 0
+                if self._backups > 0 and size and size + len(text.encode("utf-8")) >= self._max:
+                    self._rotate()
+                with open(self._path, "a", encoding="utf-8") as fh:
+                    fh.write(text)
+        except Exception:        # noqa: BLE001 - logging must never break the program
+            self.handleError(record)
+
+
 def install(app_version: str = "") -> bool:
     """Start the log for this process. Idempotent; False (and no hooks) when
     the log folder cannot be written."""
@@ -114,12 +207,15 @@ def install(app_version: str = "") -> bool:
     try:
         d = folder()
         d.mkdir(parents=True, exist_ok=True)
-        handler = logging.handlers.RotatingFileHandler(d / LOG_NAME, maxBytes=MAX_BYTES,
-                                                       backupCount=LOG_BACKUPS, encoding="utf-8")
+        (d / LOG_NAME).touch()                  # (creating it is the proof the folder can be written)
+        handler = _SharedLogHandler(d / LOG_NAME, MAX_BYTES, LOG_BACKUPS)
         handler.setFormatter(logging.Formatter("%(message)s"))
         crash = d / CRASH_NAME
-        if crash.exists() and crash.stat().st_size > MAX_BYTES:
-            os.replace(crash, crash.with_name(CRASH_NAME + ".1"))
+        try:
+            if crash.exists() and crash.stat().st_size > MAX_BYTES:
+                os.replace(crash, crash.with_name(CRASH_NAME + ".1"))
+        except OSError:         # held by another window: append to it (I245)
+            pass
         cf = open(crash, "a", encoding="utf-8")
     except OSError:
         return False
@@ -178,7 +274,13 @@ def _ended() -> None:
 def _where(tb) -> str:
     """The innermost frame of Kinetrace's own code, else the innermost frame."""
     frames = traceback.extract_tb(tb) if tb is not None else []
-    own = [f for f in frames if "kinetrace" in f.filename.replace("\\", "/").lower()]
+
+    def ours(f) -> bool:         # inside the package folder -- not "kinetrace" anywhere in the path, which the
+        try:                     # install folder (and so every library under it) has too (G141)
+            return Path(f.filename).resolve().is_relative_to(_PKG)
+        except (OSError, ValueError):
+            return False
+    own = [f for f in frames if ours(f)]
     f = (own or frames or [None])[-1]
     return f"{f.name} ({Path(f.filename).name}:{f.lineno})" if f is not None else "unknown place"
 
@@ -279,18 +381,24 @@ def _ended_sessions() -> set[str]:
     file, oldest first: a session's start and end can sit in two of them)."""
     lp = log_path()
     files = [lp.with_name(f"{LOG_NAME}.{k}") for k in range(LOG_BACKUPS, 0, -1)] + [lp]
-    ended, head = set(), None
+    ended, heads = set(), {}          # heads: pid -> the header of that process's latest session
     for f in files:
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         for ln in text.splitlines():
-            if ln.startswith("==== Kinetrace "):
-                head = ln.strip()
-            elif ln.startswith("==== ended normally") and head is not None:
-                ended.add(head)
-                head = None
+            if ln.startswith("==== Kinetrace ") or ln.startswith("==== ended normally"):
+                # two windows share the log: an end line belongs to the session of ITS pid, not to the
+                # latest header (I245)
+                m = re.search(r"\bpid (\d+)", ln)
+                pid = m.group(1) if m else None
+                if ln.startswith("==== Kinetrace "):
+                    heads[pid] = ln.strip()
+                else:
+                    head = heads.pop(pid, None) if pid is not None else (heads.popitem()[1] if heads else None)
+                    if head is not None:
+                        ended.add(head)
     return ended
 
 

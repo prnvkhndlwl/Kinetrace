@@ -39,7 +39,7 @@ KEYS = tuple(f[0] for f in FORMATS)
 STATE = "exports.json"
 
 
-_FOLDER = re.compile(r"[A-Za-z0-9._-]+")
+_FOLDER = projectfile.CAMERA_FOLDER                       # the one camera-folder rule (R16)
 _MADE = [re.compile(_FOLDER.pattern.join(map(re.escape, p.split("{cam}")))) for _k, _l, p, _c in FORMATS]
 
 
@@ -48,7 +48,7 @@ def _ours(out: Path, name) -> bool:
     exports.json is read from a folder someone else may have made, and every
     name in it that is no longer made is DELETED -- so never a path, never
     anything but one of FORMATS' file names."""
-    if not isinstance(name, str) or not _FOLDER.fullmatch(name) or name.startswith("."):
+    if not projectfile.is_camera_folder(name):
         return False
     if not any(m.fullmatch(name) for m in _MADE):
         return False
@@ -73,6 +73,18 @@ def _fingerprint(index: dict, prefixes: tuple, *extra: str) -> str:
     return projectfile._digest(*extra, *parts)
 
 
+def _write_points_in_camera_world(calibio, project, path: str) -> None:
+    """xyzpts.csv in the world the exported cameras (3D -> Export Calibration) are in:
+    mirrored in Z for a left-handed easyWand / DLTdv calibration, the file's origin
+    restored for a K + R/t import. The probe is the one the export dialog takes,
+    so the two agree (I170)."""
+    import numpy as np
+    rec = project.reconstruction
+    probe = (np.nanmedian(rec.xyz.reshape(-1, 3), axis=0) if np.isfinite(rec.xyz).any() else None)
+    models = calibio.to_models(project.calibration, list(project.names), probe) if project.calibration else None
+    calibio.write_points3d(rec, path, "dltdv", models)
+
+
 def refresh(root: str | Path, formats: list[str], scorer: str = "Kinetrace", cancel=lambda: False
             ) -> tuple[list[str], list[str]]:
     """Bring `root`/exports up to date for `formats`. -> (files written,
@@ -92,7 +104,7 @@ def refresh(root: str | Path, formats: list[str], scorer: str = "Kinetrace", can
     index = projectfile._read_index(root)
     meta = projectfile.read_meta(root)
     cams = [(c.get("folder"), c.get("name")) for c in meta.get("cameras") or []]
-    if not all(isinstance(f, str) and _FOLDER.fullmatch(f) and not f.startswith(".") for f, _n in cams):
+    if not all(projectfile.is_camera_folder(f) for f, _n in cams):
         return [], ["kinetrace.json names a camera folder that is not a plain name: exports/ was not refreshed"]
     has_3d = (root / "reconstruction" / "meta.json").is_file()
     jobs = []
@@ -105,8 +117,10 @@ def refresh(root: str | Path, formats: list[str], scorer: str = "Kinetrace", can
                              lambda p, path: p.export_multi_dltdv(path)))
         elif key == "xyz_dltdv":
             if has_3d:
-                jobs.append((pattern, _fingerprint(index, ("reconstruction/",), key),
-                             lambda p, path: calibio.write_points3d(p.reconstruction, path, "dltdv")))
+                # in the world of the cameras Export Calibration writes, so the points reproject through them (I170);
+                # the calibration is part of what the file is made from
+                jobs.append((pattern, _fingerprint(index, ("reconstruction/", "calibration.json"), key),
+                             lambda p, path: _write_points_in_camera_world(calibio, p, path)))
         else:
             for i, (folder, name) in enumerate(cams):
                 fp = _fingerprint(index, (f"cameras/{folder}/", "project.json"), key, str(name))

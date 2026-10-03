@@ -70,9 +70,16 @@ def folder() -> tuple[Path, bool]:
     return _cached
 
 
+def safe_id(project_id) -> bool:
+    """A project id is a file name in this folder (I148): letters, digits, '-'
+    and '_' only (projectfile.new_id() gives 32 hex digits). The one rule:
+    projectfile re-exports it (R16)."""
+    return isinstance(project_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", project_id) is not None
+
+
 def paths(project_id: str) -> tuple[Path, Path, Path]:
     # the id comes from a project file: it must stay a plain name in this folder (I148)
-    if not isinstance(project_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", project_id):
+    if not safe_id(project_id):
         raise ValueError(f"not a project id: {str(project_id)[:80]!r}")
     d = folder()[0]
     return d / f"{project_id}.kinetrace", d / f"{project_id}.json", d / f"{project_id}.view.json"
