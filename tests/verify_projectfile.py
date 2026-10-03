@@ -270,7 +270,7 @@ PERSISTED = {
                 "exports"},
     "MaskTrack": {"n_frames", "bbox", "area", "centroid", "score", "contours", "midline"},
     "BodyTrack": {"joints3d", "joints2d", "conf", "score", "bbox", "focal", "cam_t", "names", "backend", "runs",
-                  "faces", "mesh", "rig", "n_frames", "n_people", "has_3d", "notes", "n_requested", "step"},
+                  "faces", "mesh", "rig", "n_frames", "n_people", "has_3d", "notes", "n_requested", "step", "box_src"},
 }
 for cls, obj in (("TrackingSession", p.sessions[0]), ("Project", p), ("MaskTrack", p.sessions[0].masks),
                  ("BodyTrack", p.sessions[0].body)):

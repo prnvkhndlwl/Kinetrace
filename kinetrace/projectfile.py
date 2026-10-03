@@ -37,6 +37,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -44,7 +45,9 @@ import sys
 import time
 import unicodedata
 import uuid
+import weakref
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -52,6 +55,9 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import numpy as np
 
 from kinetrace import APP_VERSION
+from kinetrace.recovery import safe_id  # noqa: F401 - the one project-id rule (R16); re-exported here
+
+_log = logging.getLogger("kinetrace.errors")        # the error log keeps what is logged here (crashlog.py)
 
 FORMAT = "kinetrace-project"
 FORMAT_VERSION = 2              # 2 = a folder, one CSV per landmark (I145); 1 = a zip, one tracks.csv per camera
@@ -79,12 +85,17 @@ class ProjectFileError(Exception):
 
 
 # ------------------------------------------------------------------ small codecs
-def f32_text(a: np.ndarray) -> np.ndarray:
-    """Shortest text that reads back as exactly the same float32; '' for NaN."""
-    a = np.asarray(a, np.float32)
+def _float_text(a, dtype) -> np.ndarray:
+    """Shortest text that reads back as exactly the same `dtype`; '' for NaN."""
+    a = np.asarray(a, dtype)
     s = a.astype(str)
     s[np.isnan(a)] = ""
     return s
+
+
+def f32_text(a: np.ndarray) -> np.ndarray:
+    """Shortest text that reads back as exactly the same float32; '' for NaN."""
+    return _float_text(a, np.float32)
 
 
 def text_f32(col, where: str) -> np.ndarray:
@@ -176,11 +187,27 @@ def _clean_json(obj):
     return obj
 
 
+_FOLDER_CHARS = "A-Za-z0-9._-"
+CAMERA_FOLDER = re.compile(f"[{_FOLDER_CHARS}]+")          # (R16) the one camera-folder rule: read, layout check, autoexport
+
+
+def is_camera_folder(name) -> bool:
+    """A camera folder name a project may hold: [A-Za-z0-9._-], never hidden."""
+    return isinstance(name, str) and CAMERA_FOLDER.fullmatch(name) is not None and not name.startswith(".")
+
+
+def _key(name: str) -> str:
+    """A file name as the matching rule sees it: composed (NFC) and case-folded,
+    so a decomposed name (HFS+) or a case-only difference (NTFS / macOS) is the
+    same file (I163, I211)."""
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", str(name)).casefold())
+
+
 def camera_folders(names: list[str]) -> list[str]:
     """Zip-safe, case-insensitively unique folder names ([A-Za-z0-9._-])."""
     out, seen = [], set()
     for i, n in enumerate(names):
-        base = re.sub(r"[^A-Za-z0-9._-]+", "_", unicodedata.normalize("NFKD", n)).strip("._") or f"cam{i + 1}"
+        base = re.sub(f"[^{_FOLDER_CHARS}]+", "_", unicodedata.normalize("NFKD", n)).strip("._") or f"cam{i + 1}"
         f, k = base, 2
         while f.lower() in seen:
             f, k = f"{base}-{k}", k + 1
@@ -214,10 +241,7 @@ def landmark_files(names: list[str]) -> list[str]:
 
 def f64_text(a: np.ndarray) -> np.ndarray:
     """Shortest text that reads back as exactly the same float64; '' for NaN."""
-    a = np.asarray(a, np.float64)
-    s = a.astype(str)
-    s[np.isnan(a)] = ""
-    return s
+    return _float_text(a, np.float64)
 
 
 def _codes(c: np.ndarray) -> np.ndarray:
@@ -339,6 +363,14 @@ class Frozen:
     files: dict = field(default_factory=dict)      # zip member -> str (text) or np.ndarray (npy)
 
 
+def _point_row(p, file: str) -> list:
+    """One landmark's points.csv row, in POINT_COLS order (`_read_point` is its
+    inverse: the columns are declared once, here and there)."""
+    return [p.name, _hex(p.color), int(p.display), p.kind, repr(float(p.radius)), int(p.anchor), p.source,
+            p.spec, int(p.free), p.shape,
+            "" if not p.outline else " ".join(repr(float(v)) for xy in p.outline for v in xy), file, p.tracker]
+
+
 def _put_arrays(files: dict, folder: str, arrays: dict, prefix: str) -> None:
     """A `to_arrays` dict -> folder/<key>.npy for arrays, folder/<key>.json for
     the JSON strings. The same keys come back for `from_arrays`."""
@@ -370,7 +402,29 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
         "conventions": {"frames": "counted from 0",
                         "pixels": "OpenCV pixel centres, counted from 0 (top-left pixel centre = 0, 0)",
                         "blank": "no data"}})
-    where = target or getattr(project, "path", None)
+    cams = _freeze_cameras(project, folders, target or getattr(project, "path", None), layout)
+    files["project.json"] = _json({"cameras": cams, "active_camera": project.names[project.active],
+                                   "exports_on_save": list(getattr(project, "exports", []) or [])})   # (G42)
+    files["state.json"] = _json(_clean_json(state))
+    if project.calibration is not None and len(project.calibration) > 0:
+        arr = project.calibration.to_arrays("calib_")
+        cal = json.loads(arr["calib_meta"])
+        cal["coefs"] = np.asarray(arr["calib_coefs"], np.float64).tolist()
+        cal["notes"] = list(getattr(project.calibration, "notes", []) or [])
+        files["calibration.json"] = _json(_clean_json(cal))
+    if any(l is not None for l in project.lenses):
+        files["lenses.json"] = _json(_clean_json([None if l is None else l.to_json() for l in project.lenses]))
+    _freeze_reconstruction(files, project.reconstruction, folders, binary_tracks)
+    for i, s in enumerate(project.sessions):
+        _freeze_camera(files, f"cameras/{folders[i]}", s, binary_tracks)
+    if not binary_tracks:
+        files["README.txt"] = _readme(project.names, folders)
+    return fz
+
+
+def _freeze_cameras(project, folders: list[str], where, layout: str) -> list[dict]:
+    """project.json's camera entries: video path (absolute and relative to the
+    project), size, rate, offset."""
     base = (Path(where).resolve() if layout == "folder" else Path(where).resolve().parent) if where else None
     cams = []
     for i, s in enumerate(project.sessions):
@@ -386,18 +440,11 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
                      "file_fps": float(getattr(s, "file_fps", s.fps)),   # the file's own rate (G38)
                      "width": int(s.width), "height": int(s.height),
                      "offset": float(project.offsets[i]), "rate": float(project.rates[i])})
-    files["project.json"] = _json({"cameras": cams, "active_camera": project.names[project.active],
-                                   "exports_on_save": list(getattr(project, "exports", []) or [])})   # (G42)
-    files["state.json"] = _json(_clean_json(state))
-    if project.calibration is not None and len(project.calibration) > 0:
-        arr = project.calibration.to_arrays("calib_")
-        cal = json.loads(arr["calib_meta"])
-        cal["coefs"] = np.asarray(arr["calib_coefs"], np.float64).tolist()
-        cal["notes"] = list(getattr(project.calibration, "notes", []) or [])
-        files["calibration.json"] = _json(_clean_json(cal))
-    if any(l is not None for l in project.lenses):
-        files["lenses.json"] = _json(_clean_json([None if l is None else l.to_json() for l in project.lenses]))
-    r = project.reconstruction
+    return cams
+
+
+def _freeze_reconstruction(files: dict, r, folders: list[str], binary_tracks: bool) -> None:
+    """The 3D result: binary arrays in a recovery copy, else one readable table per landmark (I145)."""
     if r is not None and binary_tracks:
         rec = {"xyz": r.xyz.astype(np.float64), "residual": r.residual.astype(np.float64),
                "n_cams": r.n_cams.astype(np.int32),
@@ -420,11 +467,6 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
             "frames": "reference camera's frames (the first camera's)"})
         for j, f in enumerate(rfiles):
             files[f"reconstruction/points/{f}"] = ("p3", arrays, j, int(r.t0), cams_px)
-    for i, s in enumerate(project.sessions):
-        _freeze_camera(files, f"cameras/{folders[i]}", s, binary_tracks)
-    if not binary_tracks:
-        files["README.txt"] = _readme(project.names, folders)
-    return fz
 
 
 def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
@@ -438,12 +480,8 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
         "timeline": st.get("timeline"),
         "annotator": s.annotator, "counters": {"points": s._name_counter, "events": s._event_counter}}))
     lfiles = landmark_files([p.name for p in s.points])
-    files[f"{d}/points.csv"] = ("points", [
-        [p.name, _hex(p.color), int(p.display), p.kind, repr(float(p.radius)), int(p.anchor), p.source,
-         p.spec, int(p.free), p.shape,
-         "" if not p.outline else " ".join(repr(float(v)) for xy in p.outline for v in xy),
-         "" if binary_tracks else lfiles[j], p.tracker]
-        for j, p in enumerate(s.points)])
+    files[f"{d}/points.csv"] = ("points", [_point_row(p, "" if binary_tracks else lfiles[j])
+                                           for j, p in enumerate(s.points)])
     arrays = dict(tracks=s.tracks.copy(), confidence=s.confidence.copy(), visibility=s.visibility.copy(),
                   manual=s.manual.copy(), tracked=s.tracked.copy(), occluded=s.occluded.copy(),
                   radius=s.radius.copy())
@@ -474,7 +512,30 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
                 files[f"{d}/silhouette/summary.csv"] = ("sil", summ)
             _put_arrays(files, f"{d}/silhouette", m, "mask_")
     if s.body is not None:
-        _put_arrays(files, f"{d}/body", s.body.to_arrays("body_", mesh=True), "body_")
+        _put_arrays(files, f"{d}/body", s.body.to_arrays("body_", mesh=False), "body_")
+        _put_mesh(files, f"{d}/body", s.body)
+
+
+_MESH_BLOCKS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()     # BodyTrack -> (key, {name: entry})
+
+
+def _put_mesh(files: dict, folder: str, body) -> None:
+    """The body's mesh block (`mesh_*.npy`): joined and hashed once, then reused
+    for as long as `mesh_version` says the mesh did not change -- it used to be
+    joined, copied and hashed at every save and every 30 s autosave (R17: 110 ms
+    and 180 MB per 1000 meshed frames on the GUI thread). The arrays are never
+    written in place, so a frozen project and the cache share them."""
+    key = (body.mesh_version, len(body.mesh), None if body.faces is None else id(body.faces))
+    hit = _MESH_BLOCKS.get(body)
+    if hit is None or hit[0] != key:
+        block = {}
+        for name, arr in body.mesh_arrays("").items():
+            arr.flags.writeable = False
+            block[name] = ("npy", arr, [None])           # [digest], filled once by _materialize
+        hit = (key, block)
+        _MESH_BLOCKS[body] = hit
+    for name, entry in hit[1].items():
+        files[f"{folder}/{name}.npy"] = entry
 
 
 # ------------------------------------------------------------------ tables (worker thread)
@@ -598,11 +659,16 @@ def _empty_tracks(T: int, N: int) -> dict:
                 radius=np.full((T, N), np.nan, np.float32))
 
 
-def _materialize(item, yield_gil, need_digest: bool = True):
+def _materialize(item, need_digest: bool = True):
     """A frozen entry -> (content, digest): content is text, an array (.npy)
     or a Table (CSV, formatted only if it is written)."""
     if isinstance(item, tuple):
         kind = item[0]
+        if kind == "npy":                       # an array whose fingerprint is kept with it (R17)
+            memo = item[2]
+            if need_digest and memo[0] is None:
+                memo[0] = _digest(item[1])
+            return item[1], (memo[0] or "") if need_digest else ""
         if kind == "lm":
             t = _landmark_table(*item[1:])
         elif kind == "sil":
@@ -631,7 +697,7 @@ def write(frozen: Frozen, path: str | Path, *, compresslevel: int = 1, fsync: bo
         with open(tmp, "wb") as fh:
             with zipfile.ZipFile(fh, "w", allowZip64=True) as z:
                 for name in sorted(frozen.files):
-                    data, _ = _materialize(frozen.files[name], yield_gil, need_digest=False)
+                    data, _ = _materialize(frozen.files[name], need_digest=False)
                     if isinstance(data, Table):
                         data = data.csv(yield_gil)
                     info = zipfile.ZipInfo(name, date_time=_ZIP_TIME)
@@ -677,6 +743,11 @@ _CAM_FILES = {"view.json", "points.csv", "tracks.csv", "events.csv", "notes.csv"
               "skeleton.json", "segment.json", "tracks.npy", "confidence.npy", "visibility.npy", "manual.npy",
               "tracked.npy", "occluded.npy", "radius.npy"}
 _CAM_DIRS = ("tracks", "silhouette", "body")
+# files an older layout left in a camera folder (format 1's tracks.csv, the recovery form's dense arrays): a save
+# removes them if they are there, besides what the previous save wrote (I164)
+_LEGACY_CAM_FILES = ("tracks.csv", "tracks.npy", "confidence.npy", "visibility.npy", "manual.npy", "tracked.npy",
+                     "occluded.npy", "radius.npy")
+_OWN_DOT = (CACHE_DIR, HISTORY_DIR, SAVING_DIR, ".lock")      # the dot entries Kinetrace itself makes
 
 
 def project_root(path: str | Path) -> Path:
@@ -789,43 +860,100 @@ def _pid_alive(pid: int) -> bool:
         return True
 
 
-def _lock_stale(lk: Path) -> bool:
-    import socket
+def _proc_start(pid: int) -> str | None:
+    """A token that differs when `pid` is another process than it was: the
+    process's start time as the OS keeps it (a pid reused after a reboot is not
+    the process that took the lock, I246). None when it cannot be told."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, int(pid))            # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return None
+            try:
+                c, e, kt, ut = (wintypes.FILETIME() for _ in range(4))
+                if not k.GetProcessTimes(h, ctypes.byref(c), ctypes.byref(e), ctypes.byref(kt), ctypes.byref(ut)):
+                    return None
+                return str((c.dwHighDateTime << 32) | c.dwLowDateTime)
+            finally:
+                k.CloseHandle(h)
+        if sys.platform.startswith("linux"):
+            stat = Path(f"/proc/{int(pid)}/stat").read_text()
+            return stat.rsplit(")", 1)[1].split()[19]             # field 22: start time, ticks since boot
+        import subprocess
+        out = subprocess.run(["ps", "-p", str(int(pid)), "-o", "lstart="], capture_output=True, text=True,
+                             timeout=5).stdout.strip()
+        return out or None
+    except Exception:        # noqa: BLE001 - a courtesy check: unknown = fall back on "is it alive"
+        return None
+
+
+def _read_lock(lk: Path) -> dict | None:
+    """The .lock's content, None when it is not one Kinetrace wrote."""
     try:
         other = json.loads(lk.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return other if isinstance(other, dict) else None
+
+
+def _lock_stale(other: dict | None) -> bool:
+    """True for a lock whose writer is gone: not a lock Kinetrace wrote (I157),
+    hours old, its process dead (on this computer), or its pid now another
+    process (the start time it recorded no longer matches, I246)."""
+    import socket
+    if other is None:
+        return True
+    try:
         if time.time() - float(other.get("time") or 0) > LOCK_STALE_S:
             return True
-        return other.get("host") == socket.gethostname() and not _pid_alive(int(other.get("pid") or 0))
-    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
-        return True                                  # not a lock Kinetrace wrote (I157)
+        if other.get("host") != socket.gethostname():
+            return False
+        pid = int(other.get("pid") or 0)
+        if not _pid_alive(pid):
+            return True
+        start = other.get("start")
+        if isinstance(start, str) and start:
+            now = _proc_start(pid)
+            return now is not None and now != start
+        return False
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        return True
 
 
-def clear_stale_lock(root: str | Path) -> None:
-    """A save that crashed left its .lock: removed when its process is gone."""
+def clear_stale_lock(root: str | Path) -> dict | None:
+    """A save that crashed left its .lock: removed when its process is gone.
+    -> the lock of a save that is still running (a live process, a fresh
+    lock), else None."""
     lk = Path(root) / LOCK
-    if lk.is_file() and _lock_stale(lk):
+    if not lk.is_file():
+        return None
+    other = _read_lock(lk)
+    if _lock_stale(other):
         lk.unlink(missing_ok=True)
+        return None
+    return other
 
 
 def _take_lock(root: Path) -> Path:
     """One save at a time per project folder: `.lock` created exclusively
-    (process id, computer, time). Two Kinetrace windows saving the same
-    project would otherwise clear each other's .saving / .history. A lock
-    whose process is gone (on this computer) or that is hours old is taken over."""
+    (process id, its start time, computer, time). Two Kinetrace windows saving
+    the same project would otherwise clear each other's .saving / .history. A
+    lock whose process is gone (on this computer) or that is hours old is taken over."""
     import socket
     lk = root / LOCK
-    me = {"pid": os.getpid(), "host": socket.gethostname(), "time": time.time()}
+    me = {"pid": os.getpid(), "host": socket.gethostname(), "time": time.time(), "start": _proc_start(os.getpid())}
     for _attempt in range(3):
         try:
             fd = os.open(str(lk), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            try:
-                other = json.loads(lk.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                other = {}
-            if _lock_stale(lk):
+            other = _read_lock(lk)
+            if _lock_stale(other):
                 lk.unlink(missing_ok=True)          # a crash's leftover
                 continue
+            other = other or {}
             raise ProjectFileError(
                 f"{root.name} is being saved by another Kinetrace right now (process {other.get('pid')} on "
                 f"{other.get('host')}). Close the other window (or wait for its save), then save again.") from None
@@ -876,26 +1004,6 @@ def _unchanged_on_disk(p: Path, entry) -> bool:
     return [st.st_size, st.st_mtime_ns] == list(entry[:2])
 
 
-def _managed(root: Path) -> set[str]:
-    """The files of the project layout that are on disk (what a save may
-    replace or remove). Anything else in the folder -- videos/, exports/, a
-    user's own notes -- is never touched."""
-    out = {n for n in _TOP_FILES if (root / n).is_file()}
-    rec = root / "reconstruction"
-    if rec.is_dir():
-        out |= {p.relative_to(root).as_posix() for p in rec.rglob("*") if p.is_file()}
-    cams = root / "cameras"
-    if cams.is_dir():
-        for d in cams.iterdir():
-            if not d.is_dir():
-                continue
-            out |= {p.relative_to(root).as_posix() for p in d.iterdir() if p.is_file() and p.name in _CAM_FILES}
-            for sub in _CAM_DIRS:
-                if (d / sub).is_dir():
-                    out |= {p.relative_to(root).as_posix() for p in (d / sub).rglob("*") if p.is_file()}
-    return out
-
-
 def _layout_rel(rel) -> bool:
     """True for a relative path of the project layout (what a save writes):
     a top file, reconstruction/..., cameras/<folder>/<camera file or folder>/...
@@ -909,8 +1017,72 @@ def _layout_rel(rel) -> bool:
         return parts[0] in _TOP_FILES
     if parts[0] == "reconstruction":
         return True
-    return (parts[0] == "cameras" and len(parts) >= 3 and re.fullmatch(r"[A-Za-z0-9._-]+", parts[1]) is not None
+    return (parts[0] == "cameras" and len(parts) >= 3 and is_camera_folder(parts[1])
             and ((len(parts) == 3 and parts[2] in _CAM_FILES) or (len(parts) >= 4 and parts[2] in _CAM_DIRS)))
+
+
+# the kinds of file a project's sub-folders hold: what a save may treat as its own when it has no record
+_OWN_SUFFIX = {"tracks": (".csv",), "silhouette": (".csv", ".npy", ".json"), "body": (".npy", ".json"),
+               "reconstruction": (".csv", ".npy", ".json")}
+
+
+def _scan_layout(root: Path) -> set[str]:
+    """The project's own files on disk by their KIND (a table of a landmark, a
+    silhouette / body array): used only when there is no record of what the
+    previous save wrote. A spreadsheet's `snout.xlsx`, a note, a hidden file
+    and any folder the layout does not name are not the project's."""
+    out = {n for n in _TOP_FILES if (root / n).is_file()}
+
+    def take(d: Path, kind: str):
+        try:
+            for p in d.rglob("*"):
+                if p.is_file() and p.suffix.lower() in _OWN_SUFFIX[kind]:
+                    out.add(p.relative_to(root).as_posix())
+        except OSError:
+            pass
+    take(root / "reconstruction", "reconstruction")
+    cams = root / "cameras"
+    try:
+        dirs = [d for d in cams.iterdir() if d.is_dir() and is_camera_folder(d.name)] if cams.is_dir() else []
+    except OSError:
+        dirs = []
+    for d in dirs:
+        out |= {f"cameras/{d.name}/{n}" for n in _CAM_FILES if (d / n).is_file()}
+        for sub in _CAM_DIRS:
+            if (d / sub).is_dir():
+                take(d / sub, sub)
+    return out
+
+
+def _own_files(root: Path, index: dict) -> set[str]:
+    """THE rule for "the project's files" (R16, I164, I165): what a save may
+    replace or remove -- the files the previous save wrote (its index), the
+    leftovers an older layout is known to have made, and, only when there is no
+    index (deleted, or an undone save), the files that are of the project's own
+    kinds. Never a user's file (`snout.xlsx`, a note, `cam1 - Copy/`), never a
+    hidden one (`.DS_Store`, a lock file), nothing `_layout_rel` rejects --
+    what a rollback would refuse to name -- and only what is on disk."""
+    out = {r for r in index if isinstance(r, str)}
+    cams = root / "cameras"
+    try:
+        dirs = [d for d in cams.iterdir() if d.is_dir() and is_camera_folder(d.name)] if cams.is_dir() else []
+    except OSError:
+        dirs = []
+    for d in dirs:
+        out |= {f"cameras/{d.name}/{n}" for n in _LEGACY_CAM_FILES if (d / n).is_file()}
+    if not index:
+        out |= _scan_layout(root)
+    return {r for r in out if _layout_rel(r) and (root / r).is_file()}
+
+
+def holds_only_own_entries(folder: str | Path) -> bool:
+    """True for a folder a first save may use: empty, or holding only what
+    Kinetrace itself makes in a project folder (.cache, .history, .saving,
+    .lock -- what a first save that failed leaves behind, I244)."""
+    try:
+        return all(e.name in _OWN_DOT for e in Path(folder).iterdir())
+    except OSError:
+        return False
 
 
 def _history_paths(root: Path, record: dict, what: str) -> dict:
@@ -987,18 +1159,42 @@ def finish_interrupted(root: str | Path) -> str | None:
     return said
 
 
+def _fresh_dir(d: Path) -> None:
+    """An empty folder at `d`, best effort: a file in it that another program
+    holds open (the previous save's copy, being compared in a diff tool) must
+    not stop a save (I213) -- what cannot be removed stays, and the files this
+    save puts there replace it."""
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(exist_ok=True)
+
+
+def _move_aside(src: Path, dst: Path) -> None:
+    """src -> dst, for the previous save's copy in .history. Where `dst` is a file
+    another program holds open (a diff tool comparing the previous save) and so
+    cannot be replaced, its content is overwritten in place, which Windows
+    allows -- the save goes on (I213)."""
+    try:
+        _replace(src, dst)
+    except PermissionError:
+        if not dst.is_file():
+            raise
+        shutil.copyfile(src, dst)
+        src.unlink()
+
+
 def write_folder(frozen: Frozen, path: str | Path, *, fsync: bool = True,
-                 yield_gil=lambda: time.sleep(0), **_ignored) -> dict:
+                 yield_gil=lambda: time.sleep(0)) -> dict:
     """Save into the project folder, writing ONLY the files whose content
     changed. Crash-safe: new files are written aside (.saving/), the files
     they replace go to .history/ (the previous save), and the new
     kinetrace.json -- one atomic replace -- is the moment the save counts; a
     save cut short before it is undone the next time the project is opened.
-    -> {"written", "unchanged", "removed"} counts."""
+    -> {"written", "unchanged", "removed"} counts (+ "tidy_up": the steps after
+    the commit that did not work, in words: the save itself stood, G110)."""
     root = Path(path)
     if root.exists() and not root.is_dir():
         raise ProjectFileError(f"{root.name} is a file, not a project folder")
-    if root.is_dir() and not (root / META).is_file() and any(root.iterdir()):
+    if root.is_dir() and not (root / META).is_file() and not holds_only_own_entries(root):
         raise ProjectFileError(f"{root} is a folder that is not a Kinetrace project: choose another name")
     if not root.parent.is_dir():                        # a folder that is gone is said, not re-made (I104)
         raise FileNotFoundError(f"the folder {root.parent} does not exist (a disconnected drive?)")
@@ -1015,12 +1211,11 @@ def _write_folder_locked(frozen: Frozen, root: Path, fsync: bool, yield_gil) -> 
     new_saved = json.loads(frozen.files[META])["saved_at"]
     old_saved = _saved_at(root)
     index = _read_index(root)
-    cache, tmp, hist = root / CACHE_DIR, root / SAVING_DIR, root / HISTORY_DIR
+    cache, tmp = root / CACHE_DIR, root / SAVING_DIR
     cache.mkdir(exist_ok=True)
     _hide(cache)
     (cache / "index.json").unlink(missing_ok=True)      # caches untrusted until this save is complete
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir()
+    _fresh_dir(tmp)
     _hide(tmp)
     try:
         return _write_folder_steps(frozen, root, index, old_saved, new_saved, fsync, yield_gil)
@@ -1028,13 +1223,46 @@ def _write_folder_locked(frozen: Frozen, root: Path, fsync: bool, yield_gil) -> 
         shutil.rmtree(tmp, ignore_errors=True)         # whatever happened, nothing is left aside
 
 
-def _write_folder_steps(frozen, root, index, old_saved, new_saved, fsync, yield_gil) -> dict:
-    cache, tmp, hist = root / CACHE_DIR, root / SAVING_DIR, root / HISTORY_DIR
-    keep, changed, tables, cols = {}, [], [], {}
+@dataclass
+class _Item:
+    """One file of a save: what it will hold, its fingerprint, the index entry
+    of the previous save, and whether the folder already holds exactly that."""
+    content: object
+    digest: str
+    entry: list | None
+    same: bool
+
+
+def _plan(frozen: Frozen, root: Path, index: dict) -> tuple[dict, list[str], set[str]]:
+    """THE planner of a save, shared by the save itself and the close question
+    (R16): for every file to write, whether the folder already holds it (same
+    fingerprint AND the same file on disk), and which of the project's files go
+    (`_own_files`, not what is in the folder). -> ({rel: _Item}, removed,
+    case_news): `case_news` = new files whose name differs only by letter case
+    or Unicode form from a file that goes (a landmark renamed `snout` ->
+    `Snout`, I163): file systems that do not tell them apart must see the old
+    one set aside BEFORE the new one goes in, or the new one replaces it and
+    then the "removal" takes the new one away."""
+    items = {}
     for rel in sorted(frozen.files):
-        content, digest = _materialize(frozen.files[rel], yield_gil)
+        content, digest = _materialize(frozen.files[rel])
         entry = index.get(rel)
         same = rel != META and entry is not None and entry[2] == digest and _unchanged_on_disk(root / rel, entry)
+        items[rel] = _Item(content, digest, entry, same)
+    removed = sorted(r for r in _own_files(root, index) if r not in frozen.files)
+    gone = {_key(r) for r in removed}
+    case_news = {r for r in frozen.files if _key(r) in gone}
+    return items, removed, case_news
+
+
+def _stage(items: dict, root: Path, fsync: bool, yield_gil) -> tuple[list, list, dict, dict]:
+    """Stage 1: every file that changed is written into .saving/ (the tables
+    are only collected: they are formatted next), and the binary copies of the
+    tables into .cache/. -> (changed [(rel, digest)], tables, keep, cols)."""
+    cache, tmp = root / CACHE_DIR, root / SAVING_DIR
+    keep, changed, tables, cols = {}, [], [], {}
+    for rel, it in items.items():
+        content, digest, entry, same = it.content, it.digest, it.entry, it.same
         if same and not isinstance(content, Table):
             keep[rel] = entry
             continue
@@ -1049,7 +1277,7 @@ def _write_folder_steps(frozen, root, index, old_saved, new_saved, fsync, yield_
             if same:
                 keep[rel] = [*entry[:3], cols[rel]]
                 continue
-            tables.append((rel, content, digest))       # formatted below, in helpers when there is a lot
+            tables.append((rel, content, digest))       # formatted next, in helpers when there is a lot
             continue
         elif isinstance(content, np.ndarray):
             buf = io.BytesIO()
@@ -1060,9 +1288,14 @@ def _write_folder_steps(frozen, root, index, old_saved, new_saved, fsync, yield_
         _write_bytes(tmp / rel, data, fsync)
         changed.append((rel, digest))
         yield_gil()
-    # the tables' CSV text: numpy's exact float text holds the GIL, so a big save
-    # hands it to helper processes (csvpool.py); whatever they do not finish is
-    # formatted here, the same bytes either way
+    return changed, tables, keep, cols
+
+
+def _format_tables(tables: list, changed: list, root: Path, fsync: bool, yield_gil) -> None:
+    """Stage 2: the tables' CSV text. numpy's exact float text holds the GIL, so
+    a big save hands it to helper processes (csvpool.py); whatever they do not
+    finish is formatted here, the same bytes either way."""
+    tmp = root / SAVING_DIR
     need = sum(t.n * (12 * len(t.written) + 1) for _r, t, _d in tables) + (64 << 20)     # generous
     free = _free_bytes(root)
     if free < need:
@@ -1077,62 +1310,115 @@ def _write_folder_steps(frozen, root, index, old_saved, new_saved, fsync, yield_
             yield_gil()
         changed.append((rel, digest))
     changed.sort()
-    removed = sorted(_managed(root) - set(frozen.files))
+
+
+def _commit(root: Path, changed: list, removed: list[str], case_news: set[str], old_saved, new_saved,
+            fsync: bool) -> None:
+    """Stage 3: the files they replace (and the ones that go) move into
+    .history/, the new ones move in, and the replace of kinetrace.json is the
+    moment the save counts. Anything that goes wrong before it is undone."""
+    tmp, hist = root / SAVING_DIR, root / HISTORY_DIR
+    new = [r for r, _ in changed if r != META]
+    # a case-only rename is a removal plus an addition: `exists()` on a file system that ignores case would
+    # call the new name "replaced" (I163)
     pending = {"saved_at_before": old_saved, "saved_at": new_saved, "removed": removed,
-               "replaced": [r for r, _ in changed if r != META and (root / r).exists()],
-               "added": [r for r, _ in changed if r != META and not (root / r).exists()]}
-    shutil.rmtree(hist, ignore_errors=True)
-    hist.mkdir()
+               "replaced": [r for r in new if r not in case_news and (root / r).exists()],
+               "added": [r for r in new if r in case_news or not (root / r).exists()]}
+    _fresh_dir(hist)
     _hide(hist)
+    for stale in ("pending.json", "previous.json", META):       # (a file kept open by another program stays)
+        try:
+            (hist / stale).unlink(missing_ok=True)
+        except OSError:
+            pass
     _write_json_atomic(hist / "pending.json", pending, fsync)
+    committed = False
     try:
-        for rel, _d in changed:
-            if rel == META:
-                continue
+        for rel in removed:                                  # the old ones first (I163)
+            (hist / rel).parent.mkdir(parents=True, exist_ok=True)
+            _move_aside(root / rel, hist / rel)
+        for rel in new:
             dst = root / rel
             if dst.exists():
                 (hist / rel).parent.mkdir(parents=True, exist_ok=True)
-                _replace(dst, hist / rel)
+                _move_aside(dst, hist / rel)
             dst.parent.mkdir(parents=True, exist_ok=True)
             _replace(tmp / rel, dst)
-        for rel in removed:
-            (hist / rel).parent.mkdir(parents=True, exist_ok=True)
-            _replace(root / rel, hist / rel)
         if (root / META).is_file():
             shutil.copy2(root / META, hist / META)
         if fsync:                                         # every move on disk before the commit
-            for d in sorted({(root / r).parent for r, _ in changed} | {(hist / r).parent for r in removed}
+            for d in sorted({(root / r).parent for r in new} | {(hist / r).parent for r in removed}
                             | {(hist / r).parent for r in pending["replaced"]}):
                 _fsync_dir(d)
         _replace(tmp / META, root / META)                 # the save counts from here
+        committed = True
         if fsync:
             _fsync_dir(root)
     except BaseException:
-        _rollback(root, pending)
+        if not committed:
+            _rollback(root, pending)
         raise
-    _replace(hist / "pending.json", hist / "previous.json")
+
+
+def _finish(root: Path, frozen: Frozen, keep: dict, changed: list, cols: dict, removed: list[str],
+            new_saved: str) -> dict:
+    """Stage 4, after the commit: nothing here may undo or fail the save --
+    it counted. A step that does not work (a file or folder another program
+    holds) is logged and said in the stats' "tidy_up", never raised (G110): the
+    next open finishes a `pending.json` left behind, and a missing index only
+    makes the next save write everything."""
+    cache, hist = root / CACHE_DIR, root / HISTORY_DIR
+    tidy = []
+
+    def attempt(what, fn):
+        try:
+            return fn()
+        except OSError as e:
+            _log.warning("save of %s: %s: %s", root.name, what, e)
+            tidy.append(f"{what}: {e}")
+    attempt("the previous-save record", lambda: _replace(hist / "pending.json", hist / "previous.json"))
     files = dict(keep)
     for rel, digest in changed:
-        st = (root / rel).stat()
-        files[rel] = [st.st_size, st.st_mtime_ns, digest] + ([cols[rel]] if rel in cols else [])
-    _write_json_atomic(cache / "index.json", {"saved_at": new_saved, "files": files}, fsync=False)
-    for rel in removed:
-        (cache / (rel + ".npy")).unlink(missing_ok=True)
-        d = (root / rel).parent
-        while d != root and d.is_dir() and not any(d.iterdir()):     # a removed camera's empty folders
-            d.rmdir()
-            d = d.parent
-    return {"written": len(changed), "unchanged": len(frozen.files) - len(changed), "removed": len(removed)}
+        st = attempt(f"reading back {rel}", lambda rel=rel: (root / rel).stat())
+        if st is not None:
+            files[rel] = [st.st_size, st.st_mtime_ns, digest] + ([cols[rel]] if rel in cols else [])
+    attempt("the index in .cache", lambda: _write_json_atomic(cache / "index.json", {"saved_at": new_saved,
+                                                                                      "files": files}, fsync=False))
+    for rel in removed:                                  # a removed camera's empty folders
+        def tidy_dirs(rel=rel):
+            d = (root / rel).parent
+            while d != root and d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+                d = d.parent
+        attempt(f"removing the emptied folder of {rel}", tidy_dirs)
+    stats = {"written": len(changed), "unchanged": len(frozen.files) - len(changed), "removed": len(removed)}
+    if tidy:
+        stats["tidy_up"] = tidy
+    return stats
+
+
+def _write_folder_steps(frozen, root, index, old_saved, new_saved, fsync, yield_gil) -> dict:
+    cache = root / CACHE_DIR
+    items, removed, case_news = _plan(frozen, root, index)
+    for rel in removed:        # their cache copies go first: on a file system that ignores case one may be the new file's
+        try:
+            (cache / (rel + ".npy")).unlink(missing_ok=True)
+        except OSError:
+            pass
+    changed, tables, keep, cols = _stage(items, root, fsync, yield_gil)
+    _format_tables(tables, changed, root, fsync, yield_gil)
+    _commit(root, changed, removed, case_news, old_saved, new_saved, fsync)
+    return _finish(root, frozen, keep, changed, cols, removed, new_saved)
 
 
 _NOT_CHANGES = {META, "README.txt", "state.json"}      # where the user was / derived: never "a change"
 
 
 def changes_since_save(frozen: Frozen, path: str | Path) -> tuple[list[str], list[str]] | None:
-    """What differs from the last save of the project folder at `path`:
-    (files whose content would change, files that would be removed), from
-    the fingerprints that save left (the same ones a save compares; nothing
-    is written). None when that cannot be told (not a folder, no index)."""
+    """What a save would do now, from the same plan the save makes (`_plan`):
+    (files whose content would be written, files that would be removed),
+    without writing anything. None when that cannot be told (not a folder, no
+    index)."""
     root = project_root(path)
     if not root.is_dir():
         return None
@@ -1140,15 +1426,9 @@ def changes_since_save(frozen: Frozen, path: str | Path) -> tuple[list[str], lis
     if not index:
         return None
     skip = lambda r: r in _NOT_CHANGES or r.endswith("/view.json")      # noqa: E731
-    changed = []
-    for rel in sorted(frozen.files):
-        if skip(rel):
-            continue
-        entry = index.get(rel)
-        if entry is None or entry[2] != _materialize(frozen.files[rel], lambda: None)[1]:
-            changed.append(rel)
-    removed = sorted(r for r in index if r not in frozen.files and not skip(r))
-    return changed, removed
+    items, removed, _news = _plan(frozen, root, index)
+    changed = [rel for rel, it in items.items() if not it.same and not skip(rel)]
+    return changed, [r for r in removed if not skip(r)]
 
 
 def describe_changes(changed: list[str], removed: list[str], cameras: list[tuple[str, str]],
@@ -1223,35 +1503,53 @@ def restore_previous(path: str | Path) -> str:
 
 # ------------------------------------------------------------------ read
 class _Source:
-    """A project folder or a single file (zip) with the same layout."""
+    """A project folder or a single file (zip) with the same layout. Names are
+    matched by `_key` (composed, case-folded) when the exact name is not there:
+    a file system that lists `Cam1` as `cam1`, or a decomposed name, is still
+    the file (I163, I211); hidden files (`.DS_Store`, AppleDouble `._x.csv`) are
+    not part of the project (I210)."""
 
     def __init__(self, path: Path):
         self.path = path
         self.index: dict = {}
         if path.is_dir():
             self.zip = None
-            self.names = set()
+            names = set()
             for dirpath, dirs, fnames in os.walk(path):
                 rel = Path(dirpath).relative_to(path).as_posix()
                 if rel == ".":
                     dirs[:] = [d for d in dirs if d not in _NOT_DATA and not d.startswith(".")]
                     rel = ""
-                self.names |= {f"{rel}/{f}" if rel else f for f in fnames}
+                else:
+                    dirs[:] = [d for d in dirs if not d.startswith(".")]
+                names |= {f"{rel}/{f}" if rel else f for f in fnames if not f.startswith(".")}
             self.index = _read_index(path)
         else:
             try:
                 self.zip = zipfile.ZipFile(path)
             except zipfile.BadZipFile:
                 raise ProjectFileError(f"{path.name} is not a Kinetrace project (not a zip file, or damaged)") from None
-            self.names = set(self.zip.namelist())
-        for n in self.names:
+            names = set(self.zip.namelist())
+        for n in names:
             if ".." in PurePosixPath(n).parts or n.startswith("/"):
                 raise ProjectFileError(f"{path.name}: unsafe member name {n!r}")
+        # a member with a hidden part (macOS's `._x.csv`, `.DS_Store`) is never the project's (I210)
+        self.names = {n for n in names if not any(p.startswith(".") for p in PurePosixPath(n).parts)}
+        self._keys = {n: _key(n) for n in self.names}
+        self._actual: dict[str, str] = {}
+        for n in sorted(self.names):
+            self._actual.setdefault(self._keys[n], n)
+
+    def resolve(self, name: str) -> str | None:
+        """The name as the project holds it: exactly as asked, else the same name
+        up to case / Unicode form; None when there is none."""
+        return name if name in self.names else self._actual.get(_key(name))
 
     def has(self, name: str) -> bool:
-        return name in self.names
+        return self.resolve(name) is not None
 
     def bytes(self, name: str) -> bytes:
+        name = self.resolve(name) or name
         try:
             return self.zip.read(name) if self.zip else (self.path / name).read_bytes()
         except zipfile.BadZipFile as e:                      # CRC mismatch: damaged
@@ -1278,14 +1576,12 @@ class _Source:
     def arrays(self, folder: str) -> dict:
         """folder/*.npy + *.json -> the mapping `from_arrays` expects."""
         out = {}
-        pre = folder + "/"
-        for n in self.names:
-            if n.startswith(pre) and "/" not in n[len(pre):]:
-                key = n[len(pre):]
-                if key.endswith(".npy"):
-                    out[key[:-4]] = self.npy(n)
-                elif key.endswith(".json"):
-                    out[key[:-5]] = self.text(n)
+        for n in self.files_in(folder):
+            key = PurePosixPath(n).name
+            if key.endswith(".npy"):
+                out[key[:-4]] = self.npy(n)
+            elif key.endswith(".json"):
+                out[key[:-5]] = self.text(n)
         return out
 
     def table(self, name: str, required: tuple, optional: tuple = ()) -> tuple[dict, int]:
@@ -1295,6 +1591,7 @@ class _Source:
         """A CSV table -- from .cache/ when the file is still the one the
         last save wrote (same size and time), else parsed from its text (a
         hand edit): the CSV is always what counts."""
+        name = self.resolve(name) or name
         entry = self.index.get(name)
         if entry is not None and len(entry) > 3 and _unchanged_on_disk(self.path / name, entry):
             try:
@@ -1310,13 +1607,16 @@ class _Source:
                 pass
         return parse(self.text(name), name)
 
+    def _under(self, folder: str) -> list[tuple[str, str]]:
+        """(rest of the name below `folder`, the name as held) for everything under it."""
+        pre = _key(folder) + "/"
+        return [(k[len(pre):], n) for n, k in self._keys.items() if k.startswith(pre)]
+
     def has_dir(self, folder: str) -> bool:
-        pre = folder + "/"
-        return any(n.startswith(pre) for n in self.names)
+        return bool(self._under(folder))
 
     def files_in(self, folder: str) -> list[str]:
-        pre = folder + "/"
-        return sorted(n for n in self.names if n.startswith(pre) and "/" not in n[len(pre):])
+        return sorted(n for rest, n in self._under(folder) if "/" not in rest)
 
 
 def parse_table(text: str, name: str, required: tuple, optional: tuple = ()) -> tuple[dict, int]:
@@ -1391,21 +1691,38 @@ def locate_video(entry: dict, project_dir: Path | None, extra_dirs=()) -> Path |
     return None
 
 
+@contextmanager
+def _parsing(where: str):
+    """An odd value in a hand-edited file is a sentence naming the file (and the
+    row when the caller knows it), never a raw KeyError / ValueError (G111)."""
+    try:
+        yield
+    except ProjectFileError:
+        raise
+    except (KeyError, TypeError, ValueError, IndexError, AttributeError, OverflowError) as e:
+        what = f"{e} is missing" if isinstance(e, KeyError) else str(e)
+        raise ProjectFileError(f"{where}: a value cannot be read ({what})") from None
+
+
 def read(path: str | Path):
     """-> (Project, state dict, kinetrace.json dict). Raises ProjectFileError
     with the file (and row) for anything that cannot be read."""
-    from kinetrace.calib import Calibration, Reconstruction
     from kinetrace.project import Project
-    from kinetrace.session import DEFAULT_UI_STATE, TrackingSession
+    from kinetrace.session import DEFAULT_UI_STATE
 
     root = project_root(path)
     interrupted = None
+    live = None
     if root.is_dir() and (root / LOCK).is_file():
         try:
-            clear_stale_lock(root)
+            live = clear_stale_lock(root)
         except OSError:
             pass
     if root.is_dir() and (root / HISTORY_DIR / "pending.json").is_file():
+        if live is not None:        # a save is running right now: its files are mid-move, not an interrupted save (I246)
+            raise ProjectFileError(
+                f"{root.name} is being saved by another Kinetrace right now (process {live.get('pid')} on "
+                f"{live.get('host')}). Open it again when that save has finished.")
         try:
             interrupted = finish_interrupted(root)
         except OSError as e:
@@ -1415,27 +1732,51 @@ def read(path: str | Path):
     if not src.has("kinetrace.json"):
         raise ProjectFileError(f"{root.name}: no kinetrace.json - not a Kinetrace project")
     meta = src.json("kinetrace.json")
-    if meta.get("format") != FORMAT:
+    if not isinstance(meta, dict) or meta.get("format") != FORMAT:
         raise ProjectFileError("kinetrace.json: not a Kinetrace project file")
-    if int(meta.get("format_version", 0)) > FORMAT_VERSION:
+    with _parsing("kinetrace.json"):
+        newer = int(meta.get("format_version", 0)) > FORMAT_VERSION
+    if newer:
         raise ProjectFileError(f"kinetrace.json: made by a newer Kinetrace (format "
                                f"{meta.get('format_version')}); update Kinetrace to open it")
     if not safe_id(meta.get("project_id")):
         meta["project_id"] = new_id()             # a file name in the recovery folder: never a path (I148)
     pj = src.json("project.json") if src.has("project.json") else None
-    if not pj or not pj.get("cameras"):
+    if not isinstance(pj, dict) or not isinstance(pj.get("cameras"), list) or not pj["cameras"]:
         raise ProjectFileError("project.json: missing, or no cameras listed")
     state = src.json("state.json") if src.has("state.json") else {}
     if not isinstance(state, dict):
         state = {}                                # a hand-edited state.json: defaults, not a refusal
     if not isinstance(state.get("tools"), dict):
         state["tools"] = {}
+    sessions, names, offsets, rates = _read_cameras(src, pj)
+    active = names.index(pj["active_camera"]) if pj.get("active_camera") in names else 0
+    p = Project(sessions, names, offsets, active, rates)
+    for s in p.sessions:                         # window-wide toggles live once, in state.json
+        s.ui_state.update({k: v for k, v in state["tools"].items() if k in DEFAULT_UI_STATE})
+    p.calibration = _read_calibration(src)
+    lenses = _read_lenses(src, len(sessions))
+    if lenses is not None:
+        p.lenses = lenses
+    p.reconstruction = _read_reconstruction(src)
+    p.exports = [str(x) for x in (pj.get("exports_on_save") or []) if isinstance(x, str)]
+    p.dirty = False
+    # the app locates each camera's video from these, and says when a cut-short save was undone
+    meta = dict(meta, _cameras=pj["cameras"], _interrupted=interrupted)
+    return p, state, meta
+
+
+def _read_cameras(src: _Source, pj: dict) -> tuple[list, list, list, list]:
+    """project.json's cameras -> (sessions with their data, names, offsets, rates)."""
+    from kinetrace.session import DEFAULT_UI_STATE, TrackingSession
     sessions, names, offsets, rates = [], [], [], []
     for k, cam in enumerate(pj["cameras"]):
-        folder = cam.get("folder") or camera_folders([cam.get("name", f"cam{k + 1}")])[0]
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", folder) or folder.startswith("."):
-            raise ProjectFileError(f"project.json: camera folder {folder!r} is not allowed")
         where = f"project.json camera {k + 1}"
+        if not isinstance(cam, dict):
+            raise ProjectFileError(f"{where}: expected the camera's settings")
+        folder = cam.get("folder") or camera_folders([cam.get("name", f"cam{k + 1}")])[0]
+        if not is_camera_folder(folder):
+            raise ProjectFileError(f"project.json: camera folder {folder!r} is not allowed")
         try:
             T, fps = int(cam["n_frames"]), float(cam["fps"])
             w, h = int(cam["width"]), int(cam["height"])
@@ -1443,6 +1784,17 @@ def read(path: str | Path):
             raise ProjectFileError(f"{where}: needs n_frames, fps, width and height") from None
         if not (1 <= T <= MAX_FRAMES and 1 <= w <= MAX_SIDE and 1 <= h <= MAX_SIDE):   # sizes every array (I157)
             raise ProjectFileError(f"{where}: {T} frames of {w} x {h} pixels is not a video Kinetrace can hold")
+        # a rate of 0 would divide every playhead move; a NaN / null offset would raise at the first one (I214)
+        try:
+            offset, rate = float(cam.get("offset", 0.0)), float(cam.get("rate", 1.0))
+        except (TypeError, ValueError):
+            raise ProjectFileError(f"{where}: offset and rate must be numbers (found offset "
+                                   f"{cam.get('offset')!r}, rate {cam.get('rate')!r})") from None
+        if not np.isfinite(offset):
+            raise ProjectFileError(f"{where}: offset {cam.get('offset')!r} is not a finite number of frames")
+        if not (np.isfinite(rate) and rate > 0):
+            raise ProjectFileError(f"{where}: rate {cam.get('rate')!r} must be a number above 0 "
+                                   "(this camera's frame rate / the first camera's)")
         s = TrackingSession(str((cam.get("video") or {}).get("path", "")), T, fps, w, h)
         try:                                     # a project from before G38 has no file_fps: the same rate
             s.file_fps = float(cam.get("file_fps", fps)) or fps
@@ -1452,18 +1804,23 @@ def read(path: str | Path):
         _read_camera(src, f"cameras/{folder}", s)
         sessions.append(s)
         names.append(str(cam.get("name", folder)))
-        offsets.append(float(cam.get("offset", 0.0)))
-        rates.append(float(cam.get("rate", 1.0)))
-    active = names.index(pj["active_camera"]) if pj.get("active_camera") in names else 0
-    p = Project(sessions, names, offsets, active, rates)
-    for s in p.sessions:                         # window-wide toggles live once, in state.json
-        s.ui_state.update({k: v for k, v in state["tools"].items() if k in DEFAULT_UI_STATE})
-    if src.has("calibration.json"):
-        c = src.json("calibration.json")
-        try:
-            coefs = np.asarray(c.pop("coefs"), np.float64)
-        except (KeyError, TypeError, ValueError):
-            raise ProjectFileError("calibration.json: 'coefs' missing or not 11 numbers per camera") from None
+        offsets.append(offset)
+        rates.append(rate)
+    return sessions, names, offsets, rates
+
+
+def _read_calibration(src: _Source):
+    from kinetrace.calib import Calibration
+    if not src.has("calibration.json"):
+        return None
+    c = src.json("calibration.json")
+    if not isinstance(c, dict):
+        raise ProjectFileError("calibration.json: expected the calibration's settings")
+    try:
+        coefs = np.asarray(c.pop("coefs"), np.float64)
+    except (KeyError, TypeError, ValueError):
+        raise ProjectFileError("calibration.json: 'coefs' missing or not 11 numbers per camera") from None
+    with _parsing("calibration.json"):
         notes = c.pop("notes", [])
         for cam in c.get("cams") or []:
             if cam.get("rmse") is None:                  # NaN is written as null
@@ -1471,26 +1828,36 @@ def read(path: str | Path):
         cal = Calibration.from_arrays({"calib_coefs": coefs, "calib_meta": json.dumps(c)}, "calib_")
         if cal is not None:
             cal.notes = list(notes or [])
-            p.calibration = cal
-    if src.has("lenses.json"):
-        from kinetrace.lens import LensProfile
-        raw = src.json("lenses.json")
-        if isinstance(raw, list) and len(raw) == len(sessions):
-            p.lenses = [None if d is None else LensProfile.from_json(d) for d in raw]
+    return cal
+
+
+def _read_lenses(src: _Source, n_cameras: int):
+    if not src.has("lenses.json"):
+        return None
+    from kinetrace.lens import LensProfile
+    raw = src.json("lenses.json")
+    if not isinstance(raw, list) or len(raw) != n_cameras:
+        return None
+    out = []
+    for k, d in enumerate(raw):
+        with _parsing(f"lenses.json entry {k + 1}"):
+            out.append(None if d is None else LensProfile.from_json(d))
+    return out
+
+
+def _read_reconstruction(src: _Source):
+    from kinetrace.calib import Reconstruction
     rec = src.arrays("reconstruction")
     if "xyz" in rec:                              # binary (recovery copies, format 1)
-        m = json.loads(rec["meta"])
-        p.reconstruction = Reconstruction(int(m["t0"]), list(m["names"]), rec["xyz"].astype(np.float64),
-                                          rec["residual"].astype(np.float64), rec["n_cams"].astype(np.int32),
-                                          str(m.get("unit", "")),
-                                          rec["per_cam"].astype(np.float32) if "per_cam" in rec else None)
-    elif src.has("reconstruction/meta.json"):
-        p.reconstruction = _read_points3d(src)
-    p.exports = [str(x) for x in (pj.get("exports_on_save") or []) if isinstance(x, str)]
-    p.dirty = False
-    # the app locates each camera's video from these, and says when a cut-short save was undone
-    meta = dict(meta, _cameras=pj["cameras"], _interrupted=interrupted)
-    return p, state, meta
+        with _parsing("reconstruction"):
+            m = json.loads(rec["meta"])
+            return Reconstruction(int(m["t0"]), list(m["names"]), rec["xyz"].astype(np.float64),
+                                  rec["residual"].astype(np.float64), rec["n_cams"].astype(np.int32),
+                                  str(m.get("unit", "")),
+                                  rec["per_cam"].astype(np.float32) if "per_cam" in rec else None)
+    if src.has("reconstruction/meta.json"):
+        return _read_points3d(src)
+    return None
 
 
 def _read_points3d(src: _Source):
@@ -1527,34 +1894,61 @@ def _read_points3d(src: _Source):
     return Reconstruction(t0, names, xyz, res, ncam, str(m.get("unit", "")), per)
 
 
+def _clean_name(n: str) -> str:
+    """A name read from a file, without what a spreadsheet takes for a formula
+    (M7): ONE rule for every place a landmark's name comes from -- points.csv,
+    a format-1 tracks.csv, the keys of ball_prompts.json / spots.json -- or the
+    same landmark would be two (I212)."""
+    from kinetrace.session import formula_safe, starts_formula
+    return formula_safe(n) if starts_formula(n) else n
+
+
+def _read_point(cols: dict, n: int, i: int, where: str):
+    """Row `i` of points.csv -> PointMeta (`_point_row` is its inverse)."""
+    from kinetrace.session import SOURCES, TRACKERS, PointMeta
+
+    def g(c, default=""):
+        return cols[c][i] if cols.get(c) is not None else default
+    with _parsing(where):
+        outline = g("outline").split()
+        source = g("source", "track")
+        return PointMeta(
+            _clean_name(g("name")), _rgb(g("color", "#ffffff"), where), g("shown", "1") != "0",
+            g("kind", "point") or "point", float(g("radius", "0") or 0), g("anchor", "0") == "1",
+            source if source in SOURCES else "track", g("spec"), g("free", "0") == "1",
+            g("shape", "circle") or "circle",
+            [[float(outline[j]), float(outline[j + 1])] for j in range(0, len(outline) - 1, 2)] or None,
+            tracker=g("tracker", "") if g("tracker", "") in TRACKERS else "")
+
+
 def _read_camera(src: _Source, d: str, s) -> None:
-    from kinetrace.body import BodyTrack
-    from kinetrace.segmenter import MIDLINE_SAMPLES, MaskTrack
-    from kinetrace.session import SOURCES, TRACKERS, AnimalMeta, Event, PointMeta, formula_safe, starts_formula
+    points, pfiles = _read_points(src, d)
+    arr, points = _read_tracks(src, d, points, pfiles, s.n_frames)
+    index = {p.name: i for i, p in enumerate(points)}
+    s.points = points
+    s.tracks, s.confidence, s.visibility = arr["tracks"], arr["confidence"], arr["visibility"]
+    s.manual, s.tracked, s.occluded, s.radius = arr["manual"], arr["tracked"], arr["occluded"], arr["radius"]
+    _read_events_notes(src, d, s)
+    _read_markers(src, d, s, index)
+    _read_segment_body(src, d, s)
+    _read_view(src, d, s, index)
 
-    def _name(n):         # names from a file lose what a spreadsheet takes for a formula (M7)
-        return formula_safe(n) if starts_formula(n) else n
 
-    T = s.n_frames
-    # ---- points
+def _read_points(src: _Source, d: str) -> tuple[list, list]:
+    """points.csv -> (the points with their settings, the `file` column)."""
     points, pfiles = [], []
     if src.has(f"{d}/points.csv"):
         cols, n = src.table(f"{d}/points.csv", ("name",), POINT_COLS[1:])
         pfiles = list(cols.get("file") or [""] * n)
         for i in range(n):
-            g = lambda c, default="": (cols[c][i] if cols.get(c) is not None else default)  # noqa: E731
-            where = f"{d}/points.csv row {i + 2}"
-            outline = g("outline").split()
-            points.append(PointMeta(
-                _name(g("name")), _rgb(g("color", "#ffffff"), where), g("shown", "1") != "0", g("kind", "point") or "point",
-                float(g("radius", "0") or 0), g("anchor", "0") == "1",
-                g("source", "track") if g("source", "track") in SOURCES else "track", g("spec"),
-                g("free", "0") == "1", g("shape", "circle") or "circle",
-                [[float(outline[j]), float(outline[j + 1])] for j in range(0, len(outline) - 1, 2)] or None,
-                tracker=g("tracker", "") if g("tracker", "") in TRACKERS else ""))
-    index = {p.name: i for i, p in enumerate(points)}
-    # ---- tracks (dense .npy in recovery files, one CSV per landmark in projects,
-    # one long tracks.csv in format 1)
+            points.append(_read_point(cols, n, i, f"{d}/points.csv row {i + 2}"))
+    return points, pfiles
+
+
+def _read_tracks(src: _Source, d: str, points: list, pfiles: list, T: int) -> tuple[dict, list]:
+    """The positions: dense .npy in recovery files, one CSV per landmark in
+    projects, one long tracks.csv in format 1. -> (the T x N arrays, the points
+    -- a landmark file points.csv does not name adds one)."""
     if src.has(f"{d}/tracks.npy"):
         arr = {k: src.npy(f"{d}/{k}.npy") for k in
                ("tracks", "confidence", "visibility", "manual", "tracked", "occluded", "radius")}
@@ -1562,28 +1956,34 @@ def _read_camera(src: _Source, d: str, s) -> None:
             if v.shape[0] != T or v.shape[1] != len(points):
                 raise ProjectFileError(f"{d}/{k}.npy: shape {v.shape} does not match {T} frames x "
                                        f"{len(points)} points")
-    elif src.has_dir(f"{d}/tracks") or not src.has(f"{d}/tracks.csv"):
+        return arr, points
+    if src.has_dir(f"{d}/tracks") or not src.has(f"{d}/tracks.csv"):
         derived = landmark_files([p.name for p in points])
         named = [f"{d}/tracks/{(pfiles[j] if j < len(pfiles) and pfiles[j].strip() else derived[j]).strip()}"
                  for j in range(len(points))]
+        known = {_key(r) for r in named}
         for rel in src.files_in(f"{d}/tracks"):     # a file points.csv does not name: a new landmark
-            if rel.lower().endswith(".csv") and rel not in named:
-                points.append(PointMeta(_name(unicodedata.normalize("NFC", PurePosixPath(rel).stem)),
-                                        _PALETTE[len(points) % len(_PALETTE)]))
+            if rel.lower().endswith(".csv") and _key(rel) not in known:
+                points.append(_new_point(PurePosixPath(rel).stem, len(points)))
                 named.append(rel)
+                known.add(_key(rel))
         arr = _empty_tracks(T, len(points))
         for j, rel in enumerate(named):
             if src.has(rel):
                 _fill_landmark(arr, j, src.load_table(rel, _parse_landmark, LANDMARK_COLS, _LM_KINDS), T, rel)
-        index = {p.name: i for i, p in enumerate(points)}
-    else:
-        cols, n = src.table(f"{d}/tracks.csv", ("frame", "point", "x", "y"), TRACK_COLS[4:])
-        arr, points = tracks_from_table(cols, n, points, T, f"{d}/tracks.csv")
-        index = {p.name: i for i, p in enumerate(points)}
-    s.points = points
-    s.tracks, s.confidence, s.visibility = arr["tracks"], arr["confidence"], arr["visibility"]
-    s.manual, s.tracked, s.occluded, s.radius = arr["manual"], arr["tracked"], arr["occluded"], arr["radius"]
-    # ---- events / notes / prompts / skeleton / segment
+        return arr, points
+    cols, n = src.table(f"{d}/tracks.csv", ("frame", "point", "x", "y"), TRACK_COLS[4:])
+    return tracks_from_table(cols, n, points, T, f"{d}/tracks.csv")
+
+
+def _new_point(raw_name: str, k: int):
+    """A landmark only a file knows (named by the file / the table)."""
+    from kinetrace.session import PointMeta
+    return PointMeta(_clean_name(unicodedata.normalize("NFC", raw_name)), _PALETTE[k % len(_PALETTE)])
+
+
+def _read_events_notes(src: _Source, d: str, s) -> None:
+    from kinetrace.session import Event
     if src.has(f"{d}/events.csv"):
         cols, n = src.table(f"{d}/events.csv", ("name", "start", "end"), EVENT_COLS[3:])
         for i in range(n):
@@ -1592,33 +1992,56 @@ def _read_camera(src: _Source, d: str, s) -> None:
                 a, b = int(cols["start"][i]), int(cols["end"][i])
             except ValueError:
                 raise ProjectFileError(f"{where}: start / end must be whole numbers") from None
-            s.events.append(Event(_name(cols["name"][i]), min(a, b), max(a, b),
+            s.events.append(Event(_clean_name(cols["name"][i]), min(a, b), max(a, b),
                                   _rgb(cols["color"][i], where) if cols.get("color") else (255, 200, 0),
                                   (cols.get("note") or [""] * n)[i], (cols.get("author") or [""] * n)[i]))
     if src.has(f"{d}/notes.csv"):
         cols, n = src.table(f"{d}/notes.csv", ("frame", "text"), NOTE_COLS[2:])
         for i in range(n):
             if cols["text"][i].strip():
-                s.notes[int(cols["frame"][i])] = {"text": cols["text"][i],
-                                                  "author": (cols.get("author") or [""] * n)[i],
-                                                  "time": (cols.get("time") or [""] * n)[i]}
-    if src.has(f"{d}/ball_prompts.json"):
-        for nm, per in (src.json(f"{d}/ball_prompts.json") or {}).items():
+                try:
+                    frame = int(cols["frame"][i])
+                except ValueError:
+                    raise ProjectFileError(f"{d}/notes.csv row {i + 2}: the frame {cols['frame'][i]!r} must be a "
+                                           "whole number") from None
+                s.notes[frame] = {"text": cols["text"][i], "author": (cols.get("author") or [""] * n)[i],
+                                  "time": (cols.get("time") or [""] * n)[i]}
+
+
+def _read_markers(src: _Source, d: str, s, index: dict) -> None:
+    """ball_prompts.json / spots.json (keyed by landmark name) and skeleton.json."""
+    rel = f"{d}/ball_prompts.json"
+    if src.has(rel):
+        raw = src.json(rel)
+        if not isinstance(raw, dict):
+            raise ProjectFileError(f"{rel}: expected one entry per ball marker")
+        for nm, per in raw.items():
+            nm = _clean_name(nm)
             if nm in index and s.points[index[nm]].is_ball:
-                s.points[index[nm]].ball_prompts = {int(f): [[float(c[0]), float(c[1]), int(c[2])] for c in cs]
-                                                    for f, cs in per.items()}
+                with _parsing(f"{rel} ({nm})"):
+                    s.points[index[nm]].ball_prompts = {
+                        int(f): [[float(c[0]), float(c[1]), int(c[2])] for c in cs] for f, cs in per.items()}
     if src.has(f"{d}/spots.json"):
         from kinetrace.spots import SpotSettings
         per = src.json(f"{d}/spots.json")
         for nm, st in (per.items() if isinstance(per, dict) else ()):
+            nm = _clean_name(nm)
             if nm in index and isinstance(st, dict):       # odd values fall back to automatic
                 s.points[index[nm]].spot = SpotSettings.from_dict(st).to_dict()
     if src.has(f"{d}/skeleton.json"):
         sk = src.json(f"{d}/skeleton.json")
         if isinstance(sk, dict) and sk.get("landmarks"):
             s.skeleton = sk
+
+
+def _read_segment_body(src: _Source, d: str, s) -> None:
+    from kinetrace.body import BodyTrack
+    from kinetrace.segmenter import MIDLINE_SAMPLES, MaskTrack
+    from kinetrace.session import AnimalMeta
+    T = s.n_frames
     if src.has(f"{d}/segment.json"):
-        s.animal = AnimalMeta.from_json(src.text(f"{d}/segment.json"))
+        with _parsing(f"{d}/segment.json"):
+            s.animal = AnimalMeta.from_json(src.text(f"{d}/segment.json"))
         m = src.arrays(f"{d}/silhouette")
         rel = f"{d}/silhouette/summary.csv"
         if "bbox" not in m and src.has(rel):          # format 2: the per-frame numbers are a CSV
@@ -1637,16 +2060,22 @@ def _read_camera(src: _Source, d: str, s) -> None:
                          ("cframe", np.zeros(0, np.int32)), ("mframe", np.zeros(0, np.int32)),
                          ("mpts", np.zeros((0, MIDLINE_SAMPLES, 2), np.float32))):
                 m.setdefault(k, v)                 # a hand-written summary without outlines
-        s.masks = MaskTrack.from_arrays("", m) if "bbox" in m else MaskTrack(T)
+        with _parsing(f"{d}/silhouette"):
+            s.masks = MaskTrack.from_arrays("", m) if "bbox" in m else MaskTrack(T)
         if s.masks.n_frames != T:
             raise ProjectFileError(f"{d}/silhouette: {s.masks.n_frames} frames, the video has {T}")
         s.masks.native_w, s.masks.native_h = s.width, s.height
     b = src.arrays(f"{d}/body")
     if b:
-        s.body = BodyTrack.from_arrays("", b)
+        with _parsing(f"{d}/body"):
+            s.body = BodyTrack.from_arrays("", b)
         if s.body.n_frames != T:
             raise ProjectFileError(f"{d}/body: {s.body.n_frames} frames, the video has {T}")
-    # ---- view
+
+
+def _read_view(src: _Source, d: str, s, index: dict) -> None:
+    """view.json: where the user was (never data: odd values fall back)."""
+    T = s.n_frames
     s._name_counter, s._event_counter = len(s.points), len(s.events)
     v = src.json(f"{d}/view.json") if src.has(f"{d}/view.json") else {}
     if not isinstance(v, dict):
@@ -1680,7 +2109,6 @@ def tracks_from_table(cols: dict, n: int, points: list, T: int, where: str):
     """tracks.csv columns -> the T x N arrays of a session (NaN / False where a
     cell has no row). A point name only the table knows becomes a new point,
     appended to `points`. -> (arrays, points). Also used by trackio.py."""
-    from kinetrace.session import PointMeta
     index = {p.name: i for i, p in enumerate(points)}
     if n:
         try:
@@ -1691,15 +2119,13 @@ def tracks_from_table(cols: dict, n: int, points: list, T: int, where: str):
         if bad.any():
             raise ProjectFileError(f"{where}: row {int(np.flatnonzero(bad)[0]) + 2}: frame {fr[bad][0]} "
                                    f"is outside the video (0 - {T - 1})")
-        for nm in sorted(set(cols["point"]) - set(index), key=cols["point"].index):
+        pnames = [_clean_name(x) for x in cols["point"]]      # the same name rule as points.csv (I212)
+        for nm in sorted(set(pnames) - set(index), key=pnames.index):
             index[nm] = len(points)                   # a name only tracks.csv knows: a new point
-            points.append(PointMeta(nm, _PALETTE[len(points) % len(_PALETTE)]))
-        pi = np.fromiter(map(index.__getitem__, cols["point"]), np.int64, n)
+            points.append(_new_point(nm, len(points)))
+        pi = np.fromiter(map(index.__getitem__, pnames), np.int64, n)
     N = len(points)
-    arr = dict(tracks=np.full((T, N, 2), np.nan, np.float32), confidence=np.zeros((T, N), np.float32),
-               visibility=np.zeros((T, N), bool), manual=np.zeros((T, N), bool),
-               tracked=np.zeros((T, N), bool), occluded=np.zeros((T, N), bool),
-               radius=np.full((T, N), np.nan, np.float32))
+    arr = _empty_tracks(T, N)
     if n:
         dup = np.unique(fr * N + pi, return_counts=True)[1] > 1
         if dup.any():
@@ -1719,6 +2145,7 @@ def tracks_from_table(cols: dict, n: int, points: list, T: int, where: str):
             arr["radius"][fr, pi] = text_f32(cols["radius"], where)
     return arr, points
 
+
 _PALETTE = [(255, 77, 77), (77, 210, 255), (255, 210, 77), (140, 255, 120), (220, 120, 255),
             (255, 150, 60), (80, 160, 255), (255, 110, 190)]
 
@@ -1726,12 +2153,6 @@ _PALETTE = [(255, 77, 77), (77, 210, 255), (255, 210, 77), (140, 255, 120), (220
 # ------------------------------------------------------------------ conveniences (tests, CLI)
 def new_id() -> str:
     return uuid.uuid4().hex
-
-
-def safe_id(project_id) -> bool:
-    """A project id is a file name in the recovery folder (I148): letters,
-    digits, '-' and '_' only (new_id() gives 32 hex digits)."""
-    return isinstance(project_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", project_id) is not None
 
 
 def timestamp() -> str:

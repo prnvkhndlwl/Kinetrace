@@ -135,7 +135,7 @@ for form in ("single file", "folder"):
     else:
         members = {}
         for d_, _dirs, fs in os.walk(p99):
-            if os.sep + "." in d_:
+            if any(part.startswith(".") for part in os.path.relpath(d_, p99).split(os.sep) if part != "."):
                 continue
             for f_ in fs:
                 full = os.path.join(d_, f_)
