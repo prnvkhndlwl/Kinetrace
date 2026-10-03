@@ -18,7 +18,7 @@ Everything else comes from requirements.txt.
 
 Then the source code of AllTracker (Harley et al., ICCV 2025, MIT licence),
 the default point model, is fetched into models/alltracker at a pinned commit
-(277 KB); its 63 MB checkpoint downloads the first time you press Track.
+(about 1 MB); its 66 MB checkpoint downloads the first time you press Track.
 Without it the app falls back to CoTracker3.
 
 Finally the environment is verified (every package imports) and the hardware
@@ -28,7 +28,8 @@ A marker file, .venv/kinetrace-install.json, records a finished install; the
 launchers start the app only when it is there. Standard library only.
 
     install.py                   install (or verify) everything
-    install.py --force           reinstall the packages even if they import
+    install.py --force           reinstall the packages even if they import (PyTorch with
+                                 --force-reinstall, the others with --upgrade)
     install.py --alltracker-only fetch AllTracker's code only (the launchers retry a missed fetch)
 """
 import json
@@ -41,11 +42,16 @@ import time
 
 TORCH = "2.12.1"
 TORCHVISION = "0.27.1"
-DRIVER_MIN = 580            # NVIDIA driver branch the CUDA 13 build needs
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+# the app's own modules that need nothing installed (standard library only at import): the driver
+# rule and the pinned AllTracker code live there once, not copied here (R21)
+from kinetrace import device, downloads  # noqa: E402
+
+DRIVER_MIN = device.DRIVER_MIN              # NVIDIA driver branch the CUDA 13 build needs
 # the AllTracker commit Kinetrace's alltracker_backend.py was verified against
-ALLTRACKER_SHA = "e7553135e7b361590dbccd10e2b274b024f41cd6"      # = kinetrace/downloads.py CODE["alltracker"]
-ALLTRACKER_DIR = os.path.join(HERE, "models", "alltracker")
+ALLTRACKER_SHA = downloads.CODE["alltracker"].commit
+ALLTRACKER_DIR = str(downloads.CODE["alltracker"].dest)
 MARKER = os.path.join(sys.prefix, "kinetrace-install.json")
 # what a working environment must be able to import (checked in a fresh process)
 IMPORTS = "import PySide6.QtWidgets, cv2, numpy, scipy, torch, torchvision, transformers, PIL, imageio_ffmpeg"
@@ -59,23 +65,7 @@ def say(msg: str) -> None:
     print(msg, flush=True)
 
 
-def nvidia_driver():
-    """(driver version text, major) from nvidia-smi, or None without an NVIDIA driver."""
-    exe = shutil.which("nvidia-smi")
-    if exe is None:
-        return None
-    try:
-        r = subprocess.run([exe, "--query-gpu=driver_version", "--format=csv,noheader"],
-                           capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if r.returncode != 0 or not r.stdout.strip():
-        return None
-    ver = r.stdout.strip().splitlines()[0].strip()
-    try:
-        return ver, int(ver.split(".")[0])
-    except ValueError:
-        return ver, 0
+nvidia_driver = device.nvidia_driver        # (driver version text, major) or None without an NVIDIA driver
 
 
 def has_nvidia() -> bool:
@@ -98,6 +88,41 @@ def pip(*args: str) -> None:
            "--timeout", "90", *args]
     say("+ " + " ".join(cmd))
     subprocess.check_call(cmd)
+
+
+# Qt's system libraries on Linux: the file Qt fails to open -> the Ubuntu / Debian package (the
+# list run.sh checks with ldconfig)
+LINUX_LIBS = {"libxcb-cursor.so.0": "libxcb-cursor0", "libEGL.so.1": "libegl1",
+              "libxkbcommon-x11.so.0": "libxkbcommon-x11-0", "libGL.so.1": "libgl1",
+              "libxkbcommon.so.0": "libxkbcommon0", "libdbus-1.so.3": "libdbus-1-3",
+              "libfontconfig.so.1": "libfontconfig1"}
+
+
+def system_libs_hint(why: str) -> str | None:
+    """When an import failed because a Linux system library is missing ("libEGL.so.1: cannot open
+    shared object file"), the sentence + the apt-get line that fixes it; else None (G98). Reinstalling
+    the Python packages cannot help with this, so it must not be advised."""
+    import re
+    if "cannot open shared object file" not in str(why):
+        return None
+    m = re.search(r"(lib[\w.+-]+\.so[.\d]*): cannot open shared object file", str(why))
+    named = m.group(1) if m else ""
+    pkgs = [LINUX_LIBS[named]] if named in LINUX_LIBS else []
+    if shutil.which("ldconfig"):
+        try:
+            have = subprocess.run(["ldconfig", "-p"], capture_output=True, text=True, timeout=20).stdout
+            pkgs += [pkg for lib, pkg in LINUX_LIBS.items() if lib not in have and pkg not in pkgs]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if not pkgs:
+        pkgs = list(LINUX_LIBS.values())
+    return ("The window needs system libraries that are not installed on this computer" +
+            (f" ({named})" if named else "") + ". The Python packages themselves are fine: install the "
+            "libraries, then start the launcher again (nothing is downloaded again). On Ubuntu / Debian:\n"
+            "    sudo apt-get install -y " + " ".join(pkgs))
+
+
+EXIT_SYSTEM_LIBS = 3        # install.py's exit code for "a system library is missing"; run.sh words it
 
 
 def imports_ok() -> tuple[bool, str]:
@@ -132,10 +157,8 @@ def fetch_alltracker() -> None:
     """AllTracker's code into models/alltracker (skipped when already there):
     the pinned commit's zip, used only when its Python files have the pinned
     digest and every member stays inside the folder (kinetrace/downloads.py, I153)."""
-    if os.path.exists(os.path.join(ALLTRACKER_DIR, "nets", "alltracker.py")):
+    if downloads.code_present("alltracker"):
         return
-    sys.path.insert(0, HERE)
-    from kinetrace import downloads
     c = downloads.CODE["alltracker"]
     say(f"+ fetching AllTracker (MIT licence), commit {c.commit[:12]}, from github.com/{c.repo}")
     try:
@@ -149,10 +172,8 @@ def fetch_alltracker() -> None:
 def hardware_report() -> None:
     """The same text as `python -m kinetrace --check` (no Qt is imported)."""
     try:
-        sys.path.insert(0, HERE)
-        from kinetrace.device import describe
         say("")
-        say(describe())
+        say(device.describe())
     except Exception as e:      # noqa: BLE001 - a report must never fail an install
         say(f"(hardware report unavailable: {e})")
 
@@ -170,7 +191,11 @@ def main(force: bool = False) -> int:
 
     choice = torch_choice()
     if not force:
-        ok, _ = imports_ok()
+        ok, why = imports_ok()
+        hint = None if ok else system_libs_hint(why)
+        if hint:                                    # not a missing package: no reinstall (G98)
+            say(hint)
+            return EXIT_SYSTEM_LIBS
         if ok and torch_matches():
             # the launchers only come here when the marker is missing -- a fresh
             # folder, or an update that changed requirements.txt / install.py and
@@ -200,23 +225,30 @@ def main(force: bool = False) -> int:
     say("Step 1 of 4: the package installer (pip)")
     pip("--upgrade", "pip")
     wheels = [f"torch=={TORCH}", f"torchvision=={TORCHVISION}"]
+    # --force must really reinstall: pip treats "==2.12.1" as met by an installed 2.12.1+cpu, so the
+    # wrong build (CPU on a GPU machine) would stay without --force-reinstall (I238)
+    again = ["--force-reinstall"] if force else []
     say("Step 2 of 4: PyTorch, the deep-learning engine (" + ("about 3 GB with the CUDA libraries: the longest "
         "step" if choice == "cuda" else "a few hundred MB") + ")")
     if choice == "cuda":
-        pip(*wheels, "--index-url", "https://download.pytorch.org/whl/cu130")
+        pip(*wheels, *again, "--index-url", "https://download.pytorch.org/whl/cu130")
     elif choice == "cpu" and sys.platform != "darwin" and platform.machine().upper() not in ("ARM64", "AARCH64"):
-        pip(*wheels, "--index-url", "https://download.pytorch.org/whl/cpu")
+        pip(*wheels, *again, "--index-url", "https://download.pytorch.org/whl/cpu")
     else:
-        pip(*wheels)
+        pip(*wheels, *again)
     say("Step 3 of 4: the other packages (Qt for the window, OpenCV, transformers, ...: about 500 MB)")
-    pip("-r", os.path.join(HERE, "requirements.txt"))
-    say("Step 4 of 4: AllTracker's code (1 MB)")
+    pip(*(["--upgrade"] if force else []), "-r", os.path.join(HERE, "requirements.txt"))
+    say("Step 4 of 4: AllTracker's code (about 1 MB)")
     fetch_alltracker()
 
     ok, why = imports_ok()
     if not ok:
         say("")
         say(f"Installation finished but a package does not import: {why}")
+        hint = system_libs_hint(why)
+        if hint:                                    # (G98) a missing Linux library, not a broken environment
+            say(hint)
+            return EXIT_SYSTEM_LIBS
         say("Delete the .venv folder and start the launcher again; if it happens twice, send the lines above "
             "with your question.")
         return 1

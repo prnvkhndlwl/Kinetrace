@@ -25,7 +25,7 @@ from kinetrace.errors import plain_error
 
 VERDICT_WORDS = {"clear": "CLEAR - use it", "weak": "WEAK - check by eye first",
                  "none": "NONE - do not apply"}
-VERDICT_COLORS = {"clear": theme.GREEN, "weak": "#FFD60A", "none": theme.RED}
+_ORPHANS: list = []         # a sync thread that outlived its dialog, kept referenced until it ends (G96)
 
 
 class _SyncThread(QThread):
@@ -306,16 +306,21 @@ class SyncDialog(QDialog):
         n = len(self.results)
         # (I11) name the file that is actually silent, and a camera that did not record
         # the stretch, instead of calling every row "no sound track"
-        if any(getattr(cs, "ref_silent", False) for cs in self.results):
+        if any(cs.ref_silent for cs in self.results):
             self.status.setText(f"{self.project.name(0)} (the reference): {self.results[0].result.why}")
             self.btn_apply.setEnabled(False)
             return
-        n_silent = sum(1 for cs in self.results if getattr(cs, "has_audio", True) is False)
-        reach = [self.project.name(cs.view) for cs in self.results if getattr(cs, "out_of_reach", False)]
-        if n_silent or reach:
+        n_silent = sum(1 for cs in self.results if cs.has_audio is False)
+        # (G97) a file ffmpeg could not open at all is "could not be read", not "no sound track"
+        unread = [self.project.name(cs.view) for cs in self.results if cs.has_audio is None]
+        reach = [self.project.name(cs.view) for cs in self.results if cs.out_of_reach]
+        if n_silent or reach or unread:
             bits = []
             if n_silent:
                 bits.append(f"{n_silent} video(s) have no sound track: use the Motion method for them.")
+            if unread:
+                bits.append(f"{', '.join(unread)} could not be read (hover the verdict for the reason): check that "
+                            "the video file is there and opens.")
             if reach:
                 bits.append(f"{', '.join(reach)} did not record this stretch (stopped earlier, or started much "
                             "later than assumed): choose a stretch every camera recorded, or widen the search.")
@@ -359,7 +364,25 @@ class SyncDialog(QDialog):
         self.accept()
 
     def done(self, code):                       # noqa: D401 - Qt override
-        if self._thread is not None and self._thread.isRunning():
-            self._thread.request_cancel()
-            self._thread.wait(30000)
+        th = self._thread
+        if th is not None and th.isRunning():
+            # (G96) never block the window waiting for the reader: ask it to stop (ffmpeg is killed,
+            # the picture reader quits at its next frame), let go of this dialog and keep the thread
+            # referenced until it has finished -- dropping a running QThread aborts the program
+            th.request_cancel()
+            import warnings
+            with warnings.catch_warnings():             # PySide warns about a signal nobody listens to
+                warnings.simplefilter("ignore")
+                for sig in (th.progress, th.done, th.error):
+                    try:
+                        sig.disconnect()
+                    except (RuntimeError, TypeError):
+                        pass
+            self.hide()
+            try:
+                from kinetrace.app import _retire       # closeEvent waits for what is kept there
+                _retire(th)
+            except ImportError:
+                _ORPHANS.append(th)
+                th.finished.connect(lambda t=th: _ORPHANS.remove(t) if t in _ORPHANS else None)
         super().done(code)

@@ -211,7 +211,7 @@ _starts = {"ref": 10.0, "late": 16.0, "early": 4.0}          # world second each
 _tracks = {nm: _world + 0.01 * _crng.normal(size=len(_world)) for nm in _starts}
 
 
-def _fake_signal(path, t0, duration, sr=SR):
+def _fake_signal(path, t0, duration, sr=SR, should_cancel=None):
     a = int(round((_starts[path] + max(0.0, float(t0))) * sr))
     b = min(len(_tracks[path]), a + int(round(float(duration) * sr)))
     return _tracks[path][max(0, a):b].copy() if b > a else np.zeros(0)

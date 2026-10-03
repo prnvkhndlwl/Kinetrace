@@ -396,7 +396,7 @@ check(not np.array_equal(_px(appicon.render(32)), _px(appicon.render(32, simple=
       "small sizes get the simpler drawing")
 ic = appicon.icon()
 check(all(ic.pixmap(s, s).width() == s for s in (16, 32, 64, 256)), "every size is in the icon")
-check(all((appicon.CACHE / f"appicon_v{appicon.ICON_VERSION}_{s}.png").exists() for s in appicon.SIZES),
+check(all(appicon.cache_file(s).exists() for s in appicon.SIZES),
       "rendered once into the theme cache")
 seen_about.clear()
 

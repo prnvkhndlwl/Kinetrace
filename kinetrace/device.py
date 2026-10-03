@@ -56,11 +56,26 @@ BENCH_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 BENCH_MIN_SPEEDUP = 1.0     # the GPU is used when it is at least this much faster than the CPU
 
 
+_driver_text: list = []         # [version text or ""], read once: nvidia-smi is a process start
+
+
+def _driver_for_key() -> str:
+    if not _driver_text:
+        try:
+            d = nvidia_driver()
+        except Exception:       # noqa: BLE001 - a key part, never a reason to fail
+            d = None
+        _driver_text.append(d[0] if d else "")
+    return _driver_text[0]
+
+
 def _bench_key(torch) -> str:
-    """What the cached measurement is valid for: this PyTorch, this GPU, this CPU."""
-    gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else (
-        "mps" if _mps_available(torch) else "none")
-    return f"{torch.__version__}|{gpu}|{platform.machine()}|{os.cpu_count()}|{platform.processor()}"
+    """What the cached measurement is valid for: this PyTorch, this GPU and its
+    driver (a driver update can fix - or break - a GPU, I239), this CPU."""
+    cuda = torch.cuda.is_available()
+    gpu = torch.cuda.get_device_name(0) if cuda else ("mps" if _mps_available(torch) else "none")
+    drv = _driver_for_key() if cuda else ""
+    return f"{torch.__version__}|{gpu}|{drv}|{platform.machine()}|{os.cpu_count()}|{platform.processor()}"
 
 
 def benchmark(device: str, torch=None) -> float:
@@ -111,7 +126,11 @@ def _read_bench(key: str) -> dict | None:
         import json
         with open(BENCH_FILE, encoding="utf-8") as fh:
             d = json.load(fh)
-        return d if isinstance(d, dict) and d.get("key") == key else None
+        if not (isinstance(d, dict) and d.get("key") == key):
+            return None
+        if d.get("gpu") and d.get("gpu_ms") is None:
+            return None         # a failed GPU run saved by an older version: try the GPU again (I239)
+        return d
     except Exception:       # noqa: BLE001 - no cache, or an unreadable one: measure again
         return None
 
@@ -126,16 +145,38 @@ def _write_bench(d: dict) -> None:
         pass                # a read-only install measures again next time
 
 
+_memo: dict = {}                # (file, key, file mtime) -> the measurement: once per process
+
+
+def _bench_mtime() -> tuple | None:
+    """What identifies the cache file's current content (time and size: a coarse file system
+    clock must not hide a rewrite)."""
+    try:
+        st = os.stat(BENCH_FILE)
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
 def compare(torch=None) -> dict:
     """The GPU-versus-CPU measurement for this machine, cached in BENCH_FILE:
     {key, cpu_ms, gpu, gpu_ms (None when the GPU could not run it), speedup,
     error}. The first call on a machine takes a few seconds (the CPU pass on
-    a slow laptop); afterwards it is a file read."""
+    a slow laptop); afterwards it is a file read, and within one run of the app
+    a memo. A GPU that could NOT run the workload is not written to the file
+    (a busy card or a half-loaded driver at one start must not keep the CPU in
+    use for good): it is remembered for this run only and tried again at the
+    next start (I239)."""
     if torch is None:
         import torch
     key = _bench_key(torch)
+    sig = (BENCH_FILE, key, _bench_mtime())
+    if sig in _memo:
+        return _memo[sig]
     cached = _read_bench(key)
     if cached is not None:
+        _memo.clear()
+        _memo[sig] = cached
         return cached
     gpu = "cuda" if torch.cuda.is_available() else ("mps" if _mps_available(torch) else None)
     d = {"key": key, "cpu_ms": None, "gpu": gpu, "gpu_ms": None, "speedup": None, "error": ""}
@@ -143,6 +184,8 @@ def compare(torch=None) -> dict:
         d["cpu_ms"] = benchmark("cpu", torch)
     except Exception as e:      # noqa: BLE001 - the CPU cannot fail this; record it if it does
         d["error"] = f"cpu: {type(e).__name__}: {e}"
+        _memo.clear()
+        _memo[sig] = d
         return d
     if gpu is not None:
         try:
@@ -150,7 +193,10 @@ def compare(torch=None) -> dict:
             d["speedup"] = d["cpu_ms"] / max(d["gpu_ms"], 1e-6)
         except Exception as e:  # noqa: BLE001 - a GPU that cannot run the workload is not used
             d["error"] = f"{gpu}: {type(e).__name__}: {e}"
-    _write_bench(d)
+    if gpu is None or d["gpu_ms"] is not None:
+        _write_bench(d)
+    _memo.clear()
+    _memo[sig if gpu is None or d["gpu_ms"] is None else (BENCH_FILE, key, _bench_mtime())] = d
     return d
 
 
@@ -335,8 +381,8 @@ def probe(refresh: bool = False) -> dict:
         # a GPU exists but the CPU is doing the work: say why, first
         if b.get("gpu_ms") is None:
             p["notes"].append("A GPU is present but could not run the models (" + str(b.get("error", "")) +
-                              "). The CPU is used. Update the graphics driver; delete models/device_benchmark.json "
-                              "to measure again.")
+                              "). The CPU is used for this run. Update the graphics driver; the GPU is tried "
+                              "again every time Kinetrace starts.")
         else:
             p["notes"].append(f"The CPU measured faster than the GPU on this machine (GPU {b['gpu_ms']:.0f} ms vs "
                               f"CPU {b['cpu_ms']:.0f} ms per pass), so the CPU is used. Delete "
@@ -375,6 +421,8 @@ def probe(refresh: bool = False) -> dict:
                          "Delete .venv and start the launcher again with an up-to-date NVIDIA driver to use it.")
         elif p["forced"] == "cpu":
             notes.append("The CPU was chosen with KINETRACE_DEVICE=cpu.")
+        elif p["cuda"] or p["mps"]:
+            pass                # a GPU exists: the note above says why the CPU is used (G95)
         else:
             notes.append("No GPU was found. Everything works; the models are several times slower and "
                          "SAM 3D Body is switched off.")

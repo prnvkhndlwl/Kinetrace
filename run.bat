@@ -27,7 +27,9 @@ rem --- 1. a Python 3.10 - 3.14 that can make virtual environments -------------
 rem "py" is the python.org launcher; "python" may be the Microsoft Store stub,
 rem which only prints an advertisement and fails - the version test filters it.
 set "PYEXE="
-set "PYCHECK=import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] < (3, 15) else 1); import venv, ensurepip"
+rem the imports come BEFORE the version exit (I220): after sys.exit they never ran, so a Python without venv
+rem / ensurepip was accepted and "python -m venv" failed later
+set "PYCHECK=import sys, venv, ensurepip; sys.exit(0 if (3, 10) <= sys.version_info[:2] < (3, 15) else 1)"
 rem KINETRACE_BOOTSTRAP_PYTHON=1 skips the search and always uses a private
 rem Python (a broken system Python; the CI's bootstrap job)
 if "%KINETRACE_BOOTSTRAP_PYTHON%"=="1" goto :bootstrap
