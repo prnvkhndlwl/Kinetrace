@@ -5655,11 +5655,9 @@ class MainWindow(QMainWindow):
         elif chosen is acts["clear_window"] and self.timeline.sel_range is not None:
             self._multi_clear(sel, *self.timeline.sel_range)
         elif chosen is acts["clear_all"]:
-            if QMessageBox.question(self, "Clear tracks",
-                                    f"Clear every frame of the tracks of {len(sel)} points? The points stay in the "
-                                    "list. Ctrl+Z brings the tracks back.",
-                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
-                self._clear_window(0, s.n_frames - 1, list(sel), do_points=True, do_masks=False)
+            self._clear_whole_tracks(sel, "Clear tracks",
+                                     f"Clear every frame of the tracks of {len(sel)} points? The points stay in the "
+                                     "list. Ctrl+Z brings the tracks back.")
         elif chosen is acts["delete"]:
             self._delete_points(list(sel))
         elif chosen is acts["hidden"]:
@@ -5676,9 +5674,9 @@ class MainWindow(QMainWindow):
         elif chosen in acts["tracker"]:
             self._set_tracker(sel, acts["tracker"][chosen])
         elif chosen is acts["fill"]:
-            snap = s.snapshot()
-            n = sum(s.interpolate_keyframes(q, replace=False, window=self.timeline.sel_range)[0]
-                    for q in sel if not s.points[q].derived and len(s.manual_frames(q)) >= 2)
+            snap, done = self._interpolate_pids(
+                [q for q in sel if not s.points[q].derived and len(s.manual_frames(q)) >= 2], replace=False)
+            n = sum(k for k, _span in done)
             if n:
                 self._set_undo_point(snap)
                 self._refresh_overlay()
@@ -5871,14 +5869,32 @@ class MainWindow(QMainWindow):
             return True
         if chosen is acts.get("clear_all"):
             n = int(s.tracked[:, pid].sum())
-            if QMessageBox.question(
-                    self, "Clear track",
-                    f"Clear {name}'s positions on all {n:,} frames?\n\nThe point itself stays in "
-                    "the list, so you can place it again. Ctrl+Z undoes this.",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
-                self._clear_tracked_window(0, s.n_frames - 1, [pid])
+            self._clear_whole_tracks(
+                [pid], "Clear track",
+                f"Clear {name}'s positions on all {n:,} frames?\n\nThe point itself stays in "
+                "the list, so you can place it again. Ctrl+Z undoes this.")
             return True
         return False
+
+    def _clear_whole_tracks(self, pids, title: str, text: str) -> None:
+        """'Clear the whole track(s)?' of the single and the multi-point menu (R13): ask (No is the
+        default), then clear every frame of the points' tracks, one undo step. Each menu words its
+        own question."""
+        s = self.session
+        if QMessageBox.question(self, title, text, QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) == QMessageBox.Yes:
+            self._clear_window(0, s.n_frames - 1, list(pids), do_points=True, do_masks=False)
+
+    def _interpolate_pids(self, pids, replace: bool):
+        """The keyframe fill of the single and the multi-point menu (R13): a curve through each
+        point's hand-placed frames fills the frames between (`replace`: also overwrites them),
+        inside the timeline's selected window if there is one. Returns (the snapshot taken BEFORE,
+        [(frames filled, span) per point]); the caller makes it the undo point only when it filled
+        something."""
+        s = self.session
+        snap = s.snapshot()
+        window = self.timeline.sel_range
+        return snap, [s.interpolate_keyframes(q, replace=replace, window=window) for q in pids]
 
     def _interpolate_keyframes(self, pid: int, replace: bool) -> None:
         """Point menu: a curve through the hand-placed frames fills the gaps
@@ -5887,8 +5903,8 @@ class MainWindow(QMainWindow):
         if s is None or self.state != READY or not (0 <= pid < s.n_points):
             return
         name = s.points[pid].name
-        snap = s.snapshot()
-        n, span = s.interpolate_keyframes(pid, replace=replace, window=self.timeline.sel_range)
+        snap, done = self._interpolate_pids([pid], replace)
+        n, span = done[0]
         if not n:
             self.statusBar().showMessage(
                 f"{name}: nothing to fill — it needs at least two hand-placed frames"
