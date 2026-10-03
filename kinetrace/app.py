@@ -3975,8 +3975,7 @@ class MainWindow(QMainWindow):
             # same rule as points): the click is a new SAM prompt on this frame
             if (self.selected is not None and self.selected < s.n_points and s.points[self.selected].is_ball
                     and not s.tracked[self.current, self.selected]):
-                self._undo_snap = s.snapshot()  # (I123)
-                self.act_undo.setEnabled(True)
+                self._begin_edit()              # (I123)
                 s.add_ball_prompt(self.selected, self.current, x, y)
                 self._refresh_overlay()
                 self._update_track_button()
@@ -3984,8 +3983,7 @@ class MainWindow(QMainWindow):
                     f"{s.points[self.selected].name}: SAM will be prompted here on frame {self.current} — "
                     "press Track to continue it", 7000)
                 return
-            self._undo_snap = s.snapshot()      # adding is one undo step too (I123)
-            self.act_undo.setEnabled(True)
+            self._begin_edit()                  # adding is one undo step too (I123)
             pid = s.add_ball(self.current, x, y)
             self._share_landmarks()
             self.selected = pid
@@ -4015,8 +4013,7 @@ class MainWindow(QMainWindow):
             return
         # (I123) without a snapshot here, Ctrl+Z right after adding restored an OLDER
         # snapshot: the new point vanished AND the previous run or edit was undone
-        self._undo_snap = s.snapshot()
-        self.act_undo.setEnabled(True)
+        self._begin_edit()
         derived_sel = (self.selected is not None and self.selected < s.n_points
                        and s.points[self.selected].derived)
         pid = s.add_point(self.current, x, y)
@@ -4039,8 +4036,7 @@ class MainWindow(QMainWindow):
             return
         if self.btn_add.isChecked():
             self.btn_add.setChecked(False)      # the next click places THIS point
-        self._undo_snap = s.snapshot()          # one undo step, in every camera (I123, G19)
-        self.act_undo.setEnabled(True)
+        self._begin_edit()                      # one undo step, in every camera (I123, G19)
         pid = s.add_empty_point()
         self._share_landmarks()
         self.selected = pid
@@ -4064,8 +4060,7 @@ class MainWindow(QMainWindow):
             return
         self.btn_add.setChecked(False)  # one placement per arm
         s = self.session
-        self._undo_snap = s.snapshot()          # (I123)
-        self.act_undo.setEnabled(True)
+        self._begin_edit()                      # (I123)
         pid = s.add_point(self.current, cx, cy, kind="group", radius=radius)
         self._share_landmarks()
         self.selected = pid
@@ -4595,8 +4590,7 @@ class MainWindow(QMainWindow):
         c = pts.mean(axis=0)
         radius = float(np.max(np.hypot(pts[:, 0] - c[0], pts[:, 1] - c[1])))
         s = self.session
-        self._undo_snap = s.snapshot()          # (I123)
-        self.act_undo.setEnabled(True)
+        self._begin_edit()                      # (I123)
         pid = s.add_point(self.current, float(c[0]), float(c[1]), kind="group", radius=radius,
                           shape=shape, outline=pts.tolist())
         self._share_landmarks()
@@ -4614,8 +4608,7 @@ class MainWindow(QMainWindow):
         s = self.session
         if s is None or pid >= s.n_points or self.state != READY:
             return
-        self._undo_snap = s.snapshot()          # Ctrl+Z takes the mark back, nothing older (I71)
-        self.act_undo.setEnabled(True)
+        self._begin_edit()                      # Ctrl+Z takes the mark back, nothing older (I71)
         s.set_occluded(self.current, pid, on)
         self._refresh_overlay()
         name = s.points[pid].name
@@ -4644,9 +4637,8 @@ class MainWindow(QMainWindow):
             title="Mark all points hidden?" if on else "Unmark all points?")
         if not use:
             return
-        self._undo_snap = s.snapshot()
+        self._begin_edit()
         n = s.set_occluded_window(use, f0, f1, on)
-        self.act_undo.setEnabled(True)
         self.timeline.clear_selection()
         self._refresh_overlay()
         names = ", ".join(s.points[p].name for p in use[:4]) + (" …" if len(use) > 4 else "")
@@ -4744,8 +4736,7 @@ class MainWindow(QMainWindow):
         s = self.session
         if s is None or pid >= s.n_points:
             return
-        self._undo_snap = s.snapshot()          # its own undo step: Ctrl+Z restored an older one (G68)
-        self.act_undo.setEnabled(True)
+        self._begin_edit()                      # its own undo step: Ctrl+Z restored an older one (G68)
         s.points[pid].free = bool(free)
         s.dirty = True
         name = s.points[pid].name
@@ -4779,8 +4770,7 @@ class MainWindow(QMainWindow):
                 return
         # an undo point whether or not there was data to lose: the source change itself
         # is an edit, and Ctrl+Z would otherwise undo an older one (G70)
-        self._undo_snap = s.snapshot()
-        self.act_undo.setEnabled(True)
+        self._begin_edit()
         if spec:
             if s.animal is None:
                 self.toast.show_message(
@@ -4947,8 +4937,7 @@ class MainWindow(QMainWindow):
     def _clear_skeleton(self):
         if self.session is None:
             return
-        self._undo_snap = self.session.snapshot()      # the skeleton is in the snapshot (G70)
-        self.act_undo.setEnabled(True)
+        self._begin_edit()                             # the skeleton is in the snapshot (G70)
         self.session.clear_skeleton()
         self._refresh_skeleton_menu()
         self._refresh_overlay()
@@ -5099,6 +5088,26 @@ class MainWindow(QMainWindow):
                      f"{s.points[row].name} has no position on this frame — click on the video "
                      "to place it here and continue the same point"), 6000)
 
+    def _set_undo_point(self, snap, extra: dict | None = None) -> None:
+        """Make `snap` the undo point and enable Ctrl+Z (R10): for an edit that took its snapshot
+        BEFORE it knew whether it would change anything (a fill that found nothing to fill takes no
+        undo step), or whose snapshot is not the working camera's as it stands -- `_begin_edit` is
+        the one for an edit that always happens. `extra`: the other cameras' snapshots
+        {view: Snapshot} that belong to the same step."""
+        self._undo_snap = snap                   # (setting it forgets the extras)
+        if extra:
+            self._undo_extra.update(extra)
+        self.act_undo.setEnabled(True)
+
+    def _set_run_undo_point(self, snaps: dict) -> None:
+        """One Ctrl+Z for a run that went through several cameras: `snaps` = {view: the snapshot
+        taken before the run}; the working camera's is the undo point (a fresh one when it ran
+        nothing), the others' ride along (R10; `_multi_finish`, `_passes_finish`, the re-track's
+        Keep)."""
+        p = self.project
+        self._set_undo_point(snaps.get(p.active, self.session.snapshot()),
+                             {v: sn for v, sn in snaps.items() if v != p.active})
+
     def _begin_edit(self, names=None) -> None:
         """The undo point BEFORE an edit (I123, G68): the working camera's snapshot, plus -- for an
         edit made by landmark name, which changes every camera that has it (G19) -- each of those
@@ -5130,8 +5139,7 @@ class MainWindow(QMainWindow):
             return
         # a Ctrl+click / N-continue is ONE undo step, like a plain click:
         # without it Ctrl+Z threw away the whole previous tracking run (I64)
-        self._undo_snap = self.session.snapshot()
-        self.act_undo.setEnabled(True)
+        self._begin_edit()
         corrected = bool(self.session.tracked[self.current, pid] and not self.session.manual[self.current, pid])
         self.session.set_position(self.current, pid, x, y)
         if corrected:
@@ -5181,14 +5189,13 @@ class MainWindow(QMainWindow):
                 "right-click it → Data source → Track by appearance", 6000)
             return
         x, y = self._snap_to_prediction(pid, x, y)
-        self._undo_snap = s.snapshot()   # Ctrl+Z takes the click back
+        self._begin_edit()               # Ctrl+Z takes the click back
         corrected = bool(s.tracked[self.current, pid] and not s.manual[self.current, pid])
         s.set_position(self.current, pid, x, y)
         if corrected:
             self._hint_corrections(pid)
         self._refresh_overlay()
         self._update_track_button()
-        self.act_undo.setEnabled(True)
         n = int(s.manual[:, pid].sum())
         plural = "s" if n != 1 else ""
         rmse = self._residual_sentence(s.points[pid].name)      # (G28)
@@ -5251,9 +5258,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         # one undo step: without it Ctrl+Z restored an OLDER snapshot and took
-        # back the last tracking run instead (I71)
-        self._undo_snap = self.session.snapshot()
-        self.act_undo.setEnabled(True)
+        # back the last tracking run instead (I71); the other cameras that hold the name join it
+        self._begin_edit([name])
         self.session.remove_point(pid)
         self._remove_landmarks_elsewhere([name])
         self.timeline.clear_selection()   # its lane rows would now point elsewhere
@@ -5336,14 +5342,13 @@ class MainWindow(QMainWindow):
                 f"frames?{also}\n\nCtrl+Z restores them.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        self._undo_snap = s.snapshot()
+        self._begin_edit(gone)
         self.canvas.cancel_gesture()
         for pid in sorted(pids, reverse=True):  # descending keeps indices valid
             s.remove_point(pid)
         self._remove_landmarks_elsewhere(gone)
         self.timeline.clear_selection()   # its lane rows would now point elsewhere
         self.selected = None
-        self.act_undo.setEnabled(True)
         self._refresh_point_list()
         self._refresh_overlay()
         self._apply_state()
@@ -5403,10 +5408,9 @@ class MainWindow(QMainWindow):
                 + ("the selected points have no position there" if use else "there is no silhouette there")
                 + (" and no silhouette" if use and do_masks else "") + " — nothing was changed", 6000)
             return None
-        self._undo_snap = s.snapshot()
+        self._begin_edit()
         n_pts = s.clear_window(use, f0, f1) if use else 0
         n_msk = s.clear_masks(f0, f1) if do_masks else 0
-        self.act_undo.setEnabled(True)
         self.timeline.clear_selection()
         self._refresh_overlay()
         self._refresh_animal_panel()
@@ -5676,8 +5680,7 @@ class MainWindow(QMainWindow):
             n = sum(s.interpolate_keyframes(q, replace=False, window=self.timeline.sel_range)[0]
                     for q in sel if not s.points[q].derived and len(s.manual_frames(q)) >= 2)
             if n:
-                self._undo_snap = snap
-                self.act_undo.setEnabled(True)
+                self._set_undo_point(snap)
                 self._refresh_overlay()
                 self.timeline.refresh()
             self.statusBar().showMessage(f"{n} frame(s) filled from the curves through the hand placements"
@@ -5892,8 +5895,7 @@ class MainWindow(QMainWindow):
                 + (" with empty frames between them" if not replace else "")
                 + (" inside the selected window" if self.timeline.sel_range else ""), 7000)
             return
-        self._undo_snap = snap
-        self.act_undo.setEnabled(True)
+        self._set_undo_point(snap)
         self._refresh_overlay()
         self.timeline.refresh()
         self._update_track_button()
@@ -6417,8 +6419,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"No ◇ for {name}: {pr['why']}", 9000)
             return
         x, y = float(pr["xy"][0]), float(pr["xy"][1])
-        self._undo_snap = s.snapshot()
-        self.act_undo.setEnabled(True)
+        self._begin_edit()
         s.set_position(self.current, pid, x, y)
         self._refresh_overlay()
         self._update_track_button()
@@ -6479,11 +6480,10 @@ class MainWindow(QMainWindow):
             return
         n_cams = int(got[1])
         x, y = float(got[0][0]), float(got[0][1])
-        self._undo_snap = s.snapshot()
+        self._begin_edit()
         s.set_position(self.current, pid, x, y)
         self._refresh_overlay()
         self._update_track_button()
-        self.act_undo.setEnabled(True)
         moved = float(np.linalg.norm(np.array([x, y]) - cur)) if np.isfinite(cur).all() else float("nan")
         self.statusBar().showMessage(
             f"{s.points[pid].name} snapped onto {n_cams} camera{'s' if n_cams != 1 else ''}' rays at "
@@ -6646,9 +6646,7 @@ class MainWindow(QMainWindow):
         # original tracking run -- and the working camera only), as `_multi_finish` does
         snaps = {v: sn for v, sn in st["snaps"].items() if v < p.n_views}
         if snaps:
-            self._undo_snap = snaps.get(p.active, self.session.snapshot())
-            self._undo_extra.update({v: sn for v, sn in snaps.items() if v != p.active})
-            self.act_undo.setEnabled(True)
+            self._set_run_undo_point(snaps)
         self._refresh_overlay()
         self._apply_state()
         self.toast.show_message(f"Re-tracking kept ({word.lower()}). Save the project (Ctrl+S).",
@@ -6903,9 +6901,7 @@ class MainWindow(QMainWindow):
             if ends:                      # not back at the start frame, where the second pass began
                 self._goto(min(min(ends), self.n_frames - 1), force=True)
         if snaps:
-            self._undo_snap = snaps.get(p.active, self.session.snapshot())
-            self._undo_extra.update({v: sn for v, sn in snaps.items() if v != p.active})
-            self.act_undo.setEnabled(True)
+            self._set_run_undo_point(snaps)
         self._refresh_overlay()
         self._refresh_companions()
         self.timeline.refresh()
@@ -7225,9 +7221,7 @@ class MainWindow(QMainWindow):
         # one Ctrl+Z for the whole run, in every camera it touched (the switches above
         # cleared the undo point, as any camera switch does)
         snaps = {v: s for v, s in st["snaps"].items() if v < p.n_views}
-        self._undo_snap = snaps.get(p.active, self.session.snapshot())
-        self._undo_extra.update({v: s for v, s in snaps.items() if v != p.active})
-        self.act_undo.setEnabled(True)
+        self._set_run_undo_point(snaps)
         self._refresh_companions()
         self._refresh_guides()
         self._update_track_button()
@@ -9803,8 +9797,7 @@ class MainWindow(QMainWindow):
             return
         opts = dlg.result_options
         self._body_backend = opts.backend
-        self._undo_snap = s.snapshot()      # Ctrl+Z takes the whole run back
-        self.act_undo.setEnabled(True)
+        self._begin_edit()                  # Ctrl+Z takes the whole run back
         # target=: the result belongs to THIS camera, whatever is active when it ends (I83)
         w = BodyPoseWorker(self.info.path, self.n_frames, opts, s.masks, target=s)    # (G78) fps is a no-op
         self._body_worker = w
@@ -10048,9 +10041,8 @@ class MainWindow(QMainWindow):
                 "Remove every body pose from this view? Ctrl+Z takes it back.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        self._undo_snap = s.snapshot()
+        self._begin_edit()
         s.clear_body()
-        self.act_undo.setEnabled(True)
         self._refresh_body_view(force=True)
         self.timeline.update()
         self._apply_state()
