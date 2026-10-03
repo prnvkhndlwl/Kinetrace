@@ -175,7 +175,7 @@ base = os.path.join(OUT, "gui_export")
 written = []
 for lab, suf, key in win.EXPORT_FORMATS:
     if key != "all":
-        written += win._export_one(key, base + "_" + key + suf)
+        written += win._export_one(key, base + "_" + key + suf)[0]
 assert all(os.path.exists(p) for p in written) and any(p.endswith("_segment.csv") for p in written)
 print("exports OK:", len(written), "files")
 

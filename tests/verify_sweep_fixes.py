@@ -578,7 +578,7 @@ print("adding a point / region is one undo step (I123) OK")
 s.events.clear()
 s.set_note(3, "fin flare")
 out_csv = os.path.join(OUT, "notes_only.csv")
-written = win._export_one("wide", out_csv)
+written = win._export_one("wide", out_csv)[0]
 side = os.path.join(OUT, "notes_only_events.csv")
 assert side in [os.path.normpath(w) for w in written] or os.path.exists(side), written
 assert "fin flare" in open(side, encoding="utf-8").read()
@@ -753,6 +753,9 @@ class _FakeWiz:
 
     def exec(self):
         return QDialog.Rejected
+
+    def deleteLater(self):          # the app deletes the wizard after reading its result (I249)
+        pass
 
 
 real_wiz = lwmod.LensWizard
