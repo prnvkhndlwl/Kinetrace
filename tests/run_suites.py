@@ -29,7 +29,7 @@ GPU = ["audit_sweep", "verify_balls", "verify_animal", "verify_tracker", "verify
        "verify_keys_follow", "verify_semiauto_pan", "verify_alltracker", "verify_long", "verify_retrack",
        "verify_track_all", "verify_track_selection",
        # the 2026-10-02 code review's regression checks that need the GPU
-       "verify_review_tracking", "verify_review_app2"]
+       "verify_review_tracking", "verify_review_app2", "verify_review_i185"]
 # verify_pythonw is in no group on purpose: it must be launched DETACHED (Start-Process,
 # no output redirect) or the stderr guard it checks cannot fail; see CLAUDE.md
 CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery", "verify_interop", "verify_shared_landmarks", "verify_multiview", "verify_loading", "verify_stress", "verify_3d", "verify_wand", "verify_lens", "verify_body",

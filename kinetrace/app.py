@@ -7236,6 +7236,8 @@ class MainWindow(QMainWindow):
         (no ETA, no overwrite question, "Stepped to frame" at its end): a bound
         (`stop_after`) alone no longer makes a run a step -- the second pass of a two-pass
         run was one (G99)."""
+        if self._loading:
+            return None         # a project / video is still opening behind the card (G71)
         if not self._tracking_engine_ready():
             return None
         s = self.session
@@ -7602,7 +7604,6 @@ class MainWindow(QMainWindow):
             w.finished_ok.connect(self._on_track_finished)
             w.error.connect(self._on_track_error)
         self._track_pids = list(w.point_ids)
-        self._run_had_animal = w.animal is not None
         self._run_hand = getattr(w, "_kt_hand", None)       # (I189)
         self._autopause_info = None
         self._member_frames.clear()
