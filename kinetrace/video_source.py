@@ -466,17 +466,14 @@ class SeekService(QThread):
     A failed read is retried once on a FRESH capture before anything is
     reported (I40): a transient read error (a network share hiccup) used to
     shorten the video for the rest of the session. `n_frames` is the VERIFIED
-    count (`probe_video`); a frame below it that still fails is a
-    `decode_failed`, not the end of the file. Without it, a persistent failure
-    is reported as `eof_truncated` as before. An exception never ends the
-    thread: it is reported and the next request is served.
+    count (`probe_video`); a frame that still fails is a `decode_failed` (the
+    app always passes the verified count, so the end of the file is never
+    guessed here). An exception never ends the thread: it is reported and the
+    next request is served.
     """
 
     frame_ready = Signal(int, object)  # (frame index, RGB ndarray)
     seek_slow = Signal(int)            # decode in progress for idx (show "Seeking...")
-    eof_truncated = Signal(int)        # only for a SeekService built with n_frames=None (the app always
-                                       # passes the verified count, so it never fires there: a failing
-                                       # frame below that count is decode_failed)
     decode_failed = Signal(int, str)   # (frame, reason) a frame that exists could not be
                                        # decoded twice; frame -1 = the video would not open
 
@@ -547,11 +544,8 @@ class SeekService(QThread):
                 with self._cond:
                     superseded = self._target is not None
                 if frame is None:
-                    if err is None and (self._n_frames is None or idx >= self._n_frames):
-                        self.eof_truncated.emit(idx)
-                    else:
-                        self.decode_failed.emit(
-                            idx, err or "the decoder returned no picture (tried twice)")
+                    self.decode_failed.emit(
+                        idx, err or "the decoder returned no picture (tried twice)")
                 elif not superseded:
                     self.frame_ready.emit(idx, frame)
                     # idle prefetch: warm the frames a forward step / playback

@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, Q
                                QDockWidget, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
                                QMenu, QMessageBox, QPlainTextEdit, QProgressDialog,
-                               QPushButton, QSizePolicy, QSpinBox, QSplitter, QTextBrowser,
+                               QSizePolicy, QSpinBox, QSplitter, QTextBrowser,
                                QToolButton, QVBoxLayout, QWidget)
 
 from kinetrace import APP_NAME, APP_TAGLINE, APP_VERSION, theme
@@ -38,8 +38,6 @@ from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_
 from kinetrace import projectfile, recovery, trackio
 from kinetrace.errors import plain_error as _plain_error
 from kinetrace.session import TrackingSession
-
-PROJECT_SUFFIX = projectfile.SUFFIX
 from kinetrace.viewgrid import ViewGrid, caption_for
 from kinetrace.skeletons import all_templates, save_user_template
 from kinetrace.theme import apply_theme
@@ -48,7 +46,9 @@ from kinetrace.video_source import DEFAULT_CACHE_BYTES, FrameCache, SeekService,
 from kinetrace import icons
 from kinetrace.widgets import LoadingOverlay, ManualDialog, OnboardingStrip, SettingsDialog, Toast
 
-# duplicated from tracker.py so the GUI can check without importing torch
+PROJECT_SUFFIX = projectfile.SUFFIX
+# the manual heading Help / Track ▾ open at (R11: it was spelled out three times)
+MANUAL_WHICH_MODEL = "Which point model should I use?"
 
 IDLE, READY, TRACKING = range(3)
 VIDEO_FILTER = "Videos (*.mp4 *.avi *.mov *.mkv *.m4v *.wmv *.webm *.mpg *.mpeg);;All files (*)"
@@ -92,7 +92,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>AT / CT / MS</td><td>beside a point's name in POINTS: its tracker — AllTracker, CoTracker3 or Moving spot (right-click → Tracker). One Track press tracks each selected point with its own tracker; AllTracker and CoTracker3 points run one after the other (two passes over the same frames), and a point that stops ends the run for all</td></tr>
 <tr><td class=k>Shift+T</td><td>several cameras: this run in <b>every camera</b> that has the point(s) here, all at the same time (Track ▾ → <i>Every camera</i> makes T and F always do that)</td></tr>
 <tr><td class=k>X / Space</td><td>pause a running track (during 3D → Re-track Disagreeing Stretches: stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run: stops every camera at once)</td></tr>
-<tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>Every camera</b> (several cameras: the selected points — or all — tracked in each camera that has them at this instant, ball markers included, all at the same time, each live in its own view; the button says "· 3 cams"; X stops them all; one Ctrl+Z undoes all; the menu stays open while you tick, so mode, Every camera and point model combine); <b>point model</b>: sets the tracker of the selected points and the project's default for the others — AllTracker (default: animals and objects with a visible shape), CoTracker3 (faster, sub-pixel on high-contrast markers) or Moving spot (only a target small enough to be ONE point — a dot up to about 20 px with no visible shape; no model, stops where it loses the spot); <b>Test the point models on my clicks</b> (place a point by hand on 20 frames in a row first) recommends one; the choice is saved with the project</td></tr>
+<tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>Every camera</b> (several cameras: the selected points tracked in each camera that has them at this instant, ball markers included, all at the same time, each live in its own view; the button says "· 3 cams"; X stops them all; one Ctrl+Z undoes all; the menu stays open while you tick, so mode, Every camera and point model combine); <b>point model</b>: sets the tracker of the selected points and the project's default for the others — AllTracker (default: animals and objects with a visible shape), CoTracker3 (faster, sub-pixel on high-contrast markers) or Moving spot (only a target small enough to be ONE point — a dot up to about 20 px with no visible shape; no model, stops where it loses the spot); <b>Test the point models on my clicks</b> (place a point by hand on 20 frames in a row first) recommends one; the choice is saved with the project</td></tr>
 <tr><td class=k>Auto-pause</td><td>stop the run when the model loses a point (a brief occlusion doesn't trigger it); the point's track is <b>cut</b> at the first unreliable frame and the playhead goes there</td></tr>
 <tr><td class=k>ROI</td><td>track inside a crop around the points when it clearly helps</td></tr>
 <tr><td class=k>Ctrl+Z</td><td>undo the last tracking run, bulk edit or hand edit (a click, a right-click clear, Ctrl+click, deleted point, Shift+X) — one step</td></tr>
@@ -102,7 +102,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>N (or Add)</td><td>arm the crosshair: the next click places a point — stray clicks never edit</td></tr>
 <tr><td class=k>click (armed)</td><td>place a new point — or continue the selected point where it has no data</td></tr>
 <tr><td class=k>hold left + move</td><td>pan the view (from a marker too: points are never dragged — a click places them)</td></tr>
-<tr><td class=k>right-click a marker</td><td>clear that point on <b>this frame only</b> and select it (one Ctrl+Z step)</td></tr>
+<tr><td class=k>right-click a marker</td><td>clear that point on <b>this frame only</b> and select it (one Ctrl+Z step); with several points selected, a short right click on one of their markers clears all of them on this frame (points only — the segment is not touched)</td></tr>
 <tr><td class=k>hold right on a marker</td><td>(half a second) the point's menu — the same menu as a right click on its name in POINTS</td></tr>
 <tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing is placed (a notice on the video says so). One Ctrl+Z step. A click on or right beside the ◇ places it exactly there. A landmark derived from the silhouette cannot be placed by hand (right-click → Data source → Track by appearance first)</td></tr>
 <tr><td class=k>＋ New point</td><td>POINTS panel: a named point with no position yet, selected (and in every camera's list) — then click it on the video</td></tr>
@@ -120,9 +120,8 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>L</td><td>loupe: magnifier under the cursor with a crosshair on the exact pixel</td></tr>
 <tr><td class=k>View → Trails</td><td>Off / Last 10 frames / Custom… (any length) — fading, optional upcoming path; in every camera while Track ▾ → Every camera is ticked; View → Display filter: contrast / brighten / frame difference (display only)</td></tr>
 <tr><td class=k>drag (armed)</td><td>outline a region in the Add ▾ shape (circle or rectangle; a polygon is clicked corner by corner) → tracked as one point (its fitted center)</td></tr>
-<tr><td class=k>drag a marker</td><td>move / correct it on this frame (one Ctrl+Z step; not for a landmark derived from the silhouette)</td></tr>
 <tr><td class=k>Ctrl+click</td><td>move the selected point here (one Ctrl+Z step)</td></tr>
-<tr><td class=k>right-click</td><td>marker or list entry: rename · lock to seed appearance · data source · hidden on this frame · may leave the segment · delete</td></tr>
+<tr><td class=k>right-click (list) / hold right (marker)</td><td>the point's menu: rename · lock to seed appearance · data source · hidden on this frame · may leave the segment · tracker · delete</td></tr>
 <tr><td class=k>Ctrl/Shift+click (list)</td><td>select several points</td></tr>
 <tr><td class=k>Delete</td><td>delete selected point(s) — or clear the selected frame window (below)</td></tr>
 <tr><td class=k>Esc</td><td>drops a drag or polygon in progress; then, one per press: the segment tool, the armed crosshair, the pan tool, a half-marked event, the frame-window selection, the look-here line (Alt+click); then deselects</td></tr>
@@ -233,6 +232,33 @@ def on_network_drive(path: str) -> bool:
             except Exception:       # noqa: BLE001
                 return False
     return False
+
+
+def camera_names(paths, taken=()) -> list[str]:
+    """One name per camera for `paths`, none equal to another or to `taken` (I223).
+    Cameras are named after the file (24 characters of its stem); cameras filmed into
+    sub-folders often share a stem (cam1/GX010001.MP4 ... cam8/GX010001.MP4), and
+    Import -> Camera Offsets matches BY NAME, so a collision takes the PARENT FOLDER's
+    name when that tells them apart, else a " (2)" suffix."""
+    paths = [Path(p) for p in paths]
+    stems = [p.stem[:24] for p in paths]
+    taken_l = {str(t).lower() for t in taken}
+    clash = {s for k, s in enumerate(stems) if stems.count(s) > 1 or s.lower() in taken_l}
+    if clash:
+        folders = [p.parent.name[:24] for p in paths]
+        alt = [f if (s in clash and f) else s for s, f in zip(stems, folders)]
+        if len(set(a.lower() for a in alt)) == len(alt) and not any(a.lower() in taken_l for a in alt):
+            stems = alt
+    used = set(taken_l)
+    out: list[str] = []
+    for s in stems:
+        base = s or "camera"
+        name, k = base, 2
+        while name.lower() in used:
+            name, k = f"{base} ({k})", k + 1
+        used.add(name.lower())
+        out.append(name)
+    return out
 
 
 class _DeviceProbe(QThread):
@@ -365,20 +391,41 @@ def _crash_text(tb: str, hint: str, fallback: str) -> str:
             + "\n\nHelp > Error Report shows the full details (nothing is sent anywhere).")
 
 
+def _final_error_lines(tb: str) -> str:
+    """The exception line(s) a traceback ENDS with (G104), lower-cased: the
+    non-indented lines after the last stack frame. A traceback's frames are
+    indented, so file names, line numbers and echoed source never reach the
+    matching below (a line 403 in balls.py used to read as an HTTP 403)."""
+    out: list[str] = []
+    for ln in reversed(tb.strip().splitlines()):
+        if not ln.strip():
+            continue
+        if ln[0].isspace() or ln.startswith(("Traceback", "During handling", "The above exception")):
+            break
+        out.append(ln)
+        if len(out) >= 8:
+            break
+    return "\n".join(reversed(out)).lower()
+
+
 def _model_error_hint(tb: str) -> str:
-    """Turn a traceback into one actionable sentence for the user."""
-    low = tb.lower()
+    """Turn a traceback into one actionable sentence for the user. Only the
+    final exception line(s) are matched, with specific markers (G104)."""
+    low = _final_error_lines(tb)
     if "out of memory" in low:
         return ("The GPU ran out of memory. Close other GPU applications (or pick a smaller "
                 "segmentation model in Settings) and try again.")
-    if "gated" in low or "401" in low or "403" in low:
+    if any(k in low for k in ("gatedrepoerror", "401 client error", "403 client error", "gated repo",
+                              "is gated", "gated model")):
         return ("The model weights are gated on Hugging Face. Request access to the model, "
                 "then paste a read token in Settings (it is stored inside this folder).")
-    if any(k in low for k in ("download", "urlopen", "connection", "resolve", "name or service",
-                              "max retries", "timed out", "offline")):
+    if any(k in low for k in ("urlerror", "connectionerror", "connecterror", "maxretryerror", "max retries exceeded",
+                              "name or service", "getaddrinfo", "temporary failure in name resolution",
+                              "timed out", "could not be downloaded", "offline mode", "connection refused",
+                              "connection reset", "connection aborted", "no connection")):
         return ("The model could not be downloaded. Check your internet connection and try "
                 "again — the weights are only needed once, then they live in models/.")
-    if ("cuda" in low and "device" in low) or "mps" in low and "not supported" in low:
+    if "cuda error" in low or ("cuda" in low and "device" in low) or ("mps" in low and "not supported" in low):
         return ("The graphics card could not be used. Help → System Check… says what was found; "
                 "update the NVIDIA driver, or run on the CPU (slow) by starting Kinetrace with "
                 "KINETRACE_DEVICE=cpu set.")
@@ -480,6 +527,7 @@ class _ViewRuntime:
         self.cache = FrameCache(cache_bytes)
         self.seek: SeekService | None = None
         self.want_frame: int | None = None   # frame last requested (stale-reply guard)
+        self.bad_frames: set = set()         # frames already reported as undecodable (I40)
 
     def stop(self) -> None:
         if self.seek is not None:
@@ -734,8 +782,6 @@ class MainWindow(QMainWindow):
         canvas.annotate_requested.connect(self._on_annotate)
         canvas.group_requested.connect(self._on_add_group)
         canvas.point_selected.connect(self._on_select)
-        canvas.point_moved.connect(lambda pid, x, y: None)  # live marker already moves
-        canvas.move_committed.connect(self._on_place)
         canvas.reposition_requested.connect(self._on_reposition)
         canvas.clear_frame_requested.connect(self._on_clear_frame)
         canvas.delete_requested.connect(self._on_delete)
@@ -752,8 +798,7 @@ class MainWindow(QMainWindow):
         canvas.animal_box.connect(self._on_animal_box)
         canvas.prompt_remove_requested.connect(self._on_prompt_remove)
         canvas.probe_requested.connect(self._on_probe)
-        canvas.view_clicked.connect(
-            lambda c=canvas: self._on_canvas_clicked(c))
+        # (a click on a companion switches to it through ViewGrid.view_activated -> _set_active_view)
         self._init_canvas_state(canvas)
 
     def _init_canvas_state(self, canvas) -> None:
@@ -772,14 +817,6 @@ class MainWindow(QMainWindow):
             canvas.set_onion(self.act_onion.isChecked())
             canvas.set_loupe(self.act_loupe.isChecked())
             canvas.set_display_filter(self._display_filter_key())
-
-    def _on_canvas_clicked(self, canvas) -> None:
-        """Clicking a companion view switches to that camera (it is view-only
-        until then, so nothing is lost)."""
-        for i, cv in enumerate(self.grid.canvases):
-            if cv is canvas and self.project is not None and i != self.project.active:
-                self._set_active_view(i)
-                return
 
     def _build_ui_rest(self):
         # (no shortcut strip: the full reference lives in Help → Keyboard &
@@ -1011,7 +1048,7 @@ class MainWindow(QMainWindow):
         self.act_track_all = QAction("Every camera — track the point(s) in each camera that has them here",
                                      self, checkable=True)
         self.act_track_all.setToolTip(
-            "With several cameras: Track (T, or F in semi-automatic mode) tracks the selected points — or all — "
+            "With several cameras: Track (T, or F in semi-automatic mode) tracks the selected points "
             "in EVERY camera that has them at this instant, ball markers included, all cameras at the same "
             "time, each shown live in its own view. X stops them all at once. One Ctrl+Z undoes it in every "
             "camera. Shift+T does this once without ticking it. Combines with the run mode and the point model "
@@ -1060,8 +1097,8 @@ class MainWindow(QMainWindow):
             "from your first click, counts how often each one has to be put back on your clicks, and "
             "recommends one. Nothing is changed unless you press Use.")
         menu_track.addAction(self.act_test_models)
-        self.act_which_model = QAction("Which point model should I use?", self,
-                                       triggered=lambda: self._show_manual("Which point model should I use?"))
+        self.act_which_model = QAction(MANUAL_WHICH_MODEL, self,
+                                       triggered=lambda: self._show_manual(MANUAL_WHICH_MODEL))
         self.act_which_model.setToolTip("The manual's short guide: a visible shape (an animal, an object) -> "
                                         "AllTracker + Segment; a target small enough to be one point -> Moving "
                                         "spot; a round marker -> Ball marker")
@@ -1170,6 +1207,11 @@ class MainWindow(QMainWindow):
         self._controls_full_w = tl.minimumSize().width()
         self._set_compact_controls(len(self._compact_order))
         controls.setMinimumWidth(tl.minimumSize().width())
+        # measured with the Track button at its 150 px minimum; its label grows past that
+        # ("Track · 3 points + segment ▶ · 3 cams", G61 / G29): `_fit_track_label` (G139)
+        self._controls_min_w = tl.minimumSize().width()
+        self._track_base_w = self.btn_track.minimumWidth()
+        self._track_extra = 0
         self._set_compact_controls(0)
         self._controls_level = 0            # how many labels are folded (0 = all shown)
         self._controls_compact = False
@@ -1634,7 +1676,7 @@ class MainWindow(QMainWindow):
         self.act_manual.setToolTip("The full manual, written for someone new to tracking")
         m_help.addAction(self.act_manual)
         self.act_help_models = QAction("Which &Point Model Should I Use?", self,
-                                       triggered=lambda: self._show_manual("Which point model should I use?"))
+                                       triggered=lambda: self._show_manual(MANUAL_WHICH_MODEL))
         self.act_help_models.setToolTip("A visible shape (an animal, an object) -> AllTracker + Segment, no extra "
                                         "clicks; a target small enough to be one point (a dot up to ~20 px) -> "
                                         "Moving spot; a round marker -> Ball marker -- and the test that decides "
@@ -1671,12 +1713,16 @@ class MainWindow(QMainWindow):
         # combo shortcuts only — single-letter keys (F/B/N/T/X/E/R/H/Space/
         # Delete/Esc/±) are handled in keyPressEvent so they never steal
         # keystrokes from the point-rename editor or other text fields
-        QShortcut(QKeySequence("Right"), self, lambda: self._goto(self.current + 1))
-        QShortcut(QKeySequence("Left"), self, lambda: self._goto(self.current - 1))
-        QShortcut(QKeySequence("Shift+Right"), self, lambda: self._goto(self.current + self.step_spin.value()))
-        QShortcut(QKeySequence("Shift+Left"), self, lambda: self._goto(self.current - self.step_spin.value()))
-        QShortcut(QKeySequence("Home"), self, lambda: self._goto(0))
-        QShortcut(QKeySequence("End"), self, lambda: self._goto(self.n_frames - 1))
+        # kept, so the loading card can switch them off with the menus (G71)
+        self._nav_shortcuts = [
+            QShortcut(QKeySequence("Right"), self, lambda: self._goto(self.current + 1)),
+            QShortcut(QKeySequence("Left"), self, lambda: self._goto(self.current - 1)),
+            QShortcut(QKeySequence("Shift+Right"), self,
+                      lambda: self._goto(self.current + self.step_spin.value())),
+            QShortcut(QKeySequence("Shift+Left"), self,
+                      lambda: self._goto(self.current - self.step_spin.value())),
+            QShortcut(QKeySequence("Home"), self, lambda: self._goto(0)),
+            QShortcut(QKeySequence("End"), self, lambda: self._goto(self.n_frames - 1))]
 
         # Keyboard focus discipline. Toolbar buttons never
         # take the focus: a click is a click, not a place for Space to land.
@@ -1739,7 +1785,9 @@ class MainWindow(QMainWindow):
         p = self.project
         if p is None or p.n_views == 0:
             return int(self.current)
-        return int(np.floor(p.reference_time(p.active, self.current) + 0.5))
+        # (I258) `map_frame`'s tie rule (a .5 rounds DOWN on the way back to an earlier
+        # view), not floor(x + 0.5): the two disagreed at every half-frame offset
+        return int(p.reference_index(p.active, self.current))
 
     def _fit_to_screen(self):
         """Open wide enough for the labelled control bar when the screen has
@@ -1759,7 +1807,7 @@ class MainWindow(QMainWindow):
         """Fold as FEW tool-button labels as the control bar's width requires,
         least-needed first (G2); labels come back as soon as there is room."""
         avail = self._controls.width()
-        need = self._controls_full_w
+        need = self._controls_full_w + self._track_extra      # the Track label's live width (G139)
         level = 0
         while need > avail and level < len(self._compact_order):
             need -= self._label_saving.get(self._compact_order[level], 0)
@@ -1767,6 +1815,23 @@ class MainWindow(QMainWindow):
         if level == self._controls_level:
             return
         self._set_compact_controls(level)
+
+    def _fit_track_label(self) -> None:
+        """The Track button's label changes with what is selected ("Track · 3 points +
+        segment ▶ · 3 cams", up to ~285 px); the bar was measured with an empty one
+        (150 px), so a long label clipped Track ▾ (G139). The button now keeps the
+        width its label needs, the bar's minimum follows, and the tool buttons fold
+        against the live width."""
+        if getattr(self, "_controls_min_w", None) is None:
+            return
+        want = max(self._track_base_w, self.btn_track.sizeHint().width())
+        extra = want - self._track_base_w
+        if extra == self._track_extra:
+            return
+        self._track_extra = extra
+        self.btn_track.setMinimumWidth(want)
+        self._controls.setMinimumWidth(self._controls_min_w + extra)
+        self._fit_controls()
 
     def _set_compact_controls(self, level):
         """Fold the labels of the first `level` buttons of `_compact_order`
@@ -1980,6 +2045,7 @@ class MainWindow(QMainWindow):
             self.btn_track.setEnabled(True)
             self._set_track_blocked(None)
             self.btn_track.setToolTip("Stop tracking (X or Space). Corrections are made while paused.")
+            self._fit_track_label()
             return
         s = self.session
         scope, n_sel = self._run_scope()
@@ -2011,7 +2077,16 @@ class MainWindow(QMainWindow):
                        "Ctrl+A for all)" + (", and the segment's row in SEGMENT" if s.animal is not None else "")
                        + " — only what is selected is tracked")
         elif s is None or (n == 0 and not animal_ok):
-            if scope:
+            if scope and all(0 <= q < s.n_points and s.points[q].derived for q in scope):
+                # silhouette-derived landmarks are never placed by hand: they fill in from the
+                # segment (G120)
+                blocked = (f"The selected landmark(s) fill in from the segment's silhouette, which has no click on "
+                           f"frame {self.current}: press S and click the animal here (or go to a frame with its "
+                           "silhouette) and select the segment's row in SEGMENT too"
+                           if s.animal is not None else
+                           "The selected landmark(s) fill in from the segment's silhouette: press S and click "
+                           "the animal first, then select the segment's row in SEGMENT and Track")
+            elif scope:
                 blocked = (f"The selected point(s) have no position on frame {self.current}. Select a "
                            "point that exists here, or place it here first (click it on the video)")
             elif s is not None and s.animal is not None:
@@ -2047,6 +2122,7 @@ class MainWindow(QMainWindow):
                 self.btn_track.setToolTip(
                     self.btn_track.toolTip() + f" — in each of the {n_cams} cameras that have them here, all at "
                     "the same time (Track ▾ → Every camera; X stops them all; one Ctrl+Z undoes all)")
+        self._fit_track_label()
 
     def _set_track_blocked(self, reason: str | None):
         """None = Track can start here; else the sentence T / a click shows. The
@@ -2063,9 +2139,10 @@ class MainWindow(QMainWindow):
         return "alltracker" if alltracker_backend.available() else "cotracker3"
 
     def _set_point_backend(self, key: str):
-        """Track ▾ -> Point model (or the test's Use): applies to the next run, at
-        any time, and is the PROJECT's point model -- saved with it and restored
-        when it is opened (owner, 2026-10-01; G56)."""
+        """Track ▾ -> Point model: applies to the next run, at any time, and is
+        the PROJECT's point model -- saved with it and restored when it is opened
+        (owner, 2026-10-01; G56). The SELECTED points take it too (`_set_tracker`,
+        G62); the test's Use goes through `_set_tracker` for its one point."""
         if key not in self._pm_acts:
             return
         changed = key != self._point_backend
@@ -2154,7 +2231,16 @@ class MainWindow(QMainWindow):
         from kinetrace.device import cached_device, describe
         probe = getattr(self, "_dev_probe", None)
         if cached_device() is None and probe is not None and probe.isRunning():
-            probe.wait(20000)
+            # PyTorch is still loading in the probe thread: wait for it with the loading card up
+            # and the window live (up to 20 s; Cancel shows the dialog without the result, G105)
+            def wait_for_probe(cancelled):
+                t0 = time.monotonic()
+                while probe.isRunning() and time.monotonic() - t0 < 20 and not cancelled():
+                    probe.wait(100)
+
+            self._in_background("Checking this computer", wait_for_probe, cancellable=True,
+                                detail="Loading PyTorch to look at the graphics card…",
+                                hint="This happens once per start of Kinetrace.")
         text = describe() if cached_device() is not None else \
             "The hardware check has not finished yet (PyTorch is still loading). Try again in a moment."
         dlg = QDialog(self)
@@ -2321,7 +2407,7 @@ class MainWindow(QMainWindow):
         first = not self._busy_stack
         self._busy_stack.append({"tok": tok, "cancel": on_cancel})
         if first:
-            self.menuBar().setEnabled(False)
+            self._set_input_blocked(True)
             self.overlay.start(title or "Please wait", detail or "", total or 0, hint or "",
                                on_cancel, immediate)
         else:
@@ -2345,7 +2431,7 @@ class MainWindow(QMainWindow):
         self._busy_stack = [b for b in self._busy_stack if b["tok"] != tok]
         if not self._busy_stack:
             self.overlay.finish()
-            self.menuBar().setEnabled(True)
+            self._set_input_blocked(False)
         else:
             self._busy_refresh_cancel()
             self._busy_refresh_mode()
@@ -2359,8 +2445,17 @@ class MainWindow(QMainWindow):
 
     def _busy_refresh_mode(self) -> None:
         blocking = self._loading
-        self.menuBar().setEnabled(not blocking)
+        self._set_input_blocked(blocking)
         self.overlay.set_passive(bool(self._busy_stack) and not blocking)
+
+    def _set_input_blocked(self, blocking: bool) -> None:
+        """The menus and the window's own shortcuts (arrows, Home / End, Ctrl+,) are off
+        while the loading card holds input back (G71); the keys and clicks in the app's
+        other windows are held back by `eventFilter`."""
+        self.menuBar().setEnabled(not blocking)
+        for sc in getattr(self, "_nav_shortcuts", ()):
+            sc.setEnabled(not blocking)
+        self.act_settings.setEnabled(not blocking)
 
     def _busy_cancel_cb(self):
         return next((b["cancel"] for b in reversed(self._busy_stack) if b["cancel"] is not None), None)
@@ -2535,6 +2630,8 @@ class MainWindow(QMainWindow):
         base = paths[0]
         folder = Path(base).parent.name
         n = len(paths)
+        if self._first_frame_token is not None:      # a previous open still waiting for its picture (G109)
+            self._first_frame_arrived()
         # every camera is read at once (PROBE_PARALLEL at a time), the base included,
         # with the loading card counting them -- then the project is built
         tok = self._busy_push(f"Opening {n} camera{'s' if n != 1 else ''} from {folder}", "", n,
@@ -2553,18 +2650,25 @@ class MainWindow(QMainWindow):
         try:
             self._attach_video(binfo)
             p = self.project
-            p.names[0] = Path(base).stem[:24] or p.names[0]
+            names = camera_names(paths)                 # unique, even for cam1/GX01.MP4 ... cam8/GX01.MP4 (I223)
+            p.names[0] = names[0] or p.names[0]
             rest = paths[1:]
-            added = [x for x in rest if self._add_view(x, infos.get(str(x)))]
+            added = [x for k, x in enumerate(rest, 1) if self._add_view(x, infos.get(str(x)), name=names[k])]
             self._refresh_cameras()
             self._refresh_companions()
             saved = ""
             if save_to:
-                self._busy_step(f"Saving the project as {Path(save_to).name}…")
-                self.project_path = Path(save_to)
-                self._project_dir = self.project_path.resolve()     # a project folder (I145)
-                if self._save_project():
-                    saved = f" Saved as {self.project_path.name}."
+                # (I166) never straight over a project that is already there, never inside one:
+                # the same question as Save As; No = the cameras stay open, unsaved
+                target = self._project_target(save_to)
+                if target is None:
+                    saved = " Not saved yet: use File → Save Project As… to choose where."
+                else:
+                    self._busy_step(f"Saving the project as {target.name}…")
+                    self.project_path = target
+                    self._project_dir = self.project_path.resolve()     # a project folder (I145)
+                    if self._save_project():
+                        saved = f" Saved as {self.project_path.name}."
         except Exception:
             self._busy_pop(tok)
             raise
@@ -2604,7 +2708,7 @@ class MainWindow(QMainWindow):
             if self._probe is probe:
                 self._probe = None           # its result is dropped when it comes
                 _retire(probe)               # and the thread is kept alive until it ends
-            self._after_open = None          # a folder import's follow-up must not run later
+            self._after_open = None          # a follow-up waiting for this video (an Import Tracks) must not run later
             self._busy_pop(tok)
             self.statusBar().showMessage(f"Opening {name} cancelled — nothing was changed", 5000)
 
@@ -2667,12 +2771,14 @@ class MainWindow(QMainWindow):
         self._views = [_ViewRuntime(info, DEFAULT_CACHE_BYTES)]
         self.grid.set_count(1)
         self.grid.set_active(0)
+        for cv in self.grid.canvases:
+            cv.set_stale(False)            # an Active-view-only veil must not carry into this video (G134)
         self._start_seek_service()
 
         self.canvas.set_video_size(info.width, info.height)
         self.spin.setRange(0, info.n_frames - 1)
         self.spin.setSuffix(f" / {info.n_frames - 1}")
-        self._play_timer.setInterval(max(10, round(1000 / info.fps)))
+        self._set_play_interval(info.fps)
 
         if then is None:
             self.project_path = None
@@ -2743,9 +2849,12 @@ class MainWindow(QMainWindow):
         # tile and truncated the wrong camera at EOF (I103, I111).
         rt.seek.frame_ready.connect(lambda f, rgb, r=rt: self._on_seek_frame(self._view_index(r), f, rgb))
         rt.seek.seek_slow.connect(lambda f, r=rt: self._on_seek_slow(self._view_index(r), f))
-        rt.seek.eof_truncated.connect(lambda f, r=rt: self._on_eof_truncated(self._view_index(r), f))
         rt.seek.decode_failed.connect(lambda f, msg, r=rt: self._on_decode_failed(self._view_index(r), f, msg))
         rt.seek.start()
+
+    def _set_play_interval(self, fps: float) -> None:
+        """Preview playback runs at the video's rate (at most 100 frames a second)."""
+        self._play_timer.setInterval(max(10, round(1000 / max(float(fps), 1e-6))))
 
     def _view_index(self, rt) -> int:
         """Current index of a view runtime (-1 once it has been removed)."""
@@ -2781,6 +2890,7 @@ class MainWindow(QMainWindow):
         n_frames, n_bytes = self.cache.stats()
         for i, rt in enumerate(self._views):
             rt.cache.clear()
+            rt.want_frame = None              # the other cameras ask for their picture again (G133)
             if i == self.project.active or rt.seek is not None:
                 self._start_seek_service(i)   # fresh VideoCapture: fixes decoder desync too
         self._goto(self.current, force=True)
@@ -2815,9 +2925,11 @@ class MainWindow(QMainWindow):
                 "camera's <b>offset</b> (or press <b>Align here</b>).",
                 "info", 10000)
 
-    def _add_view(self, path: str, probed=None) -> bool:
+    def _add_view(self, path: str, probed=None, name: str | None = None) -> bool:
         """Probe `path` and append it as a view. `probed`: its VideoInfo (or error
         text / "cancelled") from an earlier `_probe_many` over several files.
+        `name`: the camera's name (a folder import has worked the set out together);
+        otherwise the file's name, made different from every other camera's (I223).
         Returns once the camera is in (the probe runs off the GUI thread with the
         loading card up; it used to freeze the window ~2.3 s per 4K file)."""
         if self.project is None or self.project.n_views >= MAX_VIEWS:
@@ -2836,9 +2948,22 @@ class MainWindow(QMainWindow):
         # matching names across views is exactly what the 3D export joins on
         ref = self.project.session
         if ref is not None and ref.skeleton:
-            s.apply_skeleton(ref.skeleton)
-        i = self.project.add_view(s, Path(path).stem[:24] or None)
-        self.project.sync_landmarks()      # every point already made is waiting to be placed here (G19)
+            # only the landmarks some camera still has: deleting one leaves its name in
+            # the skeleton, and applying that whole template brought it back (I234)
+            have = set(self.project.landmark_order())
+            sk = ref.skeleton
+            t = dict(sk)
+            t["landmarks"] = [n for n in sk.get("landmarks", []) if n in have]
+            t["bones"] = [b for b in sk.get("bones", []) if all(n in have for n in b)]
+            t["derived"] = {k: v for k, v in sk.get("derived", {}).items() if k in have}
+            if sk.get("head") not in have:
+                t.pop("head", None)
+            s.apply_skeleton(t)
+        if name is None or name.lower() in {str(n).lower() for n in self.project.names}:
+            name = camera_names([path], taken=self.project.names)[0]      # (I223)
+        had_3d, had_hull = self.project.reconstruction is not None, bool(self._hull_cache)
+        i = self.project.add_view(s, name or None)
+        added = self.project.sync_landmarks()      # every point already made is waiting to be placed here (G19)
         self._views.append(_ViewRuntime(info, DEFAULT_CACHE_BYTES))
         self._rebudget_caches()
         for cv in self.grid.set_count(self.project.n_views):
@@ -2849,6 +2974,9 @@ class MainWindow(QMainWindow):
         cv.set_marker_size(self.marker_spin.value())
         self.grid.set_active(self.project.active)
         self._apply_state()            # multi-camera actions (sync, import calibration) light up
+        if added:
+            self._refresh_point_list()             # the working camera may have gained landmarks too (I234)
+        self._drop_3d_results("a camera was added", had_3d, had_hull)    # (I206) the camera set changed
         if getattr(info, "fps_note", ""):
             self.toast.show_message(f"{self.project.name(i)}: {info.fps_note}", "warn", 12000)
         cal = self.project.calibration
@@ -2883,6 +3011,8 @@ class MainWindow(QMainWindow):
             # indices shift, so that step can no longer be taken back safely (G19)
             self._undo_snap = None
             self.act_undo.setEnabled(False)
+        had_3d, had_hull = p.reconstruction is not None, bool(self._hull_cache)
+        add_on = self._leave_camera_tools()     # the same tool housekeeping as a view switch (G92)
         target = None
         if i == p.active:                 # the next camera takes over at the SAME instant (I111)
             nxt = i + 1 if i + 1 < p.n_views else i - 1
@@ -2899,6 +3029,8 @@ class MainWindow(QMainWindow):
             rt.want_frame = None
         self.grid.set_active(p.active)
         self._apply_active_view(target if target is not None else p.session.current_frame)
+        self._enter_camera_tools(add_on)
+        self._drop_3d_results("a camera was removed", had_3d, had_hull)       # (I206)
 
     def _set_active_view(self, i: int):
         """Switch the camera being worked on. The playhead follows through the
@@ -2906,23 +3038,7 @@ class MainWindow(QMainWindow):
         p = self.project
         if p is None or self.state != READY or not (0 <= i < p.n_views) or i == p.active:
             return
-        self.canvas.cancel_gesture()
-        # The tools arm ONE canvas; left armed across a switch, the new view took
-        # plain clicks as hand placements while S / N still looked on (I47), and a
-        # half-marked event was finished with the other camera's frame number (I65).
-        # Add is carried OVER instead (G20): armed in one camera, a click in another
-        # places the point there -- disarming it swallowed that click, and the next,
-        # unarmed click drew the look-here cross instead of a point. The segment
-        # tool still goes down: its clicks prompt one camera's SAM session.
-        add_on = self.btn_add.isChecked()
-        if add_on:
-            self.canvas.set_place_mode(False)       # the camera being left
-            self.canvas.set_click_only(False)
-        if self.btn_animal.isChecked():
-            self.btn_animal.setChecked(False)
-        if self._pending_event is not None:
-            self._pending_event = None
-            self.timeline.set_pending_event(None)
+        add_on = self._leave_camera_tools()
         # the camera being left keeps its exact state; the tool / display toggles
         # travel with the user: re-applying the other camera's stored copy silently
         # turned auto-pause and ROI back on and swapped the point model (I50)
@@ -2957,9 +3073,7 @@ class MainWindow(QMainWindow):
         if keep_seg and self.animal_list.count():
             self.animal_list.item(0).setSelected(True)
         self._update_track_button()
-        if add_on and self.btn_add.isChecked():
-            self.canvas.set_place_mode(True)   # the camera clicked is armed (G20)
-            self.canvas.set_click_only(self._place_kind == "ball")
+        self._enter_camera_tools(add_on)
         msg = f"Working in {p.name(i)} — points, silhouette and timeline are this camera's"
         s = p.session
         if j is not None and not s.tracked[self.current, j] and not s.points[j].derived:
@@ -2968,6 +3082,37 @@ class MainWindow(QMainWindow):
             msg = (f"Working in {p.name(i)}: {keep} is not placed in this camera on this frame — "
                    f"click it on the video{on_line}, then Track")
         self.statusBar().showMessage(msg, 9000)
+
+    def _leave_camera_tools(self) -> bool:
+        """The tool housekeeping of leaving the working camera, shared by a view
+        switch and a camera's removal (G92: removing skipped it, so Add stayed armed on
+        another canvas and the next click overwrote the selected point, and a
+        half-marked event was finished with the removed camera's frame). Returns
+        whether Add was armed, for `_enter_camera_tools`."""
+        self.canvas.cancel_gesture()
+        # The tools arm ONE canvas; left armed across a switch, the new view took
+        # plain clicks as hand placements while S / N still looked on (I47), and a
+        # half-marked event was finished with the other camera's frame number (I65).
+        # Add is carried OVER instead (G20): armed in one camera, a click in another
+        # places the point there -- disarming it swallowed that click, and the next,
+        # unarmed click drew the look-here cross instead of a point. The segment
+        # tool still goes down: its clicks prompt one camera's SAM session.
+        add_on = self.btn_add.isChecked()
+        if add_on:
+            self.canvas.set_place_mode(False)       # the camera being left
+            self.canvas.set_click_only(False)
+        if self.btn_animal.isChecked():
+            self.btn_animal.setChecked(False)
+        if self._pending_event is not None:
+            self._pending_event = None
+            self.timeline.set_pending_event(None)
+        return add_on
+
+    def _enter_camera_tools(self, add_on: bool) -> None:
+        """Arm Add on the camera taken up, when it was armed on the one left (G20)."""
+        if add_on and self.btn_add.isChecked():
+            self.canvas.set_place_mode(True)
+            self.canvas.set_click_only(self._place_kind == "ball")
 
     def _apply_active_view(self, frame: int):
         """Re-point every widget at the active view's session and frame. This is
@@ -2983,7 +3128,7 @@ class MainWindow(QMainWindow):
             self._start_seek_service(p.active)
         self.spin.setRange(0, rt.n_frames - 1)
         self.spin.setSuffix(f" / {rt.n_frames - 1}")
-        self._play_timer.setInterval(max(10, round(1000 / max(info.fps, 1e-6))))
+        self._set_play_interval(info.fps)
         for k, cv in enumerate(self.grid.canvases):
             cv.set_interactive(k == p.active and self.state == READY)
             cv.set_switchable(k != p.active and self.state == READY)
@@ -3014,23 +3159,39 @@ class MainWindow(QMainWindow):
     def _on_view_offset(self, i: int, offset: float):
         if self.project is None:
             return
-        had_3d = self.project.reconstruction is not None
+        had_3d, before = self.project.reconstruction is not None, list(self.project.offsets)
         self.project.set_offset(i, float(offset))
-        self._after_retime(had_3d)
+        if list(self.project.offsets) != before:        # an unchanged value drops nothing (I206)
+            self._after_retime(had_3d)
         self._refresh_companions()
         self._refresh_cameras()
 
-    def _after_retime(self, had_3d: bool) -> None:
+    def _after_retime(self, had_3d: bool, had_hull: bool | None = None) -> None:
         """A changed offset / rate makes the triangulation stale (I23): the
         project drops it; here the volumes, the band and the menus follow."""
-        if had_3d and self.project is not None and self.project.reconstruction is None:
-            self._hull_cache.clear()
-            self._update_disagreement()
-            self._refresh_view3d()
-            self._apply_state()
-            self.statusBar().showMessage(
-                "Camera timing changed: the 3D result made with the old timing was cleared — "
-                "press Ctrl+3 (3D → Reconstruct) again", 8000)
+        if had_hull is None:
+            had_hull = bool(self._hull_cache)
+        # (I206) the carved volumes are keyed by reference instant and made with the old
+        # timing: dropped on EVERY retime, with or without a 3D result
+        self._drop_3d_results("camera timing changed", had_3d and self.project is not None
+                              and self.project.reconstruction is None, had_hull)
+
+    def _drop_3d_results(self, why: str, had_3d: bool, had_hull: bool) -> None:
+        """The 3D layer's results no longer match the cameras (a camera added or
+        removed, the timing changed): clear the carved volumes, refresh the band, the
+        3D view and the menus, and say what was dropped. `had_3d`: the project dropped
+        its reconstruction (it does that itself); `had_hull`: volumes were carved."""
+        self._hull_cache.clear()
+        if not (had_3d or had_hull):
+            return
+        self._update_disagreement()
+        self._refresh_view3d()
+        self._apply_state()
+        gone = " and ".join(x for x, on in (("the 3D result", had_3d), ("the carved volume", had_hull)) if on)
+        self.statusBar().showMessage(
+            f"{why[:1].upper() + why[1:]}: {gone} made earlier {'were' if ' and ' in gone else 'was'} cleared — "
+            + " and ".join(x for x, on in (("press Ctrl+3 (3D → Reconstruct)", had_3d),
+                                           ("carve with Ctrl+4", had_hull)) if on) + " again", 8000)
 
     def _align_view_here(self, i: int):
         """Take what camera `i` is showing right now as the match for the active
@@ -3046,9 +3207,10 @@ class MainWindow(QMainWindow):
                 f"{p.name(i)} has no frame at this instant — nudge "
                 f"{p.name(p.active) + chr(39) + 's' if ref else 'its'} offset first", 5000)
             return
-        had_3d = p.reconstruction is not None
+        had_3d, before = p.reconstruction is not None, list(p.offsets)
         off = p.align_to(i, shown, self.current)
-        self._after_retime(had_3d)
+        if list(p.offsets) != before:
+            self._after_retime(had_3d)
         self._refresh_companions()
         self._refresh_cameras()
         self.statusBar().showMessage(
@@ -3114,7 +3276,7 @@ class MainWindow(QMainWindow):
         self._after_retime(had_3d)
         self._refresh_companions()
         self._refresh_cameras()
-        self._apply_state()                       # the window title's unsaved mark
+        self._apply_state()                       # menu / button gates (the project is now unsaved: set_fps dirties it)
         same = abs(float(v) - file_fps) <= 1e-6
         self.toast.show_message(
             f"{p.name(i)}: {float(v):g} fps" + ("  (the file's own rate)" if same else
@@ -3133,7 +3295,13 @@ class MainWindow(QMainWindow):
                                 f"Unsaved work for this video was found but could not be read ({e}).\n\n"
                                 f"It was kept as {moved.name if moved else 'is'} in the recovery folder.")
             return
-        n_saved = proj.sessions[proj.active].n_frames
+        # (I167) the opened file is ONE camera of the recovered project, not necessarily its
+        # active one: match it by path, compare THAT camera's frame count, make it the
+        # active camera (the open video is its picture), and take the whole project
+        want = os.path.normcase(os.path.abspath(self.info.path))
+        mine = next((k for k, s in enumerate(proj.sessions)
+                     if os.path.normcase(os.path.abspath(s.video_path)) == want), proj.active)
+        n_saved = proj.sessions[mine].n_frames
         if n_saved != self.info.n_frames and not (getattr(self.info, "header_frames", 0) == n_saved
                                                   and self.info.n_frames < n_saved):
             moved = recovery.quarantine(pid)
@@ -3143,7 +3311,7 @@ class MainWindow(QMainWindow):
                                 f"sit on the wrong frames. It was kept as {moved.name if moved else 'is'} in "
                                 "the recovery folder.")
             return
-        restored = proj.sessions[proj.active]
+        restored = proj.sessions[mine]
         tracked_n = int(restored.tracked.any(axis=1).sum())
         cams = (f", {proj.n_views} cameras" if proj.n_views > 1 else "")
         if QMessageBox.question(
@@ -3156,11 +3324,9 @@ class MainWindow(QMainWindow):
                                          f"{recovery.folder()[0] / 'declined'}", 10000)
             return
         restored.video_path = self.info.path
+        proj.active = mine                        # the opened video is this camera's picture
         self._project_id = pid                    # keep writing to the same recovery
-        if proj.n_views == 1:
-            self.session = restored
-        else:
-            self._adopt_project(proj, self.info)
+        self._adopt_project(proj, self.info)      # the whole project, one camera too: its name, lens, exports
         self.project.dirty = True
 
     def _teardown_video(self):
@@ -3179,6 +3345,7 @@ class MainWindow(QMainWindow):
             self._preview.wait(15000)
             _retire(self._preview)
             self._preview = None
+        self._preview_again = False         # a rerun wanted by the video that is going (I188)
         _quiet_close(self._loading_dialog)
         self._loading_dialog = None
         for rt in self._views:
@@ -3196,6 +3363,8 @@ class MainWindow(QMainWindow):
         self._lock_timer.stop()
         self._lock = None
         self._companions_stale = False
+        for cv in self.grid.canvases:
+            cv.set_stale(False)             # (G134)
         self._multi = None
         self._side = None                   # (I141)
         self.btn_play.setChecked(False)
@@ -3209,7 +3378,7 @@ class MainWindow(QMainWindow):
         per frame, and never shorten the video over it (I40)."""
         if not (0 <= view < len(self._views)):
             return
-        seen = self._views[view].__dict__.setdefault("_bad_frames", set())
+        seen = self._views[view].bad_frames
         if idx in seen:
             return
         seen.add(idx)
@@ -3222,28 +3391,6 @@ class MainWindow(QMainWindow):
                     "ends early. The frame shows blank; Shift+C retries.")
         self.toast.show_message(text, "warn", 10000)
         self.statusBar().showMessage(text, 10000)
-
-    def _on_eof_truncated(self, view: int, idx: int):
-        if not (0 <= view < len(self._views)):
-            return
-        rt = self._views[view]
-        if not 0 < idx < rt.n_frames:
-            return
-        rt.n_frames = idx
-        if self.project is not None and view == self.project.active:
-            self.spin.setMaximum(idx - 1)
-            self.spin.setSuffix(f" / {idx - 1}")
-            self.statusBar().showMessage(
-                f"Note: video ends at frame {idx - 1} (metadata reported more)", 6000)
-            if self.current >= idx:              # the playhead sat on a frame that does not exist
-                self._goto(idx - 1)
-        else:
-            # a companion's end is ITS frame number: comparing it with the working
-            # camera's playhead moved the playhead for no reason (I43); the
-            # companion simply shows nothing past its end
-            name = self.project.name(view) if self.project else f"view {view}"
-            self.statusBar().showMessage(
-                f"Note: {name} ends at frame {idx - 1} (metadata reported more)", 6000)
 
     # ------------------------------------------------------------ navigation
 
@@ -3261,14 +3408,29 @@ class MainWindow(QMainWindow):
                   Qt.Key_BracketLeft, Qt.Key_BracketRight, Qt.Key_Period, Qt.Key_Comma,
                   Qt.Key_Return, Qt.Key_Enter}
 
+    _INPUT_EVENTS = (QEvent.KeyPress, QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
+                     QEvent.MouseButtonDblClick, QEvent.Wheel)
+
+    def _other_app_windows(self) -> list:
+        """The app's windows other than the main one: the floated Segment & Points panel,
+        the 3D view, the Body window."""
+        return [w for w in (self.view3d, getattr(self, "dock", None), getattr(self, "body_win", None))
+                if w is not None]
+
     def eventFilter(self, obj, ev):
-        if ev.type() == QEvent.KeyPress and self._loading and QApplication.activeModalWidget() is None \
-                and QApplication.activeWindow() is self:
-            # opening: the window is half-built -- keys do nothing, Esc = Cancel where allowed
-            if ev.key() == Qt.Key_Escape and self._busy_cancel_cb() is not None:
-                self.overlay._on_cancel()
-            return True
-        if ev.type() == QEvent.KeyPress and self._hotkeys_apply(ev):
+        t = ev.type()
+        if t in self._INPUT_EVENTS and self._loading and QApplication.activeModalWidget() is None:
+            # opening: the window is half-built -- keys do nothing, Esc = Cancel where allowed.
+            # In EVERY window of the app (G71): T in the floated panel / the 3D view / the Body
+            # window used to start a second run while the first Track was still loading its model
+            if t == QEvent.KeyPress:
+                if QApplication.activeWindow() in (self, *self._other_app_windows()):
+                    if ev.key() == Qt.Key_Escape and self._busy_cancel_cb() is not None:
+                        self.overlay._on_cancel()
+                    return True
+            elif isinstance(obj, QWidget) and obj.window() in self._other_app_windows():
+                return True             # the card only covers the main window: those clicks are held back here
+        if t == QEvent.KeyPress and self._hotkeys_apply(ev):
             if self._hotkey(ev):
                 return True
         return super().eventFilter(obj, ev)
@@ -3307,6 +3469,8 @@ class MainWindow(QMainWindow):
 
     def _hotkey(self, ev) -> bool:
         """The hotkey table. Returns True when the key was one of ours."""
+        if self._loading:
+            return False                # the project is being built: no key acts (G71)
         key, mods = ev.key(), ev.modifiers()
         shift_only = mods == Qt.ShiftModifier
         plain = mods in (Qt.NoModifier, Qt.KeypadModifier)
@@ -3525,17 +3689,13 @@ class MainWindow(QMainWindow):
                 # Active view only (G27): this camera is not decoded; it keeps the
                 # picture it last showed, veiled, with the markers of THAT frame
                 cv.set_stale(True)
-                f = rt.want_frame
+                f = rt.want_frame           # never None here: _tile_stale needs a frame already shown
                 self.grid.set_caption(
-                    i, f"{p.name(i)}  ·  " + (f"frame {f} · " if f is not None else "")
-                    + "not following (Active view only) — click to work in it")
-                if f is None:
-                    cv.set_points(np.zeros((0, 2), np.float32), np.zeros(0, bool), [], None)
-                    cv.set_mask(None)
-                    cv.set_midline(None)
-                    continue
+                    i, f"{p.name(i)}  ·  frame {f} · not following (Active view only) — click to work in it")
             else:
                 cv.set_stale(False)
+                if f is not None:           # a camera that ends early shows its last frame, and says so
+                    f = min(f, rt.n_frames - 1)
                 self.grid.set_caption(i, caption_for(p.name(i), f, p.offsets[i], rt.n_frames))
             if f is None:                    # this camera was not recording yet
                 rt.want_frame = None
@@ -4011,17 +4171,21 @@ class MainWindow(QMainWindow):
         s = self.session
         if s is None or self.state != READY:
             return
+        new = s.animal is None
+        dropped = self._undo_not_for_prompts()
         s.ensure_animal()
         s.animal.add_click(self.current, x, y, positive)
-        self._after_prompt_change("excluded" if not positive else "marked")
+        self._after_prompt_change("excluded" if not positive else "marked", new, dropped)
 
     def _on_animal_box(self, x0: float, y0: float, x1: float, y1: float):
         s = self.session
         if s is None or self.state != READY:
             return
+        new = s.animal is None
+        dropped = self._undo_not_for_prompts()
         s.ensure_animal()
         s.animal.set_box(self.current, (x0, y0, x1, y1))
-        self._after_prompt_change("boxed")
+        self._after_prompt_change("boxed", new, dropped)
 
     def _on_prompt_remove(self, index: int):
         s = self.session
@@ -4029,25 +4193,44 @@ class MainWindow(QMainWindow):
             return
         clicks = s.animal.prompts.get(self.current, [])
         if 0 <= index < len(clicks):
+            dropped = self._undo_not_for_prompts()
             del clicks[index]
             if not clicks:
                 s.animal.prompts.pop(self.current, None)
             s._touch()
             if s.animal.has_prompt(self.current):
-                self._after_prompt_change("updated")
+                self._after_prompt_change("updated", dropped_undo=dropped)
             else:
                 s.clear_masks(self.current, self.current)
                 self._refresh_overlay()
                 self._refresh_animal_panel()
                 self._apply_state()
-                self.statusBar().showMessage("Click removed — no prompt left on this frame", 4000)
+                self.statusBar().showMessage("Click removed — no prompt left on this frame"
+                                             + (self._UNDO_DROPPED if dropped else ""), 6000 if dropped else 4000)
 
-    def _after_prompt_change(self, verb: str):
+    _UNDO_DROPPED = " (the earlier Ctrl+Z step is gone: segment clicks cannot be undone — right-click a click to remove it)"
+
+    def _undo_not_for_prompts(self) -> bool:
+        """The segment's clicks and boxes are not part of an undo snapshot, so no
+        snapshot can take one back (G70): left alone, the next Ctrl+Z undid the PREVIOUS
+        tracking run and kept the click. The undo point is cleared instead, as for
+        removing the segment (I124). True when there was one to lose."""
+        had = self._undo_snap is not None
+        self._undo_snap = None
+        self.act_undo.setEnabled(False)
+        return had
+
+    def _after_prompt_change(self, verb: str, new_segment: bool = False, dropped_undo: bool = False):
         self._refresh_overlay()
         self._refresh_animal_panel()
+        if new_segment and self.animal_list.count():
+            # the segment a click has just made is part of the next run, like a new point
+            # (G120): its row is selected, so "Press Track now" is true
+            self.animal_list.item(0).setSelected(True)
         self._apply_state()
         self.statusBar().showMessage(f"Segment {verb} on frame {self.current} — computing its "
-                                     "silhouette…", 5000)
+                                     "silhouette…" + (self._UNDO_DROPPED if dropped_undo else ""),
+                                     8000 if dropped_undo else 5000)
         self._preview_mask()
 
     def _preview_mask(self):
@@ -4070,8 +4253,10 @@ class MainWindow(QMainWindow):
         w.target_session = s            # the camera may change while SAM works (I66)
         w.loading.connect(self._on_seg_loading)
         w.progress.connect(self._on_seg_progress)
-        w.done.connect(self._on_preview_done)
-        w.error.connect(self._on_preview_error)
+        # bound to THIS worker: a result that arrives after the video was replaced must
+        # not be written into the next video's session (I188)
+        w.done.connect(lambda summ, w=w: self._on_preview_done(summ, w))
+        w.error.connect(lambda tb, w=w: self._on_preview_error(tb, w))
         self._preview = w
         self._preview_again = False
         QApplication.setOverrideCursor(Qt.BusyCursor)
@@ -4114,17 +4299,31 @@ class MainWindow(QMainWindow):
         _quiet_close(self._loading_dialog)
         self._loading_dialog = None
 
-    def _on_preview_done(self, summ: dict):
+    def _end_preview(self, w) -> bool:
+        """What every preview result starts with (I188): put the cursor back, close
+        the download card, let the worker finish (`_retire`: still cleaning up, it is
+        kept until it ends, never destroyed running, I133). True when `w` is the
+        CURRENT preview -- its result is wanted; a worker the video's replacement
+        already dropped is only cleaned up."""
         QApplication.restoreOverrideCursor()
-        self._close_loading_dialog()
-        target = getattr(self._preview, "target_session", None) if self._preview is not None else None
-        if self._preview is not None:
-            self._preview.wait(2000)
-            _retire(self._preview)      # still cleaning up: kept until it ends, never destroyed running (I133)
-        self._preview = None
+        current = w is not None and w is self._preview
+        if current:
+            self._close_loading_dialog()
+        if w is not None:
+            w.wait(2000)
+            _retire(w)
+        if current:
+            self._preview = None
+        return current
+
+    def _on_preview_done(self, summ: dict, w=None):
+        w = w if w is not None else self._preview
+        target = getattr(w, "target_session", None)
+        if not self._end_preview(w):
+            return                      # its video / project is gone (I188)
         s = target if target is not None else self.session
-        if s is None or s.animal is None:
-            return
+        if s is None or s.animal is None or self.project is None or not any(s is x for x in self.project.sessions):
+            return                      # the camera it was clicked in was removed (I188)
         f = int(summ["frame"])
         s.write_mask_summaries([summ])
         if s is not self.session:     # finished after a camera switch: stored in ITS camera (I66)
@@ -4146,14 +4345,10 @@ class MainWindow(QMainWindow):
         if self._preview_again:
             self._preview_mask()
 
-    def _on_preview_error(self, tb: str):
-        QApplication.restoreOverrideCursor()
-        self._close_loading_dialog()
-        w = self._preview
-        if self._preview is not None:
-            self._preview.wait(2000)
-            _retire(self._preview)      # (I133)
-        self._preview = None
+    def _on_preview_error(self, tb: str, w=None):
+        w = w if w is not None else self._preview
+        if not self._end_preview(w):
+            return                      # a worker of a video that is gone: nothing to say about it (I188)
         if w is not None and w.plain:                   # a download: its sentence, no traceback (G45)
             if w.cancelled:
                 self.statusBar().showMessage(tb + " Click the segment again to go on with it.", 9000)
@@ -4372,9 +4567,11 @@ class MainWindow(QMainWindow):
             QSettings("Kinetrace", "Kinetrace").setValue("annotator", name)
         except Exception:      # noqa: BLE001
             pass
-        if self.session is not None:
-            self.session.annotator = name
-            self.session.dirty = True
+        # every camera's events and notes are marked by the same person (I233)
+        for s in (self.project.sessions if self.project is not None else
+                  [self.session] if self.session is not None else []):
+            s.annotator = name
+            s.dirty = True
 
     def _set_annotator(self):
         cur = self.session.annotator if self.session is not None else self._default_annotator()
@@ -4446,6 +4643,8 @@ class MainWindow(QMainWindow):
         s = self.session
         if s is None or pid >= s.n_points:
             return
+        self._undo_snap = s.snapshot()          # its own undo step: Ctrl+Z restored an older one (G68)
+        self.act_undo.setEnabled(True)
         s.points[pid].free = bool(free)
         s.dirty = True
         name = s.points[pid].name
@@ -4477,9 +4676,10 @@ class MainWindow(QMainWindow):
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 self._refresh_point_list()
                 return
-        if will_clear and n_data:
-            self._undo_snap = s.snapshot()
-            self.act_undo.setEnabled(True)
+        # an undo point whether or not there was data to lose: the source change itself
+        # is an edit, and Ctrl+Z would otherwise undo an older one (G70)
+        self._undo_snap = s.snapshot()
+        self.act_undo.setEnabled(True)
         if spec:
             if s.animal is None:
                 self.toast.show_message(
@@ -4523,6 +4723,12 @@ class MainWindow(QMainWindow):
         s = self.session
         if s is None or self.state != READY:
             return
+        # one undo step, in every camera the template gives landmarks to (G70, G19)
+        self._undo_snap = s.snapshot()
+        self.act_undo.setEnabled(True)
+        if self.project is not None and self.project.n_views > 1:
+            for v in self.project.others():
+                self._undo_extra[v] = self.project.sessions[v].snapshot()
         new = s.apply_skeleton(t)
         if self.project is not None and self.project.n_views > 1:
             # the same animal in every camera: a camera without a skeleton adopts
@@ -4592,24 +4798,47 @@ class MainWindow(QMainWindow):
         if not landmarks:
             self.toast.show_message("A skeleton needs at least one landmark.", "warn")
             return
-        pairs = []
+        pairs, dropped = [], []
         for line in bones.toPlainText().splitlines():
-            if "-" in line:
-                a, b = (p.strip() for p in line.split("-", 1))
-                if a in landmarks and b in landmarks:
-                    pairs.append([a, b])
+            if not line.strip():
+                continue
+            # "a - b" first: landmark names may hold a hyphen ("left-hip - left-knee" was cut at
+            # the first one and the bone silently lost, G132); a line with no " - " is split at
+            # a hyphen only where both halves are landmarks
+            cuts = ([line.split(" - ", 1)] if " - " in line
+                    else [[line[:k], line[k + 1:]] for k, ch in enumerate(line) if ch == "-"])
+            pair = next(([a.strip(), b.strip()] for a, b in cuts
+                         if a.strip() in landmarks and b.strip() in landmarks), None)
+            if pair is not None:
+                pairs.append(pair)
+            else:
+                dropped.append(line.strip())
         t = {"name": name.text().strip() or "custom", "head": head.text().strip() or landmarks[0],
              "landmarks": landmarks, "bones": pairs, "derived": derived, "note": ""}
         from kinetrace.skeletons import validate_template
         t, problems = validate_template(t)
-        if problems:
+        left_out = [f"bone line “{ln}” — both ends must be landmarks of this skeleton, written “a - b”"
+                    for ln in dropped]                                                  # (G132)
+        if problems or left_out:
             # a typo such as midline:50 used to become a landmark that never fills (I62)
             QMessageBox.warning(self, "Skeleton rules corrected",
                                 "Some of the rules could not be used and were left out:\n\n• "
-                                + "\n• ".join(problems)
-                                + "\n\nThose landmarks are tracked by appearance instead (select, N, click).")
+                                + "\n• ".join(list(problems) + left_out)
+                                + ("\n\nThose landmarks are tracked by appearance instead (select, N, click)."
+                                   if problems else ""))
         try:
-            save_user_template(t)
+            try:
+                save_user_template(t)
+            except FileExistsError:
+                # a template of that name is already in skeletons/: replaced only when asked (G122)
+                from kinetrace.skeletons import user_template_path
+                fname = user_template_path(t["name"]).name
+                if QMessageBox.question(
+                        self, "Replace the saved skeleton?",
+                        f"skeletons/{fname} already exists.\n\nReplace it with this skeleton? (No: use the skeleton "
+                        "now without saving it over the old one.)",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+                    save_user_template(t, overwrite=True)
         except OSError as e:
             self.statusBar().showMessage(f"Template not saved to skeletons/: {e}", 6000)
         self._apply_skeleton_template(t)
@@ -4617,6 +4846,8 @@ class MainWindow(QMainWindow):
     def _clear_skeleton(self):
         if self.session is None:
             return
+        self._undo_snap = self.session.snapshot()      # the skeleton is in the snapshot (G70)
+        self.act_undo.setEnabled(True)
         self.session.clear_skeleton()
         self._refresh_skeleton_menu()
         self._refresh_overlay()
@@ -4674,7 +4905,14 @@ class MainWindow(QMainWindow):
         self.timeline.refresh()
 
     def _refresh_events_ui(self):
+        # clear() leaves the submenus (one per event type, one for Notes) alive as children of
+        # the menu: they are released with it, or every rebuild leaked them (I259). Found with
+        # findChildren, not through the actions' wrappers (a wrapper GC'd by Python deletes
+        # the C++ menu; see the audit_sweep harness notes)
+        old = self.m_events.findChildren(QMenu, "", Qt.FindDirectChildrenOnly)
         self.m_events.clear()
+        for sub in old:
+            sub.deleteLater()
         self.m_events.addAction(self.act_mark_event)
         if self.session is None or not (self.session.events or self.session.notes):
             return

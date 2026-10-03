@@ -114,7 +114,7 @@ def _run_service(n_frames, faults, reqs, fail_open=0):
     try:
         s = SeekService(VID, FrameCache(200 * 1024 * 1024), n_frames=n_frames)
         s.frame_ready.connect(lambda i, f: sig.append(("frame", i)))
-        s.eof_truncated.connect(lambda i: sig.append(("eof", i)))
+        assert not hasattr(s, "eof_truncated"), "the eof_truncated signal was removed (never fired in the app)"
         s.decode_failed.connect(lambda i, m: sig.append(("failed", i, m)))
         s.start()
         for idx in reqs:
@@ -142,7 +142,7 @@ ev, raw, alive = _run_service(600, {300: ["none", "none"]}, [300, 100])
 assert ev == [("failed", 300), ("frame", 100)] and alive, raw
 assert raw[0][2], "decode_failed must say why"
 ev, raw, alive = _run_service(None, {300: ["none", "none"]}, [300])
-assert ev == [("eof", 300)], f"without a verified count a persistent failure is still EOF: {raw}"
+assert ev == [("failed", 300)], f"without a verified count a persistent failure is a decode_failed too: {raw}"
 ev, raw, alive = _run_service(None, {400: ["raise", "raise"]}, [400, 100])
 assert ev == [("failed", 400), ("frame", 100)] and "MemoryError" in raw[0][2] and alive, raw
 ev, raw, alive = _run_service(600, {}, [100], fail_open=1)

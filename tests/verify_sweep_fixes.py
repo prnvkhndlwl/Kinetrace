@@ -344,10 +344,10 @@ win.btn_autopause.setChecked(True)
 print("camera switch puts S down, carries Add over to the camera clicked, drops a pending event, keeps the "
       "user's toggles (I47, G20, I65, I50) OK")
 
-cur = win.current
-win._on_eof_truncated(1, 3)                                    # a companion's end is ITS frame number
-assert win.current == cur, "a companion's EOF moved the working playhead"
-print("a companion's end of file does not move the playhead (I43) OK")
+from kinetrace.video_source import SeekService as _SeekService
+assert not hasattr(win, "_on_eof_truncated") and not hasattr(_SeekService, "eof_truncated"), \
+    "the unreachable eof_truncated path was removed (the app passes the verified frame count)"
+print("the eof_truncated path is gone: a decode failure is decode_failed, never the end (I43 -> R11) OK")
 
 calls = []
 orig = win._on_seek_frame
@@ -388,7 +388,7 @@ if summ is not None:
 
 win._on_decode_failed(0, 12, "read failed")
 win._on_decode_failed(0, 12, "read failed")
-assert len(win._views[0].__dict__.get("_bad_frames", ())) == 1
+assert len(win._views[0].bad_frames) == 1
 print("a damaged frame is reported once, never taken for the end (I40) OK")
 
 # I24: scene coordinates are OpenCV pixel centres
