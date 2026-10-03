@@ -15,6 +15,7 @@ import traceback
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from PySide6.QtCore import QEvent, QEventLoop, QObject, QRect, QSettings, QSize, Qt, QTimer, QThread, Signal
@@ -628,6 +629,67 @@ class _OpenPlan:
     file_path: Path | None
     unsaved: bool
     decline_after: str | None
+
+
+class _SegmentSpecs(NamedTuple):
+    """The segment's part of a run (R8, `MainWindow._segment_specs`): what the worker gets for it."""
+    animal: object            # AnimalSpec, None = no segment in this run
+    derived: object           # [DerivedSpec], None without a segment
+    head_pid: int | None      # the head landmark, when it is among the run's points
+    on_body: list             # the points the skeleton names (the off-body demotion)
+    constrain: list           # the points held on the silhouette (Body on, not "free")
+    stored: object            # the silhouettes an earlier pass wrote (a two-pass run's second pass)
+
+
+# Where a run stopped at a point, by `MainWindow._stop_kind` (the worker's `_autopause_reason`): `short`
+# = how the every-camera summary names it, `toast` (+ `ms`) and `status` = what the run's end says
+# ({name}, {frame}, {prev} = frame - 1); one table instead of the sentences spelt out twice (R8).
+_STOP_TEXTS = {
+    "segment": dict(
+        short="{name} was lost", ms=15000,
+        toast=("Auto-paused: <b>{name}</b> was lost (or left the frame) around frame {frame}. If it is "
+               "visible here, press <b>S</b>, click it, then Track. Or turn <b>Auto-pause</b> off (bottom "
+               "bar) to run through."),
+        status="Auto-paused: the segment was lost around frame {frame}"),
+    "ball": dict(
+        short="{name} was lost", ms=15000,
+        toast=("Stopped at frame {frame}: SAM could not find the ball <b>{name}</b> any more, and it had "
+               "not reached the picture edge, so its track ends at frame {prev}. If the ball is visible "
+               "here, select it, Add ▾ → Ball marker, click it, then Track. A ball that leaves the picture "
+               "never stops the run."),
+        status="Stopped: the ball {name} was lost at frame {frame}"),
+    "spot": dict(
+        short="{name} was not found (Moving spot)", ms=15000,
+        toast=("Stopped at frame {frame}: {said}, so its track ends at frame {prev}. Moving spot stops "
+               "instead of guessing. If you can see it here, click it (it is selected) and press Track; "
+               "clicking it on the next frame too gives it its speed. If it is not a small spot, switch "
+               "Track ▾ → Point model."),
+        status="Stopped: Moving spot {saw} {name} at frame {frame}",
+        said_two=("two spots look equally like <b>{name}</b> here (another spot or a glint right beside "
+                  "it, or two crossing)"),
+        said_none=("<b>{name}</b> was not found where its speed put it (it faded, was hidden, or turned "
+                   "sharply)"),
+        saw_two="saw two candidates for", saw_none="lost"),
+    "exit": dict(
+        short="{name} left the segment", ms=15000,
+        toast=("Stopped at frame {frame}: <b>{name}</b> left the segment's silhouette, so its track ends "
+               "at frame {prev}. Click it where it really is and press Track. If it is allowed off the "
+               "segment, right-click it → <i>May leave the segment</i>."),
+        status="Stopped: {name} left the segment at frame {frame}"),
+    "unreliable": dict(
+        short="{name} was lost", ms=12000,
+        toast=("Auto-paused: <b>{name}</b> became unreliable at frame {frame}, so its track is cut there "
+               "(its timeline lane is empty from this frame on). It is selected: click where it really is "
+               "on the video and press Track — or turn <b>Auto-pause</b> off (bottom bar) to run through."),
+        status=("Auto-paused: the model lost {name} at frame {frame} (low confidence; its track is cut "
+                "there). Click where it really is and press Track — or turn Auto-pause off to run "
+                "through")),
+}
+
+
+def _stop_short(reason: str, name: str) -> str:
+    """How the every-camera summary names a stop (`_STOP_TEXTS` `short`): by the worker's reason."""
+    return _STOP_TEXTS[reason if reason in ("exit", "spot") else "unreliable"]["short"].format(name=name)
 
 
 class MainWindow(QMainWindow):
@@ -2163,8 +2225,8 @@ class MainWindow(QMainWindow):
         n_cams = len(self._multi_jobs(semi)) if self.act_track_all.isChecked() and self.state == READY else 0
         if n_cams > 1:
             self.btn_track.setText(self.btn_track.text() + f" · {n_cams} cams")   # Track ▾ → Every camera (G29)
-        n = len([p for p in s.seedable_at(self.current) if p in scope]) if s is not None else 0
-        animal_ok = s is not None and seg and s.animal_seedable_at(self.current)
+        pids_here, animal_ok = self._startable_here(scope, seg)
+        n = len(pids_here)
         # Nothing to start from: the button stays ENABLED, only drawn quiet, because Qt
         # disables a disabled button's menu too and Track ▾'s choices must stay reachable;
         # T / a click then says why instead of starting (G34)
@@ -7295,56 +7357,128 @@ class MainWindow(QMainWindow):
         for a simultaneous every-camera run (I141); `step` = one semi-automatic frame
         (no ETA, no overwrite question, "Stepped to frame" at its end): a bound
         (`stop_after`) alone no longer makes a run a step -- the second pass of a two-pass
-        run was one (G99)."""
+        run was one (G99).
+
+        In order (R8): what can start (`_run_targets`), the overwrite question, the undo point,
+        the points' specs split by tracker, the segment's specs, the worker."""
         if self._loading:
             return None         # a project / video is still opening behind the card (G71)
         if not self._tracking_engine_ready():
             return None
         s = self.session
-        scope, _n_sel = self._run_scope()   # exactly the panel selection (G61)
-        if only_pids is not None:
-            scope = set(int(q) for q in only_pids)
-        pids = [p for p in s.seedable_at(self.current) if p in scope]
-        run_seg = self._run_segment(scope) if segment is None else bool(segment)
-        animal_ok = run_seg and s.animal_seedable_at(self.current)
+        scope, pids, run_seg, animal_ok = self._run_targets(only_pids, segment)
         if not pids and not animal_ok:
-            if not scope and not run_seg:
-                self.toast.show_message(
-                    "Nothing is selected, so nothing was tracked. Select what to track: the points in the "
-                    "<b>POINTS</b> list (Ctrl+click for several, <b>Ctrl+A</b> for all)"
-                    + (" and the segment's row in <b>SEGMENT</b>" if s.animal is not None else "") + ".",
-                    "warn", 8000)
-            elif scope:
-                self.toast.show_message(
-                    f"The selected point(s) have no position on frame {self.current}. Select a "
-                    "point that exists here, or place it here first (click it on the video).",
-                    "warn", 7000)
-            elif s.animal is not None:
-                self.toast.show_message(
-                    f"Nothing to start from on frame {self.current}: place a point with <b>N</b> "
-                    "(a few pixels is enough), or press <b>S</b> and click the segment here.",
-                    "warn", 7000)
+            self._say_nothing_to_start(scope, run_seg)
             return
         if self._preview is not None and self._preview.isRunning():
             self.toast.show_message("One moment — the silhouette preview is still computing.",
                                     "info", 4000)
             return
         self._step_run = bool(step)
+        self._say_what_runs(scope, pids, animal_ok)
+        if not self._overwrite_ok(scope, pids, animal_ok, quiet):
+            return
+
+        if not quiet:
+            self._undo_snap = s.snapshot()
+        self.act_undo.setEnabled(False)  # re-enabled when the run ends
+
+        from kinetrace.tracker import TrackingWorker        # lazy: imports torch
+        seeds = s.positions_at(self.current)
+        pids, ball_pids, spot_specs, backend = self._split_by_tracker(pids, seeds, quiet)
+        specs = self._point_specs(pids, seeds)
+        balls = self._ball_specs(ball_pids, seeds)
+        seg = self._segment_specs(pids, scope, animal_ok, segment, specs)
+        if not specs and not balls and not spot_specs and seg.animal is None:
+            self.toast.show_message(
+                f"Nothing to start from on frame {self.current}: place a point with <b>N</b>, a ball "
+                "with Add ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
+            self.act_undo.setEnabled(self._undo_snap is not None)       # no run: Ctrl+Z stays what it was
+            return
+        end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
+        w = TrackingWorker(self.info.path, self.current, None, None,
+                           self.cache, end, refine=True,
+                           specs=specs,
+                           roi=self.btn_roi.isChecked(),
+                           autopause=self.btn_autopause.isChecked(),
+                           animal=seg.animal, derived=seg.derived, head_pid=seg.head_pid,
+                           on_body_pids=seg.on_body, constrain_pids=seg.constrain,
+                           point_backend=backend, balls=balls, spots=spot_specs, stored_masks=seg.stored)
+        # the points hand-placed on the start frame: `write_segment` clears the flag of every row it
+        # writes, the start row (the user's click, position kept) included -- restored at the end of
+        # the run (I189)
+        w._kt_hand = (self.current, [q for q in pids + ball_pids + [sp.pid for sp in spot_specs]
+                                     if s.manual[self.current, q]])
+        if build_only:
+            return w                    # one camera of a simultaneous run (I141)
+        self._launch_run(w)
+
+    def _run_targets(self, only_pids, segment):
+        """What a run would start from on this frame: (scope = the points it covers, the scope's
+        points that have a position here, whether the segment runs, whether it can start here). The
+        rule behind the Track button's wording is `_update_track_button`; the sentences differ there
+        (a tooltip, not a notice), so the two are kept apart (R8)."""
+        s = self.session
+        scope, _n_sel = self._run_scope()   # exactly the panel selection (G61)
+        if only_pids is not None:
+            scope = set(int(q) for q in only_pids)
+        run_seg = self._run_segment(scope) if segment is None else bool(segment)
+        pids, animal_ok = self._startable_here(scope, run_seg)
+        return scope, pids, run_seg, animal_ok
+
+    def _startable_here(self, scope, run_seg: bool):
+        """(the scope's points that have a position on this frame, whether the segment -- when it
+        runs -- can start here from a click or a silhouette): what a run can start from, one rule
+        for the Track button (`_update_track_button`) and for a Track press (R8)."""
+        s = self.session
+        if s is None:
+            return [], False
+        return ([p for p in s.seedable_at(self.current) if p in scope],
+                bool(run_seg and s.animal_seedable_at(self.current)))
+
+    def _say_nothing_to_start(self, scope, run_seg: bool) -> None:
+        """Track was pressed with nothing that can start on this frame: why, as a notice (the
+        Track button's tooltip says the same in `_update_track_button`)."""
+        s = self.session
+        if not scope and not run_seg:
+            self.toast.show_message(
+                "Nothing is selected, so nothing was tracked. Select what to track: the points in the "
+                "<b>POINTS</b> list (Ctrl+click for several, <b>Ctrl+A</b> for all)"
+                + (" and the segment's row in <b>SEGMENT</b>" if s.animal is not None else "") + ".",
+                "warn", 8000)
+        elif scope:
+            self.toast.show_message(
+                f"The selected point(s) have no position on frame {self.current}. Select a "
+                "point that exists here, or place it here first (click it on the video).",
+                "warn", 7000)
+        elif s.animal is not None:
+            self.toast.show_message(
+                f"Nothing to start from on frame {self.current}: place a point with <b>N</b> "
+                "(a few pixels is enough), or press <b>S</b> and click the segment here.",
+                "warn", 7000)
+
+    def _say_what_runs(self, scope, pids, animal_ok: bool) -> None:
+        """The status-bar line of a starting run: what is tracked, and which selected points have no
+        position here and are skipped (their tracks are kept). Not for a one-frame step."""
+        if self._step_run:
+            return
+        s = self.session
         skipped = sum(1 for i in range(s.n_points) if not s.points[i].derived and i in scope) - len(pids)
-        if not self._step_run:
-            self.statusBar().showMessage(
-                f"Tracking the {len(pids)} selected point(s)" + (" and the segment" if animal_ok else "")
-                + " — only what is selected in the panel is tracked", 6000)
-        if skipped and not self._step_run:
+        self.statusBar().showMessage(
+            f"Tracking the {len(pids)} selected point(s)" + (" and the segment" if animal_ok else "")
+            + " — only what is selected in the panel is tracked", 6000)
+        if skipped:
             self.statusBar().showMessage(
                 f"{skipped} point(s) have no position at frame {self.current} and will be "
                 "skipped (their existing tracks are kept)", 6000)
 
-        # accidental-overwrite guard: starting far before a large body of work
-        # (irrelevant for a one-frame step, which would nag on every F). It counts the frames THIS
-        # run would overwrite: its own points' tracked frames after the start, plus the segment's
-        # silhouette frames when it runs -- every point's, a new point D alone read "will overwrite
-        # 4900 already-tracked frames" (G101)
+    def _overwrite_ok(self, scope, pids, animal_ok: bool, quiet: bool) -> bool:
+        """The accidental-overwrite guard: starting far before a large body of work asks first
+        (irrelevant for a one-frame step, which would nag on every F, and for a quiet run). It
+        counts the frames THIS run would overwrite: its own points' tracked frames after the
+        start, plus the segment's silhouette frames when it runs -- every point's, a new point D
+        alone read "will overwrite 4900 already-tracked frames" (G101). False = the user said no."""
+        s = self.session
         cols = list(pids) + ([q for q in s.derived_pids() if q in scope] if animal_ok else [])
         ahead = (s.tracked[self.current + 1:][:, cols].any(axis=1) if cols
                  else np.zeros(max(0, s.n_frames - self.current - 1), bool))
@@ -7361,29 +7495,21 @@ class MainWindow(QMainWindow):
                     f"{frames_after} already-tracked frames ahead of it.\n\n"
                     "You can undo with Ctrl+Z after it finishes. Continue?",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
-                return
+                return False
+        return True
 
-        if not quiet:
-            self._undo_snap = s.snapshot()
-        self.act_undo.setEnabled(False)  # re-enabled when the run ends
-
-        from kinetrace.tracker import (AnimalSpec, DerivedSpec, PointSpec,  # lazy: imports torch
-                                           TrackingWorker)
-        seeds = s.positions_at(self.current)
-        def _offsets(meta):
-            if meta.kind != "group" or meta.outline is None or len(meta.outline) < 3:
-                return None
-            o = np.asarray(meta.outline, np.float32).reshape(-1, 2)
-            return o - o.mean(axis=0)
+    def _split_by_tracker(self, pids, seeds, quiet: bool):
+        """Sort the run's points by what follows them: (the points the ONE appearance model of this
+        worker tracks, the ball markers, the Moving spot specs, that model's key). Point model:
+        Moving spot (I160, G56): plain points are searched as spots (spots.py, no model); a region
+        needs AllTracker / CoTracker3. Each point by its own tracker (G62): Moving spot points as
+        spots, the rest by ONE appearance model (a Track press splits AllTracker and CoTracker3
+        points into passes, G63; anything else keeps the first)."""
+        from kinetrace.tracker import SpotSpec
+        s = self.session
         ball_pids = [pid for pid in pids if s.points[pid].is_ball]
         pids = [pid for pid in pids if not s.points[pid].is_ball]
-        # Point model: Moving spot (I160, G56): plain points are searched as
-        # spots (spots.py, no model); a region needs AllTracker / CoTracker3
-        # each point by its own tracker (G62): Moving spot points as spots, the
-        # rest by ONE appearance model (a Track press splits AllTracker and
-        # CoTracker3 points into passes, G63; anything else keeps the first)
         spot_specs, left_out, nn = [], [], []
-        from kinetrace.tracker import SpotSpec
         for pid in pids:                # (`seedable_at` never returns a silhouette-derived point)
             q = s.points[pid]
             t = self._tracker_of(pid)
@@ -7406,14 +7532,32 @@ class MainWindow(QMainWindow):
                 + ", ".join(f"<b>{n}</b>" for n in left_out)
                 + " (a region) is left out of this run. Give it AllTracker or CoTracker3 (right-click its row "
                 "in POINTS → Tracker).", "info", 9000)
-        specs = [PointSpec(pid, seeds[pid].astype(np.float32).copy(),
-                           s.points[pid].kind, s.points[pid].radius,
-                           s.points[pid].anchor, _offsets(s.points[pid]))
-                 for pid in pids]
-        # ball markers: SAM segments them, a circle is fitted, the centre is the
-        # point (balls.py) - prompts from this frame on, seeded from the ball's
-        # current position, the last known radius as the size hint
+        return pids, ball_pids, spot_specs, backend
+
+    @staticmethod
+    def _region_offsets(meta):
+        """A region's polygon as vertex offsets from its centre (the worker samples members inside
+        it), None for a circle / a point."""
+        if meta.kind != "group" or meta.outline is None or len(meta.outline) < 3:
+            return None
+        o = np.asarray(meta.outline, np.float32).reshape(-1, 2)
+        return o - o.mean(axis=0)
+
+    def _point_specs(self, pids, seeds) -> list:
+        """The appearance-tracked points' `PointSpec`s, seeded from their positions on this frame."""
+        from kinetrace.tracker import PointSpec
+        s = self.session
+        return [PointSpec(pid, seeds[pid].astype(np.float32).copy(),
+                          s.points[pid].kind, s.points[pid].radius,
+                          s.points[pid].anchor, self._region_offsets(s.points[pid]))
+                for pid in pids]
+
+    def _ball_specs(self, ball_pids, seeds) -> list:
+        """Ball markers: SAM segments them, a circle is fitted, the centre is the
+        point (balls.py) - prompts from this frame on, seeded from the ball's
+        current position, the last known radius as the size hint."""
         from kinetrace.tracker import BallSpec
+        s = self.session
         balls = []
         for pid in ball_pids:
             q = s.points[pid]
@@ -7422,6 +7566,15 @@ class MainWindow(QMainWindow):
             known = rad[np.isfinite(rad)]
             balls.append(BallSpec(pid, prompts, seeds[pid], float(known[-1]) if len(known) else None,
                                   self._seg_backend))
+        return balls
+
+    def _segment_specs(self, pids, scope, animal_ok: bool, segment, specs) -> _SegmentSpecs:
+        """The segment's part of a run: its prompts, the derived landmarks to fill in, the head
+        landmark, and the on-body rules for `pids` (the constraint, the stop where a landmark leaves
+        the animal, the off-body demotion). `stored` = the silhouettes an earlier pass wrote, for
+        the second pass of a two-pass run (I185)."""
+        from kinetrace.tracker import AnimalSpec, DerivedSpec
+        s = self.session
         animal = derived = None
         head_pid = None
         on_body: list[int] = []
@@ -7457,29 +7610,7 @@ class MainWindow(QMainWindow):
                 on_body = [p for p in pids if s.points[p].name in s.skeleton.get("landmarks", [])]
             if self.btn_onbody.isChecked():
                 constrain = [p for p in pids if not s.points[p].free]
-        if not specs and not balls and not spot_specs and animal is None:
-            self.toast.show_message(
-                f"Nothing to start from on frame {self.current}: place a point with <b>N</b>, a ball "
-                "with Add ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
-            self.act_undo.setEnabled(self._undo_snap is not None)       # no run: Ctrl+Z stays what it was
-            return
-        end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
-        w = TrackingWorker(self.info.path, self.current, None, None,
-                           self.cache, end, refine=True,
-                           specs=specs,
-                           roi=self.btn_roi.isChecked(),
-                           autopause=self.btn_autopause.isChecked(),
-                           animal=animal, derived=derived, head_pid=head_pid,
-                           on_body_pids=on_body, constrain_pids=constrain,
-                           point_backend=backend, balls=balls, spots=spot_specs, stored_masks=stored)
-        # the points hand-placed on the start frame: `write_segment` clears the flag of every row it
-        # writes, the start row (the user's click, position kept) included -- restored at the end of
-        # the run (I189)
-        w._kt_hand = (self.current, [q for q in pids + ball_pids + [sp.pid for sp in spot_specs]
-                                     if s.manual[self.current, q]])
-        if build_only:
-            return w                    # one camera of a simultaneous run (I141)
-        self._launch_run(w)
+        return _SegmentSpecs(animal, derived, head_pid, on_body, constrain, stored)
 
     def _spot_velocity(self, pid: int, f: int):
         """A Moving spot run's starting speed (px / frame): from the frame before
@@ -7883,9 +8014,7 @@ class MainWindow(QMainWindow):
                 s = self.session
                 nm = (s.points[pid].name if s is not None and 0 <= pid < s.n_points
                       else "the segment" if pid < 0 else f"point {pid}")
-                res.update(fail=fail, pid=pid, why={"exit": f"{nm} left the segment",
-                                                    "spot": f"{nm} was not found (Moving spot)"}
-                           .get(reason, f"{nm} was lost"))
+                res.update(fail=fail, pid=pid, why=_stop_short(reason, nm))
             st["results"].append(res)
             if user_pause and was_paused:
                 # X / Space stops the WHOLE run where it is (the camera and frame on
@@ -7928,12 +8057,7 @@ class MainWindow(QMainWindow):
             aname = (self.session.animal.name
                      if self.session and self.session.animal else "the segment")
             if pid < 0:  # the animal itself
-                self.toast.show_message(
-                    f"Auto-paused: <b>{aname}</b> was lost (or left the frame) around frame "
-                    f"{fail_frame}. If it is visible here, press <b>S</b>, click it, then Track. "
-                    "Or turn <b>Auto-pause</b> off (bottom bar) to run through.", "warn", 15000)
-                self.statusBar().showMessage(
-                    f"Auto-paused: the segment was lost around frame {fail_frame}", 12000)
+                self._say_stop("segment", aname, fail_frame)
                 return
             name = (self.session.points[pid].name
                     if self.session and pid < self.session.n_points else f"point {pid}")
@@ -7947,49 +8071,9 @@ class MainWindow(QMainWindow):
                     self._refresh_overlay()
                     self.timeline.refresh()
                 self._on_select(pid)
-            if reason == "lost" and self.session and pid < self.session.n_points and self.session.points[pid].is_ball:
-                self.toast.show_message(
-                    f"Stopped at frame {fail_frame}: SAM could not find the ball <b>{name}</b> any more, and it "
-                    f"had not reached the picture edge, so its track ends at frame {fail_frame - 1}. If the ball "
-                    "is visible here, select it, Add ▾ → Ball marker, click it, then Track. A ball that "
-                    "leaves the picture never stops the run.", "warn", 15000)
-                self.statusBar().showMessage(f"Stopped: the ball {name} was lost at frame {fail_frame}", 12000)
-                return
-            if reason == "spot" and self.session and pid < self.session.n_points:
-                why = spot_ended.get(pid, (fail_frame, "missing"))[1]
-                if why == "ambiguous":
-                    said = (f"two spots look equally like <b>{name}</b> here (another spot or a glint right "
-                            "beside it, or two crossing)")
-                else:
-                    said = (f"<b>{name}</b> was not found where its speed put it (it faded, was hidden, or "
-                            "turned sharply)")
-                self.toast.show_message(
-                    f"Stopped at frame {fail_frame}: {said}, so its track ends at frame {fail_frame - 1}. "
-                    "Moving spot stops instead of guessing. If you can see it here, click it (it is selected) "
-                    "and press Track; clicking it on the next frame too gives it its speed. If it is not a "
-                    "small spot, switch Track ▾ → Point model.", "warn", 15000)
-                self.statusBar().showMessage(
-                    f"Stopped: Moving spot {'saw two candidates for' if why == 'ambiguous' else 'lost'} "
-                    f"{name} at frame {fail_frame}", 12000)
-                return
-            if reason == "exit":
-                self.toast.show_message(
-                    f"Stopped at frame {fail_frame}: <b>{name}</b> left the segment's silhouette, so its "
-                    f"track ends at frame {fail_frame - 1}. Click it where it really is and press Track. "
-                    "If it is allowed off the segment, right-click it → <i>May leave the segment</i>.",
-                    "warn", 15000)
-                self.statusBar().showMessage(
-                    f"Stopped: {name} left the segment at frame {fail_frame}", 12000)
-                return
-            self.toast.show_message(
-                f"Auto-paused: <b>{name}</b> became unreliable at frame {fail_frame}, so its track is cut "
-                "there (its timeline lane is empty from this frame on). It is selected: click where it really "
-                "is on the video and press Track — or turn <b>Auto-pause</b> off (bottom bar) to run through.",
-                "warn", 12000)
-            self.statusBar().showMessage(
-                f"Auto-paused: the model lost {name} at frame {fail_frame} "
-                f"(low confidence; its track is cut there). Click where it really is and press Track — "
-                f"or turn Auto-pause off to run through", 12000)
+            kind = self._stop_kind(reason, pid)
+            self._say_stop(kind, name, fail_frame,
+                           spot_ended.get(pid, (fail_frame, "missing"))[1] if kind == "spot" else "missing")
             return
         if last < getattr(self, "_run_start", 0):
             # paused during model load / warm-up: nothing was emitted, stay put
@@ -8029,6 +8113,32 @@ class MainWindow(QMainWindow):
             self.toast.show_message(
                 "Moving spot stopped (auto-pause is off, so the run went on for the rest): " + ", ".join(parts)
                 + ". Their tracks end there. Select one, click it where it is and press Track.", "warn", 15000)
+
+    def _stop_kind(self, reason: str, pid: int) -> str:
+        """Which `_STOP_TEXTS` entry a run's stop at point `pid` takes, from the worker's
+        `_autopause_reason`: a ball SAM lost, a Moving spot, a landmark that left the segment, else
+        low confidence."""
+        s = self.session
+        known = bool(s and pid < s.n_points)
+        if reason == "lost" and known and s.points[pid].is_ball:
+            return "ball"
+        if reason == "spot" and known:
+            return "spot"
+        if reason == "exit":
+            return "exit"
+        return "unreliable"
+
+    def _say_stop(self, kind: str, name: str, frame: int, why: str = "missing") -> None:
+        """The notice and the status-bar line of a run that stopped at `frame` (`_STOP_TEXTS`);
+        `why` = what Moving spot reported ("ambiguous" = two spots alike, else not found)."""
+        t = _STOP_TEXTS[kind]
+        fmt = dict(name=name, frame=frame, prev=frame - 1)
+        if kind == "spot":
+            two = why == "ambiguous"
+            fmt["said"] = t["said_two" if two else "said_none"].format(**fmt)
+            fmt["saw"] = t["saw_two" if two else "saw_none"]
+        self.toast.show_message(t["toast"].format(**fmt), "warn", t["ms"])
+        self.statusBar().showMessage(t["status"].format(**fmt), 12000)
 
     def _on_track_error(self, tb: str):
         if self._passes is not None and self._multi is None:
