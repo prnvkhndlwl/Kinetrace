@@ -56,6 +56,8 @@ camera was active, the calibration, lens profiles and the last 3D result.
 
 from __future__ import annotations
 
+import csv
+import io
 from pathlib import Path
 
 import numpy as np
@@ -98,6 +100,21 @@ class Project:
         self.rates: list[float] = ([float(r) for r in rates] if rates
                                    else [rate_of(s.fps, ref_fps) for s in self.sessions])
         self.rates = (self.rates + [1.0] * n)[:n]
+        # (I214) a rate of 0 / NaN opened silently and then raised ZeroDivisionError on every
+        # playhead move, a NaN offset raised later: refuse them where they come in, in words
+        for i, (r, o) in enumerate(zip(self.rates, self.offsets)):
+            if not (np.isfinite(r) and r > 0):
+                raise ValueError(f"camera {i + 1} ({self.names[i]}): its frame rate relative to the reference "
+                                 f"must be a number above 0 (got {r})")
+            if not np.isfinite(o):
+                raise ValueError(f"camera {i + 1} ({self.names[i]}): its frame offset must be a number (got {o})")
+        # (I214) the reference clock is camera 1 and its rate is 1 BY DEFINITION: a file whose first
+        # camera carries another rate (a hand-edited / foreign project) is re-based on it instead of
+        # re-timing every camera wrongly. Offsets are in each camera's own frames and do not change.
+        r0 = self.rates[REFERENCE_VIEW] if n else 1.0
+        if n and abs(r0 - 1.0) > 1e-12:
+            self.rates = [r / r0 for r in self.rates]
+            self.rates[REFERENCE_VIEW] = 1.0
         self.active = int(np.clip(active, 0, max(n - 1, 0)))
         self.path: str | None = None       # where this project was last saved
         self.calibration: Calibration | None = None    # DLT per view, view order
@@ -179,6 +196,24 @@ class Project:
             return None
         return local
 
+    def local_index(self, view: int, t) -> int | np.ndarray:
+        """The whole local frame of `view` nearest reference instant `t` (a
+        number or an array), with `map_frame`'s I19 tie rule: a .5 tie rounds UP,
+        the way it does towards a later view. No range check. (I258: retrack
+        used Python's round / np.rint, whose half-to-even disagreed with
+        `map_frame` at every .5 offset and shifted stretch ends by one.)"""
+        x = self.rates[view] * np.asarray(t, np.float64) + self.offsets[view]
+        out = np.floor(x + 0.5).astype(np.int64)
+        return int(out) if out.ndim == 0 else out
+
+    def reference_index(self, view: int, frame) -> int | np.ndarray:
+        """The reference frame nearest local `frame` of `view`: `map_frame`'s
+        tie rule for the way back towards an earlier view -- a .5 tie rounds
+        DOWN (so local_index then reference_index lands where it started)."""
+        x = (np.asarray(frame, np.float64) - self.offsets[view]) / self.rates[view]
+        out = np.ceil(x - 0.5).astype(np.int64)
+        return int(out) if out.ndim == 0 else out
+
 
     def align_to(self, i: int, shown_frame: int, active_frame: int) -> float:
         """Set view `i`'s offset so that `shown_frame` in it lines up with
@@ -209,7 +244,7 @@ class Project:
         """Retime one camera against the reference. The reference itself has no
         offset to set — it IS the zero — so shifting it is meaningless and is
         ignored rather than silently snapping back."""
-        if i == REFERENCE_VIEW or not (0 <= i < self.n_views):
+        if i == REFERENCE_VIEW or not (0 <= i < self.n_views) or not np.isfinite(offset):
             return
         if abs(self.offsets[i] - float(offset)) > 1e-12:
             self.offsets[i] = float(offset)
@@ -219,7 +254,7 @@ class Project:
     def set_rate(self, i: int, rate: float) -> None:
         """Override a view's frame-rate ratio (the default comes from the two
         videos' nominal fps, which is right unless a header lies)."""
-        if i == REFERENCE_VIEW or not (0 <= i < self.n_views) or rate <= 0:
+        if i == REFERENCE_VIEW or not (0 <= i < self.n_views) or not (np.isfinite(rate) and rate > 0):
             return
         if abs(self.rates[i] - float(rate)) > 1e-12:
             self.rates[i] = float(rate)
@@ -508,13 +543,16 @@ class Project:
             lines.append(",".join(cells))
         path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
         side = path.with_name(path.stem + "_pointnames.csv")
-        cams = [f"cam{c + 1},{self.name(c)} = {Path(s.video_path).name}".replace("\n", " ")
-                for c, s in enumerate(self.sessions)]
-        side.write_text("\n".join(["name,cameras"]
-                                  + [f"{nm},{self.n_views}" for nm in names]
-                                  + [f"convention,{dltdv_convention_text(flip_y, po)}",
-                                     f"rows,row k = frame k (from 0) of {self.name(ref)}, the reference camera; "
-                                     "the other cameras are sampled at the same instant through their offsets"]
-                                  + cams) + "\n",
-                        encoding="utf-8", newline="")
+        # (I175) written with csv.writer: a landmark named "tail, tip" or a video name with a comma
+        # is quoted instead of cutting the row; the header and what each row means are unchanged
+        buf = io.StringIO()
+        w = csv.writer(buf, lineterminator="\n")
+        w.writerow(["name", "cameras"])
+        w.writerows([nm, self.n_views] for nm in names)
+        w.writerow(["convention", dltdv_convention_text(flip_y, po)])
+        w.writerow(["rows", f"row k = frame k (from 0) of {self.name(ref)}, the reference camera; "
+                            "the other cameras are sampled at the same instant through their offsets"])
+        w.writerows([f"cam{c + 1}", f"{self.name(c)} = {Path(s.video_path).name}".replace("\n", " ")]
+                    for c, s in enumerate(self.sessions))
+        side.write_text(buf.getvalue(), encoding="utf-8", newline="")
         return [str(path), str(side)]

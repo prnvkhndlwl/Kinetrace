@@ -23,11 +23,11 @@ from kinetrace.calib import Calibration, CameraCalibration
 from kinetrace.calibio import load_calibration
 from kinetrace.hull import _view_rotation
 
-CALIB_FILTER = ("Calibration files (*.json *.csv *.mat *.txt *.toml *.yml *.yaml);;"
+CALIB_FILTER = ("Calibration files (*.json *.csv *.mat *.txt *.toml *.yml *.yaml *.xml);;"
                 "Kinetrace calibration (*.kcal.json);;"
                 "DLTdv / easyWand / Argus DLT coefficients (*.csv);;"
                 "easyWand data (*easyWandData.mat);;DLTdv8 project, MATLAB v7 (*dvProject.mat);;"
-                "Anipose calibration (*.toml);;OpenCV cameras (*.yml *.yaml *.json);;"
+                "Anipose calibration (*.toml);;OpenCV cameras (*.yml *.yaml *.xml *.json);;"
                 "MATLAB cameras (*.mat);;OpenCV cameras K + R/t (*.json *.txt);;All files (*)")
 
 CONVENTIONS = [
@@ -52,6 +52,43 @@ EXPORT_CAL_FORMATS = [
     ("lenses", "Lens profiles, one OpenCV .yml per camera that has one", False),
     ("offsets", "Camera offsets and frame rates (offsets.csv)", False),
 ]
+
+
+def match_columns(view_sizes, file_cameras, n_views: int) -> list[int]:
+    """Which column of a calibration file each project camera starts on (G74).
+    A column is matched to a camera by the picture size the file records for
+    it: columns whose size only ONE camera has go to that camera first (a
+    swapped pair, a rig's lone 848x480 camera), then cameras that share a size
+    take the columns of that size in order, and every camera left over takes
+    the next column nobody has taken -- so a file with no sizes is simply
+    column i for camera i. The old rule only accepted a size hit that was not
+    another camera's identity default, which in a swap is always the case."""
+    n_cols = len(file_cameras)
+    out: list[int | None] = [None] * n_views
+    taken: set[int] = set()
+    hits = []
+    for i in range(n_views):
+        size = view_sizes[i] if i < len(view_sizes) else None
+        hits.append([] if size is None else
+                    [k for k, c in enumerate(file_cameras)
+                     if c.width and (int(c.width), int(c.height)) == (int(size[0]), int(size[1]))])
+    for i in range(n_views):                        # sizes only this camera has first
+        if len(hits[i]) == 1 and hits[i][0] not in taken:
+            others = [j for j in range(n_views) if j != i and hits[i][0] in hits[j]]
+            if not others:
+                out[i] = hits[i][0]
+                taken.add(hits[i][0])
+    for i in range(n_views):                        # then shared sizes, in order
+        if out[i] is None:
+            free = [k for k in hits[i] if k not in taken]
+            if free:
+                out[i] = free[0]
+                taken.add(free[0])
+    spare = [k for k in range(n_cols) if k not in taken]
+    for i in range(n_views):                        # the rest: the next free column
+        if out[i] is None:
+            out[i] = spare.pop(0) if spare else min(i, n_cols - 1)
+    return [int(k) for k in out]
 
 
 class ExportCalibrationDialog(QDialog):
@@ -169,7 +206,11 @@ class CalibrationDialog(QDialog):
         # K + R/t cameras (Anipose, OpenCV, MATLAB cameras) are always OpenCV pixels;
         # from_krt is the only importer that moves the origin, so it marks them
         self._self_described = low.endswith((".json", ".txt")) or cal.origin_shift is not None
-        if self._self_described and cal.cameras:
+        if cal.cameras:
+            # (I171) ALWAYS take the importer's own convention: a self-described file locks it, and
+            # a file that is not (dltCoefs.csv, easyWand, a DLTdv project: MATLAB's 1-based pixels)
+            # must RESET it -- a previous self-described file left OpenCV's selected, and the
+            # next dltCoefs.csv was then imported 0-based: the I96 one-pixel error
             c0 = cal.cameras[0]
             match = [k for k, (_, o, f) in enumerate(CONVENTIONS) if o == c0.pixel_origin and f == c0.y_flip]
             self.conv.setCurrentIndex(match[0] if match else (2 if c0.pixel_origin == 0.0 else 0))
@@ -185,12 +226,7 @@ class CalibrationDialog(QDialog):
         # Default mapping: column i for camera i -- unless the file records
         # picture sizes and exactly one column matches a view's size (e.g. a
         # rig's lone 848x480 camera), in which case that column is taken.
-        default = [min(i, len(cal.cameras) - 1) for i in range(len(self.view_names))]
-        for i, size in enumerate(self.view_sizes[:len(self.view_names)]):
-            hits = [k for k, c in enumerate(cal.cameras)
-                    if c.width and (int(c.width), int(c.height)) == (int(size[0]), int(size[1]))]
-            if len(hits) == 1 and hits[0] not in [default[j] for j in range(len(default)) if j != i]:
-                default[i] = hits[0]
+        default = match_columns(self.view_sizes[:len(self.view_names)], cal.cameras, len(self.view_names))
         for i, nm in enumerate(self.view_names):
             self.grid.addWidget(QLabel(nm), i + 1, 0)
             cb = QComboBox()

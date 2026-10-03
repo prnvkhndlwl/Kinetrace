@@ -79,8 +79,8 @@ def disagreeing_stretches(project, threshold_px: list[float] | float, min_run: i
                 if b - a + 1 < min_run:
                     continue
                 seg = e[a:b + 1]
-                l0 = int(round(project.rates[c] * (r.t0 + a) + project.offsets[c]))
-                l1 = int(round(project.rates[c] * (r.t0 + b) + project.offsets[c]))
+                l0 = project.local_index(c, r.t0 + a)          # (I258) map_frame's tie rule, not round()
+                l1 = project.local_index(c, r.t0 + b)
                 if not (0 <= l0 < s.n_frames):
                     continue
                 l1 = int(min(max(l1, l0), s.n_frames - 1))
@@ -123,7 +123,7 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
         return None
     if probe is None:
         r = p.reconstruction
-        t = int(round(p.reference_time(view, local_frame)))
+        t = p.reference_index(view, int(local_frame))        # (I258)
         if r is not None and r.t0 <= t < r.t0 + r.n_frames:
             row = r.xyz[t - r.t0]
             row = row[np.isfinite(row).all(axis=1)]
@@ -208,7 +208,7 @@ def _blame(project, stretches: list[Stretch], threshold_px) -> list[Stretch]:
             _, res_full, _, _ = triangulate_batch(prep.coefs, uv)
             rest = uv.copy()
             rest[:, st.view] = np.nan
-            _, res_rest, n_rest, _ = triangulate_batch(prep.coefs, rest)
+            _, res_rest, _, _ = triangulate_batch(prep.coefs, rest)
             st.full_px = float(np.nanmedian(res_full)) if np.isfinite(res_full).any() else float("nan")
             st.rest_px = float(np.nanmedian(res_rest)) if np.isfinite(res_rest).any() else float("nan")
         # (I8) rank CAMERAS, not stretches: a camera whose error dipped under the
@@ -232,8 +232,10 @@ def _blame(project, stretches: list[Stretch], threshold_px) -> list[Stretch]:
             vfull[v] = float(np.nanmedian(full)) if np.isfinite(full).any() else float("nan")
         order = sorted(vrest, key=vrest.get)
         bv = order[0]
-        agree = vrest[bv] <= max(0.5 * vfull[bv], 0.5 * thr[bv]) if np.isfinite(vfull[bv]) \
-            else vrest[bv] <= 0.5 * thr[bv]
+        # (I228) as documented above: under the band AND under half the full residual
+        # (it used to accept whichever of "half the full residual" and "half the band" was LARGER,
+        # so the others could still disagree beyond the band and be called "agreeing")
+        agree = vrest[bv] <= thr[bv] and (not np.isfinite(vfull[bv]) or vrest[bv] <= 0.5 * vfull[bv])
         clear = len(order) == 1 or vrest[order[1]] > 1.5 * vrest[bv]
         for st in g:
             if st.view == bv and agree and clear:
@@ -274,10 +276,9 @@ def _start_on_two_rays(project, st: Stretch, threshold_px, min_run: int) -> bool
     (and `st.reason` set) when no such frame leaves `min_run` frames."""
     p = project
     r = p.reconstruction
-    rate, off = p.rates[st.view], p.offsets[st.view]
     s = p.sessions[st.view]
     for t in range(st.t0, st.t1 + 1):
-        lf = int(round(rate * t + off))
+        lf = p.local_index(st.view, t)                     # (I258)
         if 0 <= lf < s.n_frames and _n_other_views(p, st.view, st.name, lf) >= 2:
             break
     else:
@@ -355,7 +356,7 @@ def cells_summary(project, stretches: list[Stretch]) -> dict:
             k = t - r.t0
             inside = (k >= 0) & (k < r.n_frames)
             v[inside] = r.per_cam[k[inside], j, st.view]
-        lf = np.rint(p.rates[st.view] * t + p.offsets[st.view]).astype(int)
+        lf = np.asarray(p.local_index(st.view, t), dtype=int)       # (I258)
         s = p.sessions[st.view] if st.view < p.n_views else None
         pid = s.pid_by_name(st.name) if s is not None else None
         h = np.zeros(len(t), bool)
