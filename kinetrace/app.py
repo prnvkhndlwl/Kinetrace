@@ -2688,6 +2688,13 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ open video
 
+    def _start_folder(self, fallback="") -> str:
+        """Where a file dialog opens that belongs to the open project: its folder (the place its
+        videos and its files are found from), else `fallback` (R12). The other dialogs keep their
+        own rule: the project's name for a save, the video's folder for masks, the camera's name for
+        an export (`_default_output`)."""
+        return str(self._project_dir or fallback)
+
     def _open_video_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open video", "", VIDEO_FILTER)
         if path:
@@ -2699,7 +2706,7 @@ class MainWindow(QMainWindow):
         from kinetrace.folderimport import VideoFolderDialog
         if self.state == TRACKING:
             return
-        start = str(self._project_dir or (Path(self.info.path).parent if self.info else Path.home()))
+        start = self._start_folder(Path(self.info.path).parent if self.info else Path.home())
         folder = QFileDialog.getExistingDirectory(self, "Open a folder of videos", start)
         if not folder:
             return
@@ -8660,7 +8667,7 @@ class MainWindow(QMainWindow):
         if p is None or self.state != READY:
             QMessageBox.information(self, "Import 3D points", "Open the project (or its first video) first.")
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Import 3D points", str(self._project_dir or ""),
+        path, _ = QFileDialog.getOpenFileName(self, "Import 3D points", self._start_folder(),
                                               "3D points - Anipose, DLTdv xyzpts, Kinetrace (*.csv);;All files (*)")
         if not path:
             return
@@ -8727,7 +8734,7 @@ class MainWindow(QMainWindow):
                                     "Offsets line up two or more cameras: add the other cameras' videos first "
                                     "(＋ Add video in the CAMERAS panel).")
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Import camera offsets", str(self._project_dir or ""),
+        path, _ = QFileDialog.getOpenFileName(self, "Import camera offsets", self._start_folder(),
                                               "Camera offsets (*.csv);;All files (*)")
         if not path:
             return
@@ -8844,7 +8851,7 @@ class MainWindow(QMainWindow):
         # a project is a FOLDER (I145): the user opens it and picks its kinetrace.json;
         # a single-file project (*.kinetrace) is picked directly
         path, _ = QFileDialog.getOpenFileName(self, "Open project — in a project folder, choose kinetrace.json",
-                                              str(self._project_dir or ""),
+                                              self._start_folder(),
                                               f"Kinetrace project (kinetrace.json *{PROJECT_SUFFIX})")
         if path:
             self._open_project_from_path(path)
