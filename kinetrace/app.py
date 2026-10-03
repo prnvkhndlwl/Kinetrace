@@ -2057,7 +2057,8 @@ class MainWindow(QMainWindow):
         head = s.head_pid() if s.animal is not None else None
         if len(order) == 2 and head is not None and head in nn[order[1]]:
             # the pass holding the head landmark runs FIRST and carries the segment: the other
-            # pass's points are then anchored to a silhouette that exists (I185)
+            # pass's points are then anchored to a silhouette that exists, and are kept on the
+            # silhouettes the first pass wrote (the worker's `stored_masks`, I185)
             order.reverse()
         return [nn[order[0]] + rest] + [nn[k] for k in order[1:]]
 
@@ -2177,7 +2178,9 @@ class MainWindow(QMainWindow):
             if n_pass > 1:
                 what += (" — in two passes, one after the other: the AllTracker points, then the CoTracker3 points "
                          "over the same frames (a point that stops ends the run for all"
-                         + ("; the pass holding the head landmark goes first, with the segment" if seg else "") + ")")
+                         + ("; the pass holding the head landmark goes first, with the segment, and the "
+                            "second pass is kept on the silhouettes the first one makes — no second "
+                            "segmentation" if seg else "") + ")")   # (I185)
             if semi:
                 self.btn_track.setToolTip(
                     f"Semi-automatic: track {what} ONE frame forward from frame "
@@ -6805,7 +6808,9 @@ class MainWindow(QMainWindow):
                                   "in the cameras the first pass ran in")
                 continue
             self.statusBar().showMessage(
-                f"Second pass: {self._pass_label(pids)} over the same frames — X stops it", 8000)
+                f"Second pass: {self._pass_label(pids)} over the same frames"
+                + (", kept on the first pass's silhouettes" if st.get("seg_views") else "")
+                + " — X stops it", 8000)       # (I185)
             self._start_pass(pids, st["step"], st["every"], segment=False, stops=stops, quiet=True)
             if self.state == TRACKING or self._multi is not None:
                 return
@@ -7361,6 +7366,23 @@ class MainWindow(QMainWindow):
                 on_body = [p for p in pids if s.points[p].name in s.skeleton.get("landmarks", [])]
             if self.btn_onbody.isChecked():
                 constrain = [p for p in pids if not s.points[p].free]
+            if self._passes is not None and not self._passes.get("done") and self.project is not None:
+                # pass 1 of a two-pass run carries this camera's segment: its silhouettes are what
+                # the later pass is kept on (I185)
+                self._passes.setdefault("seg_views", set()).add(self.project.active)
+        stored = None
+        pp = self._passes
+        if (segment is False and animal is None and pp is not None and pp.get("done") and specs
+                and self.project is not None and self.project.active in pp.get("seg_views", ())
+                and s.animal is not None and len(s.mask_frames())):
+            # (I185) the second pass of a two-pass run: no SAM, but the silhouettes pass 1 just wrote
+            # into the session hold its on-body points to the same rules as a run with the segment
+            # (the constraint, the stop where a landmark leaves the animal, the off-body demotion)
+            stored = s.masks
+            if s.skeleton:
+                on_body = [p for p in pids if s.points[p].name in s.skeleton.get("landmarks", [])]
+            if self.btn_onbody.isChecked():
+                constrain = [p for p in pids if not s.points[p].free]
         if not specs and not balls and not spot_specs and animal is None:
             self.toast.show_message(
                 f"Nothing to start from on frame {self.current}: place a point with <b>N</b>, a ball "
@@ -7375,7 +7397,7 @@ class MainWindow(QMainWindow):
                            autopause=self.btn_autopause.isChecked(),
                            animal=animal, derived=derived, head_pid=head_pid,
                            on_body_pids=on_body, constrain_pids=constrain,
-                           point_backend=backend, balls=balls, spots=spot_specs)
+                           point_backend=backend, balls=balls, spots=spot_specs, stored_masks=stored)
         # the points hand-placed on the start frame: `write_segment` clears the flag of every row it
         # writes, the start row (the user's click, position kept) included -- restored at the end of
         # the run (I189)
