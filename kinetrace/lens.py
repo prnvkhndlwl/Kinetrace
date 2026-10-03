@@ -260,10 +260,16 @@ def read_lens_for(path: str | Path, view: int, cam_name: str = "") -> tuple[Lens
     text, where the file's own camera column decides which line camera `view`
     gets (`argus_profile_for`, I80). -> (profile or None, a sentence: the line
     that was used, or why there is none)."""
-    if str(path).lower().endswith((".json", ".yml", ".yaml")):
-        from kinetrace import calibio
-        return calibio.read_lens(path), ""
-    return argus_profile_for(path, view, cam_name)
+    from kinetrace import calibio
+    suf = Path(path).suffix.lower()
+    if suf in (".json", ".yml", ".yaml", ".xml"):
+        return calibio.read_lens_file(path), ""
+    try:
+        return argus_profile_for(path, view, cam_name)
+    except ValueError:                  # no camera lines: an OpenCV file under another name is read by content
+        if suf == ".txt":
+            raise
+        return calibio.read_lens_file(path), ""
 
 
 def load_argus_profile(path: str | Path) -> list[LensProfile]:

@@ -51,7 +51,7 @@ calibration.json                     the camera calibration, if there is one
 lenses.json                          lens profiles per camera, if any
 reconstruction/meta.json             the last 3D result, if any: its landmarks, unit, first frame
 reconstruction/points/<landmark>.csv   its positions: frame, x, y, z, residual, n_cams, <camera>_px
-cameras/<folder>/view.json           this camera: frame on screen, selected point, zoom, timeline zoom
+cameras/<folder>/view.json           this camera: frame on screen, selected point(s), zoom, timeline zoom
 cameras/<folder>/points.csv          the points (landmarks) and their settings
 cameras/<folder>/tracks/<landmark>.csv   one landmark's positions: one row per frame that has data
 cameras/<folder>/events.csv          marked events
@@ -163,9 +163,11 @@ How the program looked. `state.json` holds `tools` (every toggle: follow,
 auto-pause, ROI, marker size, trails, display filter, point model, …) and
 `layout` (window rectangle, side panel shown / floating, splitter sizes, solo
 mode, step size, the getting-started strip). `view.json` (per camera):
-`current_frame`, `selected_point` (by name), `zoom`, `center_x`,
-`center_y`, `user_zoomed`, `timeline` (`[first, last]` frame shown). Odd or
-missing values fall back to the defaults: this is never data.
+`current_frame`, `selected_point` (by name), `selected_points` (every point
+selected in the POINTS list, by name: what Track will track) and
+`segment_selected` (the SEGMENT row), `zoom`, `center_x`, `center_y`,
+`user_zoomed`, `timeline` (`[first, last]` frame shown). Odd or missing
+values fall back to the defaults: this is never data.
 
 ### `calibration.json`
 

@@ -67,7 +67,10 @@ CACHE_DIR, HISTORY_DIR, SAVING_DIR = ".cache", ".history", ".saving"
 EXPORTS_DIR, VIDEOS_DIR = "exports", "videos"
 _NOT_DATA = (CACHE_DIR, HISTORY_DIR, SAVING_DIR, EXPORTS_DIR, VIDEOS_DIR)   # never read as project data
 # the ui_state entries kept per camera (view.json); every other one is window-wide (state.json)
-VIEW_KEYS = ("selected", "zoom", "center_x", "center_y", "user_zoomed", "timeline")
+# (G103) selected_names / segment_selected = the run scope: the points selected in POINTS (BY NAME) and the
+# SEGMENT row; view.json keeps them as selected_points / segment_selected
+VIEW_KEYS = ("selected", "selected_names", "segment_selected", "zoom", "center_x", "center_y", "user_zoomed",
+             "timeline")
 TRACK_COLS = ("frame", "point", "x", "y", "confidence", "visible", "hand_placed", "hidden", "radius")  # format 1
 LANDMARK_COLS = ("frame", "x", "y", "confidence", "visible", "hand_placed", "hidden", "radius")
 SILHOUETTE_COLS = ("frame", "area", "score", "centroid_x", "centroid_y", "x0", "y0", "x1", "y1")
@@ -472,9 +475,15 @@ def _freeze_reconstruction(files: dict, r, folders: list[str], binary_tracks: bo
 def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
     st = s.ui_state
     sel = int(st.get("selected", -1))
+    scope = {}                                  # the run scope (G103), only when the app has recorded one
+    if "selected_names" in st:
+        scope["selected_points"] = [str(x) for x in (st.get("selected_names") or [])]
+    if "segment_selected" in st:
+        scope["segment_selected"] = bool(st.get("segment_selected"))
     files[f"{d}/view.json"] = _json(_clean_json({
         "current_frame": int(s.current_frame),
         "selected_point": s.points[sel].name if 0 <= sel < s.n_points else None,
+        **scope,
         "zoom": st.get("zoom", 0.0), "center_x": st.get("center_x", 0.0), "center_y": st.get("center_y", 0.0),
         "user_zoomed": bool(st.get("user_zoomed", False)),
         "timeline": st.get("timeline"),
@@ -482,9 +491,8 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
     lfiles = landmark_files([p.name for p in s.points])
     files[f"{d}/points.csv"] = ("points", [_point_row(p, "" if binary_tracks else lfiles[j])
                                            for j, p in enumerate(s.points)])
-    arrays = dict(tracks=s.tracks.copy(), confidence=s.confidence.copy(), visibility=s.visibility.copy(),
-                  manual=s.manual.copy(), tracked=s.tracked.copy(), occluded=s.occluded.copy(),
-                  radius=s.radius.copy())
+    from kinetrace.session import POINT_ARRAYS
+    arrays = {a.name: getattr(s, a.name).copy() for a in POINT_ARRAYS}       # (R15) the one table
     if binary_tracks:
         for k, v in arrays.items():
             files[f"{d}/{k}.npy"] = v
@@ -653,10 +661,8 @@ def _fill_landmark(arr: dict, j: int, t: Table, T: int, where: str) -> None:
 
 
 def _empty_tracks(T: int, N: int) -> dict:
-    return dict(tracks=np.full((T, N, 2), np.nan, np.float32), confidence=np.zeros((T, N), np.float32),
-                visibility=np.zeros((T, N), bool), manual=np.zeros((T, N), bool),
-                tracked=np.zeros((T, N), bool), occluded=np.zeros((T, N), bool),
-                radius=np.full((T, N), np.nan, np.float32))
+    from kinetrace.session import POINT_ARRAYS
+    return {a.name: a.empty(T, N) for a in POINT_ARRAYS}                     # (R15)
 
 
 def _materialize(item, need_digest: bool = True):
@@ -1926,8 +1932,9 @@ def _read_camera(src: _Source, d: str, s) -> None:
     arr, points = _read_tracks(src, d, points, pfiles, s.n_frames)
     index = {p.name: i for i, p in enumerate(points)}
     s.points = points
-    s.tracks, s.confidence, s.visibility = arr["tracks"], arr["confidence"], arr["visibility"]
-    s.manual, s.tracked, s.occluded, s.radius = arr["manual"], arr["tracked"], arr["occluded"], arr["radius"]
+    from kinetrace.session import POINT_ARRAYS
+    for a in POINT_ARRAYS:                          # (R15)
+        setattr(s, a.name, arr[a.name])
     _read_events_notes(src, d, s)
     _read_markers(src, d, s, index)
     _read_segment_body(src, d, s)
@@ -1950,8 +1957,8 @@ def _read_tracks(src: _Source, d: str, points: list, pfiles: list, T: int) -> tu
     projects, one long tracks.csv in format 1. -> (the T x N arrays, the points
     -- a landmark file points.csv does not name adds one)."""
     if src.has(f"{d}/tracks.npy"):
-        arr = {k: src.npy(f"{d}/{k}.npy") for k in
-               ("tracks", "confidence", "visibility", "manual", "tracked", "occluded", "radius")}
+        from kinetrace.session import POINT_ARRAYS
+        arr = {a.name: src.npy(f"{d}/{a.name}.npy") for a in POINT_ARRAYS}      # (R15)
         for k, v in arr.items():
             if v.shape[0] != T or v.shape[1] != len(points):
                 raise ProjectFileError(f"{d}/{k}.npy: shape {v.shape} does not match {T} frames x "
@@ -2090,6 +2097,11 @@ def _read_view(src: _Source, d: str, s, index: dict) -> None:
     s.current_frame = int(np.clip(view_value("current_frame", int, 0), 0, T - 1))
     sel = v.get("selected_point")
     s.ui_state["selected"] = index.get(sel, -1) if isinstance(sel, str) else -1
+    names = v.get("selected_points")                    # the run scope (G103): names, never indices
+    if isinstance(names, list):
+        s.ui_state["selected_names"] = [x for x in names if isinstance(x, str)]
+    if "segment_selected" in v:
+        s.ui_state["segment_selected"] = bool(v.get("segment_selected"))
     for k in ("zoom", "center_x", "center_y"):
         s.ui_state[k] = view_value(k, float, s.ui_state.get(k, 0.0))
     s.ui_state["user_zoomed"] = bool(v.get("user_zoomed", False))
@@ -2190,6 +2202,14 @@ What is where
                           ball markers); one row per frame that has data
   cameras/<camera>/events.csv, notes.csv
                           marked events and notes on frames
+  cameras/<camera>/view.json
+                          where you were: frame, zoom, the selected points, timeline zoom
+  cameras/<camera>/segment.json, skeleton.json
+                          the segment (clicks, box, name) and the skeleton template
+  cameras/<camera>/spots.json, ball_prompts.json
+                          Moving-spot settings per point; the clicks that start each ball marker
+  reconstruction/meta.json
+                          the 3D result's settings: first frame, unit, cameras
   cameras/<camera>/silhouette/summary.csv
                           the segment per frame: frame,area,score,centroid_x,centroid_y,x0,y0,x1,y1
   cameras/<camera>/silhouette/*.npy, body/*.npy

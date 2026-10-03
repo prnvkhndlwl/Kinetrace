@@ -104,7 +104,8 @@ def outside_by(xy, width: float, height: float) -> float:
 
 
 def ray_target(project, view: int, name: str, local_frame: int, probe=None,
-               why: list | None = None) -> tuple[np.ndarray, int] | None:
+               why: list | None = None, *, margin: float | None = None, observations=None,
+               info: dict | None = None) -> tuple[np.ndarray, int] | None:
     """Where the OTHER cameras' rays put landmark `name` in `view` at that
     view's `local_frame`: the nearest point on one camera's epipolar polyline,
     the least-squares crossing of several. None when no other camera has it
@@ -113,9 +114,23 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
     means no data; clipping it onto the border stored a hand placement there
     and tracked a border patch). `why`, when given, receives the reason for a
     None. `probe` = a 3D point in front of the cameras (the reconstruction's
-    centroid at that instant, else `working_probe`)."""
+    centroid at that instant, else `working_probe`).
+
+    The hand "Snap to the other cameras' rays" is this function too (R14), with its own
+    rules passed in: `margin` (the polylines' extra reach past the picture; None =
+    `epipolar_polyline`'s default, 0 = cut exactly at the edges, what the guides draw),
+    `observations` ([(camera, its calibration, raw (x, y)), ...], gathered by the caller at
+    the fractional frame, I253, among the calibrated cameras only -- then two calibrated cameras
+    are enough, where the default needs a calibration for EVERY camera of the project) and
+    `info`, which receives `intersect_polylines`'s {"mode", ...} plus "n_lines" and, when the
+    crossing is refused, "outside_px"."""
     p = project
-    if p.calibration is None or len(p.calibration.cameras) != p.n_views:
+    cal = p.calibration
+    if cal is None:
+        return None
+    if observations is None and len(cal.cameras) != p.n_views:
+        return None
+    if observations is not None and not 0 <= view < min(len(cal.cameras), p.n_views):
         return None
     s = p.sessions[view]
     pid = s.pid_by_name(name)
@@ -129,37 +144,46 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
             row = row[np.isfinite(row).all(axis=1)]
             probe = row.mean(axis=0) if len(row) else None
         if probe is None:
-            probe = working_probe(p.calibration)
-    dst = p.calibration.cameras[view]
+            probe = working_probe(cal)
+    dst = cal.cameras[view]
+    if observations is None:
+        observations = []
+        for c in range(p.n_views):
+            if c == view:
+                continue
+            sc = p.sessions[c]
+            j = sc.pid_by_name(name)
+            if j is None:
+                continue
+            fc = p.map_frame(view, c, int(local_frame))
+            if fc is None or not (0 <= fc < sc.n_frames) or not sc.exportable_at(fc, j):
+                continue
+            uv = sc.tracks[fc, j]
+            if not np.isfinite(uv).all():
+                continue
+            observations.append((c, cal.cameras[c], uv))
+    kw = {} if margin is None else {"margin": float(margin)}
     lines = []
-    for c in range(p.n_views):
-        if c == view:
-            continue
-        sc = p.sessions[c]
-        j = sc.pid_by_name(name)
-        if j is None:
-            continue
-        fc = p.map_frame(view, c, int(local_frame))
-        if fc is None or not (0 <= fc < sc.n_frames) or not sc.exportable_at(fc, j):
-            continue
-        uv = sc.tracks[fc, j]
-        if not np.isfinite(uv).all():
-            continue
+    for _c, cam, uv in observations:
         try:
-            pts = epipolar_polyline(p.calibration.cameras[c], dst, uv, probe)
+            pts = epipolar_polyline(cam, dst, uv, probe, **kw)
         except Exception:       # noqa: BLE001 - a degenerate pair must not stop the others
             continue
         if len(pts) >= 2:
             lines.append(np.asarray(pts, np.float64))
+    if info is not None:
+        info["n_lines"] = len(lines)
     if not lines:
         return None
     cur = s.tracks[int(local_frame), pid]
     near = cur if np.isfinite(cur).all() else np.array([s.width / 2.0, s.height / 2.0])
-    target = intersect_polylines(lines, near)
+    target = intersect_polylines(lines, near, info)
     if target is None or not np.isfinite(target).all():
         return None
     off = outside_by(target, s.width, s.height)
     if off > edge_tolerance(s.width):
+        if info is not None:
+            info["outside_px"] = float(off)
         if why is not None:
             why.append(f"the other cameras put it {off:.0f} px outside this camera's picture there (out of the "
                        "picture = no data): clear its track on those frames instead of re-tracking")

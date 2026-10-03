@@ -289,30 +289,29 @@ class OverlayRenderer(QThread):
                            "fps button in the CAMERAS panel first.")
 
     def run(self) -> None:
-        from kinetrace.video_source import open_capture
-        cap = None
+        from kinetrace.video_source import FrameReader      # the one shared frame reader (R17)
+        reader = None
         vw = None
         created = False             # the writer made / truncated out_path: ours to delete
         try:
-            cap = open_capture(self.video_path)
-            if not cap.isOpened():
-                raise RuntimeError("could not open " + self.video_path)
+            f0, f1 = int(self.opts.start), int(self.opts.end)
+            reader = FrameReader(self.video_path, f0)
+            cap = reader.cap
             fps = self._output_fps(float(cap.get(cv2.CAP_PROP_FPS)))
             w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             sc = float(self.opts.scale)
             size = (max(2, int(round(w * sc))), max(2, int(round(h * sc))))
-            f0, f1 = int(self.opts.start), int(self.opts.end)
             total = max(0, f1 - f0 + 1)
             vw, codec = open_writer(self.out_path, fps, size)
             created = True
-            cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
+            reader.reset(f0)
             done = 0
             for f in range(f0, f1 + 1):
                 if self._cancel:
                     break
-                ok, bgr = cap.read()
-                if not ok:
+                bgr = reader.read(f)
+                if bgr is None:
                     break
                 img = draw_overlay(bgr, f, self.session, self.opts, self.bones,
                                    mask_opacity=self.mask_opacity)
@@ -355,8 +354,8 @@ class OverlayRenderer(QThread):
         finally:
             if vw is not None:
                 vw.release()
-            if cap is not None:
-                cap.release()
+            if reader is not None:
+                reader.release()
 
 
 # ------------------------------------------------------------------ dialog
