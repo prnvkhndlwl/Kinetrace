@@ -77,7 +77,7 @@ class CircleFit:
     x: float            # native px
     y: float
     r: float
-    quality: float      # IoU of the mask with the fitted disc, 0..1
+    quality: float      # rim coverage x sqrt(share of the mask inside the disc), 0..1 (`fit_circle`)
     score: float        # SAM presence logit
 
     @property
@@ -218,12 +218,11 @@ def _disc_colour(lab: np.ndarray, cx: float, cy: float, r: float) -> np.ndarray 
 @dataclass
 class BallPrompt:
     """The user's click(s) on one ball on one frame, native px. `radius` (if
-    known) adds a box around the click; `mask` (native-res bool) re-seeds."""
+    known) adds a box around the click."""
     obj: int
     points: np.ndarray | None = None
     labels: np.ndarray | None = None
     radius: float | None = None
-    mask: np.ndarray | None = None
 
 
 @dataclass
@@ -231,7 +230,6 @@ class _State:
     xy: tuple[float, float]
     r: float | None
     miss: int = 0
-    mask: np.ndarray | None = None      # crop-resolution bool mask of the last accepted frame
     fits: int = 0
     prev_xy: tuple[float, float] | None = None   # the frame before, for velocity extrapolation
     r_ref: float | None = None                   # slow running radius: a mask that inflates frame by frame is caught
@@ -259,21 +257,13 @@ class BallTracker:
         self.crop: tuple[int, int, int, int] | None = None      # x0, y0, x1, y1 native
         self.active: dict[int, _State] = {}
         self.n_restarts = 0
-        self.last: dict[int, CircleFit] = {}
-        # why each dropped ball was dropped: "lost" (SAM lost it); "apart" (outside the
-        # one shared crop, I58) only from a tracker that may not split (split=False)
+        # why each dropped ball was dropped: always "lost" (SAM lost it). The "apart" of I58 (outside
+        # the one shared crop) cannot happen since I143: far-apart balls get a crop per group
         self.drop_reason: dict[int, str] = {}
-        self._outside: set[int] = set()      # balls not given to SAM: outside the crop
 
     # ------------------------------------------------------------ helpers
     def has(self, obj: int) -> bool:
         return obj in self.active
-
-    def drop(self, obj: int) -> None:
-        self.active.pop(obj, None)
-        self._outside.discard(obj)
-        for g in self._groups or []:
-            g.drop(obj)
 
     def _bbox_crop(self, centres) -> tuple[int, int, int, int]:
         xs = [c[0] for c in centres]
@@ -342,13 +332,10 @@ class BallTracker:
     # ------------------------------------------------------ groups (I143)
     @staticmethod
     def _prompt_centre(p: BallPrompt):
-        """Where a prompt puts its ball (the mean of its clicks, else of its mask), or None."""
+        """Where a prompt puts its ball (the mean of its clicks), or None."""
         if p.points is not None and len(p.points):
             pt = np.asarray(p.points, np.float64).reshape(-1, 2)
             return float(pt[:, 0].mean()), float(pt[:, 1].mean())
-        if p.mask is not None and np.any(p.mask):
-            ys, xs = np.nonzero(p.mask)
-            return float(xs.mean()), float(ys.mean())
         return None
 
     def _items(self, prompts) -> list[tuple[int, tuple[float, float]]]:
@@ -409,7 +396,6 @@ class BallTracker:
                     g.active[o] = self.active[o]      # the SAME state object: history and guards carry over
             self._groups.append(g)
         self.session, self.crop = None, None
-        self._outside.clear()
 
     def _merge(self) -> None:
         """Back to one shared crop (the next `_step_one` restarts it)."""
@@ -417,7 +403,6 @@ class BallTracker:
         self.n_restarts = self._restarts_done
         self._groups = None
         self.session, self.crop = None, None
-        self._outside.clear()
 
     def _step_groups(self, rgb: np.ndarray, frame_idx: int, prompts: list[BallPrompt]) -> dict[int, CircleFit]:
         for p in prompts:
@@ -462,33 +447,16 @@ class BallTracker:
             gp = [p for p in prompts if where.get(p.obj) is g]
             if g.active or gp:
                 out.update(g.step(rgb, frame_idx, gp))
-        # one circle claimed by balls of two groups: the same rule as within a crop -
-        # the ball that moved more lost it this frame
+        # one circle claimed by balls of two groups: the same rule as within a crop (the
+        # balls of ONE group were settled by that group's own step)
         grp = {o: id(g) for g in self._groups for o in g.active}
-        objs = list(out)
-        for i_a in range(len(objs)):
-            for i_b in range(i_a + 1, len(objs)):
-                a, b = objs[i_a], objs[i_b]
-                if a not in out or b not in out or grp.get(a) == grp.get(b):
-                    continue
-                fa, fb = out[a], out[b]
-                if np.hypot(fa.x - fb.x, fa.y - fb.y) < 0.8 * min(fa.r, fb.r):
-                    sa = next(g.active[a] for g in self._groups if a in g.active)
-                    sb = next(g.active[b] for g in self._groups if b in g.active)
-                    da = np.hypot(fa.x - sa.prev_xy[0], fa.y - sa.prev_xy[1]) if sa.prev_xy is not None else 0.0
-                    db = np.hypot(fb.x - sb.prev_xy[0], fb.y - sb.prev_xy[1]) if sb.prev_xy is not None else 0.0
-                    loser = a if da > db else b
-                    del out[loser]
-                    st = sa if loser == a else sb
-                    st.miss += 1
-                    if st.prev_xy is not None:
-                        st.xy, st.prev_xy = st.prev_xy, None
+        self._settle_shared_circles(out, lambda o: next(g.active[o] for g in self._groups if o in g.active),
+                                    same=lambda a, b: grp.get(a) == grp.get(b))
         # the parent's view of every group: active balls, why the gone ones went
         self.active = {}
         for g in self._groups:
             self.active.update(g.active)
-            for o, why in g.drop_reason.items():
-                self.drop_reason[o] = "lost" if why == "apart" else why   # groups never lack a crop
+            self.drop_reason.update(g.drop_reason)
             g.drop_reason.clear()
         kept = [g for g in self._groups if g.active]
         self._restarts_done += sum(g.n_restarts for g in self._groups if not g.active)
@@ -496,20 +464,36 @@ class BallTracker:
         self.n_restarts = self._restarts_done + sum(g.n_restarts for g in kept)
         if not kept:
             self._groups = None                       # nothing left: the next prompt starts afresh
-        self.last = out
         return out
+
+    @staticmethod
+    def _settle_shared_circles(out: dict, state_of, same=None) -> None:
+        """Two balls fitted to ONE circle: the one that was already there keeps it, the
+        other (the one that moved more this frame) missed it -- SAM merged them or
+        swapped onto its neighbour. `state_of(obj)` -> its `_State`; `same(a, b)` skips a
+        pair (balls of one group were settled by their own tracker)."""
+        objs = list(out)
+        for i_a in range(len(objs)):
+            for i_b in range(i_a + 1, len(objs)):
+                a, b = objs[i_a], objs[i_b]
+                if a not in out or b not in out or (same is not None and same(a, b)):
+                    continue
+                fa, fb = out[a], out[b]
+                if np.hypot(fa.x - fb.x, fa.y - fb.y) < 0.8 * min(fa.r, fb.r):
+                    sa, sb = state_of(a), state_of(b)
+                    da = np.hypot(fa.x - sa.prev_xy[0], fa.y - sa.prev_xy[1]) if sa.prev_xy is not None else 0.0
+                    db = np.hypot(fb.x - sb.prev_xy[0], fb.y - sb.prev_xy[1]) if sb.prev_xy is not None else 0.0
+                    loser = a if da > db else b
+                    del out[loser]
+                    st = sa if loser == a else sb
+                    st.miss += 1
+                    if st.prev_xy is not None:
+                        st.xy, st.prev_xy = st.prev_xy, None      # forget the merged position
 
     def _step_one(self, rgb: np.ndarray, frame_idx: int, prompts: list[BallPrompt]) -> dict[int, CircleFit]:
         """One SAM session on one crop for every ball (the tracker's original step)."""
         prompts = list(prompts or [])
-        centres = []
-        for p in prompts:
-            if p.points is not None and len(p.points):
-                pt = np.asarray(p.points, np.float64).reshape(-1, 2)
-                centres.append((float(pt[:, 0].mean()), float(pt[:, 1].mean())))
-            elif p.mask is not None and np.any(p.mask):
-                ys, xs = np.nonzero(p.mask)
-                centres.append((float(xs.mean()), float(ys.mean())))
+        centres = [c for c in (self._prompt_centre(p) for p in prompts) if c is not None]
         # the newest clicks FIRST: when the balls do not fit one crop, _crop_for holds
         # centres[0], so a (re)started session always has a prompt inside its picture
         centres += [st.xy for st in self.active.values()]
@@ -528,7 +512,6 @@ class BallTracker:
                 restart = False
         sam_prompts: list[Prompt] = []
         if restart:
-            old_crop = self.crop
             self.crop = self._crop_for(centres)
             x0, y0, x1, y1 = self.crop
             self.session = self.seg.new_session(frame_idx, (x1 - x0, y1 - y0))
@@ -542,8 +525,7 @@ class BallTracker:
                 if any(p.obj == obj for p in prompts):
                     continue                      # a fresh click on it replaces the guess
                 if not self._inside(self.crop, st.xy):
-                    self._outside.add(obj)        # never click SAM outside its picture (I58)
-                    continue
+                    continue                      # never click SAM outside its picture (I58)
                 xy = st.xy
                 if st.prev_xy is not None:
                     xy = (2 * st.xy[0] - st.prev_xy[0], 2 * st.xy[1] - st.prev_xy[1])
@@ -553,38 +535,20 @@ class BallTracker:
         for p in prompts:
             # a click outside the crop (the balls are too far apart for one crop) is
             # never handed to SAM in coordinates outside its picture (I58): the ball
-            # is registered, misses, and is dropped with drop_reason "apart"
-            given = False
-            if p.mask is not None and np.any(p.mask):
-                m = np.asarray(p.mask, bool)[y0:y1, x0:x1]
-                ys, xs = np.nonzero(m)
-                if len(xs):
-                    sam_prompts.append(Prompt(p.obj, mask=m))
-                    given = True
-                    xy = (float(xs.mean()) + x0, float(ys.mean()) + y0)
-                    r = float(np.sqrt(len(xs) / np.pi))
-                else:
-                    fy, fx = np.nonzero(p.mask)
-                    xy, r = (float(fx.mean()), float(fy.mean())), p.radius
-            else:
-                pt = np.asarray(p.points, np.float64).reshape(-1, 2)
-                lab = np.asarray(p.labels if p.labels is not None else np.ones(len(pt)), int).ravel()
-                pos = pt[lab > 0] if (lab > 0).any() else pt
-                xy = (float(pos[:, 0].mean()), float(pos[:, 1].mean()))
-                r = p.radius
-                box = None
-                if r is not None and r > 0:
-                    box = (xy[0] - x0 - 1.1 * r, xy[1] - y0 - 1.1 * r, xy[0] - x0 + 1.1 * r, xy[1] - y0 + 1.1 * r)
-                sel = np.array([self._inside(self.crop, q) for q in pt], bool)
-                if self._inside(self.crop, xy) and (sel[lab > 0].any() if (lab > 0).any() else sel.any()):
-                    sam_prompts.append(Prompt(p.obj, points=pt[sel] - [x0, y0], labels=lab[sel], box=box))
-                    given = True
-            self.active[p.obj] = _State(xy=xy, r=r, miss=0, mask=None)
+            # is registered and misses
+            pt = np.asarray(p.points, np.float64).reshape(-1, 2)
+            lab = np.asarray(p.labels if p.labels is not None else np.ones(len(pt)), int).ravel()
+            pos = pt[lab > 0] if (lab > 0).any() else pt
+            xy = (float(pos[:, 0].mean()), float(pos[:, 1].mean()))
+            r = p.radius
+            box = None
+            if r is not None and r > 0:
+                box = (xy[0] - x0 - 1.1 * r, xy[1] - y0 - 1.1 * r, xy[0] - x0 + 1.1 * r, xy[1] - y0 + 1.1 * r)
+            sel = np.array([self._inside(self.crop, q) for q in pt], bool)
+            if self._inside(self.crop, xy) and (sel[lab > 0].any() if (lab > 0).any() else sel.any()):
+                sam_prompts.append(Prompt(p.obj, points=pt[sel] - [x0, y0], labels=lab[sel], box=box))
+            self.active[p.obj] = _State(xy=xy, r=r, miss=0)
             self.drop_reason.pop(p.obj, None)
-            if given:
-                self._outside.discard(p.obj)
-            else:
-                self._outside.add(p.obj)
         crop = np.ascontiguousarray(rgb[y0:y1, x0:x1])
         if restart and not sam_prompts:
             # nothing inside the new crop to prompt (only when the balls do not fit
@@ -639,8 +603,7 @@ class BallTracker:
             if ok:
                 cx, cy, r, q = fit
                 st.prev_xy = st.xy if st.fits > 0 else None
-                st.xy, st.r, st.miss, st.mask = (cx + x0, cy + y0), r, 0, m.copy()
-                self._outside.discard(obj)
+                st.xy, st.r, st.miss = (cx + x0, cy + y0), r, 0
                 st.r_ref = r if st.r_ref is None else 0.97 * st.r_ref + 0.03 * r
                 if col is not None:
                     st.lab_ref = col if st.lab_ref is None else 0.95 * st.lab_ref + 0.05 * col
@@ -650,35 +613,10 @@ class BallTracker:
                 st.miss += 1
         # two balls fitted to one circle: the one that was already there keeps it,
         # the other missed this frame (SAM merged them or swapped onto its neighbour)
-        objs = list(out)
-        for i_a in range(len(objs)):
-            for i_b in range(i_a + 1, len(objs)):
-                a, b = objs[i_a], objs[i_b]
-                if a not in out or b not in out:
-                    continue
-                fa, fb = out[a], out[b]
-                if np.hypot(fa.x - fb.x, fa.y - fb.y) < 0.8 * min(fa.r, fb.r):
-                    sa, sb = self.active[a], self.active[b]
-                    da = np.hypot(fa.x - sa.prev_xy[0], fa.y - sa.prev_xy[1]) if sa.prev_xy is not None else 0.0
-                    db = np.hypot(fb.x - sb.prev_xy[0], fb.y - sb.prev_xy[1]) if sb.prev_xy is not None else 0.0
-                    loser = a if da > db else b
-                    del out[loser]
-                    st = self.active[loser]
-                    st.miss += 1
-                    if st.prev_xy is not None:
-                        st.xy, st.prev_xy = st.prev_xy, None      # forget the merged position
-        gone = [o for o, st in self.active.items() if st.miss > self.lost_frames]
-        if gone:
-            # "apart": the ball sat outside the shared crop, or in its margin while the
-            # balls could not share one crop - re-clicking it cannot help (I58)
-            fits_all = self.fits_one_crop()
-            for obj in gone:
-                st = self.active.pop(obj)
-                apart = obj in self._outside or (self.crop is not None and not fits_all
-                                                 and (not self._inside(self.crop, st.xy) or self._near_edge(st.xy)))
-                self.drop_reason[obj] = "apart" if apart else "lost"
-                self._outside.discard(obj)
+        self._settle_shared_circles(out, self.active.__getitem__)
+        for obj in [o for o, st in self.active.items() if st.miss > self.lost_frames]:
+            del self.active[obj]
+            self.drop_reason[obj] = "lost"
         if not self.active:
             self.session = None          # nothing left to track: the next prompt starts afresh
-        self.last = out
         return out

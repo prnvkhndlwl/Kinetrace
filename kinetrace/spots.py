@@ -27,7 +27,8 @@ the picture simply ends (out of frame = no data).
 The second half is the scorer behind Track ▾ -> Test the point models on my
 clicks: every setting is started from the first of the user's hand-placed
 frames, re-placed from the click wherever it drifts or stops (what the user
-would do), and counted.
+would do), and counted. Its result is for ONE point: "Use ..." sets that
+point's tracker (G62), not the project's default.
 
 No Qt, no torch: numpy + cv2 on small crops around the prediction.
 """
@@ -150,16 +151,20 @@ class SpotLook:
     cue: str                   # "bright" | "dark": the channel it stands out in
     sigma: float               # its scale (DoG inner sigma), px
     contrast: float            # its DoG peak / the surrounding DoG noise
-    xy: tuple                  # the peak, native px
     at_limit: bool = False     # the largest scale tried fitted best: the target may be bigger still
 
     @property
     def diameter(self) -> float:
-        return 2.0 * math.sqrt(2.0) * self.sigma
+        return spot_diameter(self.sigma)
+
+
+def spot_diameter(sigma: float) -> float:
+    """A spot's diameter in px from its DoG scale (~2.8 sigma)."""
+    return 2.0 * math.sqrt(2.0) * sigma
 
 
 def default_radius(cue: str, sigma: float) -> float:
-    d = 2.0 * math.sqrt(2.0) * sigma
+    d = spot_diameter(sigma)
     return max(15.0, 2.0 * d) if cue == "change" else max(MIN_RADIUS, 1.5 * d)
 
 
@@ -249,18 +254,16 @@ def measure_spot(rgb: np.ndarray, xy, cues=("bright", "dark"), sigmas=SIGMAS) ->
         for s in sigmas:
             dog = _dog(ch, s)
             r = max(3.0, s)
-            sub, sx0, sy0 = _crop(dog, cx, cy, r)
+            sub = _crop(dog, cx, cy, r)[0]
             if sub.size == 0:
                 continue
-            k = int(np.argmax(sub))
-            v = float(sub.flat[k])
+            v = float(sub.flat[int(np.argmax(sub))])
             if v > 0 and (best is None or v > best[0]):
-                py, px = divmod(k, sub.shape[1])
-                best = (v, cue, s, dog, (x0 + sx0 + px, y0 + sy0 + py))
+                best = (v, cue, s, dog)
     if best is None:
         return None
-    v, cue, s, dog, pxy = best
-    return SpotLook(cue, float(s), v / _noise(dog), (float(pxy[0]), float(pxy[1])), s >= sigmas[-1])
+    v, cue, s, dog = best
+    return SpotLook(cue, float(s), v / _noise(dog), s >= sigmas[-1])
 
 
 def looks_like_small_spot(rgb: np.ndarray, xy) -> SpotLook | None:
@@ -301,14 +304,25 @@ class ChangeHistory:
     def push(self, idx: int, gray: np.ndarray) -> None:
         if self.past and idx - self.past[-1][0] < HIST_STEP:
             return
-        if self.past and idx <= self.past[-1][0]:
-            return
         self.past.append((int(idx), gray))
         if len(self.past) == self.past.maxlen:
             self.ahead = []
 
     def add_ahead(self, idx: int, gray: np.ndarray) -> None:
         self.ahead.append((int(idx), gray))
+
+    def seed(self, past, ahead, first: int) -> None:
+        """The background before a run's first frame `first` (I194, ONE rule for the
+        worker, the test and the scorer): the frames before it, and the look-ahead
+        frames only when the frames the cue can really use at `first` (`frames_for`: the
+        `HIST_GAP` frames beside the current one are left out) are fewer than
+        `MIN_HIST`. Counting the frames merely read let a run from frame 9 or 10 start
+        with 4 usable ones and stop at once."""
+        for k, g in past:
+            self.push(k, g)
+        if len(self.frames_for(first)) < MIN_HIST:
+            for k, g in ahead:
+                self.add_ahead(k, g)
 
     def frames_for(self, idx: int) -> list:
         past = [g for k, g in self.past if idx - HIST_FRAMES <= k <= idx - HIST_GAP]
@@ -325,6 +339,38 @@ class ChangeHistory:
         med = np.median(stack, axis=0)
         spread = np.percentile(np.abs(stack - med), 90, axis=0)
         return med, spread
+
+
+def _grey(rgb: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2GRAY)
+
+
+def read_background(get_frame, first: int, n_video: int | None = None):
+    """The change cue's background for a run that starts at `first` (I194): `get_frame(k)`
+    -> RGB or None. -> (past, ahead) = [(k, grey)] before the start (every `HIST_STEP`-th of
+    the last `HIST_FRAMES`) and, only when the usable past is short (`ChangeHistory.seed`),
+    the frames after it, read up to the VIDEO's end (`n_video`, or until `get_frame` has
+    none): the run's own end used to cut them (a semi-automatic step from frame 0-8 got
+    none and stopped at once)."""
+    past = []
+    for k in range(max(0, first - HIST_FRAMES), first, HIST_STEP):
+        rgb = get_frame(k)
+        if rgb is not None:
+            past.append((k, _grey(rgb)))
+    probe = ChangeHistory()
+    for k, g in past:
+        probe.push(k, g)
+    ahead = []
+    if len(probe.frames_for(first)) < MIN_HIST:
+        stop = first + HIST_FRAMES + 1
+        if n_video is not None:
+            stop = min(stop, int(n_video))
+        for k in range(first + HIST_STEP, stop, HIST_STEP):
+            rgb = get_frame(k)
+            if rgb is None:
+                break                       # the video's end
+            ahead.append((k, _grey(rgb)))
+    return past, ahead
 
 
 # ------------------------------------------------------------------ one spot
@@ -348,16 +394,13 @@ class SpotTracker:
         v = None if vel is None else np.asarray(vel, np.float64).reshape(2)
         self.vel = v if v is not None and np.isfinite(v).all() else None
         self.size = size                      # (w, h) native px
-        self.look: SpotLook | None = None
         self.ref: deque = deque(maxlen=REF_FRAMES)
-        self.noise = 0.0
         self.stopped: tuple[int, str] | None = None
-        self.last = None
 
     # -- geometry
     @property
     def diameter(self) -> float:
-        return 2.0 * math.sqrt(2.0) * max(0.5, self.settings.sigma)
+        return spot_diameter(max(0.5, self.settings.sigma))
 
     def search_radius(self) -> float:
         s = self.settings
@@ -378,16 +421,14 @@ class SpotTracker:
         if self.size is None:
             self.size = (w, h)
         if not self.settings.resolved:
-            self.settings, self.look = resolve(self.settings, rgb, self.pos)
-        self.last = idx
+            self.settings = resolve(self.settings, rgb, self.pos)[0]
         cue = self.settings.cue
         if cue in ("bright", "dark"):
-            # the background's DoG noise over a wider crop, the spot's own strength at the seed
+            # the spot's own strength at the seed (the crop `_spot_candidates` measures noise in)
             s = self.settings.sigma
-            crop, x0, y0 = _crop(rgb, self.pos[0], self.pos[1], 3.0 * s * DOG_RATIO + 24.0)
+            crop, x0, y0 = _crop(rgb, self.pos[0], self.pos[1], 3.0 * s * DOG_RATIO + NOISE_HALF)
             if crop.shape[0] >= 3 and crop.shape[1] >= 3:
                 dog = _dog(channel(crop, cue), s)
-                self.noise = _noise(dog)
                 ys, xs, vals = _peaks(dog)
                 d = np.hypot(xs + x0 - self.pos[0], ys + y0 - self.pos[1])
                 near = d <= max(3.0, 0.5 * self.diameter + 2.0)
@@ -421,7 +462,6 @@ class SpotTracker:
         step = new - self.pos
         self.vel = step if self.vel is None else VEL_KEEP * self.vel + (1.0 - VEL_KEEP) * step
         self.pos = new
-        self.last = idx
         return fix
 
     # -- bright / dark spot
@@ -444,10 +484,15 @@ class SpotTracker:
         return out, _noise(dog)
 
     def _step_spot(self, rgb, pred, R):
+        if not self.ref:
+            # No reference strength: the click sat on no peak (a few px off the spot). Taking
+            # the strongest candidate as the reference would keep a glint as data at
+            # confidence >= 0.5, so stop and let the user click the spot itself (I187).
+            return None, "missing"
         cands, noise = self._spot_candidates(rgb, pred, R)
         if not cands:
             return None, "missing"
-        if self.vel is None and self.ref:
+        if self.vel is None:
             # one click, speed unknown: the wide first search takes the candidate
             # most like the clicked spot, not the strongest (a glint on water
             # often is); two alike = ambiguous (click the next frame too)
@@ -464,10 +509,10 @@ class SpotTracker:
             self.ref.append(v)
             return SpotFix(float(x), float(y), float(max(0.05, min(1.0, math.exp(-d0)))), v), ""
         x, y, v = cands[0]
-        ref = float(np.median(self.ref)) if self.ref else v
+        ref = float(np.median(self.ref))
         if v < WEAK_FRAC * ref or v < NOISE_K * noise:
             return None, "missing"
-        if self.ref and v > MERGE_RATIO * ref:
+        if v > MERGE_RATIO * ref:
             return None, "ambiguous"
         sep = max(3.0, 2.0 * self.settings.sigma)
         second = next((c for c in cands[1:] if np.hypot(c[0] - x, c[1] - y) > sep), None)
@@ -547,35 +592,22 @@ class SpotRun:
 
     def resolve(self, rgb: np.ndarray) -> None:
         for t in self.trackers.values():
-            t.settings, t.look = resolve(t.settings, rgb, t.pos)
+            t.settings = resolve(t.settings, rgb, t.pos)[0]
         if any(t.settings.cue == "change" for t in self.trackers.values()):
             self.history = ChangeHistory()
 
-    @property
-    def needs_history(self) -> bool:
-        return self.history is not None
-
-    def prefill(self, get_frame, n_frames: int) -> None:
-        """The change cue's background before the run's first frame:
-        `get_frame(k)` -> RGB or None. The frames before the start, every
-        `HIST_STEP`-th; near the video's start (fewer than `MIN_HIST` of them)
-        the frames after it stand in until enough have been seen."""
+    def prefill(self, get_frame, n_video: int | None = None) -> None:
+        """The change cue's background before the run's first frame (`read_background`):
+        `get_frame(k)` -> RGB or None; `n_video` = the VIDEO's frame count when known (near
+        the video's start the look-ahead reads up to it, not up to the run's end, I194)."""
         if self.history is None:
             return
         s0 = self.start_frame
-        for k in range(max(0, s0 - HIST_FRAMES), s0, HIST_STEP):
-            rgb = get_frame(k)
-            if rgb is not None:
-                self.history.push(k, cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2GRAY))
-        if len(self.history.past) < MIN_HIST:
-            for k in range(s0 + HIST_STEP, min(n_frames, s0 + HIST_FRAMES + 1), HIST_STEP):
-                rgb = get_frame(k)
-                if rgb is not None:
-                    self.history.add_ahead(k, cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2GRAY))
+        past, ahead = read_background(get_frame, s0, n_video)
+        self.history.seed(past, ahead, s0)
 
     def step(self, idx: int, rgb: np.ndarray) -> dict[int, SpotFix]:
-        gray = (cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2GRAY)
-                if self.history is not None else None)
+        gray = _grey(rgb) if self.history is not None else None
         out = {}
         for pid, t in self.trackers.items():
             fix = (t.start(idx, rgb, gray, self.history) if idx == self.start_frame
@@ -660,7 +692,7 @@ def candidate_settings(sigma: float, clicks: dict | None = None) -> list[SpotSet
     (`motion_radius`), the search they call for and 1.6 / 2.5 x it are tried
     as well -- before, the radii came from the size alone, and the change
     cue's were fixed at 10 / 16 / 25 px (I162)."""
-    d = 2.0 * math.sqrt(2.0) * sigma
+    d = spot_diameter(sigma)
     need = motion_radius(clicks) if clicks else 0.0
     out = []
     for cue in CUES:
@@ -681,13 +713,14 @@ class TestResult:
     label: str
     model: str                         # "spot" | "alltracker" | "cotracker3"
     settings: SpotSettings | None = None
-    frames: int = 0                    # clicked frames scored (after the first)
+    frames: int = 0                    # clicked frames scored (after the first) -- only ones the run really reached
     first_ok: int = 0                  # clicked frames followed before the first correction
     corrections: int = 0
     drifts: int = 0                    # ... where it was silently off by more than the limit
     stops: int = 0                     # ... where it stopped and said so
     errors: list = field(default_factory=list)
     error: str = ""                    # could not run (a sentence)
+    unread: int | None = None          # the video stopped delivering frames here: the clicked frames from it on were not scored (I251)
 
     @property
     def median_error(self) -> float:
@@ -771,27 +804,31 @@ def score_spot_settings(frames, clicks: dict, settings_list, size, limit: float,
     setting starts from the first click, and is re-placed from the click
     wherever it drifts more than `limit` or stops (a correction)."""
     cands = [_Cand(s, clicks, size) for s in settings_list]
-    hist = ChangeHistory()
-    for k, g in history_frames:
-        hist.push(k, g)
-    if len(hist.past) < MIN_HIST:
-        for k, g in ahead_frames:
-            hist.add_ahead(k, g)
     first = min(clicks)
+    hist = ChangeHistory()
+    hist.seed(history_frames, ahead_frames, first)       # I194: counts the frames the cue can use
     n = 0
     total = max(clicks) - first + 1
+    last_seen = first - 1
+    cancelled = False
     for f, rgb in frames:
         if cancel is not None and cancel():
+            cancelled = True
             break
-        gray = cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2GRAY)
+        gray = _grey(rgb)
         for c in cands:
             c.frame(f, rgb, gray, hist, limit)
         hist.push(f, gray)
         n += 1
+        last_seen = f
         if progress is not None:
             progress(n, total)
+    # the clicked frames the run really reached; when the video stopped delivering frames
+    # before the last click, say from which frame (I251: it counted every click)
+    unread = None if cancelled or last_seen >= max(clicks) else last_seen + 1
     for c in cands:
-        c.res.frames = sum(1 for f in clicks if f > first)
+        c.res.frames = sum(1 for f in clicks if first < f <= last_seen)
+        c.res.unread = unread
     return [c.res for c in cands]
 
 
@@ -874,10 +911,14 @@ def verdict_text(point: str, results: list[TestResult]) -> str:
     if others:
         cmp = "; ".join(f"{r.label}: {corr(r)}" for r in sorted(others, key=lambda r: r.key())[:3])
         lead += f" The others: {cmp}."
+    if win.unread is not None:
+        lead += (f" Frame {win.unread} of the video could not be read, so only the clicked frames before it "
+                 "were tested.")
+    # G118: since G62 the button changes only THIS point's tracker, not the project's
     if win.model == "spot":
-        lead += (" Use Point model: Moving spot for this project: this target behaves like a single point, which "
-                 "is what Moving spot follows, and it stops (instead of drifting) where it loses it.")
+        lead += (f" Use Moving spot for {point}: this target behaves like a single point, which is what Moving "
+                 "spot follows, and it stops (instead of drifting) where it loses it.")
     else:
-        lead += (f" Keep {win.label}: it needs no extra clicks. Moving spot is only for a target small enough "
-                 "to be one point, where the others lose it.")
+        lead += (f" Keep {win.label} for {point}: it needs no extra clicks. Moving spot is only for a target "
+                 "small enough to be one point, where the others lose it.")
     return lead

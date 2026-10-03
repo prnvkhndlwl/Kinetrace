@@ -8,14 +8,16 @@ frames, a few seconds) and, when ticked, AllTracker and CoTracker3 (re-tracked
 from every correction, slower). Wherever a model drifts more than the drift
 limit from a click, or stops, it is put back on that click -- what the user
 would have to do -- and that is one correction. The model with the fewest
-corrections is recommended, in a sentence; "Use it" makes it the project's
-point model (and stores the Moving spot settings on the point).
+corrections is recommended, in a sentence; "Use ... for <point>" makes it THAT
+POINT's tracker (G62; and stores the Moving spot settings on the point).
 
 The work runs on a QThread with its own capture (the GUI thread never touches
 cv2 capture or torch); the dialog only shows progress, the table and the
 verdict.
 """
 from __future__ import annotations
+
+import sys
 
 import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
@@ -50,6 +52,7 @@ class _TestRun(QThread):
         self.roi = bool(roi)
         self.limit = None
         self.look = None
+        self.unread = None          # the first frame the video would not deliver, if one did not (I251)
         self._cancel = False
         self._worker = None
 
@@ -81,19 +84,9 @@ class _TestRun(QThread):
                 raise RuntimeError(f"frame {first} of the video could not be read")
             look = spots.measure_spot(rgb0, clicks[first])
             sigma = look.sigma if look is not None else spots.DEFAULT_SIGMA
-            self.limit = spots.drift_limit(w, 2.0 * np.sqrt(2.0) * sigma)
-            gray = []
-            for k in range(max(0, first - spots.HIST_FRAMES), first, spots.HIST_STEP):
-                f = src.get_frame(k)
-                if f is not None:
-                    gray.append((k, _grey(f)))
-            ahead = []
-            if len(gray) < spots.MIN_HIST:
-                for k in range(first + spots.HIST_STEP, min(self.n_frames, first + spots.HIST_FRAMES + 1),
-                               spots.HIST_STEP):
-                    f = src.get_frame(k)
-                    if f is not None:
-                        ahead.append((k, _grey(f)))
+            self.limit = spots.drift_limit(w, spots.spot_diameter(sigma))
+            # the change cue's background: ONE rule with the worker's (I194)
+            gray, ahead = spots.read_background(src.get_frame, first, self.n_frames)
             src.seek(first)
             settings = spots.candidate_settings(sigma, clicks)
             self.look = look
@@ -113,8 +106,13 @@ class _TestRun(QThread):
         finally:
             src.close()
         results = list(spots.best_spot(res).values())
+        # the video stopped delivering frames before the last click (I251): the scorer counted only
+        # the clicked frames it reached; the whole-run models are tested on those same frames
+        self.unread = res[0].unread if res else None
+        if self.unread is not None:
+            self.clicks = {f: xy for f, xy in self.clicks.items() if f < self.unread}
         for model in self.models:
-            if self._cancel:
+            if self._cancel or len(self.clicks) < 2:
                 break
             results.append(self._model(model))
         return results
@@ -133,7 +131,10 @@ class _TestRun(QThread):
             runs[0] += 1
             self.progress.emit(f"{label}: run {runs[0]} (from frame {f})", f - frames[0], last - frames[0] + 1)
             out: dict = {}
-            judged = {f}
+            # only clicks AFTER this run's start are judged (I186): a re-run after a correction
+            # starts at its click, so the clicks before it have no data here, and judging them
+            # stopped every re-run after its first window
+            judged = {g for g in frames if g <= f}
             errs: list = []
             wk = TrackingWorker(self.video_path, f, None, None, self.cache, last + 1, refine=True,
                                 specs=[PointSpec(0, np.asarray(xy, np.float32))], roi=self.roi,
@@ -176,14 +177,10 @@ class _TestRun(QThread):
             return spots.TestResult(label, model, error=f"{label} could not run here: {why}")
 
 
-def _grey(rgb):
-    import cv2
-    return cv2.cvtColor(np.ascontiguousarray(rgb), cv2.COLOR_RGB2GRAY)
-
-
 class PointModelTest(QDialog):
     """The dialog: what the test does, whether the clicks are enough, a Run
-    button, progress, the results table, the verdict and "Use it"."""
+    button, progress, the results table, the verdict and "Use ... for <point>"
+    (that point's tracker, G62)."""
 
     def __init__(self, parent, point_name: str, video_path: str, cache, n_frames: int, size,
                  manual_clicks: dict, models, roi: bool, gpu: bool, on_use=None):
@@ -261,7 +258,7 @@ class PointModelTest(QDialog):
         lay.addWidget(self.verdict)
         bottom = QHBoxLayout()
         bottom.addStretch(1)
-        self.btn_use = QPushButton("Use it")
+        self.btn_use = QPushButton(f"Use it for {point_name}")      # G118: it sets THIS point's tracker
         self.btn_use.setEnabled(False)
         self.btn_use.clicked.connect(self._use)
         bottom.addWidget(self.btn_use)
@@ -323,8 +320,12 @@ class PointModelTest(QDialog):
         self.results = list(results)
         limit = self._thread.limit if self._thread is not None else None
         look = self._thread.look if self._thread is not None else None
+        unread = self._thread.unread if self._thread is not None else None
+        used = [f for f in self.clicks if unread is None or f < unread]
         self.status.setText(
-            f"Tested on {len(self.clicks)} hand-placed frames ({min(self.clicks)}-{max(self.clicks)}); "
+            f"Tested on {len(used)} hand-placed frames ({min(used)}-{max(used)}); "
+            + (f"frame {unread} of the video could not be read, so the clicks from it on were left out; "
+               if unread is not None else "")
             + (f"the spot measures about {look.diameter:.0f} px across; " if look is not None else "")
             + (f"a position more than {limit:.1f} px from your click counts as a drift." if limit else ""))
         self.winner = spots.recommend(self.results)
@@ -362,7 +363,7 @@ class PointModelTest(QDialog):
         if self.winner is not None:
             self.btn_use.setText(f"Use {MODEL_LABELS.get(self.winner.model, self.winner.label)}"
                                  + (f" ({self.winner.settings.describe()})" if self.winner.model == "spot" else "")
-                                 + " for this project")
+                                 + f" for {self.point_name}")
             self.btn_use.setEnabled(True)
 
     def _use(self) -> None:
@@ -380,15 +381,22 @@ class PointModelTest(QDialog):
             self.status.setText("Cancelling…")
 
     def _stop_thread(self) -> None:
+        """Cancel the test thread and wait for it ONCE (I252): reject() calls this and then
+        close() calls it again through closeEvent -- a thread already handed on is not waited
+        for twice (up to 10 s frozen), nor registered twice."""
         th = self._thread
-        if th is None or not th.isRunning():
+        if th is None or not th.isRunning() or th in _ORPHANS:
             return
         th.cancel()
         if not th.wait(5000):
             # a model step can take a moment: keep the thread referenced until it
-            # ends -- dropping a running QThread aborts the program (I133)
+            # ends -- dropping a running QThread aborts the program (I133). The app's own
+            # registry (what its closeEvent waits for, I112) takes it too when the app is loaded.
             _ORPHANS.append(th)
             th.finished.connect(lambda: _ORPHANS.remove(th) if th in _ORPHANS else None)
+            app = sys.modules.get("kinetrace.app")
+            if app is not None and hasattr(app, "_retire"):
+                app._retire(th)
 
     def reject(self) -> None:
         self._stop_thread()

@@ -9,7 +9,7 @@ from PySide6.QtCore import QCoreApplication
 
 app = QCoreApplication([])
 
-from kinetrace.tracker import TrackingWorker, get_model, pick_device
+from kinetrace.tracker import TrackingWorker, _drain, get_model, pick_device
 from kinetrace.video_source import FrameCache
 
 VID = os.path.join(ROOT, r"test600.mp4")
@@ -124,11 +124,24 @@ def _fails_at_300(self):
     return _read_next(self)
 
 
+import kinetrace.tracker as _tk  # noqa: E402
+
+_frame_decodes = _tk._frame_decodes
+
+
+def _damaged_300(path, idx):
+    """A damaged frame cannot be read by a FRESH capture either (I240: a frame that a fresh
+    capture does read is a hiccup, not damage)."""
+    return False if idx == 300 else _frame_decodes(path, idx)
+
+
 vs.VideoSource.read_next = _fails_at_300
+_tk._frame_decodes = _damaged_300
 try:
     trD, _, evD = run_segment(250, GT[250], refine=False, allow_error=True)
 finally:
     vs.VideoSource.read_next = _read_next
+    _tk._frame_decodes = _frame_decodes
 print(f"decode failure at 300: finished={evD['finished']}, error={str(evD['error'])[:90]!r}...")
 assert evD["finished"] is None, "a damaged frame must not be reported as a completed run"
 assert evD["error"] and "Frame 300" in evD["error"] and "could not be decoded" in evD["error"], evD["error"]
@@ -143,17 +156,19 @@ assert np.isfinite(trE[580:600, :, 0]).all()
 wA = TrackingWorker(VID, 250, GT[250][:1], [0], FrameCache(64 * 1024 * 1024), 600)
 wA._frame_wh = (640, 480)
 vs.VideoSource.read_next = _fails_at_300
+_tk._frame_decodes = _damaged_300
 try:
     srcA = vs.VideoSource(VID, FrameCache(64 * 1024 * 1024))
-    lastA = wA._run_animal_only(srcA, 250)
+    lastA = _drain(wA._animal_only_steps(srcA, 250))
     srcA.close()
 finally:
     vs.VideoSource.read_next = _read_next
+    _tk._frame_decodes = _frame_decodes
 assert wA.decode_failed_at == 300 and lastA == 299, (wA.decode_failed_at, lastA)
 wB = TrackingWorker(VID, 580, GT[580][:1], [0], FrameCache(64 * 1024 * 1024), 610)
 wB._frame_wh = (640, 480)
 srcB = vs.VideoSource(VID, FrameCache(64 * 1024 * 1024))
-lastB = wB._run_animal_only(srcB, 580)
+lastB = _drain(wB._animal_only_steps(srcB, 580))
 srcB.close()
 assert wB.decode_failed_at is None and lastB == 599, (wB.decode_failed_at, lastB)
 print("decode failure reported distinctly; a short header is still the end OK")
@@ -168,7 +183,14 @@ calls = {}
 saved = (trk.get_model, trk.get_segmenter, balls_mod.BallTracker)
 trk.get_model = lambda **kw: (None, "cpu")               # no model: the segment itself is stubbed
 trk.get_segmenter = lambda backend, **kw: None
-balls_mod.BallTracker = lambda seg, wh: object()
+class _StubBalls:                                         # a ball tracker with the one ball still followed
+    active = {}
+
+    def has(self, obj):
+        return True
+
+
+balls_mod.BallTracker = lambda seg, wh: _StubBalls()
 try:
     wH = TrackingWorker(VID, 0, None, None, FrameCache(64 * 1024 * 1024), 600, autopause=False,
                         specs=[PointSpec(0, GT[0, 0].astype(np.float32))],
@@ -213,7 +235,7 @@ wR._frame_wh = (600, 400)
 wR._templates, wR._template_frac, wR._refined = {}, {}, {}
 spR = PointSpec(0, seed.copy(), anchor=True)
 g0, g1 = blob(*seed), blob(seed[0] + 20.0, seed[1] + 10.0)
-wR._capture_templates(g0, [spR], [("point", 0)])
+wR._capture_templates(g0, [spR])
 pred = np.array([[seed], [seed + [21.5, 9.0]], [seed + [1.5, -1.0]]], np.float32)   # model guesses ~1.5 px off
 outR = wR._refine_window(0, pred, np.ones((3, 1), bool), deque([(0, g0), (1, g1), (2, g0)]), 0, {0: spR})
 e_moved = outR[1, 0] - (seed + [20.0, 10.0])

@@ -53,11 +53,6 @@ def preferred_backend() -> str:
     real 4K lizard clip: 12.8 vs 27.3 fps for SAM 2.1 base+, visibly better masks),
     else the fast ungated default."""
     return "sam3" if local_dir("sam3") is not None else DEFAULT_BACKEND
-UNSUPPORTED_NOTE = {
-    "sam3.1": "SAM 3.1 ships as a raw checkpoint (sam3.1_multiplex.pt) with a different tracker "
-              "architecture and no transformers integration; it needs Meta's sam3 package. Not "
-              "loadable here yet.",
-}
 
 
 def local_dir(backend: str) -> Path | None:
@@ -99,6 +94,22 @@ def token_path() -> Path:
 
 def has_token() -> bool:
     return bool(os.environ.get("HF_TOKEN")) or token_path().exists()
+
+
+def hf_cache_args() -> dict:
+    """`from_pretrained` arguments that make a load read THIS folder's models/hf whatever
+    HF_HOME the user's environment has (I195). `os.environ.setdefault("HF_HOME")` above keeps
+    a value the user already set, so a load without these looked in THEIR cache (with
+    local_files_only once the pinned snapshot was here): SAM failed to load after a
+    successful download, and the token saved in Settings was never read. The hub folder is
+    where `downloads.hf_snapshot` puts the weights; the token is models/hf/token unless
+    HF_TOKEN is set."""
+    kw: dict = {"cache_dir": str(HF_DIR / "hub")}
+    if not os.environ.get("HF_TOKEN") and token_path().exists():
+        tok = token_path().read_text(encoding="utf-8").strip()
+        if tok:
+            kw["token"] = tok
+    return kw
 
 
 def save_token(token: str) -> None:
@@ -228,7 +239,7 @@ class Segmenter:
         from kinetrace.downloads import hf_load_args
         # a local folder, or the Hub repo at the commit every test ran against (I154): with
         # that commit's files in models/hf nothing is asked of the Hub
-        rev = {} if local_dir(backend) is not None else hf_load_args(src)
+        rev = {} if local_dir(backend) is not None else {**hf_load_args(src), **hf_cache_args()}
         self.model = M.from_pretrained(src, dtype=self.dtype, **rev).to(self.device).eval()
         self.proc = P.from_pretrained(src, **rev)
         self._torch = torch
@@ -467,10 +478,6 @@ class MaskTrack:
     def n_masked(self) -> int:
         return int((self.area > 0).sum())
 
-    def last_frame(self) -> int | None:
-        fr = self.frames()
-        return int(fr[-1]) if len(fr) else None
-
     def rasterize(self, frame: int, height: int, width: int) -> np.ndarray:
         """Bool mask (at the requested size) rebuilt from the stored native
         outline. Without a known native size the outline is taken to be in the
@@ -486,10 +493,6 @@ class MaskTrack:
                       for p in polys]
             cv2.fillPoly(out, scaled, 1)
         return out.astype(bool)
-
-    def diag(self, frame: int) -> float:
-        b = self.bbox[frame]
-        return float(np.hypot(b[2] - b[0] + 1, b[3] - b[1] + 1)) if b[0] >= 0 else 0.0
 
     # ----------------------------------------------------------- persistence
     def to_arrays(self, prefix: str) -> dict[str, np.ndarray]:
