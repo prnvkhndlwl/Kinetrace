@@ -133,7 +133,7 @@ assert win.btn_onbody.isChecked(), "Body constraint must default to on"
 print("skeleton OK")
 
 # ---- fused tracking run --------------------------------------------------------
-win.point_list.clearSelection()   # a single selected landmark would scope the run to itself
+win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
 assert win.btn_track.text().startswith("Track ") and "sel." not in win.btn_track.text()
 win._start_tracking()
 wait_until(lambda: win.state == TRACKING, 10, "tracking start")

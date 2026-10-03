@@ -55,7 +55,7 @@ assert win.session.n_points == 4 and win.point_list.count() == 4
 assert win._track_blocked is None, "Track can start once points exist"
 
 # ---- full tracking run ----
-win.point_list.clearSelection()   # run scope = panel selection; none = everything
+win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
 win._toggle_tracking()
 pump(lambda: win.state == TRACKING, 120, "tracking start (model load)")
 pump(lambda: win.state == READY, 300, "tracking finish")
@@ -68,7 +68,7 @@ assert win.act_undo.isEnabled()
 
 # ---- pause mid-run ----
 win._goto(0)
-win.point_list.clearSelection()   # run scope = panel selection; none = everything
+win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
 win._toggle_tracking()
 pump(lambda: win.state == TRACKING, 60, "second run start")
 pump(lambda: win.current > 100, 120, "progress past frame 100")
@@ -84,7 +84,7 @@ wrong = GT[250, 0] + np.array([50.0, 30.0])  # empty static background
 win._on_place(0, float(wrong[0]), float(wrong[1]))
 assert s.manual[250, 0] and np.allclose(s.tracks[250, 0], wrong, atol=0.5)
 pre_run = s.tracks.copy()  # undo restores to the state at Track-click (incl. the edit)
-win.point_list.clearSelection()   # run scope = panel selection; none = everything
+win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
 win._toggle_tracking()
 pump(lambda: win.state == TRACKING, 60, "resume start")
 pump(lambda: win.state == READY, 300, "resume finish")
@@ -104,7 +104,7 @@ print("undo restored pre-run state")
 win._goto(250)
 for d in range(4):
     win._on_place(d, float(GT[250, d, 0]), float(GT[250, d, 1]))
-win.point_list.clearSelection()   # run scope = panel selection; none = everything
+win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
 win._toggle_tracking()
 pump(lambda: win.state == TRACKING, 60, "clean re-track start")
 pump(lambda: win.state == READY, 300, "clean re-track finish")
@@ -146,7 +146,7 @@ assert not s.tracked[301:, [0, 1, 3]].any(), "unselected points must be left alo
 win._goto(300)                                     # all four have data here
 for r in range(4):
     win.point_list.item(r).setSelected(True)
-assert win._run_scope()[0] is None and "all 4 point" in win.btn_track.toolTip(), win.btn_track.toolTip()
+assert win._run_scope()[0] == {0, 1, 2, 3} and "4 selected point" in win.btn_track.toolTip(), win.btn_track.toolTip()
 win._start_tracking(stop_after=330)
 pump(lambda: win.state == TRACKING, 10, "full run start")
 pump(lambda: win.state == READY, 120, "full run end")

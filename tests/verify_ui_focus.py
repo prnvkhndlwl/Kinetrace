@@ -440,6 +440,10 @@ win.toast.hide()
 _pid = win.session.add_point(win.current, 60.0, 60.0)
 win._refresh_point_list()
 win._update_track_button()
+assert win._track_blocked is not None and "Select what to track" in win._track_blocked, \
+    "a point that is not selected is not tracked (G61)"
+win.point_list.item(_pid).setSelected(True)
+win._update_track_button()
 assert win._track_blocked is None and win.btn_track.property("idle") is False, "a point here makes Track loud again"
 win.session.remove_point(_pid)
 win._refresh_point_list()

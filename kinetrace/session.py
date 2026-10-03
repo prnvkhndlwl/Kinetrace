@@ -87,6 +87,7 @@ DEFAULT_UI_STATE: dict = {
 }
 
 SOURCES = ("track", "silhouette", "ball")
+TRACKERS = ("alltracker", "cotracker3", "spot")   # a point's own tracker (G62); "" = the project default
 
 
 def in_frame(pts, w: float, h: float):
@@ -166,6 +167,9 @@ class PointMeta:
     # as a dict, from Track ▾ -> Test the point models on my clicks); None =
     # automatic. Per camera: each camera sees the spot differently (I161)
     spot: dict | None = None
+    # the point's own tracker (G62): "alltracker" | "cotracker3" | "spot", or "" =
+    # the project's default point model (Track ▾). Shared across cameras (by name)
+    tracker: str = ""
 
     @property
     def derived(self) -> bool:
@@ -183,7 +187,7 @@ class PointMeta:
                          None if self.outline is None else [list(v) for v in self.outline],
                          None if self.ball_prompts is None
                          else {int(f): [list(c) for c in cs] for f, cs in self.ball_prompts.items()},
-                         None if self.spot is None else dict(self.spot))
+                         None if self.spot is None else dict(self.spot), self.tracker)
 
     def outline_at(self, center) -> np.ndarray | None:
         """The region outline translated to `center` (its fitted position on a
@@ -435,7 +439,8 @@ class TrackingSession:
         camera's own geometry, so the region arrives here as a circle of the same
         radius; ball clicks and the appearance lock are per camera too."""
         m = PointMeta(meta.name, meta.color, True, meta.kind, meta.radius, False, meta.source,
-                      meta.spec, meta.free, meta.shape if meta.outline is None else "circle")
+                      meta.spec, meta.free, meta.shape if meta.outline is None else "circle",
+                      tracker=meta.tracker)
         pid = self._append_point(m)
         self._touch()
         return pid

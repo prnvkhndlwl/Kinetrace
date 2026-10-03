@@ -465,6 +465,7 @@ class VideoCanvas(QGraphicsView):
         # _build_context_menu); left None, the menu is the canvas-only one
         self.menu_extra = None          # callable(menu, acts, pid)
         self.menu_extra_action = None   # callable(chosen, acts, pid) -> handled?
+        self.multi_menu = None          # callable(pid, global pos) -> handled? (several selected, G64)
         self._trail_len = TRAIL_FRAMES
         self._trail_future = False
         self._onion = False
@@ -1271,6 +1272,8 @@ class VideoCanvas(QGraphicsView):
         pid, pos = self._rpress
         self._rpress = None
         if self._interactive:
+            if callable(self.multi_menu) and self.multi_menu(pid, pos):
+                return                          # one of several selected points: the menu for all (G64)
             self._context_menu(pid, pos)
 
     def mouseMoveEvent(self, ev):
@@ -1347,9 +1350,8 @@ class VideoCanvas(QGraphicsView):
             pid = self._rpress[0]
             self._rpress = None
             self._rpress_timer.stop()
-            if self._interactive:              # a short right click: clear it on this frame (G59)
-                self.point_selected.emit(pid)
-                self.clear_frame_requested.emit(pid)
+            if self._interactive:              # a short right click: clear it on this frame (G59);
+                self.clear_frame_requested.emit(pid)   # the app selects it, or clears every selected one
             return
         if self._panning and ev.button() == getattr(self, "_pan_button", Qt.MiddleButton):
             self._panning = False

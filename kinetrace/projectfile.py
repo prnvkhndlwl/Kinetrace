@@ -67,7 +67,7 @@ LANDMARK_COLS = ("frame", "x", "y", "confidence", "visible", "hand_placed", "hid
 SILHOUETTE_COLS = ("frame", "area", "score", "centroid_x", "centroid_y", "x0", "y0", "x1", "y1")
 POINT3D_COLS = ("frame", "x", "y", "z", "residual", "n_cams")         # + one <camera>_px column per camera
 POINT_COLS = ("name", "color", "shown", "kind", "radius", "anchor", "source", "spec", "free", "shape", "outline",
-              "file")
+              "file", "tracker")
 EVENT_COLS = ("name", "start", "end", "color", "note", "author")
 NOTE_COLS = ("frame", "text", "author", "time")
 _ZIP_TIME = (1980, 1, 1, 0, 0, 0)          # fixed: the same project always gives the same bytes
@@ -442,7 +442,7 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
         [p.name, _hex(p.color), int(p.display), p.kind, repr(float(p.radius)), int(p.anchor), p.source,
          p.spec, int(p.free), p.shape,
          "" if not p.outline else " ".join(repr(float(v)) for xy in p.outline for v in xy),
-         "" if binary_tracks else lfiles[j]]
+         "" if binary_tracks else lfiles[j], p.tracker]
         for j, p in enumerate(s.points)])
     arrays = dict(tracks=s.tracks.copy(), confidence=s.confidence.copy(), visibility=s.visibility.copy(),
                   manual=s.manual.copy(), tracked=s.tracked.copy(), occluded=s.occluded.copy(),
@@ -1530,7 +1530,7 @@ def _read_points3d(src: _Source):
 def _read_camera(src: _Source, d: str, s) -> None:
     from kinetrace.body import BodyTrack
     from kinetrace.segmenter import MIDLINE_SAMPLES, MaskTrack
-    from kinetrace.session import SOURCES, AnimalMeta, Event, PointMeta, formula_safe, starts_formula
+    from kinetrace.session import SOURCES, TRACKERS, AnimalMeta, Event, PointMeta, formula_safe, starts_formula
 
     def _name(n):         # names from a file lose what a spreadsheet takes for a formula (M7)
         return formula_safe(n) if starts_formula(n) else n
@@ -1550,7 +1550,8 @@ def _read_camera(src: _Source, d: str, s) -> None:
                 float(g("radius", "0") or 0), g("anchor", "0") == "1",
                 g("source", "track") if g("source", "track") in SOURCES else "track", g("spec"),
                 g("free", "0") == "1", g("shape", "circle") or "circle",
-                [[float(outline[j]), float(outline[j + 1])] for j in range(0, len(outline) - 1, 2)] or None))
+                [[float(outline[j]), float(outline[j + 1])] for j in range(0, len(outline) - 1, 2)] or None,
+                tracker=g("tracker", "") if g("tracker", "") in TRACKERS else ""))
     index = {p.name: i for i, p in enumerate(points)}
     # ---- tracks (dense .npy in recovery files, one CSV per landmark in projects,
     # one long tracks.csv in format 1)

@@ -589,14 +589,16 @@ print("notes are exported without events (I125) OK")
 calls = []
 orig_start, orig_seed, orig_aseed = win._start_tracking, s.seedable_at, s.animal_seedable_at
 win._start_tracking = lambda **k: calls.append(k)
-s.seedable_at = lambda f: False
+s.seedable_at = lambda f: []
 s.animal_seedable_at = lambda f: True
+win._run_segment = lambda scope: True        # the segment's row is selected (G61)
 win._track_step()
 assert calls and calls[0].get("stop_after") == win.current + 1, calls
 s.animal_seedable_at = lambda f: False
 calls.clear()
 win._track_step()
-assert not calls and "S and click" in win.statusBar().currentMessage()
+assert not calls and win.statusBar().currentMessage()
+del win._run_segment
 win._start_tracking = orig_start
 del s.seedable_at, s.animal_seedable_at
 print("a semi-automatic step runs with only a segment (I128) OK")
@@ -887,6 +889,7 @@ if mode.startswith("track"):
     win.session.add_point(0, 100.0, 100.0)
     win._refresh_point_list()
     win._apply_state()
+    win.act_select_all.trigger()             # only what is selected is tracked (G61)
     win._toggle_tracking()
     assert pump(lambda: win.state == TRACKING, 10), "no run started"
     assert pump(lambda: win.state == READY and win.worker is None, 10), "the handler did not run"

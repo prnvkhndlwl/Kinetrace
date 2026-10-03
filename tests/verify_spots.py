@@ -345,7 +345,7 @@ pump(0.1)
 win._on_annotate(*GT[1])
 win._goto(0, force=True)
 pump(0.1)
-win.point_list.clearSelection()
+win.act_select_all.trigger()       # only what is selected is tracked (G61)
 win._start_tracking()
 wait(lambda: win.state == TRACKING, 60, "tracking start")
 wait(lambda: win.state == READY, 120, "tracking end")
@@ -386,7 +386,7 @@ d = seen[-1]
 assert not d.enough and not d.btn_run.isEnabled() and "at least 20" in d.req.text() and "10 more" in d.req.text(), \
     d.req.text()
 print(f"  10 clicks: refused -- {ascii(d.req.text()[:90])}...")
-win._set_point_backend(default)                  # the test's Use must set it back to spot
+win._set_point_backend(default)                  # P1 (selected) back to the default; Use gives it Moving spot
 for f in range(10, 25):
     s.set_position(f, 0, *(GT[f] + np.random.default_rng(f).normal(0, 0.6, 2)))
 s.points[0].spot = None
@@ -395,14 +395,16 @@ d = seen[-1]
 assert d.enough and d.results is not None, d.error
 print(f"  25 clicks: {ascii(d.verdict.text()[:160])}...")
 assert d.winner.model == "spot" and d.winner.settings.cue == "bright" and d.winner.corrections == 0
-assert win._point_backend == "spot" and win.act_pm_spot.isChecked()
+assert s.points[0].tracker == "spot" and win._tracker_of(0) == "spot", "Use gives THAT point its tracker (G62)"
+assert win._point_backend == default, "the project's default is not changed by the test"
+assert "Moving spot" in win.point_list.item(0).toolTip()
 assert s.points[0].spot and s.points[0].spot["cue"] == "bright"
 win._undo_run()
 pump(0.05)
 assert s.points[0].spot is None, "Ctrl+Z takes the settings back"
 win._apply_test_choice(0, d.winner)
 print("  the test: refused below 20 clicks with how many more; recommends Moving spot (bright) with 0 "
-      "corrections; Use sets the project's point model and the point's settings; Ctrl+Z OK")
+      "corrections; Use gives that point Moving spot and its settings; Ctrl+Z OK")
 
 # saved with the project, restored on open; a new video does not inherit it
 proj = os.path.join(OUT, "spots_test.kinetrace")
@@ -410,16 +412,16 @@ win.project.save(proj)
 from kinetrace.project import Project  # noqa: E402
 
 p2 = Project.load(proj)
-assert p2.sessions[0].ui_state.get("point_backend") == "spot" and p2.sessions[0].points[0].spot["cue"] == "bright"
+assert p2.sessions[0].points[0].tracker == "spot" and p2.sessions[0].points[0].spot["cue"] == "bright"
 win._open_video(VID2)
 wait(lambda: win.state == READY and win.info is not None and win.info.path == VID2, 60, "open 2")
 assert win._point_backend == default and win._pm_acts[default].isChecked(), win._point_backend
 win._open_project_from_path(proj)
 wait(lambda: win.state == READY and win.session is not None and win.session.points, 60, "reopen")
 pump(0.2)
-assert win._point_backend == "spot" and win.act_pm_spot.isChecked(), "the project's point model comes back"
+assert win.session.points[0].tracker == "spot" and win._tracker_of(0) == "spot", "the point's tracker comes back"
 assert win.session.points[0].spot["cue"] == "bright"
-print("  the point model is saved with the project and restored on open; another video keeps the default OK")
+print("  the point's tracker is saved with the project and restored on open; another video keeps the default OK")
 
 # switch at any time, both ways
 for k in ("alltracker", "cotracker3", "spot"):
@@ -429,6 +431,7 @@ for k in ("alltracker", "cotracker3", "spot"):
 
 # the corrections hint: AllTracker / CoTracker3 data corrected by hand on 5 of 20 frames
 win._pm_acts[default].trigger()
+win._set_tracker([0], default)          # P1 back on an appearance model: the corrections hint is for those
 s = win.session
 L = 40
 tw = np.repeat(GT[None, :L, :], 1, 0).transpose(1, 0, 2).astype(np.float32) + 15.0
@@ -464,7 +467,7 @@ win.act_pm_spot.trigger()
 win._goto(0, force=True)
 win._on_add_group(500.0, 200.0, 30.0)
 pump(0.05)
-win.point_list.clearSelection()
+win.act_select_all.trigger()
 win._start_tracking(stop_after=5)
 wait(lambda: win.state == READY and win.worker is None, 60, "region run")
 assert "left out" in win.toast.text(), win.toast.text()
@@ -506,7 +509,7 @@ pump(0.2)
 # semi-automatic: F at frame 1 tracks exactly frame 2
 win.act_mode_semi.trigger()
 win._goto(1, force=True)
-win.point_list.clearSelection()
+win.act_select_all.trigger()            # only what is selected is tracked (G61)
 pump(0.1)
 win._track_step()
 wait(lambda: win.state == READY and win.worker is None, 60, "semi step")
@@ -518,7 +521,7 @@ win.act_mode_auto.trigger()
 win._goto(1, force=True)
 win.act_track_all.setChecked(True)
 pump(0.05)
-win.point_list.clearSelection()
+win.act_select_all.trigger()
 win._toggle_tracking(all_cameras=True)
 wait(lambda: win._multi is not None or win.state == TRACKING, 30, "every-camera start")
 wait(lambda: win._multi is None and win.state == READY, 120, "every-camera end")

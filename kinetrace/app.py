@@ -16,7 +16,7 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QEventLoop, QObject, QRect, QSettings, Qt, QTimer, QThread, Signal
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QRect, QSettings, QSize, Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, QApplication, QDialog, QDialogButtonBox,
                                QDockWidget, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog,
@@ -86,10 +86,13 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>frame box</td><td>type a frame number + Enter</td></tr>
 </table>
 <h3>Tracking</h3><table>
-<tr><td class=k>T</td><td>start tracking / pause (semi-automatic mode: one step)</td></tr>
+<tr><td class=k>T</td><td>start tracking / pause (semi-automatic mode: one step). Only what is <b>selected</b> is tracked: the points selected in POINTS and the segment when its SEGMENT row is selected — nothing selected, nothing tracked</td></tr>
+<tr><td class=k>Ctrl+A</td><td>select everything to track: every point and the segment</td></tr>
+<tr><td class=k>several selected</td><td>right-click one of them in POINTS (or hold right on one of their markers): one menu for all — track these, clear here / in the window / whole tracks, delete, hidden here, show / hide, Tracker, fill gaps (the segment too when its row is selected); a short right click on one of their markers clears all of them on this frame</td></tr>
+<tr><td class=k>AT / CT / MS</td><td>beside a point's name in POINTS: its tracker — AllTracker, CoTracker3 or Moving spot (right-click → Tracker). One Track press tracks each selected point with its own tracker; AllTracker and CoTracker3 points run one after the other (two passes over the same frames), and a point that stops ends the run for all</td></tr>
 <tr><td class=k>Shift+T</td><td>several cameras: this run in <b>every camera</b> that has the point(s) here, all at the same time (Track ▾ → <i>Every camera</i> makes T and F always do that)</td></tr>
 <tr><td class=k>X / Space</td><td>pause a running track (during 3D → Re-track Disagreeing Stretches: stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run: stops every camera at once)</td></tr>
-<tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>Every camera</b> (several cameras: the selected points — or all — tracked in each camera that has them at this instant, ball markers included, all at the same time, each live in its own view; the button says "· 3 cams"; X stops them all; one Ctrl+Z undoes all; the menu stays open while you tick, so mode, Every camera and point model combine); <b>point model</b>: AllTracker (default: animals and objects with a visible shape), CoTracker3 (faster, sub-pixel on high-contrast markers) or Moving spot (only a target small enough to be ONE point — a dot up to about 20 px with no visible shape; no model, stops where it loses the spot); <b>Test the point models on my clicks</b> (place a point by hand on 20 frames in a row first) recommends one; the choice is saved with the project</td></tr>
+<tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>Every camera</b> (several cameras: the selected points — or all — tracked in each camera that has them at this instant, ball markers included, all at the same time, each live in its own view; the button says "· 3 cams"; X stops them all; one Ctrl+Z undoes all; the menu stays open while you tick, so mode, Every camera and point model combine); <b>point model</b>: sets the tracker of the selected points and the project's default for the others — AllTracker (default: animals and objects with a visible shape), CoTracker3 (faster, sub-pixel on high-contrast markers) or Moving spot (only a target small enough to be ONE point — a dot up to about 20 px with no visible shape; no model, stops where it loses the spot); <b>Test the point models on my clicks</b> (place a point by hand on 20 frames in a row first) recommends one; the choice is saved with the project</td></tr>
 <tr><td class=k>Auto-pause</td><td>stop the run when the model loses a point (a brief occlusion doesn't trigger it); the point's track is <b>cut</b> at the first unreliable frame and the playhead goes there</td></tr>
 <tr><td class=k>ROI</td><td>track inside a crop around the points when it clearly helps</td></tr>
 <tr><td class=k>Ctrl+Z</td><td>undo the last tracking run, bulk edit or hand edit (a click, a right-click clear, Ctrl+click, deleted point, Shift+X) — one step</td></tr>
@@ -610,6 +613,7 @@ class MainWindow(QMainWindow):
         self._seg_backend = preferred_backend()     # segmentation model (Settings)
         self._point_backend = self._preferred_point_backend()   # Track dropdown
         self._spot_hints: set = set()          # the one-time Moving spot hints already shown (G58)
+        self._passes = None                    # a Track press with AllTracker AND CoTracker3 points (G63)
         self._spot_corrections: dict = {}      # (project, camera, point) -> frames corrected by hand
         self._mask_opacity = 0.35
         self._region_shape = "circle"               # Add ▾: circle | rect | polygon
@@ -743,6 +747,7 @@ class MainWindow(QMainWindow):
         canvas.occluded_toggled.connect(self._on_occluded_toggled)
         canvas.menu_extra = self._extend_point_menu
         canvas.menu_extra_action = self._point_menu_extra_action
+        canvas.multi_menu = self._maybe_multi_menu
         canvas.animal_click.connect(self._on_animal_click)
         canvas.animal_box.connect(self._on_animal_box)
         canvas.prompt_remove_requested.connect(self._on_prompt_remove)
@@ -1039,7 +1044,8 @@ class MainWindow(QMainWindow):
             "speed puts it — the brightest or darkest small blob there, or what changes much more than that "
             "background usually does — and it STOPS where it cannot find the dot or sees two alike, instead of "
             "drifting. Click the dot on two frames in a row before you track (that gives its speed). Regions "
-            "are left out of a Moving spot run. Saved with the project; switch back at any time.")
+            "are left out of a Moving spot run. Choosing it here gives it to the SELECTED points (and makes it "
+            "the default for points without their own); right-click a point's row → Tracker does it for one.")
         self._pm_acts = {"alltracker": self.act_pm_alltracker, "cotracker3": self.act_pm_cotracker,
                          "spot": self.act_pm_spot}
         for key, act in self._pm_acts.items():
@@ -1213,12 +1219,14 @@ class MainWindow(QMainWindow):
             "Select one, then a plain click on the video places it on this frame.\n"
             "Right-click: rename, data source, hidden here, jump to its first / last\n"
             "frame, clear a stretch, fill gaps between hand placements, delete.\n"
-            "Track follows the selection: with some points selected it tracks only\n"
-            "those (select all, or none, to track everything).\n"
+            "Track tracks ONLY what is selected here (and the segment's row when it\n"
+            "is selected): Ctrl+click for several, Ctrl+A for everything. AT / CT / MS\n"
+            "beside a name = its tracker (right-click → Tracker to change it).\n"
             "Ctrl/Shift+click selects several: Delete removes them all; with a\n"
             "frame window selected on the timeline, Delete clears just that window\n"
             "(Shift+drag the timeline over the lanes you want cleared).")
         self.point_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.point_list.setIconSize(QSize(34, 14))        # colour + the point's tracker (G62)
         self.point_list.itemChanged.connect(self._on_item_changed)
         self.point_list.currentRowChanged.connect(self._on_list_select)
         # the run scope follows the selection: keep the Track button's wording current
@@ -1252,10 +1260,12 @@ class MainWindow(QMainWindow):
         # instead of hunting through menus
         self.animal_list = QListWidget()
         self.animal_list.setFixedHeight(26)   # one row; re-measured once it has an item
-        self.animal_list.setSelectionMode(QAbstractItemView.NoSelection)
+        self.animal_list.setSelectionMode(QAbstractItemView.MultiSelection)   # a click toggles it (G61)
+        self.animal_list.itemSelectionChanged.connect(self._update_track_button)
         self.animal_list.setToolTip(
-            "The tracked segment. The checkbox shows / hides its silhouette; double-click to "
-            "rename; right-click to clear a stretch of silhouettes or remove it entirely.")
+            "The tracked segment. Click its name to select it: Track then tracks it (with the points "
+            "selected in POINTS). The checkbox shows / hides its silhouette; double-click to rename; "
+            "right-click to clear a stretch of silhouettes or remove it entirely.")
         self.animal_list.itemChanged.connect(self._on_animal_item_changed)
         self.animal_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.animal_list.customContextMenuRequested.connect(self._animal_menu)
@@ -1376,6 +1386,11 @@ class MainWindow(QMainWindow):
                                 shortcut=QKeySequence("Ctrl+Z"),
                                 triggered=self._undo_run, enabled=False)
         m_edit.addAction(self.act_undo)
+        self.act_select_all = QAction("Select &Everything to Track", self, shortcut=QKeySequence("Ctrl+A"),
+                                      triggered=self._select_all_tracked)
+        self.act_select_all.setToolTip("Selects every point in POINTS and the segment's row: Track then tracks "
+                                       "all of them (only what is selected is tracked). Esc clears the selection.")
+        m_edit.addAction(self.act_select_all)
         m_edit.addSeparator()
         self.act_note = QAction("&Note at This Frame…   (Shift+N)", self, triggered=lambda: self._edit_note())
         self.act_note.setToolTip("Attach a free-text note to the current frame (shown on the timeline, "
@@ -1904,15 +1919,59 @@ class MainWindow(QMainWindow):
             self.act_onboarding.setChecked(False)
 
     def _run_scope(self):
-        """Which points a run covers: the panel's multi-selection, or every point
-        when all (or none) are selected. Returns (set of pids | None = all, n_selected)."""
+        """Which points a run covers: EXACTLY the points selected in POINTS (owner,
+        2026-10-02, G61 -- nothing selected used to mean everything). Returns
+        (set of pids, n_selected)."""
         s = self.session
         if s is None:
-            return None, 0
-        sel = set(self._selected_pids())
-        if not sel or len(sel) >= s.n_points:
-            return None, len(sel)
+            return set(), 0
+        sel = {p for p in self._selected_pids() if p < s.n_points}
         return sel, len(sel)
+
+    def _segment_selected(self) -> bool:
+        """The SEGMENT row is selected: the segment is part of the next run (G61)."""
+        it = self.animal_list.item(0) if self.animal_list.count() else None
+        return bool(it is not None and it.isSelected())
+
+    def _run_segment(self, scope) -> bool:
+        """The segment runs when its row is selected, or when a selected landmark
+        is derived from it (it cannot fill in without the silhouette)."""
+        s = self.session
+        return bool(s is not None and s.animal is not None
+                    and (self._segment_selected()
+                         or any(0 <= q < s.n_points and s.points[q].derived for q in scope)))
+
+    def _tracker_of(self, pid: int, s=None) -> str:
+        """A point's tracker (G62): its own, else the project's default point model."""
+        from kinetrace.session import TRACKERS
+        s = s if s is not None else self.session
+        t = s.points[pid].tracker if s is not None and 0 <= pid < s.n_points else ""
+        t = t if t in TRACKERS else self._point_backend
+        if t == "alltracker" and not alltracker_backend.available():
+            t = "cotracker3"
+        return t
+
+    def _tracker_passes(self, pids) -> list[list[int]]:
+        """The passes one Track press needs (G63): AllTracker points (or CoTracker3
+        ones) + Moving spot points + ball markers + derived landmarks in the first;
+        CoTracker3 points in a second when AllTracker points are selected too
+        (owner: one after the other)."""
+        s = self.session
+        nn: dict[str, list[int]] = {}
+        rest = []
+        for q in sorted(pids):
+            if q >= s.n_points:
+                continue
+            m = s.points[q]
+            t = "" if (m.derived or m.is_ball) else self._tracker_of(q)
+            if t in ("alltracker", "cotracker3"):
+                nn.setdefault(t, []).append(q)
+            else:
+                rest.append(q)
+        order = [k for k in ("alltracker", "cotracker3") if k in nn]
+        if not order:
+            return [rest]
+        return [nn[order[0]] + rest] + [nn[k] for k in order[1:]]
 
     def _update_track_button(self):
         semi = self._track_mode == "semi"
@@ -1924,26 +1983,37 @@ class MainWindow(QMainWindow):
             return
         s = self.session
         scope, n_sel = self._run_scope()
-        # the button itself says what a run covers, so a scoped run never surprises
-        if scope is not None:
-            self.btn_track.setText(f"Step {n_sel} sel. ▶  (F)" if semi else f"Track {n_sel} sel. ▶")
-        else:
-            self.btn_track.setText("Step ▶  (F)" if semi else "Track ▶")
+        seg = self._run_segment(scope)
+        # the button itself says what a run covers: exactly what is selected (G61)
+        what_sel = []
+        if n_sel:
+            what_sel.append(f"{n_sel} point{'s' if n_sel != 1 else ''}")
+        if seg:
+            what_sel.append("segment")
+        n_pass = len(self._tracker_passes(scope)) if (s is not None and scope) else 1
+        label = "Step" if semi else "Track"
+        self.btn_track.setText(f"{label} · {' + '.join(what_sel)}" + (f" ({n_pass} passes)" if n_pass > 1 else "")
+                               + (" ▶  (F)" if semi else " ▶") if what_sel else (f"{label} ▶  (F)" if semi
+                                                                                 else f"{label} ▶"))
         n_cams = len(self._multi_jobs(semi)) if self.act_track_all.isChecked() and self.state == READY else 0
         if n_cams > 1:
             self.btn_track.setText(self.btn_track.text() + f" · {n_cams} cams")   # Track ▾ → Every camera (G29)
-        n = len([p for p in s.seedable_at(self.current) if scope is None or p in scope]) if s is not None else 0
-        animal_ok = s is not None and s.animal_seedable_at(self.current)
+        n = len([p for p in s.seedable_at(self.current) if p in scope]) if s is not None else 0
+        animal_ok = s is not None and seg and s.animal_seedable_at(self.current)
         # Nothing to start from: the button stays ENABLED, only drawn quiet, because Qt
         # disables a disabled button's menu too and Track ▾'s choices must stay reachable;
         # T / a click then says why instead of starting (G34)
         self.btn_track.setEnabled(True)
         if self.state == IDLE:
             blocked = "Open a video first (Ctrl+O) or a project (Ctrl+Shift+O)"
+        elif s is not None and not scope and not seg and (s.n_points or s.animal is not None):
+            blocked = ("Select what to track: click the points in the POINTS list (Ctrl+click for several, "
+                       "Ctrl+A for all)" + (", and the segment's row in SEGMENT" if s.animal is not None else "")
+                       + " — only what is selected is tracked")
         elif s is None or (n == 0 and not animal_ok):
-            if scope is not None:
+            if scope:
                 blocked = (f"The selected point(s) have no position on frame {self.current}. Select a "
-                           "point that exists here, or clear the selection (Esc) to track everything")
+                           "point that exists here, or place it here first (click it on the video)")
             elif s is not None and s.animal is not None:
                 blocked = ("Nothing to track from this frame: place a point (N), press S and click the "
                            "segment here, or move to a frame where the points/segment exist")
@@ -1959,10 +2029,13 @@ class MainWindow(QMainWindow):
         else:
             what = []
             if n:
-                what.append(f"the {n} selected point(s)" if scope is not None else f"all {n} point(s)")
+                what.append(f"the {n} selected point(s)")
             if animal_ok:
-                what.append("the segment (silhouette + derived landmarks)")
+                what.append("the segment (silhouette)")
             what = " and ".join(what)
+            if n_pass > 1:
+                what += (" — in two passes, one after the other: the AllTracker points, then the CoTracker3 points "
+                         "over the same frames (a point that stops ends the run for all)")
             if semi:
                 self.btn_track.setToolTip(
                     f"Semi-automatic: track {what} ONE frame forward from frame "
@@ -2002,6 +2075,10 @@ class MainWindow(QMainWindow):
             self.session.ui_state["point_backend"] = key
             if changed:
                 self.session.dirty = True        # a project setting: saved with the project
+            sel = [q for q in self._selected_pids() if q < self.session.n_points
+                   and not self.session.points[q].derived and not self.session.points[q].is_ball]
+            if sel:                              # the selected points take it too (G62)
+                self._set_tracker(sel, key)
         self.statusBar().showMessage(
             {"alltracker": "Point model: AllTracker — applies to the next Track run",
              "cotracker3": "Point model: CoTracker3 — applies to the next Track run",
@@ -2856,6 +2933,9 @@ class MainWindow(QMainWindow):
         s0 = self.session
         keep = (s0.points[self.selected].name
                 if self.selected is not None and self.selected < s0.n_points else None)
+        # the WHOLE selection comes along too: it is what Track tracks (G61)
+        keep_all = {s0.points[q].name for q in self._selected_pids() if q < s0.n_points}
+        keep_seg = self._segment_selected()
         prev = p.name(p.active)
         # the camera being left shows ITS frame at this instant; the one taken up is
         # driven by the playhead from now on (Active view only keeps the first where
@@ -2870,6 +2950,13 @@ class MainWindow(QMainWindow):
         j = p.session.pid_by_name(keep) if keep is not None else None
         if j is not None:
             self.point_list.setCurrentRow(j)   # selects it (and shows its epipolar guides)
+        for nm in keep_all:
+            q = p.session.pid_by_name(nm)
+            if q is not None and q < self.point_list.count():
+                self.point_list.item(q).setSelected(True)
+        if keep_seg and self.animal_list.count():
+            self.animal_list.item(0).setSelected(True)
+        self._update_track_button()
         if add_on and self.btn_add.isChecked():
             self.canvas.set_place_mode(True)   # the camera clicked is armed (G20)
             self.canvas.set_click_only(self._place_kind == "ball")
@@ -3229,8 +3316,7 @@ class MainWindow(QMainWindow):
             if (self._track_mode == "semi" and self.state == READY
                     and self.session is not None
                     and self.current < self.n_frames - 1
-                    and (self.session.seedable_at(self.current)
-                         or self.session.animal_seedable_at(self.current))):
+                    and self._track_blocked is None):
                 self._toggle_tracking()             # one step (in every camera with Track ▾ → Every camera)
             else:
                 self._goto(self.current + 1)
@@ -3771,6 +3857,7 @@ class MainWindow(QMainWindow):
         so the rebuild is not mistaken for a user edit."""
         self.animal_label.setText(self._animal_status_text())
         s = self.session
+        seg_sel = self._segment_selected()
         self.animal_list.blockSignals(True)
         self.animal_list.clear()
         has = s is not None and s.animal is not None
@@ -3801,6 +3888,7 @@ class MainWindow(QMainWindow):
             if n_masked == 0:
                 item.setForeground(QColor(theme.TEXT_DIM))
             self.animal_list.addItem(item)
+            item.setSelected(seg_sel)               # a rebuild keeps it in (or out of) the next run (G61)
             # exactly one row tall at whatever font / DPI this machine uses
             self.animal_list.setFixedHeight(
                 self.animal_list.sizeHintForRow(0) + 2 * self.animal_list.frameWidth() + 2)
@@ -4949,6 +5037,12 @@ class MainWindow(QMainWindow):
         s = self.session
         if s is None or self.state != READY or not (0 <= pid < s.n_points):
             return
+        sel = self._selected_pids()
+        if pid in sel and len(sel) > 1:
+            # one of several selected points: all of them on this frame, the selection kept (G64)
+            self._multi_clear(sel, self.current, self.current)
+            return
+        self._on_select(pid)
         name = s.points[pid].name
         if not s.tracked[self.current, pid]:
             self.statusBar().showMessage(f"{name} has no position on frame {self.current}", 4000)
@@ -4962,8 +5056,21 @@ class MainWindow(QMainWindow):
         """Points AND silhouettes inside [f0, f1], as one undo step."""
         self._clear_window(f0, f1, pids, do_points=True, do_masks=True)
 
+    def _select_all_tracked(self) -> None:
+        """Ctrl+A: every point and the segment -- Track covers only what is selected (G61)."""
+        if self.session is None:
+            return
+        self.point_list.selectAll()
+        if self.animal_list.count():
+            self.animal_list.item(0).setSelected(True)
+        self._update_track_button()
+        self.statusBar().showMessage("Everything selected: Track tracks every point"
+                                     + (" and the segment" if self.session.animal is not None else ""), 5000)
+
     def _deselect(self):
-        if self.selected is not None:
+        if self._segment_selected():
+            self.animal_list.clearSelection()
+        if self.selected is not None or self._selected_pids():
             self.selected = None
             self.point_list.blockSignals(True)
             self.point_list.clearSelection()
@@ -4971,6 +5078,7 @@ class MainWindow(QMainWindow):
             self.point_list.blockSignals(False)
             self._refresh_overlay()
             self._refresh_companions()      # the other cameras drop the selection ring too (G22)
+            self._update_track_button()     # nothing selected = nothing to track (G61)
             self.statusBar().showMessage("Selection cleared — a plain click on the video now edits nothing; "
                                          "press N, then click, to add a new point", 5000)
 
@@ -5016,6 +5124,8 @@ class MainWindow(QMainWindow):
         if item is None or self.session is None or self.state != READY:
             return
         pid = self.point_list.row(item)
+        if self._maybe_multi_menu(pid, self.point_list.viewport().mapToGlobal(pos)):
+            return                              # several selected: the menu for all of them (G64)
         menu, acts = self.canvas._build_context_menu(pid)
         chosen = menu.exec(self.point_list.viewport().mapToGlobal(pos))
         menu.deleteLater()          # a shown menu otherwise lingers as a child of the canvas
@@ -5033,6 +5143,127 @@ class MainWindow(QMainWindow):
             self._on_free_toggled(pid, acts["free"].isChecked())
         elif chosen == acts["occluded"]:
             self._on_occluded_toggled(pid, acts["occluded"].isChecked())
+
+    def _maybe_multi_menu(self, pid: int, global_pos) -> bool:
+        """Right click (POINTS) / long right press (video) on one of SEVERAL selected
+        points: the entries that act on all of them (G64). False = one point's menu."""
+        sel = self._selected_pids()
+        if self.session is None or self.state != READY or pid not in sel or len(sel) < 2:
+            return False
+        menu, acts = self._build_multi_menu(sel)
+        chosen = menu.exec(global_pos)
+        menu.deleteLater()
+        self._multi_menu_action(chosen, acts, sel)
+        return True
+
+    def _build_multi_menu(self, sel: list[int]):
+        """The menu for several selected points (and the segment when its row is
+        selected too): every entry acts on all of them, each as one Ctrl+Z step."""
+        s = self.session
+        seg = self._segment_selected() and s.animal is not None
+        n = len(sel)
+        who = f"the {n} selected points" + (" and the segment" if seg else "")
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        acts: dict = {}
+        head = menu.addAction(f"{n} points selected" + (" + the segment" if seg else ""))
+        head.setEnabled(False)
+        menu.addSeparator()
+        acts["track"] = menu.addAction(f"Track {who} from frame {self.current}")
+        acts["track"].setToolTip("Only these: each point with its own tracker (T does the same)")
+        menu.addSeparator()
+        acts["clear_here"] = menu.addAction(f"Clear {who} on frame {self.current}")
+        acts["clear_here"].setToolTip("This frame only; the points stay. One Ctrl+Z step "
+                                      "(a right click on one of their markers does the same)")
+        rng = self.timeline.sel_range
+        acts["clear_window"] = menu.addAction(f"Clear {who} in frames {rng[0]}\u2013{rng[1]}" if rng
+                                              else "Clear them in the selected frame window")
+        acts["clear_window"].setEnabled(rng is not None)
+        acts["clear_window"].setToolTip("Shift+drag across the timeline to select a frame window first")
+        acts["clear_all"] = menu.addAction(f"Clear the whole tracks of the {n} points (keep the points)")
+        acts["clear_all"].setToolTip("Every frame of their tracks; the points stay in the list, ready to be "
+                                     "placed again. One Ctrl+Z step")
+        acts["delete"] = menu.addAction(f"Delete the {n} points")
+        acts["delete"].setToolTip("Remove them from the project (asks first; Ctrl+Z brings them back). The "
+                                  "segment has its own row menu for removing it")
+        menu.addSeparator()
+        all_hidden = all(s.occluded[self.current, q] for q in sel)
+        acts["hidden"] = menu.addAction(("Unmark them hidden" if all_hidden else "Mark them hidden")
+                                        + f" on frame {self.current}")
+        acts["hidden"].setToolTip("Hidden = kept, but left out of exports and 3D (Shift+X for one point)")
+        all_shown = all(s.points[q].display for q in sel)
+        acts["display"] = menu.addAction("Hide them on the video" if all_shown else "Show them on the video")
+        sub = menu.addMenu("Tracker")
+        acts["tracker"] = {}
+        plain = [q for q in sel if not s.points[q].derived and not s.points[q].is_ball]
+        for key in ("alltracker", "cotracker3", "spot"):
+            a = sub.addAction({"alltracker": "AllTracker — a visible shape (an animal, an object)",
+                               "cotracker3": "CoTracker3 — faster; high-contrast markers",
+                               "spot": "Moving spot — a target small enough to be one point"}[key])
+            a.setCheckable(True)
+            a.setChecked(bool(plain) and all(self._tracker_of(q) == key for q in plain))
+            a.setEnabled(bool(plain) and (key != "alltracker" or alltracker_backend.available()))
+            acts["tracker"][a] = key
+        sub.menuAction().setEnabled(bool(plain))
+        sub.menuAction().setToolTip("Give every selected point this tracker (ball markers and silhouette "
+                                    "landmarks keep theirs)")
+        acts["fill"] = menu.addAction("Fill their gaps between hand placements")
+        acts["fill"].setToolTip("For each point with two or more hand-placed frames: a smooth curve through "
+                                "them fills the empty frames between (one Ctrl+Z step)")
+        return menu, acts
+
+    def _multi_menu_action(self, chosen, acts: dict, sel: list[int]) -> None:
+        s = self.session
+        if chosen is None or s is None:
+            return
+        if chosen is acts["track"]:
+            self._toggle_tracking()
+        elif chosen is acts["clear_here"]:
+            self._multi_clear(sel, self.current, self.current)
+        elif chosen is acts["clear_window"] and self.timeline.sel_range is not None:
+            self._multi_clear(sel, *self.timeline.sel_range)
+        elif chosen is acts["clear_all"]:
+            if QMessageBox.question(self, "Clear tracks",
+                                    f"Clear every frame of the tracks of {len(sel)} points? The points stay in the "
+                                    "list. Ctrl+Z brings the tracks back.",
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+                self._clear_window(0, s.n_frames - 1, list(sel), do_points=True, do_masks=False)
+        elif chosen is acts["delete"]:
+            self._delete_points(list(sel))
+        elif chosen is acts["hidden"]:
+            on = not all(s.occluded[self.current, q] for q in sel)
+            self._occlude_window(self.current, self.current, list(sel), on)
+        elif chosen is acts["display"]:
+            show = not all(s.points[q].display for q in sel)
+            for q in sel:
+                s.points[q].display = show
+            s.dirty = True
+            self._refresh_point_list()
+            self._refresh_overlay()
+        elif chosen in acts["tracker"]:
+            self._set_tracker(sel, acts["tracker"][chosen])
+        elif chosen is acts["fill"]:
+            snap = s.snapshot()
+            n = sum(s.interpolate_keyframes(q, replace=False, window=self.timeline.sel_range)[0]
+                    for q in sel if not s.points[q].derived and len(s.manual_frames(q)) >= 2)
+            if n:
+                self._undo_snap = snap
+                self.act_undo.setEnabled(True)
+                self._refresh_overlay()
+                self.timeline.refresh()
+            self.statusBar().showMessage(f"{n} frame(s) filled from the curves through the hand placements"
+                                         + (" — Ctrl+Z undoes" if n else " (nothing to fill)"), 7000)
+
+    def _multi_clear(self, sel, f0: int, f1: int) -> None:
+        """Several selected points (and the segment, when its row is selected)
+        cleared on frames f0..f1, as one undo step (G64)."""
+        s = self.session
+        seg = self._segment_selected() and s.animal is not None
+        self._clear_window(f0, f1, list(sel), do_points=True, do_masks=seg)
+        self.statusBar().showMessage(
+            f"{len(sel)} points" + (" and the segment" if seg else "")
+            + (f" cleared on frame {f0}" if f0 == f1 else f" cleared in frames {f0}-{f1}")
+            + " — Ctrl+Z brings them back", 6000)
 
     def _extend_point_menu(self, menu, acts: dict, pid: int) -> None:
         """Append the frame-aware entries to a point's context menu: where its
@@ -5146,6 +5377,21 @@ class MainWindow(QMainWindow):
         a_test.setToolTip("Compares AllTracker, CoTracker3 and Moving spot on the frames where you placed this "
                           "point by hand (at least 20 in a row) and recommends one")
         acts["test_models"] = a_test
+        # this point's own tracker (G62): applies to the selected points when it is one of them
+        sub = menu.addMenu("Tracker")
+        acts["tracker"] = {}
+        cur = self._tracker_of(pid)
+        for key in ("alltracker", "cotracker3", "spot"):
+            a = sub.addAction({"alltracker": "AllTracker — a visible shape (an animal, an object)",
+                               "cotracker3": "CoTracker3 — faster; high-contrast markers",
+                               "spot": "Moving spot — a target small enough to be one point"}[key])
+            a.setCheckable(True)
+            a.setChecked(cur == key)
+            a.setEnabled(not q.derived and not q.is_ball and (key != "alltracker" or alltracker_backend.available()))
+            acts["tracker"][a] = key
+        sub.menuAction().setEnabled(not q.derived and not q.is_ball)
+        sub.menuAction().setToolTip("Which tracker follows this point (shown as AT / CT / MS on its row). With "
+                                    "several points selected, all of them change.")
 
     def _point_menu_extra_action(self, chosen, acts: dict, pid: int) -> bool:
         """Apply one of the frame-aware point entries. Returns True when it
@@ -5156,6 +5402,10 @@ class MainWindow(QMainWindow):
         name = s.points[pid].name
         if chosen is acts.get("test_models"):
             self._test_point_models(pid)
+            return True
+        if chosen in acts.get("tracker", {}):
+            sel = self._selected_pids()
+            self._set_tracker(sel if pid in sel else [pid], acts["tracker"][chosen])
             return True
         if chosen is acts.get("snap_epipolar"):
             self._snap_to_epipolar(pid)
@@ -5277,12 +5527,15 @@ class MainWindow(QMainWindow):
         if getattr(self, "timeline", None) is not None and self.project is not None:
             self._update_disagreement()        # columns follow the point list
         self.point_list.blockSignals(True)
+        keep = set(self._selected_pids())          # a rebuild must not drop a multi-selection (G61) --
+        if self.selected not in keep:              # unless the current point changed (a new point)
+            keep = set()
         self.point_list.clear()
         if self.session is not None:
             s = self.session
             for pid, meta in enumerate(s.points):
                 item = QListWidgetItem(meta.name)
-                pm = QPixmap(14, 14)
+                pm = QPixmap(34, 14)
                 pm.fill(Qt.transparent)
                 from PySide6.QtGui import QPainter, QPen
                 painter = QPainter(pm)
@@ -5297,6 +5550,14 @@ class MainWindow(QMainWindow):
                     painter.drawEllipse(2, 2, 10, 10)
                 else:
                     painter.fillRect(1, 1, 12, 12, QColor(*meta.color))
+                tag = "" if (meta.derived or meta.is_ball) else self.TRACKER_TAGS.get(self._tracker_of(pid, s), "")
+                if tag:                     # its tracker, on its row (G62)
+                    f = painter.font()
+                    f.setPixelSize(9)
+                    f.setBold(True)
+                    painter.setFont(f)
+                    painter.setPen(QColor(theme.TEXT_DIM))
+                    painter.drawText(16, 0, 18, 14, Qt.AlignVCenter | Qt.AlignLeft, tag)
                 painter.end()
                 item.setIcon(QIcon(pm))
                 item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
@@ -5314,10 +5575,16 @@ class MainWindow(QMainWindow):
                     item.setToolTip(f"{meta.name}: a ball marker — SAM outlines it each frame and the "
                                     "fitted circle's centre is the point (its circle is drawn on the video)")
                 else:
-                    item.setToolTip(f"{meta.name}: tracked by appearance")
+                    t = self._tracker_of(pid, s)
+                    item.setToolTip(f"{meta.name}: tracked by {self.TRACKER_NAMES.get(t, t)}"
+                                    + ("" if meta.tracker else " (the project's default)")
+                                    + " — right-click → Tracker to change it")
                 self.point_list.addItem(item)
             if self.selected is not None and self.selected < s.n_points:
                 self.point_list.setCurrentRow(self.selected)
+            for q in keep:
+                if q < self.point_list.count():
+                    self.point_list.item(q).setSelected(True)
         self.point_list.blockSignals(False)
 
     # ------------------------------------------------ epipolar guides (3D)
@@ -5796,7 +6063,7 @@ class MainWindow(QMainWindow):
             s.set_position(job.local0, pid, float(target[0]), float(target[1]))
             self._on_select(pid)
             self._refresh_overlay()
-            self._start_tracking(stop_after=job.local1, only_pids=[pid], quiet=True)
+            self._start_tracking(stop_after=job.local1, only_pids=[pid], quiet=True, segment=True)
             if self.state == TRACKING:
                 st["done"].append(job)
                 self.statusBar().showMessage(
@@ -5924,17 +6191,151 @@ class MainWindow(QMainWindow):
             self.toast.show_message(blocked + ".", "warn", 7000)   # instead of a silent no-op (G34)
         elif self.state == READY:
             every = self.act_track_all.isChecked() if all_cameras is None else all_cameras
-            jobs = self._multi_jobs(step=self._track_mode == "semi") if every else []
-            if every and len(jobs) > 1:
-                self._start_multi_tracking(step=self._track_mode == "semi")
+            step = self._track_mode == "semi"
+            scope, _n = self._run_scope()
+            passes = self._tracker_passes(scope) if scope else [[]]
+            self._passes = None
+            if len(passes) > 1:
+                s = self.session
+                self._passes = {"queue": [[s.points[q].name for q in g] for g in passes[1:]],
+                                "groups": [[s.points[q].name for q in g] for g in passes],
+                                "view": self.project.active, "frame": self.current, "step": step,
+                                "every": every, "done": [], "snap": None, "msnaps": None}
+            self._start_pass(None if len(passes) == 1 else passes[0], step, every,
+                             segment=None, stops=None, quiet=False)
+
+    def _start_pass(self, pids, step: bool, every: bool, segment, stops, quiet: bool) -> None:
+        """One pass of a Track press (G63): `pids` None = the selection as it is;
+        `stops` {camera: last frame} keeps a later pass inside the first one."""
+        names = None if pids is None else {self.session.points[q].name for q in pids}
+        jobs = self._multi_jobs(step, names=names, segment=segment, stops=stops) if every else []
+        if every and len(jobs) > 1:
+            self._start_multi_tracking(step=step, names=names, segment=segment, stops=stops)
+            if self._passes is not None and self._passes["msnaps"] is None and self._multi is not None:
+                self._passes["msnaps"] = dict(self._multi["snaps"])
+            return
+        if every and self.project is not None and self.project.n_views > 1:
+            # it used to fall back to the working camera without a word (G32)
+            self._say_single_camera(jobs)
+        stop = None if not stops else stops.get(self.project.active)
+        if step:
+            stop = self.current + 1 if stop is None else min(stop, self.current + 1)
+            if self.current >= self.n_frames - 1:
+                self.statusBar().showMessage("Already at the last frame", 3000)
                 return
-            if every and self.project is not None and self.project.n_views > 1:
-                # it used to fall back to the working camera without a word (G32)
-                self._say_single_camera(jobs)
-            if self._track_mode == "semi":
-                self._track_step()
-            else:
-                self._start_tracking()
+        if pids is None and segment is None:
+            self._start_tracking(stop_after=stop) if stop is not None else self._start_tracking()
+        else:
+            self._start_tracking(stop_after=stop, only_pids=pids, quiet=quiet, segment=segment)
+        if self._passes is not None and self._passes["snap"] is None and self.state == TRACKING:
+            self._passes["snap"] = self._undo_snap
+
+    def _passes_record(self, lasts: dict, fail, user_stop: bool, error: bool = False) -> None:
+        """A pass of a two-pass run ended: note where, then go on (G63)."""
+        st = self._passes
+        if st is None:
+            return
+        st["done"].append({"lasts": dict(lasts), "fail": fail, "user_stop": user_stop, "error": error})
+        QTimer.singleShot(0, self._passes_next)
+
+    def _passes_next(self) -> None:
+        """Start the next pass from the same camera and frame, never past where the
+        previous one stopped (a point that stops ends the run for all, owner); after
+        the last, every point of the run ends on the same frame (`_passes_finish`)."""
+        st = self._passes
+        if st is None:
+            return
+        if self.state != READY:
+            QTimer.singleShot(100, self._passes_next)
+            return
+        prev = st["done"][-1]
+        if prev["user_stop"] or prev["error"] or not st["queue"]:
+            self._passes_finish()
+            return
+        p = self.project
+        names = st["queue"].pop(0)
+        if p.active != st["view"]:
+            self._set_active_view(st["view"])
+        self._goto(st["frame"], force=True)
+        stops = {v: last for v, last in prev["lasts"].items() if last is not None}
+        if not stops or max(stops.values()) <= st["frame"] and not st["step"]:
+            st["done"].append({"lasts": {}, "fail": None, "user_stop": False, "error": False, "skipped": True})
+            self._passes_finish()
+            return
+        s = self.session
+        pids = [q for q in (s.pid_by_name(n) for n in names) if q is not None]
+        self.statusBar().showMessage(
+            f"Second pass: the CoTracker3 points ({', '.join(names)}) over the same frames — X stops it", 8000)
+        self._start_pass(pids, st["step"], st["every"], segment=False, stops=stops, quiet=True)
+        if self.state != TRACKING and self._multi is None:
+            # nothing of this pass could start here: the run ends with the first pass
+            st["done"].append({"lasts": {}, "fail": None, "user_stop": False, "error": False, "skipped": True})
+            self._passes_finish()
+
+    def _passes_finish(self) -> None:
+        """The last pass is done: the points of an earlier pass that went further
+        go back to their pre-run data after the run's end (one end frame for all);
+        one Ctrl+Z undoes every pass; the playhead goes to the first stop."""
+        st, self._passes = self._passes, None
+        p = self.project
+        if st is None or p is None:
+            return
+        ran = [d for d in st["done"] if not d.get("skipped")]
+        snaps = st["msnaps"] or ({st["view"]: st["snap"]} if st["snap"] is not None else {})
+        trimmed = []
+        if len(ran) > 1:
+            for v in set().union(*[d["lasts"].keys() for d in ran]):
+                lasts = [d["lasts"].get(v) for d in ran]
+                if any(x is None for x in lasts) or v >= p.n_views or v not in snaps:
+                    continue
+                end = min(lasts)
+                sv = p.sessions[v]
+                for d, group in zip(ran, st["groups"]):
+                    if d["lasts"][v] > end:
+                        pids = [q for q in (sv.pid_by_name(n) for n in group) if q is not None]
+                        self._restore_frames(sv, snaps[v], pids, end + 1, d["lasts"][v])
+                        trimmed.append((p.name(v), end))
+        if snaps:
+            self._undo_snap = snaps.get(p.active, self.session.snapshot())
+            self._undo_extra.update({v: sn for v, sn in snaps.items() if v != p.active})
+            self.act_undo.setEnabled(True)
+        fails = [d["fail"] for d in ran if d.get("fail") is not None]
+        if fails:
+            v, f, pid = min(fails, key=lambda t: t[1])
+            if v < p.n_views and p.active != v:
+                self._set_active_view(v)
+            self._goto(min(f, self.n_frames - 1), force=True)
+            if 0 <= pid < self.session.n_points:
+                self._on_select(pid)
+        self._refresh_overlay()
+        self._refresh_companions()
+        self.timeline.refresh()
+        self._update_track_button()
+        g = st["groups"]
+        msg = (f"Two passes, one after the other: AllTracker ({', '.join(g[0])}), then CoTracker3 "
+               f"({', '.join(g[1])}).")
+        if ran and ran[-1]["user_stop"] or (len(ran) == 1 and len(g) > 1):
+            msg += " The second pass did not run (the run was stopped first): press Track again for those points."
+        if trimmed:
+            msg += (f" The second pass stopped earlier (frame {trimmed[0][1]}), so the first pass's points end "
+                    "there too — every point of the run ends on the same frame.")
+        msg += " One Ctrl+Z undoes both passes."
+        self.toast.show_message(msg, "warn" if (fails or trimmed) else "info", 12000)
+
+    def _restore_frames(self, s, snap, pids, f0: int, f1: int) -> None:
+        """Put the pre-run data back for `pids` on frames f0..f1 (a later pass ended earlier)."""
+        f1 = min(f1, s.n_frames - 1)
+        if f0 > f1 or not pids:
+            return
+        sl = slice(f0, f1 + 1)
+        for k in ("tracks", "visibility", "manual", "tracked", "confidence", "occluded", "radius"):
+            src, dst = getattr(snap, k, None), getattr(s, k, None)
+            if src is None or dst is None:
+                continue
+            for q in pids:
+                if q < src.shape[1] and q < dst.shape[1]:
+                    dst[sl, q] = src[sl, q]
+        s.dirty = True
 
     def _track_step(self):
         """Semi-automatic: track exactly one frame forward, then pause. Each
@@ -5945,17 +6346,16 @@ class MainWindow(QMainWindow):
         if self.current >= self.n_frames - 1:
             self.statusBar().showMessage("Already at the last frame", 3000)
             return
-        if not (self.session.seedable_at(self.current) or self.session.animal_seedable_at(self.current)):
-            # a segment alone is enough, as for the Track button (I128)
-            self.statusBar().showMessage(
-                "Nothing to track from this frame — press N and click to place a point, or S and click the "
-                "animal (or select a point in the list and click where it is)", 5000)
+        self._update_track_button()
+        if self._track_blocked is not None:
+            # a segment alone is enough, as for the Track button (I128); only what is selected (G61)
+            self.statusBar().showMessage(self._track_blocked, 6000)
             return
         self._start_tracking(stop_after=self.current + 1)
 
     # ------------------------------------------- tracking in every camera (G29)
 
-    def _multi_jobs(self, step: bool = False) -> list[dict]:
+    def _multi_jobs(self, step: bool = False, names=None, segment=None, stops=None) -> list[dict]:
         """One run per camera that has something to track at this instant: the
         points of the run's scope (the panel selection, by NAME, or all) that
         have a position at that camera's frame -- ball markers included -- or its
@@ -5964,7 +6364,9 @@ class MainWindow(QMainWindow):
         if p is None or p.n_views < 2 or self.session is None:
             return []
         scope, _n = self._run_scope()
-        names = None if scope is None else {self.session.points[i].name for i in scope if i < self.session.n_points}
+        if names is None:
+            names = {self.session.points[i].name for i in scope if i < self.session.n_points}
+        seg = self._run_segment(scope) if segment is None else segment
         jobs = []
         for v in [p.active] + p.others():
             sv = p.sessions[v]
@@ -5972,11 +6374,15 @@ class MainWindow(QMainWindow):
             rt = self._views[v] if v < len(self._views) else None
             if fv is None or rt is None or not (0 <= fv < rt.n_frames - (1 if step else 0)):
                 continue
-            pids = [q for q in sv.seedable_at(fv) if names is None or sv.points[q].name in names]
-            if not pids and not sv.animal_seedable_at(fv):
+            pids = [q for q in sv.seedable_at(fv) if sv.points[q].name in names]
+            if not pids and not (seg and sv.animal_seedable_at(fv)):
                 continue
-            jobs.append({"view": v, "frame": int(fv), "pids": pids,
-                         "stop": int(fv) + 1 if step else None})
+            stop = int(fv) + 1 if step else None
+            if stops is not None:
+                if v not in stops or stops[v] is None:
+                    continue
+                stop = stops[v] if stop is None else min(stop, stops[v])
+            jobs.append({"view": v, "frame": int(fv), "pids": pids, "stop": stop, "segment": seg})
         return jobs
 
     def _tracking_engine_ready(self) -> bool:
@@ -5994,7 +6400,7 @@ class MainWindow(QMainWindow):
             return False
         return True
 
-    def _start_multi_tracking(self, step: bool = False) -> None:
+    def _start_multi_tracking(self, step: bool = False, names=None, segment=None, stops=None) -> None:
         """Track in every camera that has the points, ALL AT ONCE (I141): one worker
         per camera, advanced together on one thread (tracker.MultiTrackingWorker),
         so the GPU holds one run's memory (~11 GB for a 4K AllTracker run) and each
@@ -6005,7 +6411,7 @@ class MainWindow(QMainWindow):
         if not self._tracking_engine_ready():
             return
         p = self.project
-        jobs = self._multi_jobs(step)
+        jobs = self._multi_jobs(step, names=names, segment=segment, stops=stops)
         if self.state != READY or len(jobs) < 2:
             return
         self._multi = {"jobs": list(jobs), "orig": p.active, "orig_frame": self.current, "step": step,
@@ -6028,7 +6434,8 @@ class MainWindow(QMainWindow):
                 self._set_active_view(v)
             self._goto(job["frame"], force=True)
             pids = [q for q in job["pids"] if q < self.session.n_points]
-            w = self._start_tracking(stop_after=job["stop"], only_pids=pids, quiet=True, build_only=True)
+            w = self._start_tracking(stop_after=job["stop"], only_pids=pids, quiet=True, build_only=True,
+                                     segment=job.get("segment"))
             if w is None:
                 self._multi["results"].append({"view": v, "last": None, "why": "nothing to start from"})
                 continue
@@ -6139,8 +6546,7 @@ class MainWindow(QMainWindow):
         say which camera lacks what, so it does not look like a broken option (G32)."""
         p = self.project
         scope, _n = self._run_scope()
-        names = sorted({self.session.points[i].name for i in (scope if scope is not None else
-                        range(self.session.n_points)) if i < self.session.n_points
+        names = sorted({self.session.points[i].name for i in scope if i < self.session.n_points
                         and not self.session.points[i].derived})
         have = {j["view"] for j in jobs}
         if p.active not in have:
@@ -6179,7 +6585,7 @@ class MainWindow(QMainWindow):
             self._goto(job["frame"], force=True)
             # the same landmarks, looked up again: a switch re-selects by name
             pids = [q for q in job["pids"] if q < self.session.n_points]
-            self._start_tracking(stop_after=job["stop"], only_pids=pids, quiet=True)
+            self._start_tracking(stop_after=job["stop"], only_pids=pids, quiet=True, segment=job.get("segment"))
             if self.state == TRACKING:
                 st["current"] = v
                 left = len(st["jobs"])
@@ -6239,6 +6645,11 @@ class MainWindow(QMainWindow):
             else:
                 parts.append(f"{nm}: {r.get('why') or 'not tracked'}")
         left = [p.name(j["view"]) for j in st["jobs"] if j["view"] < p.n_views]
+        if self._passes is not None:
+            # one pass of a two-pass run (G63): where each camera ended, then the next pass
+            self._passes_record({r["view"]: r.get("last") for r in st["results"] if r.get("view") is not None},
+                                (problem["view"], problem["fail"], problem.get("pid", -1)) if problem else None,
+                                user_stop, st["stopped"] == "error")
         if st["step"] and not user_stop and problem is None:
             self.statusBar().showMessage(
                 f"Stepped one frame in {len(done)} cameras — F for the next; Ctrl+Z undoes the step in all", 6000)
@@ -6256,7 +6667,7 @@ class MainWindow(QMainWindow):
             self.worker.request_pause()
 
     def _start_tracking(self, stop_after: int | None = None, only_pids=None, quiet: bool = False,
-                        build_only: bool = False):
+                        build_only: bool = False, segment: bool | None = None):
         """`only_pids` overrides the panel selection (automatic runs); `quiet`
         skips the overwrite guard and keeps the caller's undo snapshot;
         `build_only` returns the worker, unstarted (None when nothing can start),
@@ -6264,16 +6675,23 @@ class MainWindow(QMainWindow):
         if not self._tracking_engine_ready():
             return None
         s = self.session
-        scope, _n_sel = self._run_scope()   # panel selection limits the run
+        scope, _n_sel = self._run_scope()   # exactly the panel selection (G61)
         if only_pids is not None:
             scope = set(int(q) for q in only_pids)
-        pids = [p for p in s.seedable_at(self.current) if scope is None or p in scope]
-        animal_ok = s.animal_seedable_at(self.current)
+        pids = [p for p in s.seedable_at(self.current) if p in scope]
+        run_seg = self._run_segment(scope) if segment is None else bool(segment)
+        animal_ok = run_seg and s.animal_seedable_at(self.current)
         if not pids and not animal_ok:
-            if scope is not None:
+            if not scope and not run_seg:
+                self.toast.show_message(
+                    "Nothing is selected, so nothing was tracked. Select what to track: the points in the "
+                    "<b>POINTS</b> list (Ctrl+click for several, <b>Ctrl+A</b> for all)"
+                    + (" and the segment's row in <b>SEGMENT</b>" if s.animal is not None else "") + ".",
+                    "warn", 8000)
+            elif scope:
                 self.toast.show_message(
                     f"The selected point(s) have no position on frame {self.current}. Select a "
-                    "point that exists here, or clear the selection (Esc) to track everything.",
+                    "point that exists here, or place it here first (click it on the video).",
                     "warn", 7000)
             elif s.animal is not None:
                 self.toast.show_message(
@@ -6286,11 +6704,12 @@ class MainWindow(QMainWindow):
                                     "info", 4000)
             return
         self._step_run = stop_after is not None
-        skipped = sum(1 for i in range(s.n_points) if not s.points[i].derived
-                      and (scope is None or i in scope)) - len(pids)
-        if scope is not None and not self._step_run:
+        skipped = sum(1 for i in range(s.n_points) if not s.points[i].derived and i in scope) \
+            - len([q for q in pids if not s.points[q].derived])
+        if not self._step_run:
             self.statusBar().showMessage(
-                f"Tracking only the {len(pids)} selected point(s) — select all (or nothing) to track everything", 6000)
+                f"Tracking the {len(pids)} selected point(s)" + (" and the segment" if animal_ok else "")
+                + " — only what is selected in the panel is tracked", 6000)
         if skipped and not self._step_run:
             self.statusBar().showMessage(
                 f"{skipped} point(s) have no position at frame {self.current} and will be "
@@ -6325,23 +6744,35 @@ class MainWindow(QMainWindow):
         pids = [pid for pid in pids if not s.points[pid].is_ball]
         # Point model: Moving spot (I160, G56): plain points are searched as
         # spots (spots.py, no model); a region needs AllTracker / CoTracker3
-        spot_specs, left_out = [], []
-        if self._point_backend == "spot":
-            from kinetrace.tracker import SpotSpec
-            for pid in pids:
-                q = s.points[pid]
-                if q.kind != "point" or q.derived:
-                    if not q.derived:
-                        left_out.append(q.name)
+        # each point by its own tracker (G62): Moving spot points as spots, the
+        # rest by ONE appearance model (a Track press splits AllTracker and
+        # CoTracker3 points into passes, G63; anything else keeps the first)
+        spot_specs, left_out, nn = [], [], []
+        from kinetrace.tracker import SpotSpec
+        for pid in pids:
+            q = s.points[pid]
+            if q.derived:
+                continue
+            t = self._tracker_of(pid)
+            if t == "spot":
+                if q.kind != "point":
+                    left_out.append(q.name)
                     continue
                 spot_specs.append(SpotSpec(pid, seeds[pid], self._spot_velocity(pid, self.current), q.spot))
-            pids = [pid for pid in pids if s.points[pid].derived]
+            else:
+                nn.append((pid, t))
+        kinds = [k for k in ("alltracker", "cotracker3") if any(t == k for _q, t in nn)]
+        backend = kinds[0] if kinds else self._point_backend
+        not_now = [s.points[q].name for q, t in nn if t != backend]
+        if not_now and not quiet:
+            self.statusBar().showMessage(f"Not in this run (another tracker): {', '.join(not_now)}", 8000)
+        pids = [q for q, t in nn if t == backend] + [pid for pid in pids if s.points[pid].derived]
         if left_out and not quiet:
             self.toast.show_message(
-                "Point model <b>Moving spot</b> follows plain points only, so "
+                "<b>Moving spot</b> follows single points only, so "
                 + ", ".join(f"<b>{n}</b>" for n in left_out)
-                + " (a region) is left out of this run. Track it with Track ▾ → Point model: AllTracker or "
-                "CoTracker3.", "info", 9000)
+                + " (a region) is left out of this run. Give it AllTracker or CoTracker3 (right-click its row "
+                "in POINTS → Tracker).", "info", 9000)
         specs = [PointSpec(pid, seeds[pid].astype(np.float32).copy(),
                            s.points[pid].kind, s.points[pid].radius,
                            s.points[pid].anchor, _offsets(s.points[pid]))
@@ -6369,8 +6800,7 @@ class MainWindow(QMainWindow):
                 seed_mask = s.masks.rasterize(self.current, wh, ww)
             animal = AnimalSpec({f: list(v) for f, v in s.animal.prompts.items()},
                                 dict(s.animal.boxes), seed_mask, self._seg_backend)
-            derived = [DerivedSpec(pid, s.points[pid].spec) for pid in s.derived_pids()
-                       if scope is None or pid in scope]
+            derived = [DerivedSpec(pid, s.points[pid].spec) for pid in s.derived_pids() if pid in scope]
             hp = s.head_pid()
             head_pid = hp if hp in pids else None
             if s.skeleton:
@@ -6390,7 +6820,7 @@ class MainWindow(QMainWindow):
                            autopause=self.btn_autopause.isChecked(),
                            animal=animal, derived=derived, head_pid=head_pid,
                            on_body_pids=on_body, constrain_pids=constrain,
-                           point_backend=self._point_backend, balls=balls, spots=spot_specs)
+                           point_backend=backend, balls=balls, spots=spot_specs)
         if build_only:
             return w                    # one camera of a simultaneous run (I141)
         self._launch_run(w)
@@ -6460,22 +6890,21 @@ class MainWindow(QMainWindow):
         s = self.session
         if s is None or not (0 <= pid < s.n_points):
             return
+        self._undo_snap = s.snapshot()
+        self.act_undo.setEnabled(True)
         if result.model == "spot" and result.settings is not None:
-            self._undo_snap = s.snapshot()
-            self.act_undo.setEnabled(True)
             s.points[pid].spot = result.settings.to_dict()
-            s.dirty = True
-        self._set_point_backend(result.model)
+        self._set_tracker([pid], result.model)
         self.toast.show_message(
-            f"Point model: <b>{result.label}</b> for this project"
-            + (f" ({s.points[pid].name}'s settings: {result.settings.describe()})" if result.model == "spot" else "")
-            + ". Track ▾ switches it back at any time.", "success", 8000)
+            f"<b>{s.points[pid].name}</b> is now tracked by <b>{result.label}</b>"
+            + (f" ({result.settings.describe()})" if result.model == "spot" else "")
+            + ". Its tracker shows on its row in POINTS; right-click the row → Tracker changes it.", "success", 8000)
 
     def _hint_corrections(self, pid: int) -> None:
         """G58: once per point, when it has been corrected by hand on 5 of the last
         20 frames while AllTracker / CoTracker3 tracks it -- the squid pattern."""
         s = self.session
-        if s is None or self._point_backend == "spot" or s.points[pid].kind != "point":
+        if s is None or s.points[pid].kind != "point" or self._tracker_of(pid) == "spot":
             return
         key = ("corr", id(self.project), self.project.active if self.project else 0, s.points[pid].name)
         hist = self._spot_corrections.setdefault(key[1:], [])
@@ -6495,7 +6924,7 @@ class MainWindow(QMainWindow):
         """G58: once per project, when a new point sits on a small isolated spot
         and nothing says it is an animal (no segment in this camera)."""
         s = self.session
-        if s is None or self._point_backend == "spot" or s.animal is not None:
+        if s is None or s.animal is not None or self._tracker_of(pid) == "spot":
             return
         key = ("tiny", id(self.project))
         if key in self._spot_hints:
@@ -6515,6 +6944,26 @@ class MainWindow(QMainWindow):
             "AllTracker. To find out, click it on 20 frames in a row, then <b>Track ▾ → Test the point models on "
             "my clicks</b>. <b>Click here</b> to read when to use which.", "info", 15000,
             on_click=lambda: self._show_manual("Which point model should I use?"))
+
+    TRACKER_TAGS = {"alltracker": "AT", "cotracker3": "CT", "spot": "MS"}
+    TRACKER_NAMES = {"alltracker": "AllTracker", "cotracker3": "CoTracker3", "spot": "Moving spot"}
+
+    def _set_tracker(self, pids, key: str) -> None:
+        """Give these points their own tracker, in every camera (by name: a landmark
+        is one thing in all of them, G19 / G62)."""
+        s = self.session
+        if s is None:
+            return
+        names = {s.points[q].name for q in pids if q < s.n_points}
+        for sv in (self.project.sessions if self.project is not None else [s]):
+            for m in sv.points:
+                if m.name in names and not m.derived and not m.is_ball and m.tracker != key:
+                    m.tracker = key
+                    sv.dirty = True
+        self._refresh_point_list()
+        self._update_track_button()
+        self.statusBar().showMessage(
+            f"{', '.join(sorted(names))}: tracked by {self.TRACKER_NAMES.get(key, key)} from the next run", 7000)
 
     def _launch_run(self, w, driver=None) -> None:
         """Wire a built worker to the working camera's live display and start it.
@@ -6701,7 +7150,13 @@ class MainWindow(QMainWindow):
         self._user_paused = False
         autopause = self._autopause_info            # the impl consumes it
         reason = getattr(self.worker, "_autopause_reason", "") if self.worker is not None else ""
+        pass_view = self.project.active if self.project is not None else 0
         self._on_track_finished_impl(last, was_paused)
+        if self._passes is not None and self._multi is None and self._retrack is None:
+            # one pass of a two-pass run (G63)
+            fail = None if autopause is None else (pass_view, int(autopause[0]), int(autopause[1]))
+            self._passes_record({pass_view: int(last) if last >= self._passes["frame"] else None}, fail,
+                                bool(user_pause and was_paused))
         if self._multi is not None:
             st = self._multi
             res = {"view": st.get("current"), "last": int(last)}
@@ -6873,6 +7328,8 @@ class MainWindow(QMainWindow):
                 + ". Their tracks end there. Select one, click it where it is and press Track.", "warn", 15000)
 
     def _on_track_error(self, tb: str):
+        if self._passes is not None and self._multi is None:
+            self._passes = None                 # an error ends a two-pass run (G63)
         decode_at = getattr(self.worker, "decode_failed_at", None) if self.worker is not None else None
         dl_failed = getattr(self._model_worker, "download_failed", None)
         if self._multi is not None:

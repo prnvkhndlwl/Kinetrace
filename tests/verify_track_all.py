@@ -124,7 +124,7 @@ for v, marks in ((1, (name_dot, name_ball)), (2, (name_ball,))):
 assert sb.points[sb.pid_by_name(name_ball)].ball_prompts, "a click on a ball in another camera is its SAM prompt"
 win._set_active_view(0)
 win._deselect()
-win.point_list.clearSelection()
+win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
 pump(0.2)
 assert win.current == F0
 
@@ -212,7 +212,7 @@ for v in range(3):
     pump(0.2)
     win._goto(F0)
     win._deselect()
-    win.point_list.clearSelection()
+    win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
     pump(0.1)
     win._toggle_tracking()
     wait(lambda: win.state == READY and win.worker is None, 300, f"cam{v} alone")
@@ -233,7 +233,7 @@ print("I141: each camera tracked alone gives exactly the same tracks, confidence
 # ---- 3. semi-automatic: F steps one frame in every camera -------------------------------
 win._goto(F0)                       # the run ended on its last frame; after the undo only F0 has data
 win._deselect()
-win.point_list.clearSelection()
+win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
 win.act_mode_semi.trigger()
 pump(0.05)
 assert win.btn_track.text().endswith("· 3 cams") and win.btn_track.text().startswith("Step"), win.btn_track.text()

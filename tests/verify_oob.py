@@ -64,11 +64,9 @@ s = win.session
 
 win._on_add(gtx[0], gty[0])                 # P1: the dot that will exit
 win._on_add(150.0 + 0.0, 300.0)             # P2: stays in frame
-# Adding a point selects it, and the run scope follows the panel selection —
-# clear it so this run covers BOTH points (see CLAUDE.md).
-win.point_list.clearSelection()
-win.selected = None
-assert win._run_scope()[0] is None, "this run must cover every point"
+# Track tracks only what is selected (G61): select both points
+win.act_select_all.trigger()
+assert win._run_scope()[0] == {0, 1}, "this run must cover every point"
 # P1 leaving the frame IS a real confidence collapse, so auto-pause would
 # legitimately stop the run at ~frame 136 and truncate P2 with it. This suite is
 # about out-of-frame data hygiene and click-continue; verify_conf_autopause owns
@@ -139,6 +137,7 @@ win.session.tracked[t_gap, 0] = False
 win.session.manual[t_gap, 0] = False
 win._goto(320)
 win._on_place(0, float(gtx[320]), float(gty[320]))
+win.act_select_all.trigger()                 # both points (G61)
 win._toggle_tracking()                       # re-track from 320 (P2 seeds too)
 pump(lambda: win.state != READY, 60, "restart")
 pump(lambda: win.state == READY, 300, "refinish")

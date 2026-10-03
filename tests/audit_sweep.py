@@ -498,7 +498,7 @@ if not NO_TRACK:
                 a.setChecked(True)
                 a.trigger()
         win._track_mode = "auto"
-    win.point_list.clearSelection()
+    win.act_select_all.trigger()            # only what is selected is tracked (G61)
     _CTX.update(state="TRACKING", what="run", mode="accept")
     win._toggle_tracking()
     wait(lambda: win.state == TRACKING, 180, "run start")

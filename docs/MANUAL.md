@@ -414,9 +414,13 @@ to bring the names back. The Track button always keeps its words.
   to set; **＋ Add video** adds another camera of the same event (section 10).
 - **SEGMENT** — once you have outlined the animal, a row with its name and a
   checkbox, a line counting its clicks and silhouettes, and the **Skeleton ▾**
-  and **Clear segment** buttons.
-- **POINTS** — every body part, each with a checkbox (show / hide) and a small
-  symbol saying how it is found (Step 4 below). Double-click a name to rename
+  and **Clear segment** buttons. Click the name to **select** the segment: Track
+  tracks it only while it is selected (click again to unselect).
+- **POINTS** — every body part, each with a checkbox (show / hide), a small
+  symbol saying how it is found (Step 4 below), and **AT**, **CT** or **MS**:
+  the tracker that follows it — AllTracker, CoTracker3 or Moving spot
+  (right-click → *Tracker* changes it). **Track tracks only the points selected
+  here** (Ctrl+click for several, **Ctrl+A** for everything). Double-click a name to rename
   it; right-click it for everything else (on the video, hold the right button
   on its marker instead: a short right click there clears it on that frame).
   A name may not start with **= + -**
@@ -564,11 +568,19 @@ all — place the ones you need.
 
 ### Step 5 — Track
 
-Make sure **nothing is selected** in the POINTS list (click an empty part of the
-list, or press **Esc** — twice if a tool is still switched on). If some points
-are selected, only those get tracked — useful later, confusing now. The Track
-button tells you which it will do: **Track ▶** means everything, **Track 1 sel. ▶**
-means only the one selected point.
+**Select what you want tracked** — only that is tracked. Press **Ctrl+A** to
+select everything (every point and the segment), or click points in the POINTS
+list (Ctrl+click adds one, Shift+click a range) and the segment's name in
+SEGMENT. The Track button says what it will track: **Track · 3 points + segment ▶**.
+With nothing selected it tracks nothing and says so.
+
+Each point is followed by **its own tracker**, shown beside its name (**AT**
+AllTracker, **CT** CoTracker3, **MS** Moving spot). One Track press handles a
+mix: Moving spot points, ball markers and the segment run together with the
+AllTracker *or* CoTracker3 points; if both AllTracker and CoTracker3 points are
+selected, they run **one after the other** over the same frames (the button
+says *2 passes*), and a point that stops ends the run for all of them, so every
+point of the run ends on the same frame. One Ctrl+Z undoes it all.
 
 Press the blue **Track ▶** button (or the **T** key). If it looks grey instead
 of blue, nothing has a position on the frame you are on. Press it anyway and a
@@ -663,7 +675,18 @@ Right-click its name in the POINTS list, or **hold the right mouse button** on
 its marker on the video for half a second (a short right click on the marker
 clears it on that frame only — see below), and besides **Rename point** and
 **Delete point** you get (hover an entry to see what it does). Wherever this
-manual says *right-click a point*, either way works:
+manual says *right-click a point*, either way works.
+
+**Several points at once:** select them (Ctrl+click in POINTS, **Ctrl+A** for
+all) and right-click one of them in the list, or hold the right button on one of
+their markers. The menu then acts on **all of them** — track only these; clear
+them on this frame, in the selected frame window, or their whole tracks; delete
+them; mark them hidden here; hide or show them; give them a tracker; fill their
+gaps — and when the segment's row is selected too, its silhouette is cleared
+with them. Each is one Ctrl+Z step. A short right click on one of their markers
+clears all of them on this frame and keeps them selected.
+
+For one point:
 
 - **go to its first or last frame**, and to its first or last hand-placed
   frame, with the frame numbers shown in the menu;
@@ -744,9 +767,9 @@ throws away its silhouette track).
 
 Then press **Track ▶** again. Tracking restarts from the frame you are on, using
 your corrected position, and overwrites what follows. Your correction is treated
-as certain truth. The button says what it will track: while the part you
-corrected is still selected it reads **Track 1 sel. ▶** and re-tracks only that
-part. Press **Esc** first (nothing selected) to re-track all of them.
+as certain truth. Only what is selected is tracked: while the part you
+corrected is selected alone, the button reads **Track · 1 point ▶** and
+re-tracks only that part. Press **Ctrl+A** first to re-track everything.
 
 > **Only fix the *first* wrong frame.** Everything after it is being re-done
 > anyway. Correcting frame after frame by hand is wasted effort.
@@ -2404,7 +2427,10 @@ better over long stretches. **CoTracker3** is about twice as fast and slightly
 sharper on high-contrast marks. **Moving spot** is only for a target small
 enough to be one point — a dot with no visible shape (see *Which point model
 should I use?* at the end of this section). If a track keeps drifting, try another one. The choice applies to the
-next run, can be changed at any time, and is saved with the project.
+next run and can be changed at any time. It sets the tracker of the points
+selected at that moment (and the default for points that have none of their
+own); each point keeps its own, shown as AT / CT / MS on its row, and is saved
+with the project. Right-click a point's row → *Tracker* changes just that one.
 
 **Segmentation model** (the **▾** arrow on the Segment button) — which method
 draws the outline: **SAM 2.1 base+** (fast, a 617 MB download), **SAM 2.1
@@ -2445,9 +2471,10 @@ is a **dot small enough to be one point** (a few pixels to about 20 across, no
 visible shape), use **Moving spot**.
 
 Three point models follow the points you click. The choice is in **Track ▾**
-(and **Help → Which Point Model Should I Use?** brings you here). It applies to
-the next run, you can change it at any time, and it is saved with the project:
-the next time you open the project it is already chosen.
+(and **Help → Which Point Model Should I Use?** brings you here) and on each
+point's row (right-click → *Tracker*). **Every point has its own**, shown as
+AT / CT / MS beside its name and saved with the project, so one project can mix
+them: Track tracks each selected point with its own tracker.
 
 | Your footage | Use | Clicking needed |
 |---|---|---|
@@ -2505,8 +2532,9 @@ right-click the point → *Test the point models on its clicks*:
    where a model was off without saying so; the rest are stops, where it said
    so. Fewer corrections win; on a tie AllTracker is recommended, because it
    needs no extra clicking.
-4. **Use** makes the winner this project's point model. For Moving spot it also
-   keeps the settings it found on that point (Ctrl+Z takes them back).
+4. **Use** gives the winner to the point you tested (its row then shows AT /
+   CT / MS). For Moving spot it also keeps the settings it found on that point.
+   Ctrl+Z takes it back.
 
 The program suggests this in two situations: when you have corrected a point
 by hand on 5 of the last 20 frames, and when a new point sits on a small,

@@ -98,6 +98,7 @@ print("follow toggle OK")
 win.btn_follow.setChecked(True)
 win._goto(0)
 win._on_place(0, float(GT[0, 0, 0]), float(GT[0, 0, 1]))  # move point onto dot 0
+win.act_select_all.trigger()          # Track tracks only what is selected (G61)
 win._toggle_tracking()
 pump(lambda: win.state != READY, 60, "track start")
 pump(lambda: win.state == READY, 300, "track finish")

@@ -450,7 +450,7 @@ assert s.n_points == 3 and not s.points[2].is_ball
 print("Add > Ball marker places balls, N still places points OK")
 icon_ok = win.point_list.item(0).icon() is not None
 assert icon_ok
-win.point_list.clearSelection()        # a single selected row would scope the run to that point
+win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
 win._start_tracking(stop_after=50)
 wait(lambda: win.state == TRACKING, 60, "tracking start")
 wait(lambda: win.state == READY, 600, "tracking end")
@@ -470,7 +470,7 @@ assert int(s.tracked[:, 0].sum()) == 1, "Ctrl+Z must remove the run's ball data"
 print("undo OK")
 # round trip
 win._goto(0)                            # the undo left data on frame 0 only
-win.point_list.clearSelection()
+win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
 win._start_tracking(stop_after=20)
 wait(lambda: win.state == TRACKING, 60, "tracking start 2")
 wait(lambda: win.state == READY, 600, "tracking end 2")
