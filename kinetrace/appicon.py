@@ -15,12 +15,14 @@ trails in the point colours the app gives landmarks (`session.PALETTE`), so
 the icon's dots look like the markers on screen. Small sizes (below
 `DETAIL_MIN` px) drop the soft motion streaks and the halos and thicken the
 lines. Rendered sizes are cached as PNGs in `kinetrace/_theme_cache/` (bump
-`ICON_VERSION` after changing the drawing).
+`ICON_VERSION` after changing the drawing; the file names also carry a hash of
+the colours the drawing reads, so a changed theme or palette draws a new icon).
 
     python -m kinetrace.appicon kinetrace-icon.png [--size 1024] [--simple]
 """
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -75,6 +77,20 @@ def _land(t: np.ndarray) -> np.ndarray:
 
 
 TRAILS = ((_air, AIR), (_water, WATER), (_land, LAND))
+# the colours the drawing reads: a change to the theme or the landmark palette must not show the old
+# cached icon (R21)
+
+
+def style_hash(colours) -> str:
+    return hashlib.sha1(repr(tuple(colours)).encode()).hexdigest()[:8]
+
+
+STYLE = style_hash((STOCK, RIM, BRACKET, AIR, WATER, LAND))
+
+
+def cache_file(size: int) -> Path:
+    """Where the icon at `size` px is cached."""
+    return CACHE / f"appicon_v{ICON_VERSION}_{STYLE}_{size}.png"
 
 
 def _even(fn, n: int) -> np.ndarray:
@@ -186,7 +202,7 @@ def icon() -> QIcon:
     """The window / taskbar icon at every size, from the cache when it is there."""
     ic = QIcon()
     for s in SIZES:
-        f = CACHE / f"appicon_v{ICON_VERSION}_{s}.png"
+        f = cache_file(s)
         pm = QPixmap(str(f)) if f.exists() else QPixmap()
         if pm.isNull():
             img = render(s)

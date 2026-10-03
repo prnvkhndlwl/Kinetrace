@@ -144,11 +144,26 @@ try:
         p2 = dv.probe(refresh=True)
         assert p2["kind"] == "cpu" and any("CPU measured faster" in n for n in p2["notes"]), p2["notes"]
         assert "Measured:" in dv.describe(p2)
-        # a cache saying the GPU could not run the workload: the CPU, with the reason
-        dv._write_bench({"key": key, "cpu_ms": 10.0, "gpu": gpu, "gpu_ms": None, "speedup": None,
-                         "error": f"{gpu}: RuntimeError: simulated"})
-        d, label = dv.pick_device()
-        assert d == "cpu" and "could not run" in label and "simulated" in label, (d, label)
+        # a GPU that cannot run the workload: the CPU, with the reason -- for this run only. The failure
+        # is NOT written to the cache (a busy card at one start must not pin the CPU for good, I239), so
+        # it is made to happen live instead of by a cache file
+        real_bench = dv.benchmark
+
+        def _failing(device, torch=None):
+            if device == gpu:
+                raise RuntimeError("simulated")
+            return real_bench(device, torch)
+
+        os.remove(tmp_bench)
+        dv._memo.clear()
+        dv.benchmark = _failing
+        try:
+            d, label = dv.pick_device()
+            assert d == "cpu" and "could not run" in label and "simulated" in label, (d, label)
+            assert not os.path.exists(tmp_bench), "a failed GPU run must not be saved (I239)"
+        finally:
+            dv.benchmark = real_bench
+            dv._memo.clear()
         # a cache saying the GPU is faster: the GPU, with the ratio in the label
         dv._write_bench({"key": key, "cpu_ms": 100.0, "gpu": gpu, "gpu_ms": 5.0, "speedup": 20.0, "error": ""})
         d, label = dv.pick_device()
@@ -160,7 +175,8 @@ try:
                          "error": ""})
         c = dv.compare(torch)
         assert c["key"] == key and c["cpu_ms"], c
-        assert dv._read_bench(key) == c, "the fresh measurement is cached"
+        if c["gpu_ms"] is not None or c["gpu"] is None:        # a failed GPU run is deliberately not cached (I239)
+            assert dv._read_bench(key) == c, "the fresh measurement is cached"
         if c["gpu_ms"] is None:
             # a GPU torch reports but that cannot run the workload (GitHub's macOS
             # runners are virtual machines: Metal is "available" and every kernel

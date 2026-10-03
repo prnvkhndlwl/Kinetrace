@@ -37,13 +37,18 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+import threading
+import time
 
 import numpy as np
+
+from kinetrace.sync import AlignResult, CameraSync
 
 SAMPLE_RATE = 8000          # Hz: enough for timing (0.125 ms per sample, 1/33 of a 240 fps frame)
 BAND_DEFAULT = (300.0, 3800.0)
 BLOCK_S = 4.0               # GCC-PHAT block length; the lag range must fit inside a block
+FFMPEG_TIMEOUT_S = 600.0    # one read of a sound track (a stretch, or a whole recording over a network share)
+SILENT = 1e-9               # a block / a track whose largest sample is below this holds no sound
 SPEED_OF_SOUND = 343.0      # m/s, for the caveat
 
 
@@ -76,24 +81,67 @@ def ffmpeg_status() -> tuple[bool, str]:
                    f"or put an {exe_name} on PATH / in the KINETRACE_FFMPEG environment variable.")
 
 
-def has_audio(path: str) -> bool | None:
-    """True / False from ffmpeg's stream listing; None when ffmpeg is missing."""
+def has_audio(path: str, should_cancel=None) -> bool | None:
+    """True / False from ffmpeg's stream listing; None when it cannot be told: ffmpeg is
+    missing, or ffmpeg cannot open the file at all (missing, damaged, not a video) -- that
+    is "could not be read", not "has no sound track" (G97)."""
     exe = find_ffmpeg()
     if not exe:
         return None
-    r = subprocess.run([exe, "-hide_banner", "-i", str(path)], capture_output=True, text=True,
-                       errors="replace", creationflags=_no_window())
-    return any("Audio:" in line for line in r.stderr.splitlines())
+    try:
+        rc, _out, err = _run([exe, "-hide_banner", "-i", str(path)], should_cancel, 120.0)
+    except (OSError, InterruptedError):
+        return None
+    text = err.decode("utf-8", "replace")
+    if "Input #" not in text:           # ffmpeg prints this line for every file it managed to open
+        return None
+    return any("Audio:" in line for line in text.splitlines())
 
 
 def _no_window() -> int:
     return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
 
-def audio_signal(path: str, t0: float, duration: float, sr: int = SAMPLE_RATE) -> np.ndarray:
+def _run(cmd: list[str], should_cancel=None, timeout: float | None = FFMPEG_TIMEOUT_S) -> tuple[int, bytes, bytes]:
+    """Run ffmpeg, collecting (returncode, stdout, stderr), polled against `should_cancel`: a
+    cancel kills the process and raises InterruptedError, `timeout` seconds raise OSError (a
+    plain subprocess.run could neither be stopped nor give up -- G96)."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                            creationflags=_no_window())
+    box: dict = {}
+
+    def work():
+        try:
+            box["out"] = proc.communicate()
+        except Exception as e:      # noqa: BLE001 - reported below
+            box["err"] = e
+
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    t0 = time.monotonic()
+    while th.is_alive():
+        th.join(0.1)
+        if not th.is_alive():
+            break
+        if should_cancel is not None and should_cancel():
+            proc.kill()
+            th.join(10)
+            raise InterruptedError("cancelled")
+        if timeout is not None and time.monotonic() - t0 > timeout:
+            proc.kill()
+            th.join(10)
+            raise OSError(f"ffmpeg did not finish within {timeout:.0f} s (a very slow drive or network share?)")
+    if "err" in box:
+        raise OSError(f"ffmpeg failed: {box['err']}")
+    out, err = box["out"]
+    return proc.returncode, out, err
+
+
+def audio_signal(path: str, t0: float, duration: float, sr: int = SAMPLE_RATE, should_cancel=None) -> np.ndarray:
     """Mono float64 samples of `path` from `t0` seconds for `duration` seconds,
     decoded by ffmpeg through a pipe (no temp file). Empty array when the file
-    has no audio track; OSError when ffmpeg is missing or fails."""
+    has no audio track; OSError when ffmpeg is missing, fails, or the file cannot
+    be read; InterruptedError when `should_cancel()` turned true (ffmpeg is killed)."""
     exe = find_ffmpeg()
     if not exe:
         raise OSError(ffmpeg_status()[1])
@@ -101,16 +149,16 @@ def audio_signal(path: str, t0: float, duration: float, sr: int = SAMPLE_RATE) -
     cmd = [exe, "-hide_banner", "-loglevel", "error", "-nostdin",
            "-ss", f"{t0:.3f}", "-t", f"{max(0.0, float(duration)):.3f}", "-i", str(path),
            "-vn", "-ac", "1", "-ar", str(int(sr)), "-f", "f32le", "-"]
-    r = subprocess.run(cmd, capture_output=True, creationflags=_no_window())
-    if r.returncode != 0 and not r.stdout:
-        err = r.stderr.decode("utf-8", "replace").strip().splitlines()
-        msg = err[-1] if err else f"ffmpeg exit code {r.returncode}"
+    rc, out, err = _run(cmd, should_cancel)
+    if rc != 0 and not out:
+        lines = err.decode("utf-8", "replace").strip().splitlines()
+        msg = lines[-1] if lines else f"ffmpeg exit code {rc}"
         # ffmpeg 7 reports a video without a sound track as "Error opening output
         # files: Invalid argument" (older builds: "does not contain any stream")
-        if has_audio(path) is False:
+        if has_audio(path, should_cancel) is False:
             return np.zeros(0)
         raise OSError(f"ffmpeg could not read the audio of {os.path.basename(str(path))}: {msg}")
-    return np.frombuffer(r.stdout, np.float32).astype(np.float64)
+    return np.frombuffer(out, np.float32).astype(np.float64)
 
 
 # ------------------------------------------------------------------ filtering
@@ -140,16 +188,10 @@ def bandpass(x: np.ndarray, lo: float, hi: float, sr: int = SAMPLE_RATE) -> np.n
 
 # ------------------------------------------------------------------ alignment
 
-@dataclass
-class AudioAlign:
-    lag_s: float                # seconds: `other` shows the same sound lag_s LATER in its own time than `ref`
-    score: float                # best peak / next-best peak (>= 10 ms away)
-    peak: float                 # the best peak's height (correlogram units)
-    verdict: str                # "clear" | "weak" | "none"
-    why: str
-    n_blocks: int = 0
-    lags_s: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    curve: np.ndarray = field(default_factory=lambda: np.zeros(0))
+# one result type for both sync methods (R21): `sync.AlignResult` / `sync.CameraSync`; the names the
+# sound method used to have stay as aliases
+AudioAlign = AlignResult
+AudioCameraSync = CameraSync
 
 
 def _correlogram(a: np.ndarray, b: np.ndarray, max_lag: int, whiten: bool,
@@ -175,6 +217,10 @@ def _correlogram(a: np.ndarray, b: np.ndarray, max_lag: int, whiten: bool,
         sb = b[s0:s0 + block]
         if len(sa) < block or len(sb) < block:
             break
+        # a block counts only when BOTH tracks hold sound: a digitally silent one has nothing to
+        # time, and whitening it made a "block" of zeros that read as "no offset stands out" (G97)
+        if np.max(np.abs(sa)) < SILENT or np.max(np.abs(sb)) < SILENT:
+            continue
         fa = np.fft.rfft(sa * win, nfft)
         fb = np.fft.rfft(sb * win, nfft)
         G = fa * np.conj(fb)
@@ -206,13 +252,13 @@ def align_audio(ref: np.ndarray, other: np.ndarray, max_lag_s: float, sr: int = 
     other = np.asarray(other, np.float64)
     n = min(len(ref), len(other))
     if n < sr:      # under a second: nothing to compare
-        return AudioAlign(0.0, float("nan"), 0.0, "none",
-                          "The two sound tracks do not overlap for even a second - check the search range.")
+        return AlignResult(0.0, float("nan"), float("nan"), "none",
+                           "The two sound tracks do not overlap for even a second - check the search range.")
     max_lag = int(round(max_lag_s * sr))
     block = int(round(block_s * sr))
     lags, curve, n_blocks = _correlogram(ref[:n], other[:n], max_lag, whiten, block, block // 2)
     if n_blocks == 0 or not np.isfinite(curve).any():
-        return AudioAlign(0.0, float("nan"), 0.0, "none", "One of the sound tracks is silent.")
+        return AlignResult(0.0, float("nan"), float("nan"), "none", "One of the sound tracks is silent.")
     k = int(np.argmax(curve))
     peak = float(curve[k])
     far = np.abs(lags - lags[k]) > int(0.010 * sr)
@@ -223,8 +269,6 @@ def align_audio(ref: np.ndarray, other: np.ndarray, max_lag_s: float, sr: int = 
     # second started 2.635 s after the first with a 2 s clock prior, so
     # delay = -peak lag)
     lag_s = -float(lags[k]) / sr
-    lags_s = (-lags / sr)[::-1]
-    curve = curve[::-1]
     if score >= 1.5 and peak > 0:
         verdict = "clear"
         why = (f"The sound tracks line up at one offset (the best match is {score:.1f}x the next-best): "
@@ -239,18 +283,8 @@ def align_audio(ref: np.ndarray, other: np.ndarray, max_lag_s: float, sr: int = 
         why = (f"No offset stands out (best match {score:.2f}x the next-best). The cameras probably did not "
                "hear the same sounds in this stretch (too far apart, or wind on one microphone), or the true "
                "offset lies outside the search range.")
-    return AudioAlign(lag_s, float(score), peak, verdict, why, n_blocks, lags_s, curve)
-
-
-@dataclass
-class AudioCameraSync:
-    view: int
-    offset: float               # Kinetrace offset for this view (its own frames)
-    lag_s: float                # seconds this camera started AFTER the reference
-    result: AudioAlign
-    has_audio: bool = True      # False only when THIS video has no sound track
-    ref_silent: bool = False    # the REFERENCE has no sound here (every row says so, I11)
-    out_of_reach: bool = False  # this camera's recording does not cover the stretch searched (I11)
+    margin = peak - rival if rival > 1e-12 else peak
+    return AlignResult(lag_s, float(score), float(margin), verdict, why, n_blocks, peak)
 
 
 def acoustic_caveat(fps: float, spacing_m: float = 5.0) -> str:
@@ -275,20 +309,43 @@ def estimate_offsets_from_audio(paths: list[str], fps: list[float], ref_range_s:
     dur = max(1.0, t1 - t0)
     n_views = len(paths)
     fps = [float(f) for f in fps]
+    if not find_ffmpeg():
+        raise OSError(ffmpeg_status()[1])           # missing ffmpeg is the caller's to explain, not a row's
     if progress:
         progress(0.0)
-    ref = audio_signal(paths[reference], t0, dur)
+
+    def signal(path, a, b):
+        """(samples, None) or (None, why) when this file cannot be read at all (G97)."""
+        try:
+            return audio_signal(path, a, b, should_cancel=should_cancel), None
+        except InterruptedError:                    # cancelled: the callers check should_cancel next
+            return None, None
+        except OSError as e:
+            return None, str(e)
+
+    ref, ref_unreadable = signal(paths[reference], t0, dur)
+    if ref is None:
+        ref = np.zeros(0)
     if band is not None and len(ref):
         ref = bandpass(ref, band[0], band[1])
     ref_why = ""
-    if len(ref) == 0:
+    if should_cancel is not None and should_cancel():
+        return []
+    if ref_unreadable:
+        ref_why = (f"The reference camera (the first view) could not be read ({ref_unreadable}): check that its "
+                   "video file is there and opens, or make another camera the first view.")
+    elif len(ref) == 0:
         # (I11) say WHICH file is silent: this used to tell the user that every OTHER
         # camera had no sound track and send them all to the Motion method
         ref_why = ("The reference camera (the first view) has no sound track: make a camera with sound the first "
                    "view, or use the Motion method." if has_audio(paths[reference]) is False else
                    "The reference camera's sound does not reach this stretch (its recording is shorter): choose "
                    "a stretch inside it.")
-    out: list[AudioCameraSync] = []
+    elif np.max(np.abs(ref)) < SILENT:
+        # (G97) a track that exists but holds no sound (a muted microphone)
+        ref_why = ("The reference camera's (the first view's) sound track is silent in this stretch: no sound was "
+                   "recorded. Make a camera with sound the first view, or use the Motion method.")
+    out: list[CameraSync] = []
     done = 1
     for i, path in enumerate(paths):
         if i == reference:
@@ -302,20 +359,38 @@ def estimate_offsets_from_audio(paths: list[str], fps: list[float], ref_range_s:
         g0 = t0 - d0 - search_s
         pad_front = max(0.0, -g0)                 # the file starts after the stretch begins
         want_s = dur + 2 * search_s - pad_front
-        sig = audio_signal(path, max(0.0, g0), want_s) if not ref_why else np.zeros(0)
-        if len(sig) == 0 or ref_why:
+        unreadable = None
+        if ref_why:
+            sig = np.zeros(0)
+        else:
+            sig, unreadable = signal(path, max(0.0, g0), want_s)
+            if should_cancel is not None and should_cancel():
+                break
+            if sig is None:
+                sig = np.zeros(0)
+        silent = bool(len(sig)) and not ref_why and float(np.max(np.abs(sig))) < SILENT
+        if len(sig) == 0 or ref_why or silent:
             if ref_why:
-                row = AudioCameraSync(i, pri_frames, 0.0, AudioAlign(0.0, float("nan"), 0.0, "none", ref_why),
-                                      ref_silent=True)
+                row = CameraSync(i, pri_frames, AlignResult(0.0, float("nan"), float("nan"), "none", ref_why),
+                                 ref_silent=True)
+            elif unreadable:
+                row = CameraSync(i, pri_frames, AlignResult(
+                    0.0, float("nan"), float("nan"), "none",
+                    f"This video could not be read ({unreadable}): check that the file is there and opens."),
+                    has_audio=None)
+            elif silent:
+                row = CameraSync(i, pri_frames, AlignResult(
+                    0.0, float("nan"), float("nan"), "none",
+                    "This video's sound track is silent in this stretch (no sound was recorded: a muted "
+                    "microphone?): use the Motion method for it."))
             elif has_audio(path) is False:
-                row = AudioCameraSync(i, pri_frames, 0.0, AudioAlign(0.0, float("nan"), 0.0, "none",
-                                                                     "This video has no sound track."),
-                                      has_audio=False)
+                row = CameraSync(i, pri_frames, AlignResult(0.0, float("nan"), float("nan"), "none",
+                                                            "This video has no sound track."), has_audio=False)
             else:
                 # (I11) ffmpeg returns nothing for a window past the end of a file that
                 # HAS sound: the camera had stopped (or started much later than assumed)
-                row = AudioCameraSync(i, pri_frames, 0.0, AudioAlign(
-                    0.0, float("nan"), 0.0, "none",
+                row = CameraSync(i, pri_frames, AlignResult(
+                    0.0, float("nan"), float("nan"), "none",
                     f"This camera's recording does not reach the stretch searched (from {max(0.0, g0):.1f} s of "
                     "its own time): it had stopped, or it started much later than the offset assumed. Choose a "
                     "stretch every camera recorded, or widen the search."), out_of_reach=True)
@@ -340,12 +415,12 @@ def estimate_offsets_from_audio(paths: list[str], fps: list[float], ref_range_s:
         if res.verdict != "clear" and len(sig) < (want_s - 1.0) * sr:
             res.why += (f" (This camera's sound covers only {len(sig) / sr:.1f} of the {want_s:.1f} s searched: "
                         "its recording ends inside the stretch.)")
-        # `sig` delayed by lag_s means camera i shows the sound lag_s later in its
-        # own numbering than the (prior-shifted) reference: it started lag_s EARLIER
-        # than the prior said -> D = d0 - lag_s seconds after the reference
-        d = d0 - res.lag_s
+        # `sig` delayed by lag means camera i shows the sound lag seconds later in its
+        # own numbering than the (prior-shifted) reference: it started lag seconds EARLIER
+        # than the prior said -> D = d0 - lag seconds after the reference
+        d = d0 - res.lag
         offset = -d * fps[i]
-        out.append(AudioCameraSync(i, float(offset), float(d), res))
+        out.append(CameraSync(i, float(offset), res, lag_s=float(d)))
         done += 1
         if progress:
             progress(done / n_views)

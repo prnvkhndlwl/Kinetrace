@@ -269,8 +269,18 @@ def probe_video(path: str, vfr_samples: int = 60, progress=None) -> VideoInfo:
         header = n_frames
         say("frames", width=width, height=height, fps=fps, frames=header)
         n_frames = verified_frame_count(cap, header)
+        if not times:
+            # (I235) the sniff above decoded nothing: if frame 0 does not read either, "trust the
+            # header" (verified_frame_count's answer for a file that cannot seek) would accept a
+            # video no frame of which decodes, and every later step would toast instead
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            if not cap.read()[0]:
+                n_frames = 0
         if n_frames <= 0:
-            raise ValueError(f"No frame of this video could be decoded ({header} claimed).")
+            raise ValueError(
+                f"No frame of this video could be decoded ({header} claimed).\n\n"
+                "The file may be damaged, or use a codec this computer cannot read. Re-encoding usually fixes it:\n"
+                f'ffmpeg -i "{Path(path).name}" -c:v libx264 -crf 18 fixed.mp4')
         return VideoInfo(path, n_frames, fps, width, height, vfr, header, fps_source)
     finally:
         cap.release()
@@ -292,8 +302,9 @@ def open_capture(path: str) -> cv2.VideoCapture:
     Backends must never be MIXED inside one session: they agree on frame
     indices, but their YUV->RGB conversion differs by a few levels (measured
     max 28-56), and the tracker's subpixel refinement should not see
-    different pixels than the user corrected on. Reading the choice once,
-    process-wide, is what guarantees that.
+    different pixels than the user corrected on. The choice is the environment
+    variable, process-wide (read at every open, never per call site), which is
+    what guarantees that.
     """
     mode = os.environ.get("KINETRACE_DECODE", "").strip().lower()
     if mode == "msmf":
@@ -463,7 +474,9 @@ class SeekService(QThread):
 
     frame_ready = Signal(int, object)  # (frame index, RGB ndarray)
     seek_slow = Signal(int)            # decode in progress for idx (show "Seeking...")
-    eof_truncated = Signal(int)        # real frame count is lower than reported
+    eof_truncated = Signal(int)        # only for a SeekService built with n_frames=None (the app always
+                                       # passes the verified count, so it never fires there: a failing
+                                       # frame below that count is decode_failed)
     decode_failed = Signal(int, str)   # (frame, reason) a frame that exists could not be
                                        # decoded twice; frame -1 = the video would not open
 

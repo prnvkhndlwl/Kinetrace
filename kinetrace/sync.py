@@ -15,8 +15,8 @@ sees it, and the bumps line up at the true offset. Camera shake correlates
 too when the cameras share a rig. Cameras with different frame rates are put
 on the reference camera's clock before comparing.
 
-`motion_signal` decodes a stretch of one video once, sequentially, at a tiny
-size (64 px wide): a 2704-pixel GoPro frame costs about as much as reading
+`motion_signal` decodes a stretch of one video once, sequentially, at a small
+size (160 px wide): a 2704-pixel GoPro frame costs about as much as reading
 it from disk. `align` cross-correlates two signals over a range of lags and
 reports the best lag with a plain verdict: how far the best match stands
 above the rest. Pure numpy + cv2; runs off the GUI thread in the app.
@@ -24,7 +24,7 @@ above the rest. Pure numpy + cv2; runs off the GUI thread in the app.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -103,24 +103,30 @@ def resample_to_rate(x: np.ndarray, rate: float) -> np.ndarray:
 
 @dataclass
 class AlignResult:
-    lag: int                    # frames of the REFERENCE signal by which `other` must be shifted
-    score: float                # normalised correlation at the best lag, in [-1, 1]
-    margin: float               # best minus the best competing peak (>= 3 frames away)
+    """What both sync methods report for one camera (R21: one type, the sound method's
+    `audiosync.align_audio` returns it too)."""
+    lag: float                  # motion: frames of the REFERENCE signal by which `other` must be shifted;
+                                # sound: seconds by which `other` is delayed
+    score: float                # motion: normalised correlation at the best lag, in [-1, 1];
+                                # sound: best peak / next-best peak
+    margin: float               # best minus the best competing peak (>= 3 frames / 10 ms away)
     verdict: str                # "clear" | "weak" | "none"
     why: str
-    lags: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int64))
-    curve: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    n_blocks: int = 0           # sound only: blocks of the correlogram that counted
+    peak: float = 0.0           # sound only: the best peak's height (correlogram units)
 
 
-def align(ref: np.ndarray, other: np.ndarray, max_lag: int) -> AlignResult:
+def align(ref: np.ndarray, other: np.ndarray, max_lag: int, min_lag: int | None = None) -> AlignResult:
     """Best lag such that other[i] lines up with ref[i + lag]... precisely:
     the lag L maximising the normalised correlation of ref[t] with
     other[t - L] over their overlap. Positive L = `other` shows the same
-    event L frames LATER in its own numbering than the reference does."""
+    event L frames LATER in its own numbering than the reference does.
+    Lags are tried from `min_lag` (default -max_lag) to `max_lag`."""
     a = _clean(ref)
     b = _clean(other)
     max_lag = int(max(1, max_lag))
-    lags = np.arange(-max_lag, max_lag + 1)
+    lo = -max_lag if min_lag is None else int(min(min_lag, max_lag))
+    lags = np.arange(lo, max_lag + 1)
     curve = np.full(len(lags), np.nan)
     min_overlap = max(16, int(0.1 * min(len(a), len(b))))
     for k, L in enumerate(lags.tolist()):
@@ -137,7 +143,7 @@ def align(ref: np.ndarray, other: np.ndarray, max_lag: int) -> AlignResult:
         curve[k] = float(np.dot(sa, sb) / (na * nb))
     if not np.isfinite(curve).any():
         return AlignResult(0, float("nan"), float("nan"), "none",
-                           "The two stretches do not overlap enough to compare.", lags, curve)
+                           "The two stretches do not overlap enough to compare.")
     best = int(np.nanargmax(curve))
     score = float(curve[best])
     far = np.abs(lags - lags[best]) >= 3
@@ -157,15 +163,20 @@ def align(ref: np.ndarray, other: np.ndarray, max_lag: int) -> AlignResult:
         why = (f"No offset stands out (best correlation {score:.2f}). The cameras probably do not see the "
                "same movement in this stretch, or it lies outside the search range. Pick a stretch with "
                "an event every camera saw, or widen the search.")
-    return AlignResult(int(lags[best]), score, margin, verdict, why, lags, curve)
+    return AlignResult(int(lags[best]), score, margin, verdict, why)
 
 
 @dataclass
 class CameraSync:
+    """One camera's result, from either method (motion here, sound in `audiosync`)."""
     view: int
     offset: float               # the offset to store for this view (its own frames)
-    lag_ref: int                # frames of the reference
     result: AlignResult
+    lag_ref: int = 0            # motion: frames of the reference
+    lag_s: float = 0.0          # sound: seconds this camera started AFTER the reference
+    has_audio: bool | None = True   # sound: False = THIS video has no sound track; None = it could not be read
+    ref_silent: bool = False    # sound: the REFERENCE has no sound here (every row says so, I11)
+    out_of_reach: bool = False  # sound: this camera's recording does not cover the stretch searched (I11)
 
 
 _STAMP = None
@@ -241,8 +252,11 @@ def estimate_offsets_from_motion(paths: list[str], rates: list[float], ref_range
         # reference frame f0 + t with this camera's frame g0p + r*(t - L). With
         # local_i = r*T + offset that gives offset = g0p - r*(f0 + L). Because the
         # stretch was widened by `search` on both sides, a perfectly aligned pair
-        # sits at L = -search, so the lags to try run from about -2*search to 0.
-        res = align(ref_sig, sig_ref_clock, max_lag=2 * int(np.ceil(search)) + 2)
+        # sits at L = -search, so the lags to try run from about -2*search to 0 -- exactly the
+        # requested window (+-search around the prior), with two frames of slack for the floor /
+        # ceil above. The search used to run to +2*search+2 as well, three times the range asked
+        # for on one side: an offset OUTSIDE the window was reported clear (I237).
+        res = align(ref_sig, sig_ref_clock, max_lag=2, min_lag=-(2 * int(np.ceil(search)) + 2))
         offset = float(g0p - r * (f0 + res.lag))
-        out.append(CameraSync(i, offset, res.lag, res))
+        out.append(CameraSync(i, offset, res, lag_ref=res.lag))
     return out

@@ -14,7 +14,9 @@ cd "$(dirname "$0")"
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
-PYCHECK='import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] < (3, 15) else 1); import venv, ensurepip'
+# the imports come BEFORE the version exit (I220): after sys.exit they never ran, so Ubuntu's python3
+# without python3-venv was accepted and "python -m venv" failed later
+PYCHECK='import sys, venv, ensurepip; sys.exit(0 if (3, 10) <= sys.version_info[:2] < (3, 15) else 1)'
 
 say() { printf '%s\n' "$*"; }
 
@@ -155,9 +157,15 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
     # AllTracker, verifies every import and writes .venv/kinetrace-install.json;
     # safe to re-run, it resumes where it stopped
     .venv/bin/python install.py || {
+        rc=$?
         say ""
-        say "ERROR: the installation did not finish. Check your internet connection and run ./run.sh"
-        say "again (it resumes). If it fails twice, send the lines above with your question."
+        if [ "$rc" = 3 ]; then
+            # install.py named the missing system libraries and the apt-get line (G98)
+            say "Everything is installed except the system libraries named above. Install them and run ./run.sh again."
+        else
+            say "ERROR: the installation did not finish. Check your internet connection and run ./run.sh"
+            say "again (it resumes). If it fails twice, send the lines above with your question."
+        fi
         exit 1
     }
     [ "$OS" = "Linux" ] && linux_libs

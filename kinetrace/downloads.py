@@ -19,7 +19,9 @@ A download never starts on its own: only when a model is first needed (Track,
 S, a Body run) or by install.py. Nothing but the file itself is requested."""
 from __future__ import annotations
 
+import errno
 import hashlib
+import http.client
 import io
 import os
 import shutil
@@ -31,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+HF_CACHE = MODELS_DIR / "hf" / "hub"      # the Hugging Face cache INSIDE the install, whatever HF_HOME says (I195)
 TIMEOUT_S = 30              # no byte for this long = the download stalled
 CHUNK = 1 << 20
 RETRIES = 3
@@ -100,9 +103,10 @@ def _mb(n: float) -> str:
     return f"{n / 1e6:.0f} MB"
 
 
-def _no_net(label: str, e: Exception) -> DownloadError:
-    return DownloadError(f"{label[0].upper()}{label[1:]} could not be downloaded ({_why(e)}). Check the internet "
-                         "connection and try again: it is needed only once, then the file stays in models/.")
+def _no_net(label: str, e: Exception, hint: str | None = None) -> DownloadError:
+    hint = hint or ("Check the internet connection and try again: it is needed only once, then the file stays "
+                    "in models/.")
+    return DownloadError(f"{label[0].upper()}{label[1:]} could not be downloaded ({_why(e)}). {hint}")
 
 
 def _why(e: Exception) -> str:
@@ -110,19 +114,69 @@ def _why(e: Exception) -> str:
         return f"the server answered {e.code}"
     if isinstance(e, urllib.error.URLError):          # before the file arrived: no connection at all
         return "no connection to the server"
+    if isinstance(e, (_Cut, http.client.IncompleteRead)):
+        return "the connection was cut off before the whole file arrived"
     if isinstance(e, (TimeoutError, OSError)) and "timed out" in str(e).lower():
         return "the connection stalled"
     return type(e).__name__
 
 
+class _Cut(OSError):
+    """The server ended the answer before the announced length arrived (I236)."""
+
+
+class _Disk(Exception):
+    """Opening or writing the file being downloaded failed: the disk or the folder, not the network (G93)."""
+
+    def __init__(self, err: OSError):
+        super().__init__(str(err))
+        self.err = err
+
+
+DISK_ERRNOS = tuple(getattr(errno, n) for n in ("ENOSPC", "EACCES", "EPERM", "EROFS", "EDQUOT") if hasattr(errno, n))
+
+
+def _disk_cause(e: BaseException | None) -> OSError | None:
+    """The first OSError about the file system (a full drive, a folder that cannot be
+    written) in `e`'s chain, else None; the Hub wraps what it met while writing."""
+    for _ in range(6):
+        if e is None:
+            return None
+        if isinstance(e, OSError) and getattr(e, "errno", None) in DISK_ERRNOS:
+            return e
+        e = e.__cause__ or e.__context__
+    return None
+
+
+def _disk_error(label: str, e: OSError, folder) -> DownloadError:
+    code = getattr(e, "errno", None)
+    if code in (getattr(errno, "ENOSPC", -1), getattr(errno, "EDQUOT", -2)):
+        why = "the drive is full"
+        todo = "Free some space on it"
+    elif code in (getattr(errno, "EACCES", -1), getattr(errno, "EPERM", -1), getattr(errno, "EROFS", -1)):
+        why = "this folder cannot be written to"
+        todo = "Make the folder writable (is the Kinetrace folder on a read-only drive or in a protected location?)"
+    else:
+        why = e.strerror or type(e).__name__
+        todo = "Check the folder and the drive"
+    return DownloadError(f"{label[0].upper()}{label[1:]} could not be saved: {why} ({folder}). {todo}, then try "
+                         "again - this is not a network problem.")
+
+
 def fetch(url: str, dest: Path, *, label: str, sha256: str | None = None, size: int | None = None,
-          progress=None, cancel=lambda: False, timeout: float = TIMEOUT_S) -> Path:
+          progress=None, cancel=lambda: False, timeout: float = TIMEOUT_S, hint: str | None = None) -> Path:
     """`url` -> `dest`, through `dest.part` (a cut-off download resumes from it),
     in 1 MB chunks: `progress(done_bytes, total_bytes)` after each, `cancel()`
     checked between them, `timeout` seconds without a byte = stalled. With
-    `sha256` the file is moved into place only when it matches."""
+    `sha256` the file is moved into place only when it matches. An answer that
+    ends before its announced length is a cut connection: resumed with a Range
+    request (I236). Failures of the disk / folder are said as such, not retried
+    as network errors (G93). `hint` replaces the "check the connection" advice."""
     dest = Path(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise _disk_error(label, e, dest.parent) from None
     part = dest.with_name(dest.name + ".part")
     last = None
     for attempt in range(RETRIES):
@@ -134,7 +188,11 @@ def fetch(url: str, dest: Path, *, label: str, sha256: str | None = None, size: 
                 if have and r.status != 206:            # the server ignored the range: start again
                     have = 0
                 total = size or (int(r.headers.get("Content-Length") or 0) + have) or 0
-                with open(part, "ab" if have else "wb") as fh:
+                try:
+                    fh = open(part, "ab" if have else "wb")
+                except OSError as e:
+                    raise _Disk(e) from None
+                with fh:
                     done = have
                     while True:
                         if cancel():
@@ -142,24 +200,31 @@ def fetch(url: str, dest: Path, *, label: str, sha256: str | None = None, size: 
                         buf = r.read(CHUNK)
                         if not buf:
                             break
-                        fh.write(buf)
+                        try:
+                            fh.write(buf)
+                        except OSError as e:
+                            raise _Disk(e) from None
                         done += len(buf)
                         if progress is not None:
                             progress(done, total)
+                if total and done < total:              # http.client hands back b"" for a cut (I236)
+                    raise _Cut(f"{done} of {total} bytes")
             break
         except DownloadCancelled:
             raise
+        except _Disk as d:
+            raise _disk_error(label, d.err, part.parent) from None
         except urllib.error.HTTPError as e:
             if e.code == 416:                            # the part file is already complete
                 break
             last = e
             if e.code < 500:
-                raise _no_net(label, e) from None
-        except (urllib.error.URLError, OSError, TimeoutError) as e:
+                raise _no_net(label, e, hint) from None
+        except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException) as e:
             last = e
         time.sleep(1.0 + attempt)
     else:
-        raise _no_net(label, last) from None
+        raise _no_net(label, last, hint) from None
     if sha256 is not None:
         got = file_sha256(part)
         if got != sha256:
@@ -167,7 +232,10 @@ def fetch(url: str, dest: Path, *, label: str, sha256: str | None = None, size: 
             raise DownloadError(f"The downloaded file of {label} is not the expected one (its checksum differs), "
                                 "so it was deleted and not used. Try again later; if it keeps happening, "
                                 "update Kinetrace (Help > Check for Updates).")
-    os.replace(part, dest)
+    try:
+        os.replace(part, dest)
+    except OSError as e:
+        raise _disk_error(label, e, dest.parent) from None
     return dest
 
 
@@ -253,6 +321,8 @@ def ensure_code(key: str, progress=None, cancel=lambda: False) -> Path:
         os.replace(tmp, c.dest)
     except zipfile.BadZipFile:
         raise DownloadError(f"The download of {c.label} is damaged; try again.") from None
+    except OSError as e:                                    # unpacking into models/ failed: the disk (G93)
+        raise _disk_error(c.label, e, c.dest.parent) from None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
         zpath.unlink(missing_ok=True)
@@ -262,6 +332,13 @@ def ensure_code(key: str, progress=None, cancel=lambda: False) -> Path:
 # ------------------------------------------------------------------ Hugging Face
 def hf_revision(repo: str) -> str | None:
     return HF_REVISIONS.get(repo)
+
+
+def hf_cache_dir() -> str:
+    """The Hugging Face cache folder every load / download passes as `cache_dir`
+    (I195): models/hf/hub inside the install, even when the user has set HF_HOME
+    to their own cache (the pinned snapshot is only ever looked for HERE)."""
+    return str(HF_CACHE)
 
 
 def hf_load_args(repo: str) -> dict:
@@ -278,7 +355,7 @@ def hf_load_args(repo: str) -> dict:
 def hf_cached(repo: str) -> bool:
     """The pinned commit's snapshot (with its weights) is in models/hf."""
     rev = hf_revision(repo)
-    hub = MODELS_DIR / "hf" / "hub" / ("models--" + repo.replace("/", "--")) / "snapshots"
+    hub = HF_CACHE / ("models--" + repo.replace("/", "--")) / "snapshots"
     if rev is None:
         return hub.is_dir() and any(any(p.glob("*.safetensors")) for p in hub.iterdir() if p.is_dir())
     return any((hub / rev).glob("*.safetensors")) if (hub / rev).is_dir() else False
@@ -317,11 +394,13 @@ def hf_snapshot(repo: str, label: str, progress=None, cancel=lambda: False) -> N
             return None
 
     try:
-        snapshot_download(repo, revision=hf_revision(repo), tqdm_class=_Bar,
-                          cache_dir=str(MODELS_DIR / "hf" / "hub"))
+        snapshot_download(repo, revision=hf_revision(repo), tqdm_class=_Bar, cache_dir=hf_cache_dir())
     except DownloadCancelled:
         raise
     except Exception as e:  # noqa: BLE001 - the Hub's many errors, as one sentence
+        disk = _disk_cause(e)
+        if disk is not None:                               # a full disk / a read-only models/ (G93)
+            raise _disk_error(label, disk, HF_CACHE) from None
         low = f"{type(e).__name__} {e}".lower()
         if any(k in low for k in ("gated", "401", "403", "unauthorized", "restricted")):
             raise DownloadError(f"{label[0].upper()}{label[1:]} is gated on Hugging Face: request access to "

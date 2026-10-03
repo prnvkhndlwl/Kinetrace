@@ -28,6 +28,7 @@ again on the next start and installs whatever the new version needs (I142).
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -145,6 +146,9 @@ def latest_release(timeout: float = TIMEOUT_S) -> Release:
             data = json.loads(r.read().decode("utf-8"))
         except ValueError:
             raise UpdateError("GitHub's answer could not be read. Try again later.") from None
+        except (OSError, http.client.HTTPException):     # the connection dropped while reading (G94)
+            raise UpdateError("The connection to GitHub was cut while reading its answer. Check the internet "
+                              "connection and try again.") from None
     tag = str(data.get("tag_name") or "")
     if not tag or not data.get("zipball_url"):
         raise UpdateError("The newest release on GitHub has no version number or download.")
@@ -235,25 +239,19 @@ def trusted_url(url: str) -> bool:
 
 
 def download(url: str, dest: Path, progress=None, timeout: float = 60) -> Path:
-    """Stream `url` into `dest`; progress(done_bytes, total_bytes or 0)."""
+    """Fetch `url` into `dest`; progress(done_bytes, total_bytes or 0). Built on
+    `downloads.fetch` (R21): retries, a resume from the kept `.part`, a stall
+    timeout, and a connection cut short counts as a failure (I236) -- all said as
+    an UpdateError sentence (G94)."""
     if not trusted_url(url):
         raise UpdateError(f"The release's download link does not point to GitHub ({url[:80]}), so it was not "
                           f"used. Download the new version from {PAGE} instead.")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    with _open(url, timeout) as r, open(tmp, "wb") as fh:
-        total = int(r.headers.get("Content-Length") or 0)
-        done = 0
-        while True:
-            chunk = r.read(1 << 16)
-            if not chunk:
-                break
-            fh.write(chunk)
-            done += len(chunk)
-            if progress is not None:
-                progress(done, total)
-    _replace(tmp, dest)
-    return dest
+    from kinetrace import downloads
+    try:
+        return downloads.fetch(url, dest, label="the new version of Kinetrace", progress=progress, timeout=timeout,
+                               hint="Check the internet connection and try again.")
+    except downloads.DownloadError as e:
+        raise UpdateError(str(e)) from None
 
 
 def _release_members(zf: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
@@ -285,9 +283,16 @@ def apply_zip(root: Path, zip_path: Path, version: str, tag: str = "") -> ApplyR
         zf = zipfile.ZipFile(zip_path)
     except (OSError, zipfile.BadZipFile):
         raise UpdateError("The download is damaged (not a readable ZIP); nothing was changed. Try again.") from None
+    old_manifest = _read_manifest(root)
     with zf:
         members = _release_members(zf)
-        before = {n: _digest(root / n) for n in INSTALL_INPUTS}
+        # (I218) what the installer was last run for: the digests the last COMPLETED update
+        # recorded, else what is on disk. A half-failed update replaces install.py /
+        # requirements.txt but never reaches the manifest, so a retry still sees the change.
+        recorded = old_manifest.get("inputs")
+        before = recorded if isinstance(recorded, dict) else {n: _digest(root / n) for n in INSTALL_INPUTS}
+        after = {n: (hashlib.sha256(zf.read(members[n])).hexdigest() if n in members else None)
+                 for n in INSTALL_INPUTS}
         # unpack every file that differs into the staging folder FIRST, so a bad
         # archive fails before anything in the install has been touched
         stage = root / STAGING / "files"
@@ -307,14 +312,35 @@ def apply_zip(root: Path, zip_path: Path, version: str, tag: str = "") -> ApplyR
             if mode and os.name != "nt":
                 os.chmod(s, mode)
             todo.append(rel)
+    inputs_changed = any(after[n] != before.get(n) for n in INSTALL_INPUTS)
+    if recorded is None and (root / ".venv").is_dir() and not (root / MARKER).exists():
+        inputs_changed = True       # an earlier, half-failed update (before digests were recorded) dropped it
+    dropped = False
+    if inputs_changed:
+        # (I218) the marker goes BEFORE the first replacement: if a file is locked half-way, the
+        # next start runs install.py again instead of trusting the old marker with new inputs
+        dropped = _drop_marker(root)
+    old = set(old_manifest.get("files", []))
+    old_by_lower: dict[str, list[str]] = {}
+    for o in old:
+        old_by_lower.setdefault(o.lower(), []).append(o)
     for rel in todo:
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
+        # (I219) a release that renames a file by letter case only: on a case-insensitive file
+        # system the old name IS the target, so remove it just before the new name is written
+        # (the staged copy exists), and never remove it afterwards
+        for o in old_by_lower.get(rel.lower(), []):
+            if o != rel and not _protected(o):
+                try:
+                    (root / o).unlink()
+                except OSError:
+                    pass
         _replace(stage / rel, target)
         res.changed.append(rel)
-    old = set(_read_manifest(root).get("files", []))
+    member_lower = {m.lower() for m in members}
     for rel in sorted(old - set(members)):
-        if _protected(rel):
+        if _protected(rel) or rel.lower() in member_lower:      # (I219) a case-only rename is not a removal
             continue
         p = root / rel
         try:
@@ -325,9 +351,10 @@ def apply_zip(root: Path, zip_path: Path, version: str, tag: str = "") -> ApplyR
             pass
     (root / MANIFEST).write_text(json.dumps({
         "version": version, "tag": tag, "applied_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "files": sorted(members)}, indent=1), encoding="utf-8")
-    if any(_digest(root / n) != before[n] for n in INSTALL_INPUTS):
-        res.reinstall = _drop_marker(root)
+        "files": sorted(members), "inputs": after}, indent=1), encoding="utf-8")
+    # reinstall = there is an install to redo: the marker was there (dropped now) or an earlier,
+    # half-failed update already dropped it (the environment exists, the marker does not)
+    res.reinstall = inputs_changed and (dropped or (root / ".venv").is_dir())
     shutil.rmtree(root / STAGING, ignore_errors=True)
     return res
 
@@ -371,11 +398,12 @@ def apply(release: Release, root: Path = ROOT, progress=None) -> ApplyResult:
         return apply_git(root, release.tag, release.version)
     dest = root / STAGING / f"kinetrace-{release.version}.zip"
     try:
-        download(release.zip_url, dest, progress)
-        return apply_zip(root, dest, release.version, release.tag)
-    except OSError as e:
-        raise UpdateError(f"The update could not be written into {root} ({e}). Close any program using "
-                          "files in the Kinetrace folder and try again.") from None
+        download(release.zip_url, dest, progress)        # an UpdateError about the connection / the disk (G94)
+        try:
+            return apply_zip(root, dest, release.version, release.tag)
+        except OSError as e:                             # only the WRITING phase says "could not be written"
+            raise UpdateError(f"The update could not be written into {root} ({e}). Close any program using "
+                              "files in the Kinetrace folder and try again.") from None
     finally:
         shutil.rmtree(root / STAGING, ignore_errors=True)
 
@@ -408,10 +436,21 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     print(f"Kinetrace {APP_VERSION} in {ROOT}")
     try:
-        rel, newer = check()
+        return _main(argv)
     except UpdateError as e:
-        print(e)
+        print("\n" + str(e))
         return 1
+    except KeyboardInterrupt:
+        print("\nStopped.")
+        return 1
+    except Exception as e:      # noqa: BLE001 - a sentence for update.bat, never a traceback (G94)
+        print(f"\nThe update stopped unexpectedly ({type(e).__name__}: {e}). Check the internet connection and "
+              f"try again; the release page is {PAGE}.")
+        return 1
+
+
+def _main(argv: list[str]) -> int:
+    rel, newer = check()
     if not newer:
         print(f"This is the newest version (the newest published is {rel.version}).")
         return 0
@@ -424,11 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\r  downloaded {done / 1e6:.1f}" + (f" of {total / 1e6:.1f}" if total else "") + " MB",
               end="", flush=True)
 
-    try:
-        res = apply(rel, ROOT, _p)
-    except UpdateError as e:
-        print("\n" + str(e))
-        return 1
+    res = apply(rel, ROOT, _p)
     print("\n" + res.sentence())
     return 0
 
