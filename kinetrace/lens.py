@@ -43,6 +43,35 @@ LENS_SUFFIX = ".klens.json"
 # this is "beyond the model": no real lens on a real sensor sees past it, and a
 # rectilinear picture puts a 90-degree ray at infinity.
 MAX_RAY_DEG = 80.0
+MAX_VIEWS = 40                  # boards a fit is made from (`select_diverse` thins a longer list to this)
+# The "3 x the median" rule that sets a view aside, with the floor each call site has always
+# used (R19: one rule, the floors kept so no fit changes): the fit's own robust pass, the
+# automatic choice of views, and the review board's "Drop the worst".
+OUTLIER_FLOOR_FIT_PX = 0.45
+OUTLIER_FLOOR_PICK_PX = 0.5
+
+
+def px_scale(width: float, height: float) -> float:
+    """How many times a 1080p pixel one of this picture's pixels is, by the
+    LONGER side (I250: a portrait 4K clip was judged ~1.8 x stricter than the
+    same lens in landscape by max(1, width / 1920))."""
+    return max(1.0, max(float(width), float(height)) / 1920.0)
+
+
+def rms_limits(width: float, height: float) -> tuple[float, float]:
+    """(good, ok) limits of one reprojection error in px for a picture of this
+    size: at or under the first reads good, over the second poor. The ONE rule
+    behind the report's fit verdict and the review board's tile colours."""
+    s = px_scale(width, height)
+    return 0.6 * s, 1.2 * s
+
+
+def outlier_limit(errors, floor: float) -> float:
+    """The error above which a view is set aside: 3 x the median of `errors`
+    (NaN ignored), never below `floor`."""
+    e = np.asarray(errors, np.float64)
+    e = e[np.isfinite(e)]
+    return max(3.0 * float(np.median(e)) if len(e) else 0.0, float(floor))
 
 
 # ------------------------------------------------------------------ profile
@@ -214,6 +243,29 @@ def same_profile(a: LensProfile | None, b: LensProfile | None) -> bool:
             and np.allclose(a.dist, b.dist, rtol=0, atol=1e-12))
 
 
+def profile_key(prof: LensProfile | None):
+    """A hashable value that names a profile by what it CONTAINS (None for no
+    profile): what a settings key must hold, where `id(prof)` changes with a
+    reload or a copy and stays the same after an in-place edit (R20)."""
+    if prof is None:
+        return None
+    return (int(prof.width), int(prof.height), bool(prof.fisheye),
+            tuple(float(v) for v in np.asarray(prof.K, np.float64).ravel()),
+            tuple(float(v) for v in np.asarray(prof.dist, np.float64).ravel()))
+
+
+def read_lens_for(path: str | Path, view: int, cam_name: str = "") -> tuple[LensProfile | None, str]:
+    """THE lens-file dispatch of both wizards (R19): a Kinetrace .klens.json or
+    an OpenCV .yml / .json (`calibio.read_lens`), else an Argus / DLTdv profile
+    text, where the file's own camera column decides which line camera `view`
+    gets (`argus_profile_for`, I80). -> (profile or None, a sentence: the line
+    that was used, or why there is none)."""
+    if str(path).lower().endswith((".json", ".yml", ".yaml")):
+        from kinetrace import calibio
+        return calibio.read_lens(path), ""
+    return argus_profile_for(path, view, cam_name)
+
+
 def load_argus_profile(path: str | Path) -> list[LensProfile]:
     """An Argus / DLTdv camera profile text file: one camera per line,
     `cam f w h cx cy AR k1 k2 t1 t2 k3` (pinhole + OpenCV distortion). Pixels
@@ -309,27 +361,28 @@ def save_checkerboard_png(path: str | Path, cols_inner: int = DEFAULT_PATTERN[0]
     p = Path(path)
     if p.suffix.lower() != ".png":
         p = p.with_suffix(".png")
-    # PNG with the dpi recorded so viewers print it at the right size
-    ok = cv2.imwrite(str(p), img)
+    # PNG with the dpi recorded so viewers print it at the right size. (I222) encoded in memory and
+    # written with Python's own file API: cv2.imwrite cannot open a path with a non-ASCII character
+    # on Windows ("José"), and answered False with no reason
+    ok, enc = cv2.imencode(".png", img)
     if not ok:
-        raise OSError(f"could not write {p}")
-    _write_png_dpi(p, dpi)
+        raise OSError(f"could not encode the checkerboard as a PNG ({p})")
+    p.write_bytes(_png_with_dpi(bytes(enc), dpi))
     return img.shape[1] / px_per_mm, img.shape[0] / px_per_mm
 
 
-def _write_png_dpi(path: Path, dpi: int) -> None:
-    """Insert a pHYs chunk so the PNG carries its print resolution."""
+def _png_with_dpi(data: bytes, dpi: int) -> bytes:
+    """The PNG `data` with a pHYs chunk so it carries its print resolution."""
     import struct
     import zlib
-    data = path.read_bytes()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
-        return
+        return data
     ppm = int(round(dpi / 0.0254))
     body = struct.pack(">IIB", ppm, ppm, 1)
     chunk = struct.pack(">I", len(body)) + b"pHYs" + body
     chunk += struct.pack(">I", zlib.crc32(b"pHYs" + body) & 0xFFFFFFFF)
     # after IHDR (8 signature + 25 IHDR bytes)
-    path.write_bytes(data[:33] + chunk + data[33:])
+    return data[:33] + chunk + data[33:]
 
 
 # ----------------------------------------------------------------- detect
@@ -464,6 +517,23 @@ def orientation_note(pattern: tuple[int, int]) -> str:
             "with one odd and one even count -- the printed board is 9 x 6.")
 
 
+def corner_zero_text(how: str, pattern: tuple[int, int]) -> str:
+    """What corner 0 (the ringed dot) IS on ONE board, from how it was chosen
+    (`orient_board`'s tag: "colour" / "image", "" = unknown) - the corner editor's
+    hint (G138: it said "the same physical corner on every board" for a symmetric
+    board and for one too faint to tell by colour, where that is false)."""
+    if how == "colour":
+        return ("corner 0 - the inner corner beside the black square, the same physical corner on every "
+                "board whose corner 0 was found this way.")
+    if how == "image":
+        if not board_is_asymmetric(pattern):
+            return ("corner 0 - simply the corner nearest the top-left of the picture: this board looks the same "
+                    "turned upside down, so it is NOT the same physical corner from board to board.")
+        return ("corner 0 - chosen from the picture's top-left, because this board had too little contrast "
+                "to tell the black square: it may not be the same physical corner as on other boards.")
+    return "corner 0, where the corner order starts."
+
+
 def orientation_summary(orient: list[str], pattern: tuple[int, int]) -> str:
     """One plain sentence for the review board: how corner 0 was recognised."""
     n = len(orient)
@@ -508,9 +578,36 @@ def select_diverse(corner_list: list[np.ndarray], size: tuple[int, int], keep: i
     d = np.linalg.norm(F - F[chosen[0]], axis=1)
     while len(chosen) < keep:
         k = int(np.argmax(d))
+        if d[k] <= 1e-9:
+            break           # (I179) what is left is a copy of a pose already chosen: never the same index twice
         chosen.append(k)
         d = np.minimum(d, np.linalg.norm(F - F[k], axis=1))
     return sorted(chosen)
+
+
+# two views of the board are "the same pose" when it sits in the same place, at the same size and
+# the same tilt: centre within 1.5 % of the picture, size within 3 %, aspect / skew within 0.03
+POSE_CENTRE_TOL, POSE_SIZE_TOL, POSE_SKEW_TOL = 0.015, 0.03, 0.03
+
+
+def pose_clusters(corner_list: list[np.ndarray], size: tuple[int, int]) -> np.ndarray:
+    """A label per view; views holding the board (nearly) still share one
+    (I179: ten poses held for eight frames each are ten views of the board, not
+    eighty). Greedy: a view joins the first earlier pose it matches."""
+    labels = np.zeros(len(corner_list), int)
+    reps: list[np.ndarray] = []
+    for i, c in enumerate(corner_list):
+        f = board_features(np.asarray(c, np.float64).reshape(-1, 2), size)
+        for k, r in enumerate(reps):
+            if (np.abs(f[:2] - r[:2]).max() <= POSE_CENTRE_TOL
+                    and abs(f[2] - r[2]) <= POSE_SIZE_TOL * max(r[2], 1e-9)
+                    and abs(f[3] - r[3]) <= POSE_SKEW_TOL):
+                labels[i] = k
+                break
+        else:
+            labels[i] = len(reps)
+            reps.append(f)
+    return labels
 
 
 THUMB_MAX_W = 480       # per-board preview kept in memory for the review board
@@ -688,26 +785,38 @@ def draw_board_review(bgr: np.ndarray, corners: np.ndarray, pattern: tuple[int, 
         cv2.circle(img, p0, int(max(4, r * 2.5)), (60, 120, 255), max(1, r - 1),
                    cv2.LINE_AA)                                      # corner 0
     if axes and prof is not None:
-        try:
-            pose = view_pose(corners, pattern, square, prof)
-            if pose is not None:
-                L = 3.0 * float(square)
-                pts = project_with(prof, np.array([[0, 0, 0], [L, 0, 0], [0, L, 0], [0, 0, -L]]),
-                                   pose[0], pose[1]) * float(scale)
-                o = tuple(np.round(pts[0]).astype(int))
-                for k, col, lab in ((1, (60, 60, 240), "X"), (2, (60, 220, 60), "Y"),
-                                    (3, (240, 160, 60), "Z")):
-                    q = tuple(np.round(pts[k]).astype(int))
-                    cv2.arrowedLine(img, o, q, col, 2, cv2.LINE_AA, tipLength=0.25)
-                    cv2.putText(img, lab, (q[0] + 3, q[1] + 4), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.45, col, 1, cv2.LINE_AA)
-        except cv2.error:
-            pass
+        for lab, a, b in board_axes(corners, pattern, square, prof):
+            o = tuple(np.round(a * float(scale)).astype(int))
+            q = tuple(np.round(b * float(scale)).astype(int))
+            col = AXIS_COLORS_BGR[lab]
+            cv2.arrowedLine(img, o, q, col, 2, cv2.LINE_AA, tipLength=0.25)
+            cv2.putText(img, lab, (q[0] + 3, q[1] + 4), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, col, 1, cv2.LINE_AA)
     return img
 
 
+AXIS_COLORS_BGR = {"X": (60, 60, 240), "Y": (60, 220, 60), "Z": (240, 160, 60)}
+
+
+def board_axes(corners: np.ndarray, pattern: tuple[int, int], square: float,
+               prof: "LensProfile") -> list:
+    """The board's own X / Y / Z axes, 3 squares long, as (label, start, end)
+    in VIDEO pixels (empty when the pose cannot be solved): what the review
+    board draws on a thumbnail and the corner editor over the full frame."""
+    try:
+        pose = view_pose(corners, pattern, square, prof)
+        if pose is None:
+            return []
+        L = 3.0 * float(square)
+        pts = project_with(prof, np.array([[0, 0, 0], [L, 0, 0], [0, L, 0], [0, 0, -L]]),
+                           pose[0], pose[1])
+    except cv2.error:
+        return []
+    return [("X", pts[0], pts[1]), ("Y", pts[0], pts[2]), ("Z", pts[0], pts[3])]
+
+
 def auto_select(corner_list: list[np.ndarray], pattern: tuple[int, int], square: float,
-                size: tuple[int, int], model: str = "auto", keep: int = 40
+                size: tuple[int, int], model: str = "auto", keep: int = MAX_VIEWS
                 ) -> tuple[list[int], np.ndarray, str]:
     """Pick the views worth calibrating from, in two passes.
 
@@ -735,9 +844,8 @@ def auto_select(corner_list: list[np.ndarray], pattern: tuple[int, int], square:
     ok = np.isfinite(err)
     if not ok.any():
         return spread, err, "the spread could not be scored; using it as it is"
-    med = float(np.median(err[ok]))
-    limit = max(3.0 * med, 0.5)
-    good = [i for i in spread if ok[i] and err[i] <= limit]
+    limit = outlier_limit(err, OUTLIER_FLOOR_PICK_PX)
+    good =[i for i in spread if ok[i] and err[i] <= limit]
     dropped = len(spread) - len(good)
     if len(good) < max(8, len(spread) // 3):      # too aggressive: keep the spread
         return spread, err, (f"{len(spread)} of {n} boards chosen for a good spread "
@@ -749,6 +857,20 @@ def auto_select(corner_list: list[np.ndarray], pattern: tuple[int, int], square:
     return good, err, why
 
 
+def _fisheye_flags() -> int:
+    """The fisheye solver's flags, by NAME: they moved between OpenCV 4 (cv2.fisheye.*) and 5
+    (cv2.*) and their values differ, so a name this build does not know is an error, not a
+    fallback to OpenCV 4's numbers (R19)."""
+    flags = 0
+    for name in ("CALIB_RECOMPUTE_EXTRINSIC", "CALIB_FIX_SKEW"):
+        v = getattr(cv2.fisheye, name, getattr(cv2, name, None))
+        if v is None:
+            raise ValueError(f"this OpenCV ({cv2.__version__}) does not name the fisheye flag {name}, so the "
+                             "fisheye lens model cannot be fitted here")
+        flags |= int(v)
+    return flags
+
+
 def _fit(corner_list, pattern, square, size, fisheye: bool):
     obj = _object_points(pattern, square)
     if fisheye:
@@ -757,9 +879,7 @@ def _fit(corner_list, pattern, square, size, fisheye: bool):
         imgs = [c.reshape(1, -1, 2).astype(np.float64) for c in corner_list]
         K = np.zeros((3, 3))
         D = np.zeros((4, 1))
-        # the flag names moved between OpenCV 4 and 5; the values are stable
-        flags = (getattr(cv2.fisheye, "CALIB_RECOMPUTE_EXTRINSIC", getattr(cv2, "CALIB_RECOMPUTE_EXTRINSIC", 2))
-                 | getattr(cv2.fisheye, "CALIB_FIX_SKEW", getattr(cv2, "CALIB_FIX_SKEW", 8)))
+        flags = _fisheye_flags()
         rms, K, D, rvecs, tvecs = cv2.fisheye.calibrate(
             objs, imgs, size, K, D, flags=flags,
             criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 60, 1e-7))
@@ -789,10 +909,13 @@ def _fit(corner_list, pattern, square, size, fisheye: bool):
 
 def calibrate_lens(corner_list: list[np.ndarray], pattern: tuple[int, int], square: float,
                    size: tuple[int, int], model: str = "auto", source: str = "checkerboard (Kinetrace)",
-                   max_views: int = 40) -> LensProfile:
+                   max_views: int = MAX_VIEWS) -> LensProfile:
     """Fit the lens from detected boards. `model`: "standard" (pinhole +
     k1, k2), "fisheye" (Kannala-Brandt, wide-angle / action cameras) or
-    "auto" (fit both, keep the clearly better one, prefer standard)."""
+    "auto" (fit both, keep the clearly better one, prefer standard). A list
+    longer than `max_views` is thinned to a diverse spread of that many (the
+    review board passes the length of the boards the user ticked, so a hand-made
+    choice is fitted whole, G116)."""
     if len(corner_list) < 3:
         raise ValueError(f"only {len(corner_list)} usable views of the board; at least 3 are needed, "
                          "15 or more for a trustworthy result")
@@ -809,7 +932,7 @@ def calibrate_lens(corner_list: list[np.ndarray], pattern: tuple[int, int], squa
             # robust pass: a blurred or mis-detected view fits far worse than
             # the rest; set it aside and refit once (needs enough views left)
             pv = np.asarray(fit[3])
-            bad = pv > 3.0 * max(float(np.median(pv)), 0.15)
+            bad = pv > outlier_limit(pv, OUTLIER_FLOOR_FIT_PX)
             if bad.any() and (len(use) - int(bad.sum())) >= 8:
                 keep = [c for c, b in zip(use, bad) if not b]
                 used = [i for i, b in zip(idx, bad) if not b]
@@ -817,19 +940,29 @@ def calibrate_lens(corner_list: list[np.ndarray], pattern: tuple[int, int], squa
                 dropped[kind] = int(bad.sum())
             fits[kind] = fit
             fitted[kind] = used
-        except cv2.error as e:      # the fisheye solver is picky about degenerate views
+        except (cv2.error, ValueError) as e:      # the fisheye solver is picky about degenerate views
             errors[kind] = str(e).splitlines()[-1][:160]
     if not fits:
         raise ValueError("the lens fit failed: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
+    scores = {k: v[0] for k, v in fits.items()}
+    runaway = None
     if model == "auto" and "fisheye" in fits and "standard" in fits:
-        chosen = "fisheye" if fits["fisheye"][0] < 0.8 * fits["standard"][0] else "standard"
+        # (I178) both final models are scored on the SAME views: each one's robust pass drops its own
+        # worst views, so comparing their own fit errors let the model that discarded what it cannot
+        # follow win (standard kept at 0.138 px over 35 views where, on the same 40, the fisheye fits
+        # 0.145 against its 0.281)
+        scores = _same_view_scores(corner_list, fits, fitted, pattern, square, size)
+        chosen = "fisheye" if scores["fisheye"] < 0.8 * scores["standard"] else "standard"
         if chosen == "fisheye":
             # a fisheye fit that runs away in the corners (its inverse does not
             # converge where the board never went) is not "better" however it
             # scores on the boards: it cannot undistort part of the picture
             fk, fd = fits["fisheye"][1], fits["fisheye"][2]
-            if LensProfile(int(size[0]), int(size[1]), fk, fd, True).border_check()["runaway"]:
+            chk = LensProfile(int(size[0]), int(size[1]), fk, fd, True).border_check()
+            if chk["runaway"]:
                 chosen = "standard"
+                runaway = {"fisheye_score_px": scores["fisheye"], "standard_score_px": scores["standard"],
+                           "border_valid_frac": float(chk["valid_frac"])}      # (G117) said in the report
     else:
         chosen = next(iter(fits))
     rms, K, dist, per_view, tilts = fits[chosen]
@@ -839,15 +972,31 @@ def calibrate_lens(corner_list: list[np.ndarray], pattern: tuple[int, int], squa
     # set-aside views (typically the blurred ones swung into a corner) must not
     # count towards the view total, the coverage or the reach into the corners
     views = [corner_list[i] for i in fitted[chosen]]
-    prof.report = lens_report(prof, views, per_view, tilts, {k: v[0] for k, v in fits.items()}, errors, model)
+    prof.report = lens_report(prof, views, per_view, tilts, scores, errors, model, fisheye_runaway=runaway)
     # which of the given views were fitted, so the evidence shown matches (I78)
     prof.report["views_used"] = [int(i) for i in fitted[chosen]]
     if dropped.get(chosen):
         prof.report["views_set_aside"] = int(dropped[chosen])
         prof.report["verdict_reasons"].append(
-            f"{dropped[chosen]} view(s) fitted far worse than the rest (blur or a mis-detected board) and were "
-            "set aside before the final fit.")
+            f"{dropped[chosen]} view(s) fitted far worse than the rest (blur, a mis-detected board, or a lens "
+            "this model cannot follow near the edges) and were set aside before the final fit.")
     return prof
+
+
+def _same_view_scores(corner_list, fits: dict, fitted: dict, pattern, square, size) -> dict:
+    """Per model, the TYPICAL (median) reprojection error of its final lens on the
+    views EITHER model's final fit used - the same boards for both, so the two
+    numbers can be compared (I178). The median, not the pooled rms: one blurred
+    board in the set would otherwise decide a comparison it has nothing to say about."""
+    union = sorted(set(fitted["standard"]) | set(fitted["fisheye"]))
+    views = [corner_list[i] for i in union]
+    out = {}
+    for kind, fit in fits.items():
+        tmp = LensProfile(int(size[0]), int(size[1]), fit[1], fit[2], kind == "fisheye")
+        e = per_view_errors(views, pattern, float(square), tmp)
+        e = e[np.isfinite(e)]
+        out[kind] = float(np.median(e)) if len(e) else float(fit[0])
+    return out
 
 
 def coverage_pct(corner_list: list[np.ndarray], size: tuple[int, int]) -> float:
@@ -870,18 +1019,23 @@ def edge_reach_pct(corner_list: list[np.ndarray], size: tuple[int, int]) -> floa
 
 
 def lens_report(prof: LensProfile, views: list[np.ndarray], per_view: list[float], tilts: list[float],
-                rms_by_model: dict, errors: dict, model_requested: str) -> dict:
+                rms_by_model: dict, errors: dict, model_requested: str,
+                fisheye_runaway: dict | None = None) -> dict:
     w, h = prof.width, prof.height
-    scale = max(1.0, w / 1920.0)
+    scale = px_scale(w, h)                                  # (I250) by the longer side
     cov = coverage_pct(views, (w, h))
     reach = edge_reach_pct(views, (w, h))
-    n = len(views)
-    tilted = int(np.sum(np.asarray(tilts) >= 20.0))
+    # (I179) views of one held pose are ONE pose: the view and tilt rules count distinct poses
+    labels = pose_clusters(views, (w, h)) if len(views) else np.zeros(0, int)
+    n_total = len(views)
+    n = int(len(set(labels.tolist())))
+    tilt_mask = np.asarray(tilts) >= 20.0
+    tilted = int(len(set(labels[tilt_mask[:len(labels)]].tolist()))) if len(labels) else 0
     bend = prof.distortion_at_border()
     worst = float(np.max(per_view)) if per_view else float("nan")
     reasons = []
     good = ok = True
-    r_lim_good, r_lim_ok = 0.6 * scale, 1.2 * scale
+    r_lim_good, r_lim_ok = rms_limits(w, h)
     if prof.rms <= r_lim_good:
         reasons.append(f"The corner detections agree with the lens model to {prof.rms:.2f} px: a clean fit.")
     elif prof.rms <= r_lim_ok:
@@ -893,14 +1047,17 @@ def lens_report(prof: LensProfile, views: list[np.ndarray], per_view: list[float
         reasons.append(f"Fit error {prof.rms:.2f} px is too high. Usual causes: the square count typed does "
                        "not match the printed board, the board is not flat, motion blur, or a wrong "
                        "lens model (try the other one).")
+    held = (f" ({n_total} frames, but the board was held still in some of them)" if n < n_total else "")
     if n >= 15:
-        reasons.append(f"{n} views of the board were used.")
+        reasons.append(f"{n_total} views of the board were used"
+                       + (f", {n} of them distinct poses (the rest hold the board still)" if n < n_total else "") + ".")
     elif n >= 8:
         good = False
-        reasons.append(f"Only {n} usable views: film the board in more positions and tilts (20 or more is comfortable).")
+        reasons.append(f"Only {n} usable views{held}: film the board in more positions and tilts (20 or more is "
+                       "comfortable).")
     else:
         good = ok = False
-        reasons.append(f"Only {n} usable views: not enough to pin the lens down. Film a longer, slower pass "
+        reasons.append(f"Only {n} usable views{held}: not enough to pin the lens down. Film a longer, slower pass "
                        "with the board sharp in every frame.")
     if cov >= 55.0 and reach >= 85.0:
         reasons.append(f"The board covered {cov:.0f}% of the picture and reached {reach:.0f}% of the way "
@@ -963,12 +1120,23 @@ def lens_report(prof: LensProfile, views: list[np.ndarray], per_view: list[float
                        "corner to corner. Compare with the camera's own figure (a GoPro 'Wide' is roughly "
                        "120-150, 'Linear' about 90-100, a phone 70-85, a camcorder 40-70).")
     if len(rms_by_model) == 2:
-        reasons.append("Both lens models were tried: standard {:.2f} px, fisheye {:.2f} px; the {} model was kept.".format(
-            rms_by_model["standard"], rms_by_model["fisheye"], "fisheye" if prof.fisheye else "standard"))
+        reasons.append("Both lens models were tried: standard {:.2f} px, fisheye {:.2f} px (typical error on the "
+                       "same boards); the {} model was kept.".format(
+                           rms_by_model["standard"], rms_by_model["fisheye"], "fisheye" if prof.fisheye else "standard"))
+    if fisheye_runaway:
+        # (G117) the 0.8 x rule picked the fisheye model, the border check overruled it: say so, or the
+        # sentence above contradicts the rule it quotes
+        lost = 100.0 * (1.0 - fisheye_runaway["border_valid_frac"])
+        reasons.append(f"The fisheye model fitted these boards better ({fisheye_runaway['fisheye_score_px']:.2f} px "
+                       f"against {fisheye_runaway['standard_score_px']:.2f} px) but it runs away in the picture "
+                       f"corners: {lost:.0f}% of the picture's border cannot be undistorted with it. The standard "
+                       "model was kept; film the board pushed into every corner to let the fisheye model be "
+                       "measured there.")
     for k, v in errors.items():
         reasons.append(f"The {k} model could not be fitted ({v}).")
     verdict = "good" if good else ("ok" if ok else "poor")
-    return {"verdict": verdict, "verdict_reasons": reasons, "rms_px": float(prof.rms), "n_views": n,
+    return {"verdict": verdict, "verdict_reasons": reasons, "rms_px": float(prof.rms), "n_views": n_total,
+            "n_poses": n, "fisheye_runaway_rejected": fisheye_runaway,
             "coverage_pct": cov, "edge_reach_pct": reach, "tilted_views": tilted,
             "worst_view_px": worst, "distortion_border_px": bend, "model": "fisheye" if prof.fisheye else "standard",
             "border_valid_frac": float(chk["valid_frac"]), "border_runaway": bool(chk["runaway"]),

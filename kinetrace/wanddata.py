@@ -18,16 +18,19 @@ import numpy as np
 from kinetrace.calib import sample_tracks_at
 
 
-def raw_tracks(session) -> np.ndarray:
-    """(T, N, 2) float64 pixels, NaN where not exportable (untracked or hidden)."""
-    out = np.asarray(session.tracks, np.float64).copy()
-    ok = session.exportable & np.isfinite(session.tracks).all(axis=2)
-    out[~ok] = np.nan
-    return out
+def raw_track(session, j: int) -> np.ndarray:
+    """(T, 2) float64 pixels of landmark column `j`, NaN where not exportable
+    (untracked or hidden). One column, not the whole (T, N) array copied per
+    (landmark, camera) as it was (R20: 17 ms against 0.4 ms at 40k x 30; the
+    values are the same)."""
+    col = np.asarray(session.tracks[:, j], np.float64)
+    ok = session.exportable_at(slice(None), j) & np.isfinite(col).all(axis=1)
+    return np.where(ok[:, None], col, np.nan)
 
 
 def reference_window(project) -> tuple[int, int]:
-    """Integer reference instants every camera covers."""
+    """Integer reference instants every camera covers (kept for the tests: the
+    app samples over `sampling_window`, I30)."""
     lo, hi = -np.inf, np.inf
     for i, s in enumerate(project.sessions):
         lo = max(lo, project.reference_time(i, 0))
@@ -65,7 +68,7 @@ def common_point_names(project, min_views: int = 2) -> list[str]:
     for s in project.sessions:
         seen = set()
         for j, q in enumerate(s.points):
-            if q.name in seen or not s.exportable[:, j].any():
+            if q.name in seen or not s.exportable_at(slice(None), j).any():
                 continue
             seen.add(q.name)
             if q.name not in counts:
@@ -83,7 +86,7 @@ def _sample_name(project, name: str, t: np.ndarray) -> np.ndarray:
         j = s.pid_by_name(name)
         if j is None:
             continue
-        rt = raw_tracks(s)[:, j:j + 1]                 # (T, 1, 2)
+        rt = raw_track(s, j)[:, None]                  # (T, 1, 2)
         # vectorised Project.local_frame: rate * t + offset for every instant
         local = project.rates[c] * np.asarray(t, np.float64) + project.offsets[c]
         out[:, c] = sample_tracks_at(rt, local)[:, 0]
@@ -267,7 +270,7 @@ def coverage_summary(project, name_a: str, name_b: str) -> list[tuple[str, int, 
     out = []
     for c, s in enumerate(project.sessions):
         ja, jb = s.pid_by_name(name_a), s.pid_by_name(name_b)
-        ea = s.exportable[:, ja] if ja is not None else np.zeros(s.n_frames, bool)
-        eb = s.exportable[:, jb] if jb is not None else np.zeros(s.n_frames, bool)
+        ea = s.exportable_at(slice(None), ja) if ja is not None else np.zeros(s.n_frames, bool)
+        eb = s.exportable_at(slice(None), jb) if jb is not None else np.zeros(s.n_frames, bool)
         out.append((project.name(c), int((ea & eb).sum()), int((ea | eb).sum())))
     return out

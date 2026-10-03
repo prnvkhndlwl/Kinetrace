@@ -25,7 +25,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, QThread, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
@@ -34,27 +34,34 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFrame, QGr
 from kinetrace import lens, theme
 
 TILE_W = 300                 # thumbnail width in the gallery
-GOOD_PX = 0.6                # per-view reprojection at or under this reads "good"
-POOR_PX = 1.5                # and at or over this reads "poor"
 
 
-def _pixmap(bgr: np.ndarray, width: int | None = None) -> QPixmap:
+def pixmap(bgr: np.ndarray, width: int | None = None, max_w: int | None = None) -> QPixmap:
+    """A BGR picture as a QPixmap: scaled to exactly `width` px wide, or only
+    DOWN to `max_w` (one helper for the gallery and the result page, R19)."""
     img = bgr
     if width and img.shape[1] != width:
         h = max(1, round(img.shape[0] * width / img.shape[1]))
         img = cv2.resize(img, (width, h), interpolation=cv2.INTER_AREA)
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    elif max_w and img.shape[1] > max_w:
+        h = max(1, round(img.shape[0] * max_w / img.shape[1]))
+        img = cv2.resize(img, (max_w, h), interpolation=cv2.INTER_AREA)
+    rgb = np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     q = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888)
     return QPixmap.fromImage(q.copy())
 
 
-def quality(err: float) -> tuple[str, str]:
-    """(word, colour) for one view's reprojection error."""
+def quality(err: float, size: tuple[int, int] | None = None) -> tuple[str, str]:
+    """(word, colour) for one view's reprojection error: green up to the lens
+    report's "good" limit, amber up to its "ok" limit, red beyond - the SAME
+    limits the report grades the fit with (`lens.rms_limits`, R19; the tiles
+    used a fixed 0.6 / 1.5 px beside the report's resolution-scaled ones)."""
     if not np.isfinite(err):
         return "not scored", theme.TEXT_DIM
-    if err <= GOOD_PX:
+    good, ok = lens.rms_limits(*(size or (1920, 1080)))
+    if err <= good:
         return f"{err:.2f} px", theme.GREEN
-    if err < POOR_PX:
+    if err <= ok:
         return f"{err:.2f} px", "#E0A030"
     return f"{err:.2f} px", theme.RED
 
@@ -102,11 +109,13 @@ class CornerEditor(QDialog):
 
     The frame is re-read from the video rather than kept in memory -- the scan
     holds 480 px thumbnails so that a hundred 4K boards cost 40 MB instead of
-    2.5 GB, and this is the one place the real pixels are needed.
+    2.5 GB, and this is the one place the real pixels are needed. The caller
+    deletes the dialog after use (I249: each one kept ~47 MB of a 5.3K frame
+    for the whole session).
     """
 
     def __init__(self, parent, bgr: np.ndarray, corners: np.ndarray,
-                 pattern: tuple[int, int], square: float, prof, frame_no: int):
+                 pattern: tuple[int, int], square: float, prof, frame_no: int, orient: str = ""):
         super().__init__(parent)
         self.setWindowTitle(f"Frame {frame_no} - drag a corner to correct it")
         self.resize(1100, 820)
@@ -117,15 +126,16 @@ class CornerEditor(QDialog):
         self.square = square
         self.prof = prof
         self._drag: int | None = None
-        self._zoom = 1.0
         self._dirty = False
+        self._gray: np.ndarray | None = None
 
         lay = QVBoxLayout(self)
-        hint = QLabel("Drag any green dot onto the true corner. The ringed dot is corner 0 - the "
-                      "inner corner beside the black square, the same physical corner on every "
-                      "board - and the arrows are the board's own axes. If they point somewhere "
-                      "silly, the corners were found in the wrong order and the view is better "
-                      "left out.")
+        # (G138) the hint follows how THIS board's corner 0 was chosen: "the same physical corner on
+        # every board" is false for a symmetric board and for one too faint to tell by colour
+        hint = QLabel("Drag any green dot onto the true corner. The ringed dot is "
+                      + lens.corner_zero_text(orient, pattern)
+                      + " The arrows are the board's own axes: if they point somewhere silly, the corners "
+                        "were found in the wrong order and the view is better left out.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.TEXT_DIM};")
         lay.addWidget(hint)
@@ -147,6 +157,12 @@ class CornerEditor(QDialog):
         row.addWidget(bb)
         lay.addLayout(row)
         self._refresh()
+
+    def gray(self) -> np.ndarray:
+        """The frame in grey, made once (the corner snap on every mouse release)."""
+        if self._gray is None:
+            self._gray = cv2.cvtColor(self.bgr, cv2.COLOR_BGR2GRAY)
+        return self._gray
 
     def _reset(self):
         self.corners = self.original.copy()
@@ -170,13 +186,17 @@ class CornerEditor(QDialog):
 
 class _EditorCanvas(QWidget):
     """The picture, fitted to the widget, with the corners drawn on top and
-    draggable. Kept separate so the dialog stays readable."""
+    draggable. Kept separate so the dialog stays readable. The frame is turned
+    into a QPixmap ONCE; every repaint draws it scaled and paints the corners,
+    the first-row line, the ring and the axes with QPainter (the whole frame was
+    re-marked with OpenCV and re-converted on every mouse move: 28 ms at 4K, R19)."""
 
     def __init__(self, dlg: CornerEditor):
         super().__init__(dlg)
         self.dlg = dlg
         self.setMouseTracking(True)
         self._hover: int | None = None
+        self._base = pixmap(dlg.bgr)
 
     # ---- geometry ----
     def _fit(self) -> tuple[float, float, float]:
@@ -197,19 +217,42 @@ class _EditorCanvas(QWidget):
     def paintEvent(self, _ev):
         d = self.dlg
         p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
         p.fillRect(self.rect(), QColor(theme.BG_CANVAS))
         s, ox, oy = self._fit()
         ih, iw = d.bgr.shape[:2]
-        marked = lens.draw_board_review(d.bgr, d.corners, d.pattern, d.square, d.prof,
-                                        scale=1.0, axes=True)
-        p.drawPixmap(QRect(int(ox), int(oy), int(iw * s), int(ih * s)), _pixmap(marked))
-        # the draggable handles, in widget space so they stay a usable size
+        p.drawPixmap(QRect(int(ox), int(oy), int(iw * s), int(ih * s)), self._base)
         pts = self._to_widget(d.corners)
+        cols = int(d.pattern[0])
+        if len(pts) >= cols:
+            # the first row, so a flipped or rotated detection is obvious (what lens.draw_board_review draws)
+            p.setPen(QPen(QColor(90, 210, 250), 2))
+            p.drawPolyline([QPointF(float(x), float(y)) for x, y in pts[:cols]])
+        if d.prof is not None:
+            for lab, a, b in lens.board_axes(d.corners, d.pattern, d.square, d.prof):
+                col = QColor(*lens.AXIS_COLORS_BGR[lab][::-1])
+                wa, wb = self._to_widget(a), self._to_widget(b)
+                p.setPen(QPen(col, 2))
+                p.drawLine(QPointF(*wa), QPointF(*wb))
+                v = wb - wa
+                n = float(np.linalg.norm(v))
+                if n > 1e-6:
+                    u = v / n
+                    nrm = np.array([-u[1], u[0]])
+                    for sgn in (1.0, -1.0):
+                        tip = wb - 10.0 * u + sgn * 5.0 * nrm
+                        p.drawLine(QPointF(*wb), QPointF(*tip))
+                p.drawText(QPointF(float(wb[0]) + 4, float(wb[1]) + 5), lab)
+        # the draggable handles, in widget space so they stay a usable size
         for i, (x, y) in enumerate(pts):
             hot = (i == self._hover) or (i == d._drag)
             p.setPen(QPen(QColor(theme.ACCENT if hot else "#40E080"), 2))
             r = 9 if hot else 5
             p.drawEllipse(QPoint(int(x), int(y)), r, r)
+        if len(pts):
+            p.setPen(QPen(QColor(255, 120, 60), 2))                    # corner 0
+            p.drawEllipse(QPoint(int(pts[0, 0]), int(pts[0, 1])), 14, 14)
         moved = np.linalg.norm(d.corners - d.original, axis=1) > 0.5
         p.setPen(QPen(QColor(theme.RED), 2))
         for x, y in pts[moved]:
@@ -246,10 +289,9 @@ class _EditorCanvas(QWidget):
             # snap to the true corner near where it was dropped, so a rough
             # drag still lands sub-pixel -- the same refinement the detector
             # itself uses
-            gray = cv2.cvtColor(d.bgr, cv2.COLOR_BGR2GRAY)
             pt = np.array([[d.corners[d._drag]]], np.float32)
             try:
-                ref = cv2.cornerSubPix(gray, pt, (9, 9), (-1, -1),
+                ref = cv2.cornerSubPix(d.gray(), pt, (9, 9), (-1, -1),
                                        (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER,
                                         40, 0.001))
                 cand = np.asarray(ref, np.float64).reshape(2)
@@ -267,9 +309,11 @@ class _Tile(QFrame):
     toggled = Signal(int, bool)
     opened = Signal(int)
 
-    def __init__(self, i: int, frame_no: int, pix: QPixmap, err: float, used: bool):
+    def __init__(self, i: int, frame_no: int, pix: QPixmap, err: float, used: bool,
+                 size: tuple[int, int] | None = None):
         super().__init__()
         self.i = i
+        self._size = size
         self.setFrameShape(QFrame.StyledPanel)
         # A fixed width, or the grid stretches each tile across its cell and
         # the picture floats in a sea of panel.
@@ -292,11 +336,12 @@ class _Tile(QFrame):
         self.chk.toggled.connect(lambda v: self.toggled.emit(self.i, bool(v)))
         row.addWidget(self.chk)
         row.addStretch(1)
-        word, col = quality(err)
+        word, col = quality(err, size)
         self.err = QLabel(word)
         self.err.setStyleSheet(f"color: {col};")
         self.err.setToolTip("How far this view's corners sit from where the fitted lens "
-                            "says they should be. Under 0.6 px is good.")
+                            f"says they should be. Under {lens.rms_limits(*(size or (1920, 1080)))[0]:.1f} px "
+                            "is good.")
         row.addWidget(self.err)
         lay.addLayout(row)
         self._restyle(used)
@@ -308,7 +353,7 @@ class _Tile(QFrame):
         self._restyle(used)
 
     def set_error(self, err: float):
-        word, col = quality(err)
+        word, col = quality(err, self._size)
         self.err.setText(word)
         self.err.setStyleSheet(f"color: {col};")
 
@@ -344,7 +389,11 @@ class BoardReview(QWidget):
         self.model = "auto"          # the lens model "Best spread" fits with
         self._reader: _FrameReader | None = None
         self._reader_scan = None
+        self._reading = -1           # the board whose full frame is being read
         self._tiles: list[_Tile] = []
+        # how a slow call ("Best spread" fits a lens) is run: by default right here; a wizard hands
+        # in its off-thread runner so the page keeps repainting (G51, R19)
+        self.runner = lambda fn: fn()
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -405,14 +454,22 @@ class BoardReview(QWidget):
     def chosen(self) -> list[int]:
         return [i for i, u in enumerate(self.used) if u]
 
-    def corners(self) -> list[np.ndarray]:
-        return list(self.scan.corners) if self.scan is not None else []
+    def set_fit(self, prof, errors, note: str = "") -> None:
+        """Show `prof` and the per-view `errors` OF THAT profile on every tile
+        (the one place that writes them: the review page used to reach into
+        `prof`, `errors` and the tiles itself, R19)."""
+        self.prof = prof
+        self.errors = np.asarray(errors, float)
+        for i, tile in enumerate(self._tiles):
+            tile.set_error(self.errors[i])
+            tile.set_pixmap(self._tile_image(i))
+        self._summarise(note)
 
     def _tile_image(self, i: int) -> QPixmap:
         s = self.scan
-        return _pixmap(lens.draw_board_review(s.thumbs[i], s.corners[i], self.pattern,
-                                              self.square, self.prof,
-                                              scale=s.thumb_scale(i)), TILE_W)
+        return pixmap(lens.draw_board_review(s.thumbs[i], s.corners[i], self.pattern,
+                                             self.square, self.prof,
+                                             scale=s.thumb_scale(i)), TILE_W)
 
     def _rebuild(self):
         while self.grid.count():
@@ -424,7 +481,8 @@ class BoardReview(QWidget):
             return
         per_row = self._per_row()
         for i in range(len(self.scan.corners)):
-            t = _Tile(i, self.scan.frames[i], self._tile_image(i), self.errors[i], self.used[i])
+            t = _Tile(i, self.scan.frames[i], self._tile_image(i), self.errors[i], self.used[i],
+                      self.scan.size)
             t.toggled.connect(self._on_toggle)
             t.opened.connect(self._edit)
             self.grid.addWidget(t, i // per_row, i % per_row, Qt.AlignTop | Qt.AlignLeft)
@@ -479,9 +537,18 @@ class BoardReview(QWidget):
     def _auto(self):
         if self.scan is None:
             return
-        # the lens model the user chose on the video page, not always "auto"
-        idx, err, why = lens.auto_select(self.scan.corners, self.pattern, self.square,
-                                         self.scan.size, self.model)
+        scan, prof = self.scan, self.prof
+        corners = list(scan.corners)
+
+        def work():
+            # the lens model the user chose on the video page, not always "auto"
+            idx, err, why = lens.auto_select(corners, self.pattern, self.square, scan.size, self.model)
+            if prof is not None:
+                # the errors of the profile the tiles DRAW (its axes), not of the provisional fit
+                # auto_select made on its way (R19)
+                err = lens.per_view_errors(corners, self.pattern, self.square, prof)
+            return idx, err, why
+        idx, err, why = self.runner(work)
         self.errors = err
         self.used = [i in set(idx) for i in range(len(self.used))]
         for i, t in enumerate(self._tiles):
@@ -495,7 +562,7 @@ class BoardReview(QWidget):
         if not np.isfinite(e).any():
             self._summarise("nothing to go on yet - fit once first")
             return
-        limit = max(3.0 * float(np.nanmedian(e)), 0.5)
+        limit = lens.outlier_limit(e, lens.OUTLIER_FLOOR_PICK_PX)
         for i in range(len(self.used)):
             if np.isfinite(e[i]) and e[i] > limit:
                 self.used[i] = False
@@ -516,20 +583,26 @@ class BoardReview(QWidget):
             self._read_failed(i, "the scan does not say which video it came from")
             return
         if self._reader is not None and self._reader.isRunning():
-            return                                  # one frame at a time
+            # one frame at a time - and say so (G138: a second click used to be dropped without a word)
+            self._summarise(f"still reading frame {int(s.frames[self._reading])} - open the next board in a "
+                            "moment" if 0 <= self._reading < len(s.frames) else "still reading a frame")
+            return
         self._summarise(f"reading frame {int(s.frames[i])} at full resolution...")
         th = _FrameReader(i, s.video, int(s.frames[i]))
         th.frame_ready.connect(self._on_frame)
         self._reader = th
         self._reader_scan = s
+        self._reading = i
         th.start()
 
     def stop_reader(self):
         """Wait for a frame read in flight before the page goes away (a
-        QThread collected while running takes the process down)."""
+        QThread collected while running takes the process down). A read ends by
+        itself, so the wait has no cap (I200: a 15 s cap closed over a running
+        thread)."""
         th = self._reader
         if th is not None and th.isRunning():
-            th.wait(15000)
+            th.wait()
 
     def _read_failed(self, i: int, why: str):
         # say it: a tile click that silently does nothing reads as a dead button
@@ -546,15 +619,24 @@ class BoardReview(QWidget):
         s = self.scan
         if s is None or s is not self._reader_scan or i >= len(s.corners):
             return                                  # a new scan arrived meanwhile
+        if not self.isVisible() or not self.isEnabled():
+            # (G114) the page was left, or a fit is running with the wizard disabled: an editor opened
+            # now would change corners under a fit that has already read them
+            self._summarise()
+            return
         if bgr is None:
             self._read_failed(i, why)
             return
         self._summarise()
+        orient = list(getattr(s, "orient", []) or [])
         dlg = CornerEditor(self, bgr, s.corners[i], self.pattern, self.square, self.prof,
-                           s.frames[i])
-        if dlg.exec() != QDialog.Accepted or not dlg.moved():
+                           s.frames[i], orient[i] if i < len(orient) else "")
+        accepted = dlg.exec() == QDialog.Accepted
+        moved, new_corners = dlg.moved(), dlg.corners.copy()
+        dlg.deleteLater()          # (I249) each editor kept its full-resolution frame for the session
+        if not accepted or not moved:
             return
-        s.corners[i] = dlg.corners
+        s.corners[i] = new_corners
         self.edited.add(i)
         self.corner_rev += 1
         try:

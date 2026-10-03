@@ -26,7 +26,8 @@ Pipeline (`calibrate_wand`)
 3. Bundle adjustment (`scipy.optimize.least_squares`, trust-region reflective,
    finite-difference Jacobian with an explicit sparsity pattern so that 6
    cameras x 800 points solve in well under a second per pass): per camera
-   rvec(3) + t(3) + f (+ k1, k2) (+ cx, cy), 3 per 3D point. Camera 0's pose
+   rvec(3) + t(3) + f (+ k1, k2), 3 per 3D point (the principal point stays at
+   the image centre or the lens profile's). Camera 0's pose
    is the gauge; the scale is left free here and fixed in step 5.
 4. Outlier rejection on the observations (3 x the median error but never
    below `OUTLIER_FLOOR_PX` at 1080p, two passes; or a fixed threshold with
@@ -70,6 +71,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -80,13 +82,24 @@ from .calib import (Calibration, CameraCalibration, NoUndistort, OpenCVUndistort
                     dlt_from_camera)
 
 FOCAL_GRID = (0.25, 0.4, 0.55, 0.75, 1.0, 1.3, 1.7, 2.2)   # initial f as a multiple of image width
-OUTLIER_FLOOR_PX = 2.0      # automatic rejection threshold floor at 1080p (scaled by width / 1920):
+OUTLIER_FLOOR_PX = 2.0      # automatic rejection threshold floor at 1080p (scaled by max(w, h) / 1920):
                             # a hand-digitized wand end is not reliable below ~2 px, and 3 x median
                             # alone threw away 13% of a real GoPro calibration's clicks and made its
                             # wand score WORSE (0.95% vs 0.68% with nothing rejected)
 MIN_PAIR_POINTS = 8         # co-visible points the initial camera pair needs
 MIN_PNP_POINTS = 6          # reconstructed points a camera needs before it can be registered
 _NCP = 11                   # parameters per camera: rvec(3) t(3) f k1 k2 cx cy
+# The named checks behind the verdict (I176): the reasons AND the verdict come from the
+# same list, so a verdict can never say GOOD beside a reason that says "unreliable".
+SCORE_GOOD_PCT, SCORE_OK_PCT = 1.0, 2.5        # wand score (sd / mean of the wand length, %)
+RMSE_GOOD_PX, RMSE_OK_PX = 1.0, 2.5            # reprojection error at 1080p
+MIN_COVERAGE_PCT = 25.0                        # of the picture the wand visited, per camera
+MIN_OBS_PER_CAMERA = 30                        # usable observations a camera should keep
+MIN_OBS_KEPT_FRAC = 0.5                        # ... and the share of its own observations
+MAX_REJECTED_PCT = 5.0                         # outliers set aside, of every observation
+MIN_FRAMES_USED = 20                           # wand frames; fewer is a note, not a failure
+# the gravity check's bands (G137): consistent / suspect, in % away from g
+G_CONSISTENT_PCT, G_SUSPECT_PCT = 2.0, 5.0
 # g in the world's unit (I27): the world is in whatever unit the wand length was
 # typed in, so a drop measured in mm/s^2 must be compared with 9810, not 9.81.
 # "wand" (length not measured yet) has no entry: there the fall MEASURES the unit.
@@ -109,6 +122,27 @@ def _cam(c: int, names=None, cap: bool = False) -> str:
     if names is not None and 0 <= c < len(names) and str(names[c]).strip():
         return str(names[c])
     return f"{'Camera' if cap else 'camera'} {c + 1}"
+
+
+def _px_scale(sizes) -> np.ndarray:
+    """Per camera: how many times a 1080p pixel one of its pixels is, by the
+    LONGER side (I250: a portrait 4K clip is as sharp as a landscape one, and
+    max(1, width / 1920) judged it 1.8 x stricter). The one rule for the
+    outlier floor, the soft-L1 knee and the reprojection verdict."""
+    s = np.asarray([[w, h] for w, h in sizes], np.float64)
+    return np.maximum(1.0, s.max(axis=1) / 1920.0)
+
+
+def _per_camera(value, C: int, what: str, dtype=bool) -> np.ndarray:
+    """One value, or one per camera, as a (C,) array: the rule of `focal`,
+    `estimate_focal` and `estimate_distortion`."""
+    arr = np.asarray(value, dtype)
+    if arr.ndim == 0:
+        return np.full(C, arr)
+    arr = arr.ravel()
+    if len(arr) != C:
+        raise WandError(f"{what} has {len(arr)} entries for {C} cameras")
+    return arr.copy()
 
 
 # ------------------------------------------------------------------ result
@@ -239,7 +273,10 @@ def _normalise(uv: np.ndarray, cams: np.ndarray, cam_idx: np.ndarray) -> np.ndar
         if not m.any():
             continue
         dist = np.array([cams[c, 7], cams[c, 8], 0.0, 0.0, 0.0])
-        und = cv2.undistortPoints(uv[m].reshape(-1, 1, 2).astype(np.float64), _K_of(cams, c), dist)
+        # (I177) converge the inverse (calib.OpenCVUndistort's rule, I73): OpenCV's default
+        # 5 steps left a GoPro-like k1 / k2 corner point 4.8 mm (median) off in 3D
+        und = cv2.undistortPoints(uv[m].reshape(-1, 1, 2).astype(np.float64), _K_of(cams, c), dist,
+                                  None, None, None, OpenCVUndistort.CRITERIA)
         xn[m] = und.reshape(-1, 2)
     return xn
 
@@ -437,12 +474,15 @@ def _register_camera(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, c: int, f_ca
     cams[c] = row
 
 
-def _initialise(obs: _Obs, f0: np.ndarray, pp: np.ndarray, sizes, search_focal: bool, names=None):
+def _initialise(obs: _Obs, f0: np.ndarray, pp: np.ndarray, sizes, search_focal, names=None):
     """Steps 1-2 of the pipeline: pair pose + incremental PnP; returns the
-    camera parameters (C, 11) in camera 0's frame and the 3D points (P, 3)."""
+    camera parameters (C, 11) in camera 0's frame and the 3D points (P, 3).
+    `search_focal`: one bool, or one per camera (I221: a camera with a known
+    focal length keeps it while the others try the grid for themselves)."""
     C = obs.C
     widths = np.array([s[0] for s in sizes], np.float64)
-    scale = np.maximum(1.0, widths / 1920.0)
+    scale = _px_scale(sizes)
+    search_c = _per_camera(search_focal, C, "search_focal")
     cams = np.full((C, _NCP), np.nan)
     cams[:, 6] = f0
     cams[:, 7:9] = 0.0
@@ -467,8 +507,9 @@ def _initialise(obs: _Obs, f0: np.ndarray, pp: np.ndarray, sizes, search_focal: 
         np.add.at(counts, obs.cam[m], 1)
         counts[registered] = -1
         c = int(np.argmax(counts))
-        cands = [mult * widths[c] for mult in FOCAL_GRID] if search_focal else [float(f0[c])]
-        _register_camera(obs, cams, pts3, c, cands, 4.0 * float(scale[c]), refine_f=search_focal, names=names)
+        cands = [mult * widths[c] for mult in FOCAL_GRID] if search_c[c] else [float(f0[c])]
+        _register_camera(obs, cams, pts3, c, cands, 4.0 * float(scale[c]), refine_f=bool(search_c[c]),
+                         names=names)
         registered.append(c)
         pts3 = _retriangulate(obs, cams, registered)
     # camera 0 becomes the reference frame: world' = R0 X + t0
@@ -478,23 +519,23 @@ def _initialise(obs: _Obs, f0: np.ndarray, pp: np.ndarray, sizes, search_focal: 
 # --------------------------------------------------------- bundle adjustment
 
 
-def _bundle_adjust(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, *, free_f: bool, free_dist: bool,
-                   free_pp: bool = False, loss: str = "linear", f_scale: float = 1.0,
-                   max_nfev: int = 200):
+def _bundle_adjust(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, *, free_f, free_dist,
+                   loss: str = "linear", f_scale: float = 1.0, max_nfev: int = 200):
     """Joint refinement of cameras and points on the kept observations of
     every point that has >= 2 of them. Parameter vector = the free entries of
     [cams (C x 11) | active points (x 3)]: camera 0's pose is never free (the
     gauge), f only with `free_f` (one bool, or one per camera, I144), k1/k2
     only with `free_dist` (one bool, or
     one per camera: a camera whose points were already undistorted by a lens
-    profile keeps k1 = k2 = 0 while the others fit theirs), cx/cy only
-    with `free_pp`. The Jacobian sparsity (each residual pair touches one
+    profile keeps k1 = k2 = 0 while the others fit theirs); the principal
+    point stays where it was put (the image centre or the lens profile's).
+    The Jacobian sparsity (each residual pair touches one
     camera block and one point) lets scipy estimate it with ~14 function
     evaluations per iteration."""
     C = cams.shape[0]
     P = pts3.shape[0]
-    fd = np.broadcast_to(np.asarray(free_dist, bool).ravel() if np.ndim(free_dist) else bool(free_dist), (C,))
-    ff = np.broadcast_to(np.asarray(free_f, bool).ravel() if np.ndim(free_f) else bool(free_f), (C,))
+    fd = _per_camera(free_dist, C, "free_dist")
+    ff = _per_camera(free_f, C, "free_f")
     ok_pt = np.isfinite(pts3).all(axis=1) & (np.bincount(obs.pt[obs.used], minlength=P) >= 2)
     sel = obs.used & ok_pt[obs.pt]
     pt_g, cam_g, uv = obs.pt[sel], obs.cam[sel], obs.uv[sel]
@@ -511,7 +552,6 @@ def _bundle_adjust(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, *, free_f: boo
             free[b:b + 6] = True
         free[b + 6] = bool(ff[c])
         free[b + 7:b + 9] = bool(fd[c])
-        free[b + 9:b + 11] = bool(free_pp)
     free[n_cam:] = True
     free_idx = np.nonzero(free)[0]
     pos = np.full(len(template), -1)
@@ -614,9 +654,99 @@ def _reject(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, outlier_px, floor_px:
 # ---------------------------------------------------------- the public entry
 
 
+@dataclass
+class _Run:
+    """What one `calibrate_wand` call was asked and what it found out on the
+    way, as `_finish` and the report need it."""
+    sizes: list
+    wand_length: float
+    unit: str
+    free_f: np.ndarray             # (C,) focal length refined in the final adjustment
+    free_d: np.ndarray             # (C,) k1 / k2 fitted
+    searched: np.ndarray           # (C,) focal length found by the grid search (I221)
+    best_mult: float | None        # the grid multiple that won (None without a search)
+    names: list | None
+    frame_ids: np.ndarray | None   # reference frame of each wand_uv row (I248)
+    coverage: list                 # % of each picture the wand visited, on the RAW points (I247)
+
+
+def _prepare_flags(C: int, focal, estimate_focal, estimate_distortion):
+    """The per-camera settings of a run -> (free_f, free_d, f0, unknown).
+    `focal`: None (no camera's focal length is known), one value, or one per
+    camera with NaN = unknown (I221: a rig where only SOME cameras carry a lens
+    profile searches the grid for the others and holds the profiled ones)."""
+    free_f = _per_camera(estimate_focal, C, "estimate_focal")
+    free_d = _per_camera(estimate_distortion, C, "estimate_distortion")
+    f0 = np.full(C, np.nan) if focal is None else _per_camera(focal, C, "focal", np.float64)
+    if np.isinf(f0).any() or (np.isfinite(f0) & (f0 <= 0)).any():
+        raise WandError("focal lengths must be positive numbers (px), or NaN where unknown")
+    return free_f, free_d, f0, ~np.isfinite(f0)
+
+
+def _search_focal(obs: _Obs, f0: np.ndarray, unknown: np.ndarray, pp: np.ndarray, sizes,
+                  free_f: np.ndarray, f_scale: float, names, note):
+    """Step 6: steps 1-3 for every `FOCAL_GRID` entry (applied to the cameras
+    whose focal length is `unknown`; the others keep theirs) and the lowest
+    bundle-adjustment cost wins -> (cams, pts3, the winning multiple)."""
+    widths = np.array([s[0] for s in sizes], np.float64)
+    ff = unknown | free_f                  # a known focal length stays put unless it is to be refined
+    cands, errs = [], []
+    for gi, mult in enumerate(FOCAL_GRID):
+        try:
+            cams, pts3 = _initialise(obs, np.where(unknown, mult * widths, f0), pp, sizes, unknown, names)
+            cams, pts3, r = _bundle_adjust(obs, cams, pts3, free_f=ff, free_dist=False,
+                                           loss="soft_l1", f_scale=f_scale, max_nfev=40)
+        except WandError as ex:
+            errs.append(f"f = {mult:g} x width: {ex}")
+            continue
+        cands.append((float(r.cost) / max(r.fun.size, 1), mult, cams, pts3))
+        note(0.02 + 0.5 * (gi + 1) / len(FOCAL_GRID),
+             f"focal guess {mult:g} x width: {np.sqrt(np.mean(r.fun ** 2)):.2f} px")
+    if not cands:
+        raise WandError("the cameras could not be initialised with any focal-length guess:\n"
+                        + "\n".join(errs))
+    cands.sort(key=lambda cnd: cnd[0])
+    _, best_mult, cams, pts3 = cands[0]
+    return cams, pts3, best_mult
+
+
+def _refine_passes(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, free_f: np.ndarray, free_d: np.ndarray,
+                   f_scale: float, outlier_px, scale_all: float, note):
+    """Bundle adjustment: robust pass -> reject -> linear pass -> reject ->
+    final linear pass -> (cams, pts3, rejection threshold, observations set aside)."""
+    thr, n_out = float("nan"), 0
+    passes = (("soft_l1", True), ("linear", True), ("linear", False))
+    for k, (loss, reject) in enumerate(passes):
+        note(0.55 + 0.12 * k, f"bundle adjustment pass {k + 1}/{len(passes)}")
+        cams, pts3, r = _bundle_adjust(obs, cams, pts3, free_f=free_f, free_dist=free_d,
+                                       loss=loss, f_scale=f_scale, max_nfev=300)
+        if reject:
+            thr, n_new = _reject(obs, cams, pts3, outlier_px, OUTLIER_FLOOR_PX * scale_all)
+            n_out += n_new
+    if not np.isfinite(thr):
+        thr = float(outlier_px) if outlier_px is not None else float("nan")
+    return cams, pts3, thr, n_out
+
+
+def _scale_and_centre(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, wand_length: float):
+    """Scale so the MEAN reconstructed wand length is the true length; then the
+    origin moves to the wand centroid (camera 0's axes are kept)."""
+    w = pts3[:obs.n_wand].reshape(-1, 2, 3)
+    ln = np.linalg.norm(w[:, 0] - w[:, 1], axis=1)
+    okl = np.isfinite(ln)
+    if okl.sum() < 2:
+        raise WandError("fewer than two frames have both wand ends reconstructed: the scale cannot "
+                        "be set - digitize both ends in at least two cameras per frame")
+    s = wand_length / float(ln[okl].mean())
+    cams, pts3 = _apply_similarity(cams, pts3, np.eye(3), np.zeros(3), s)
+    centre = w[okl].reshape(-1, 3).mean(axis=0) * s
+    return _apply_similarity(cams, pts3, np.eye(3), -centre, 1.0)
+
+
 def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, bg_uv=None,
                    estimate_focal=True, estimate_distortion=False, unit="m", max_frames=400,
-                   outlier_px=None, progress=None, estimate_principal=False, names=None) -> WandResult:
+                   outlier_px=None, progress=None, names=None, frame_ids=None,
+                   coverage_uv=None, coverage_bg_uv=None) -> WandResult:
     """Calibrate C cameras from a waved wand (see the module docstring).
 
     wand_uv: (F, C, 2, 2) float - [frame, camera, end, xy], 0-based pixels,
@@ -624,24 +754,30 @@ def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, b
     wand_length: distance between the two wand markers, in `unit`.
     sizes: [(width, height)] per camera.
     focal: None (unknown: searched over `FOCAL_GRID`) or the initial focal
-        length in px, one value or one per camera.
+        length in px, one value or one per camera; NaN for a camera = unknown
+        (I221: searched / refined for those cameras only).
     principal: None (image centre) or (cx, cy) per camera.
     bg_uv: None or (B, C, 2) background points (NaN where unseen).
     estimate_focal: leave the focal lengths free in the final adjustment. One
         bool, or one per camera (I144: cameras sharing one lens profile refine
         theirs while a camera with its own profile keeps its focal length).
+        A camera whose `focal` is unknown is always refined.
     estimate_distortion: also fit k1, k2 per camera (needs good corner
         coverage; leave off for pre-undistorted points). One bool, or one per
         camera (I35: a rig where some cameras carry a lens profile fits k1/k2
         only for the others).
-    estimate_principal: also free the principal points (off by default; worth
-        trying on wide-angle footage where a fixed image centre leaves a
-        systematic residual - the report's reprojection error tells).
     max_frames: evenly subsample the wand frames beyond this many.
     outlier_px: fixed rejection threshold, or None for 3 x median (two passes).
     progress: optional callable(fraction, message).
     names: optional camera names for the messages (the project's cam1,
         GoPro2 ...); without them cameras are "camera 1", "camera 2" ...
+    frame_ids: optional (F,) reference frame of each wand_uv row; the report's
+        outlier list then names the frame, not the array row (I248; "row"
+        always holds the row).
+    coverage_uv / coverage_bg_uv: the RAW (not lens-straightened) wand / extra
+        points the coverage figure is measured on (I247: a straightened box
+        divided by the raw picture area read 33-52 % for a 25 % box). Default:
+        `wand_uv` / `bg_uv` themselves.
     """
     wand_uv = np.asarray(wand_uv, np.float64)
     if wand_uv.ndim != 4 or wand_uv.shape[2:] != (2, 2):
@@ -667,6 +803,15 @@ def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, b
     wand_length = float(wand_length)
     if not (wand_length > 0) or not np.isfinite(wand_length):
         raise WandError("the wand length must be a positive number")
+    if frame_ids is not None:
+        frame_ids = np.asarray(frame_ids, np.int64).ravel()
+        if len(frame_ids) != F:
+            raise WandError(f"frame_ids has {len(frame_ids)} entries for {F} wand frames")
+    cov_w = wand_uv if coverage_uv is None else np.asarray(coverage_uv, np.float64)
+    if cov_w.shape != wand_uv.shape:
+        raise WandError(f"coverage_uv must have the shape of wand_uv {wand_uv.shape}, got {cov_w.shape}")
+    cov_b = bg_uv if coverage_bg_uv is None else np.asarray(coverage_bg_uv, np.float64)
+    names = list(names) if names is not None else None
 
     def note(frac, msg):
         if progress is not None:
@@ -680,87 +825,32 @@ def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, b
     if obs.N < 2 * MIN_PAIR_POINTS:
         raise WandError(f"only {obs.N} digitized wand ends in total; digitize the wand in more frames")
     cv2.setRNGSeed(20260914)          # thread-local in OpenCV: deterministic RANSAC, no side effects
-    scale_all = float(max(1.0, widths.max() / 1920.0))
+    scale_all = float(_px_scale(sizes).max())
     f_scale = 2.0 * scale_all          # soft-L1 knee, px
-    if np.ndim(estimate_focal):
-        free_f = np.asarray(estimate_focal, bool).ravel()
-        if len(free_f) != C:
-            raise WandError(f"estimate_focal has {len(free_f)} entries for {C} cameras")
-    else:
-        free_f = np.full(C, bool(estimate_focal))
-    free_pp = bool(estimate_principal)
-    if np.ndim(estimate_distortion):
-        free_d = np.asarray(estimate_distortion, bool).ravel()
-        if len(free_d) != C:
-            raise WandError(f"estimate_distortion has {len(free_d)} entries for {C} cameras")
-    else:
-        free_d = np.full(C, bool(estimate_distortion))
-    names = list(names) if names is not None else None
+    free_f, free_d, f0, unknown = _prepare_flags(C, focal, estimate_focal, estimate_distortion)
 
-    searched = focal is None
-    if searched:
+    if unknown.any():
         note(0.02, "searching focal lengths")
-        cands, errs = [], []
-        for gi, mult in enumerate(FOCAL_GRID):
-            try:
-                cams, pts3 = _initialise(obs, mult * widths, pp, sizes, True, names)
-                cams, pts3, r = _bundle_adjust(obs, cams, pts3, free_f=True, free_dist=False,
-                                               loss="soft_l1", f_scale=f_scale, max_nfev=40)
-            except WandError as ex:
-                errs.append(f"f = {mult:g} x width: {ex}")
-                continue
-            cands.append((float(r.cost) / max(r.fun.size, 1), mult, cams, pts3))
-            note(0.02 + 0.5 * (gi + 1) / len(FOCAL_GRID),
-                 f"focal guess {mult:g} x width: {np.sqrt(np.mean(r.fun ** 2)):.2f} px")
-        if not cands:
-            raise WandError("the cameras could not be initialised with any focal-length guess:\n"
-                            + "\n".join(errs))
-        cands.sort(key=lambda cnd: cnd[0])
-        _, best_mult, cams, pts3 = cands[0]
+        cams, pts3, best_mult = _search_focal(obs, f0, unknown, pp, sizes, free_f, f_scale, names, note)
     else:
-        f0 = np.broadcast_to(np.asarray(focal, np.float64).ravel(), (C,)).astype(np.float64).copy()
-        if not np.isfinite(f0).all() or np.any(f0 <= 0):
-            raise WandError("focal lengths must be positive numbers (px)")
         note(0.05, "initial camera poses")
         cams, pts3 = _initialise(obs, f0, pp, sizes, False, names)
         best_mult = None
-
-    # bundle adjustment: robust pass -> reject -> linear pass -> reject -> final linear pass
-    thr, n_out = float("nan"), 0
-    passes = (("soft_l1", True), ("linear", True), ("linear", False))
-    for k, (loss, reject) in enumerate(passes):
-        note(0.55 + 0.12 * k, f"bundle adjustment pass {k + 1}/{len(passes)}")
-        cams, pts3, r = _bundle_adjust(obs, cams, pts3, free_f=free_f, free_dist=free_d, free_pp=free_pp,
-                                       loss=loss, f_scale=f_scale, max_nfev=300)
-        if reject:
-            thr, n_new = _reject(obs, cams, pts3, outlier_px, OUTLIER_FLOOR_PX * scale_all)
-            n_out += n_new
-    if not np.isfinite(thr):
-        thr = float(outlier_px) if outlier_px is not None else float("nan")
-
-    # scale: mean reconstructed wand length = the true length; then the origin
-    # moves to the wand centroid (camera 0's axes are kept)
-    w = pts3[:obs.n_wand].reshape(-1, 2, 3)
-    ln = np.linalg.norm(w[:, 0] - w[:, 1], axis=1)
-    okl = np.isfinite(ln)
-    if okl.sum() < 2:
-        raise WandError("fewer than two frames have both wand ends reconstructed: the scale cannot "
-                        "be set - digitize both ends in at least two cameras per frame")
-    s = wand_length / float(ln[okl].mean())
-    cams, pts3 = _apply_similarity(cams, pts3, np.eye(3), np.zeros(3), s)
-    centre = w[okl].reshape(-1, 3).mean(axis=0) * s
-    cams, pts3 = _apply_similarity(cams, pts3, np.eye(3), -centre, 1.0)
+    free_f = free_f | unknown                 # a focal length found by the search is refined too
+    cams, pts3, thr, n_out = _refine_passes(obs, cams, pts3, free_f, free_d, f_scale, outlier_px, scale_all, note)
+    cams, pts3 = _scale_and_centre(obs, cams, pts3, wand_length)
     note(0.95, "assembling the result")
-    res = _finish(obs, cams, pts3, wand_uv, bg_uv, sizes, wand_length, unit, thr, n_out,
-                  searched, free_f, free_pp, best_mult, free_d, names)
+    run = _Run(sizes, wand_length, str(unit), free_f, free_d, unknown, best_mult, names, frame_ids,
+               _coverage(cov_w, cov_b, sizes))
+    res = _finish(obs, cams, pts3, wand_uv, bg_uv, run, thr, n_out)
     note(1.0, f"done: wand score {res.report['wand_score_pct']:.2f}%, "
               f"{res.report['reproj_rmse_all']:.2f} px")
     return res
 
 
-def _finish(obs, cams, pts3, wand_uv, bg_uv, sizes, wand_length, unit, thr, n_out,
-            searched, free_f, free_pp, best_mult, est_dist, names=None) -> WandResult:
+def _finish(obs, cams, pts3, wand_uv, bg_uv, run: _Run, thr, n_out) -> WandResult:
     F, C = wand_uv.shape[:2]
+    sizes = run.sizes
     Fs = len(obs.frames)
     B = obs.n_bg
     e = _errors(obs, cams, pts3)
@@ -822,7 +912,7 @@ def _finish(obs, cams, pts3, wand_uv, bg_uv, sizes, wand_length, unit, thr, n_ou
         if m.any():
             reproj_cam[c] = float(np.sqrt(np.mean(e[m] ** 2)))
     rmse_all = float(np.sqrt(np.mean(e[kept] ** 2))) if kept.any() else float("nan")
-    scale_c = np.maximum(1.0, np.array([s[0] for s in sizes], np.float64) / 1920.0)
+    scale_c = _px_scale(sizes)
     rmse_eq = float(np.sqrt(np.mean((e[kept] / scale_c[obs.cam[kept]]) ** 2))) if kept.any() else float("nan")
 
     cameras = []
@@ -838,15 +928,17 @@ def _finish(obs, cams, pts3, wand_uv, bg_uv, sizes, wand_length, unit, thr, n_ou
     for k in np.nonzero(~obs.used)[0]:
         s = obs.src[k]
         px = obs.reject_err[k] if np.isfinite(obs.reject_err[k]) else e[k]
-        entry = {"kind": "wand", "frame": int(s[1]), "cam": int(s[2]), "end": int(s[3])} if s[0] == 0 \
-            else {"kind": "bg", "index": int(s[1]), "cam": int(s[2])}
+        # (I248) "frame" is the REFERENCE frame when the caller said which rows they are; "row"
+        # is always the array row (the report used to call the row "frame": row 37 = frame 370)
+        fid = int(run.frame_ids[s[1]]) if (run.frame_ids is not None and s[0] == 0) else int(s[1])
+        entry = {"kind": "wand", "frame": fid, "row": int(s[1]), "cam": int(s[2]), "end": int(s[3])} \
+            if s[0] == 0 else {"kind": "bg", "index": int(s[1]), "cam": int(s[2])}
         entry["px"] = float(px) if np.isfinite(px) else None
         outliers.append(entry)
-    report = _build_report(obs, e, kept, wand_uv, bg_uv, sizes, Rm, tv, cams, wand_length, wand_mean,
-                           wand_sd, score_all, reproj_cam, rmse_all, rmse_eq, frame_used, thr, n_out,
-                           outliers, searched, free_f, free_pp, best_mult, est_dist, names)
+    report = _build_report(obs, e, kept, wand_uv, run, Rm, tv, cams, wand_mean, wand_sd, score_all,
+                           reproj_cam, rmse_all, rmse_eq, frame_used, thr, n_out, outliers)
     return WandResult(cameras, Km, Rm, tv, dist, wand_xyz, wand_len, bg_xyz, frame_used, reproj_cam,
-                      {"wand": err_w, "bg": err_b, "wand_used": used_w, "bg_used": used_b}, str(unit), report)
+                      {"wand": err_w, "bg": err_b, "wand_used": used_w, "bg_used": used_b}, run.unit, report)
 
 
 def _camera_centres(Rm: np.ndarray, tv: np.ndarray) -> np.ndarray:
@@ -886,78 +978,130 @@ def _n_bg_reconstructed(obs: _Obs) -> int:
     return int(np.sum(cnt >= 2))
 
 
-def _build_report(obs, e, kept, wand_uv, bg_uv, sizes, Rm, tv, cams, wand_length, wand_mean, wand_sd,
-                  score_all, reproj_cam, rmse_all, rmse_eq, frame_used, thr, n_out, outliers, searched,
-                  free_f, free_pp, best_mult, est_dist, names=None) -> dict:
-    F, C = wand_uv.shape[:2]
-    est_dist = np.broadcast_to(np.asarray(est_dist, bool), (C,))
-    free_f = np.broadcast_to(np.asarray(free_f, bool), (C,))
-    score = float(100.0 * wand_sd / wand_mean) if np.isfinite(wand_sd) and wand_mean > 0 else float("nan")
-    coverage = _coverage(wand_uv, bg_uv, sizes)
-    n_obs_cam = [int(np.sum(kept & (obs.cam == c))) for c in range(C)]
-    n_in = int(np.sum(np.isfinite(wand_uv).all(axis=3).any(axis=(1, 2))))
-    n_used = int(frame_used.sum())
-    n_bg = _n_bg_reconstructed(obs)
-    rmse_ok = float(np.nanmax(np.maximum(1.0, np.array([s[0] for s in sizes], np.float64) / 1920.0)))
+class _Check(NamedTuple):
+    """One named check behind the verdict (I176). `level` 0 = passes, 1 = the
+    result can be at best USABLE, 2 = the result is poor; `text` is its reason
+    (empty for a check that passes quietly)."""
+    name: str
+    level: int
+    text: str
 
-    reasons = []
+
+_ALLOWS = ("good", "ok", "poor")
+
+
+def _verdict_checks(score, rmse_all, rmse_eq, rmse_ok, coverage, n_obs_cam, n_obs_all, n_used, n_out, n_tot,
+                    thr, names, dist_fitted: bool) -> list:
+    """The checks, in the order their reasons are shown. The reasons AND the
+    verdict are derived from this one list (I176): the verdict used to look at
+    the pooled score / error / coverage only and said GOOD for a rig in which
+    one camera had lost nearly all its observations."""
+    checks: list[_Check] = []
+    add = lambda name, level, text="": checks.append(_Check(name, level, text))   # noqa: E731
     if not np.isfinite(score):
-        reasons.append("The wand length could not be measured in enough frames to judge the calibration.")
-    elif score <= 1.0:
-        reasons.append(f"Wand length is consistent between frames (varies by {score:.2f}%).")
-    elif score <= 2.5:
-        reasons.append(f"Wand length varies by {score:.1f}% between frames: wave the wand more slowly, "
-                       f"keep both ends sharp in every camera, or check the length you typed.")
+        add("wand_score", 2, "The wand length could not be measured in enough frames to judge the calibration.")
+    elif score <= SCORE_GOOD_PCT:
+        add("wand_score", 0, f"Wand length is consistent between frames (varies by {score:.2f}%).")
+    elif score <= SCORE_OK_PCT:
+        add("wand_score", 1, f"Wand length varies by {score:.1f}% between frames: wave the wand more slowly, "
+                             f"keep both ends sharp in every camera, or check the length you typed.")
     else:
-        reasons.append(f"Wand length varies by {score:.1f}% between frames - the calibration is unreliable: "
-                       f"check the wand length you typed, that end 1 / end 2 are the same physical end in "
-                       f"every camera, and that the videos are frame-synchronised.")
+        add("wand_score", 2, f"Wand length varies by {score:.1f}% between frames - the calibration is unreliable: "
+                             f"check the wand length you typed, that end 1 / end 2 are the same physical end in "
+                             f"every camera, and that the videos are frame-synchronised.")
     if np.isfinite(rmse_eq):
         px_note = "" if rmse_ok <= 1.0 else f" ({rmse_all:.2f} px at this resolution)"
-        if rmse_eq <= 1.0:
-            reasons.append(f"Reprojection error is {rmse_all:.2f} px: the cameras agree well{px_note}.")
-        elif rmse_eq <= 2.5:
-            reasons.append(f"Reprojection error is {rmse_all:.2f} px{px_note}: acceptable; digitize the marker "
-                           f"centres more carefully or add background points for a tighter fit.")
+        if rmse_eq <= RMSE_GOOD_PX:
+            add("reprojection", 0, f"Reprojection error is {rmse_all:.2f} px: the cameras agree well{px_note}.")
+        elif rmse_eq <= RMSE_OK_PX:
+            add("reprojection", 1, f"Reprojection error is {rmse_all:.2f} px{px_note}: acceptable; digitize the "
+                                   f"marker centres more carefully or add background points for a tighter fit.")
         else:
             # (I35) do not tell someone who already fitted k1/k2 to "enable distortion estimation"
             lens_hint = ("lens distortion that the fitted k1/k2 could not describe (calibrate the lens with a "
-                         "checkerboard instead)" if est_dist.any() else
+                         "checkerboard instead)" if dist_fitted else
                          "lens distortion (undistort the points or enable distortion estimation)")
-            reasons.append(f"Reprojection error is {rmse_all:.2f} px{px_note}: too high - look for mis-clicked "
-                           f"or swapped wand ends, a sync error between videos, or {lens_hint}.")
+            add("reprojection", 2, f"Reprojection error is {rmse_all:.2f} px{px_note}: too high - look for "
+                                   f"mis-clicked or swapped wand ends, a sync error between videos, or {lens_hint}.")
+    else:
+        add("reprojection", 2, "No observation could be reprojected with the solved cameras.")
     for c, cov in enumerate(coverage):
-        if cov < 25.0:
-            reasons.append(f"{_cam(c, names, cap=True)}: the wand covered only {cov:.0f}% of the image; wave it "
-                           f"through more of this camera's view (corners included) so the whole lens is calibrated.")
+        low = cov < MIN_COVERAGE_PCT
+        add(f"coverage_{c}", int(low),
+            f"{_cam(c, names, cap=True)}: the wand covered only {cov:.0f}% of the image; wave it through more "
+            f"of this camera's view (corners included) so the whole lens is calibrated." if low else "")
     for c, n in enumerate(n_obs_cam):
-        if n < 30:
-            reasons.append(f"{_cam(c, names, cap=True)} contributed only {n} usable observations; digitize more "
-                           f"wand frames visible in this camera.")
-    if n_used < 20:
-        reasons.append(f"Only {n_used} wand frames were used; 20-50 well-spread wand positions give a stable "
-                       f"calibration.")
-    n_tot = int(obs.N)
+        if n < MIN_PNP_POINTS:
+            add(f"observations_{c}", 2,
+                f"{_cam(c, names, cap=True)} kept only {n} usable observation{'s' if n != 1 else ''}, fewer than "
+                f"the {MIN_PNP_POINTS} a camera needs to be placed: its part of this calibration cannot be "
+                f"trusted. Digitize more wand frames visible in this camera, and check its frame offset.")
+        elif n < MIN_OBS_PER_CAMERA:
+            add(f"observations_{c}", 1,
+                f"{_cam(c, names, cap=True)} contributed only {n} usable observations; digitize more "
+                f"wand frames visible in this camera.")
+        b = int(n_obs_all[c])
+        if b > 0 and n < MIN_OBS_KEPT_FRAC * b:
+            add(f"kept_{c}", 1,
+                f"{_cam(c, names, cap=True)} lost {b - n} of its {b} observations ({100.0 * (b - n) / b:.0f}%) to "
+                f"outlier rejection: look for a sync error (frame offset) between this camera and the others, "
+                f"or wand ends swapped in it.")
+    if n_used < MIN_FRAMES_USED:
+        add("frames", 0, f"Only {n_used} wand frames were used; 20-50 well-spread wand positions give a stable "
+                         f"calibration.")
     if n_out:
         pct = 100.0 * n_out / max(n_tot, 1)
         msg = f"{n_out} of {n_tot} observations ({pct:.1f}%) were rejected as outliers (> {thr:.2f} px)."
-        if pct > 5.0:
+        if pct > MAX_REJECTED_PCT:
             msg += " That is a lot: look for mis-clicked wand ends, swapped ends or a sync error."
-        reasons.append(msg)
-    if searched:
-        reasons.append("Focal lengths were estimated from the data (f = "
-                       + ", ".join(f"{f:.0f}" for f in cams[:, 6]) + " px); if you know them from the lens "
-                       "specification, entering them makes the result more stable.")
-    elif free_f.all():
-        reasons.append("Focal lengths were refined from your initial values.")
-    elif free_f.any():
-        reasons.append("Focal lengths were refined for " + ", ".join(_cam(c, names) for c in range(C) if free_f[c])
-                       + " (from their starting values) and kept as given for "
-                       + ", ".join(_cam(c, names) for c in range(C) if not free_f[c]) + ".")
-    if free_pp:
-        reasons.append("Principal points were estimated from the data: "
-                       + "; ".join(f"{_cam(c, names)}: ({cams[c, 9]:.0f}, {cams[c, 10]:.0f})" for c in range(C)) + ".")
-    weak_dist = [c for c in range(C) if est_dist[c] and coverage[c] < 25.0]
+        add("rejected", int(pct > MAX_REJECTED_PCT), msg)
+    return checks
+
+
+def _focal_reasons(cams: np.ndarray, run: _Run) -> list:
+    """How the focal lengths came about, in words (informational)."""
+    C = len(cams)
+    names, sr, ff = run.names, run.searched, run.free_f
+    if sr.all():
+        return ["Focal lengths were estimated from the data (f = "
+                + ", ".join(f"{f:.0f}" for f in cams[:, 6]) + " px); if you know them from the lens "
+                "specification, entering them makes the result more stable."]
+    if sr.any():
+        found = [c for c in range(C) if sr[c]]
+        rest = [c for c in range(C) if not sr[c]]
+        return ["Focal lengths were GUESSED from the wand alone for " + ", ".join(_cam(c, names) for c in found)
+                + " (f = " + ", ".join(f"{cams[c, 6]:.0f}" for c in found) + " px): a lens profile or a known "
+                "focal length makes those cameras more certain. " + ", ".join(_cam(c, names) for c in rest)
+                + (" started from the values you gave and were refined." if ff[rest].any()
+                   else " kept the values you gave.")]
+    if ff.all():
+        return ["Focal lengths were refined from your initial values."]
+    if ff.any():
+        return ["Focal lengths were refined for " + ", ".join(_cam(c, names) for c in range(C) if ff[c])
+                + " (from their starting values) and kept as given for "
+                + ", ".join(_cam(c, names) for c in range(C) if not ff[c]) + "."]
+    return []
+
+
+def _build_report(obs, e, kept, wand_uv, run: _Run, Rm, tv, cams, wand_mean, wand_sd, score_all, reproj_cam,
+                  rmse_all, rmse_eq, frame_used, thr, n_out, outliers) -> dict:
+    F, C = wand_uv.shape[:2]
+    sizes, names, est_dist, free_f = run.sizes, run.names, run.free_d, run.free_f
+    score = float(100.0 * wand_sd / wand_mean) if np.isfinite(wand_sd) and wand_mean > 0 else float("nan")
+    coverage = run.coverage
+    n_obs_cam = [int(np.sum(kept & (obs.cam == c))) for c in range(C)]
+    n_obs_all = np.bincount(obs.cam, minlength=C)
+    n_in = int(np.sum(np.isfinite(wand_uv).all(axis=3).any(axis=(1, 2))))
+    n_used = int(frame_used.sum())
+    n_bg = _n_bg_reconstructed(obs)
+    rmse_ok = float(_px_scale(sizes).max())
+    n_tot = int(obs.N)
+
+    checks = _verdict_checks(score, rmse_all, rmse_eq, rmse_ok, coverage, n_obs_cam, n_obs_all, n_used,
+                             n_out, n_tot, thr, names, bool(est_dist.any()))
+    reasons = [c.text for c in checks if c.text]
+    reasons += _focal_reasons(cams, run)
+    weak_dist = [c for c in range(C) if est_dist[c] and coverage[c] < MIN_COVERAGE_PCT]
     if weak_dist:
         reasons.append("Lens distortion was fitted, but the wand covered less than a quarter of the image "
                        f"in {', '.join(_cam(c, names) for c in weak_dist)}: the distortion terms are poorly "
@@ -967,16 +1111,13 @@ def _build_report(obs, e, kept, wand_uv, bg_uv, sizes, Rm, tv, cams, wand_length
     e_all = e_all[np.isfinite(e_all)]
     rmse_incl = float(np.sqrt(np.mean(e_all ** 2))) if len(e_all) else float("nan")
 
-    good = (np.isfinite(score) and score <= 1.0 and np.isfinite(rmse_eq) and rmse_eq <= 1.0
-            and all(cv >= 25.0 for cv in coverage))
-    ok = np.isfinite(score) and score <= 2.5 and np.isfinite(rmse_eq) and rmse_eq <= 2.5
-    verdict = "good" if good else ("ok" if ok else "poor")
+    verdict = _ALLOWS[max(c.level for c in checks)]
     return {
         "n_cameras": int(C),
         "n_frames_in": n_in,
         "n_frames_used": n_used,
         "n_bg_points": n_bg,
-        "wand_length": float(wand_length),
+        "wand_length": float(run.wand_length),
         "wand_mean": float(wand_mean),
         "wand_sd": float(wand_sd),
         "wand_score_pct": score,
@@ -987,11 +1128,12 @@ def _build_report(obs, e, kept, wand_uv, bg_uv, sizes, Rm, tv, cams, wand_length
         "reproj_rmse_1080p_equiv": float(rmse_eq),
         "focal_px": [float(f) for f in cams[:, 6]],
         "principal_px": [[float(a), float(b)] for a, b in cams[:, 9:11]],
-        "focal_estimated": bool(free_f.any() or searched),
-        "focal_refined": [bool(v or searched) for v in free_f],
-        "focal_searched": bool(searched),
-        "focal_grid_best": (None if best_mult is None else float(best_mult)),
-        "principal_estimated": bool(free_pp),
+        "focal_estimated": bool(free_f.any()),
+        "focal_refined": [bool(v) for v in free_f],
+        "focal_searched": bool(run.searched.any()),
+        "focal_searched_per_camera": [bool(v) for v in run.searched],
+        "focal_grid_best": (None if run.best_mult is None else float(run.best_mult)),
+        "principal_estimated": False,
         "distortion_estimated": bool(est_dist.any()),
         "distortion_estimated_per_camera": [bool(v) for v in est_dist],
         "distortion": [[float(cams[c, 7]), float(cams[c, 8])] for c in range(C)],
@@ -1000,6 +1142,7 @@ def _build_report(obs, e, kept, wand_uv, bg_uv, sizes, Rm, tv, cams, wand_length
         "camera_distances": _camera_distances(Rm, tv),
         "n_observations": n_tot,
         "n_observations_per_camera": n_obs_cam,
+        "n_observations_total_per_camera": [int(v) for v in n_obs_all],
         "outlier_threshold_px": (float(thr) if np.isfinite(thr) else None),
         "outliers_removed": int(n_out),
         "outliers": outliers,
@@ -1007,6 +1150,7 @@ def _build_report(obs, e, kept, wand_uv, bg_uv, sizes, Rm, tv, cams, wand_length
         "frame": f"{_cam(0, names)}'s axes, origin at the centroid of the wand ends",
         "verdict": verdict,
         "verdict_reasons": reasons,
+        "verdict_checks": [{"name": c.name, "allows": _ALLOWS[c.level]} for c in checks],
     }
 
 
@@ -1224,7 +1368,7 @@ def align_gravity(res: WandResult, drop_uv, fps: float, g: float | None = None,
             f"then calibrate again with that length in metres to get every result in metres.")
     else:
         ratio_pct = 100.0 * (ratio - 1.0)
-        if abs(ratio_pct) <= 2.0:
+        if abs(ratio_pct) <= G_CONSISTENT_PCT:
             out.report["verdict_reasons"].append(
                 f"The dropped object accelerates at {g_meas:.2f} {unit}/s^2 ({ratio_pct:+.1f}% of g): "
                 f"wand length and frame rate are consistent.")
@@ -1232,7 +1376,7 @@ def align_gravity(res: WandResult, drop_uv, fps: float, g: float | None = None,
             msg = (f"The dropped object accelerates at {g_meas:.2f} {unit}/s^2 ({ratio_pct:+.1f}% of g, "
                    f"expected {float(g):.2f} {unit}/s^2): check the wand length, its unit and the frame rate "
                    f"({fps:g} fps) - one of them is off.")
-            if abs(ratio_pct) > 5.0 and out.report.get("verdict") == "good":
+            if abs(ratio_pct) > G_SUSPECT_PCT and out.report.get("verdict") == "good":
                 # an independent scale check that disagrees by > 5 % is not "trust this"
                 out.report["verdict"] = "ok"
                 msg += " Until it agrees, every distance in this world is suspect."
