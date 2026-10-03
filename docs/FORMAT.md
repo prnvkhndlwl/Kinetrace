@@ -36,7 +36,9 @@ with one long `tracks.csv` per camera) still opens; see the end.
 | Colours | `#rrggbb` |
 
 Columns are found **by name**, in any order; unknown columns and unknown files
-are ignored. A table saved by a spreadsheet set to a decimal-comma locale
+are ignored, and so is every **hidden** file or folder (a name starting with a
+dot: macOS's `.DS_Store` and `._snout.csv` AppleDouble files, an editor's lock
+file). A table saved by a spreadsheet set to a decimal-comma locale
 (separated by `;`) is refused with a message saying so — save it with `,`
 separators and `.` decimals.
 
@@ -66,15 +68,21 @@ cameras/<folder>/segment.json        the segment's name, colour and SAM clicks /
 cameras/<folder>/silhouette/summary.csv   the segment per frame: area, score, centroid, box
 cameras/<folder>/silhouette/*.npy    the segment's outline and midline per frame (binary)
 cameras/<folder>/body/*.npy          body poses and mesh (binary; only after a Body run)
-exports/                             files for other programs, refreshed at each save (only when chosen)
+exports/                             files for other programs, refreshed at each save (only when chosen);
+                                     DLTdv files there are the points file + `_pointnames.csv` only
 videos/                              optional: the videos, to keep everything in one folder
 .cache/                              binary copies of the tables, for fast opening (safe to delete)
 .history/                            the files as they were before the last save
 ```
 
-Only the files listed above are the project's: a save never touches anything
-else in the folder (`videos/`, `exports/` apart from its own files, a note of
-your own). The smallest valid project is `kinetrace.json` + `project.json` +
+Only the files listed above are the project's: a save replaces or removes
+**only the files the previous save wrote** (recorded in `.cache/index.json`;
+when that record is missing, only files of the project's own kinds in its own
+folders), so a spreadsheet of your own beside a table, a note, a copy of a
+folder, `videos/` and `exports/` (apart from its own files) are never touched.
+Names are matched **ignoring case and Unicode form** (a decomposed `é` as HFS+
+lists it is the same file as a composed one; renaming a landmark `snout` →
+`Snout` is one file, not a deletion and a new file). The smallest valid project is `kinetrace.json` + `project.json` +
 one `cameras/<folder>/tracks/<landmark>.csv` (a landmark file that
 `points.csv` does not name is a landmark with default settings, named after
 the file).
@@ -117,11 +125,19 @@ videos' `relative_path`s start (`project` = the project folder itself;
 * `offset` = the frame this camera shows when the first (reference) camera is
   at its frame 0 (the first camera's is always 0). `rate` = this camera's
   frame rate / the reference camera's. Camera `i`'s frame at reference instant
-  `t` is `rate_i · t + offset_i`.
+  `t` is `rate_i · t + offset_i`. Both must be finite numbers, and `rate` above
+  0 (a project with `rate` 0 or a non-number is refused with the camera named).
+  The reference camera's rate is 1 by definition: a file whose first camera
+  carries another rate is re-based on it (every rate divided by it; the offsets,
+  which are in each camera's own frames, stay), and a first camera with a
+  non-zero offset is normalised to 0 by shifting the others.
+* An **empty or missing `video.path`** is not a found video: with only a
+  `relative_path` the program looks there first, and when that fails asks for the
+  video.
 
 ### `cameras/<folder>/points.csv`
 
-`name, color, shown, kind, radius, anchor, source, spec, free, shape, outline, file`
+`name, color, shown, kind, radius, anchor, source, spec, free, shape, outline, file, tracker`
 
 | column | meaning |
 |---|---|
@@ -132,6 +148,7 @@ videos' `relative_path`s start (`project` = the project folder itself;
 | `anchor` | 1 = the appearance lock is on |
 | `source` | `track` (followed by the point tracker), `silhouette` (computed from the segment; `spec` says how) or `ball` |
 | `free` | 1 = may leave the animal (not held on its silhouette) |
+| `tracker` | the point's own tracker: `alltracker`, `cotracker3` or `spot` (Moving spot); blank = the project's default point model (`state.json` `tools`). Any other value reads as blank |
 
 ### `cameras/<folder>/tracks/<landmark>.csv`
 
@@ -163,10 +180,14 @@ How the program looked. `state.json` holds `tools` (every toggle: follow,
 auto-pause, ROI, marker size, trails, display filter, point model, …) and
 `layout` (window rectangle, side panel shown / floating, splitter sizes, solo
 mode, step size, the getting-started strip). `view.json` (per camera):
-`current_frame`, `selected_point` (by name), `selected_points` (every point
-selected in the POINTS list, by name: what Track will track) and
-`segment_selected` (the SEGMENT row), `zoom`, `center_x`, `center_y`,
-`user_zoomed`, `timeline` (`[first, last]` frame shown). Odd or missing
+`current_frame`, `selected_point` (by name), `selected_points` (a list of names:
+every point selected in the POINTS list, which is what Track will track; names,
+never indices, so a reordered list still selects the right points) and
+`segment_selected` (true = the SEGMENT row is selected, so Track runs the
+segment too; both are written only once the app has recorded a selection, and a file
+without them simply has none recorded), `zoom`,
+`center_x`, `center_y`, `user_zoomed`, `timeline` (`[first, last]` frame shown),
+`annotator` and `counters` (the point / event name counters). Odd or missing
 values fall back to the defaults: this is never data.
 
 ### `calibration.json`
@@ -211,8 +232,14 @@ camera's frames (the first camera's), `residual` = DLTdv's rmse in pixels,
 `silhouette/`: the outlines as one point list `cpts` (P × 2) cut by `coff`
 (offsets) with `cframe` (the frame of each outline), and the 32-point midline
 `mpts` for the frames in `mframe`. `body/`: `joints3d`, `joints2d`, `conf`,
-`score`, `bbox`, `focal`, `cam_t` (frames × people × joints …), `meta.json`
-(rig, people's names, backend), and the mesh.
+`score`, `bbox`, `focal`, `cam_t` (frames × people × joints …), `box_src`
+(frames × people, `int8`: where the person's box on that frame came from —
+0 = unknown, a track made before this was recorded, counted as detected;
+1 = the person detector; 2 = given, i.e. the segment silhouette or a box drawn by
+hand, whose `score` is 1.0 meaning "you said so" and not a detection confidence;
+3 = no box, the whole frame was taken as the person), `meta.json` (rig, people's
+names, backend), and the mesh. An older body track without `box_src` opens with
+every box unknown.
 
 Read them with `numpy.load` in Python, [`readNPY`](https://github.com/kwikteam/npy-matlab)
 in MATLAB, or `RcppCNPy::npyLoad` in R. Readable copies are one export away:
@@ -274,8 +301,9 @@ save recorded, so a hand-edited CSV is always read from its text and a copy
 damaged on disk is never used. Deleting `.cache/` only makes the next open and
 save slower.
 
-One save at a time: a save holds `.lock` (process, computer, time) in the
-project folder; a second Kinetrace saving the same project is refused with a
+One save at a time: a save holds `.lock` (process id, the process's **start**
+time, computer, time) in the project folder; the start time tells a lock whose
+process id has since been taken by another program from a live one; a second Kinetrace saving the same project is refused with a
 sentence, and a lock left by a process that is gone is cleared. A save checks
 the free space on the drive before it writes the big part, and on Linux and
 macOS makes its renames durable (directory fsync) before and after the commit.
@@ -306,13 +334,15 @@ file is kept as `name.kinetrace.bak`) or to keep saving it as one file.
 ## Other programs' conventions
 
 Kinetrace converts these for you (File → Import, 3D → Export Calibration,
-Ctrl+E, and `python -m kinetrace.convert`). For reference:
+Ctrl+E, and `python -m kinetrace.convert`). The plain CSV, DeepLabCut and sparse
+TSV exports also write an `_events.csv` and (with a segment) a `_segment.csv`
+beside them; the DLTdv exports do not. For reference:
 
 | Program | Pixels | What Kinetrace reads / writes |
 |---|---|---|
 | **DeepLabCut** | top-left, pixel centres on whole numbers (as Kinetrace) | CSV with `scorer` / `bodyparts` / `coords` rows, `x, y, likelihood`, first column = frame (videos analysed by DLC; single animal) |
 | **SLEAP** | (0, 0) is the centre of the top-left pixel (as Kinetrace; sleap-io documentation) | SLEAP 1.x analysis CSV (`track, frame_idx, instance.score, node.x, node.y, node.score`) and sleap-io's `sleap` / `instances` / `points` / `frames` CSV layouts; one track |
-| **DLTdv8 / easyWand** | first pixel = **1**, top-left | xypts `pt1_cam1_X …` (NaN = none) with a `_pointnames.csv` sidecar; xyzpts `pt1_X …`; dltCoefs.csv (11 rows, a column per camera) |
+| **DLTdv8 / easyWand** | first pixel = **1**, top-left | xypts `pt1_cam1_X …` (NaN = none) with a `_pointnames.csv` sidecar (CSV-quoted, so a landmark name with a comma or a quote survives; it holds the real names); xyzpts `pt1_X …` (a frame with no 3D position is a row of NaN / empty cells, so row = reference frame); dltCoefs.csv (11 rows, a column per camera). A DLTdv export from Kinetrace is **points only**: the points file and its `_pointnames.csv`, with no events or silhouette files beside it |
 | **older DLTdv, Argus** | first pixel = 1, y up from the **bottom** edge | xypts (the sidecar's `convention` line says `bottom-left`); Argus lens profile lines `cam f w h cx cy AR k1 k2 t1 t2 k3` (OpenCV pixels) |
 | **Anipose / aniposelib** | OpenCV | `calibration.toml`: `[cam_0]` `name`, `size = [w, h]`, `matrix` (K), `distortions` (k1 k2 p1 p2 k3; 4 + `fisheye = true`), `rotation` (Rodrigues vector), `translation`; x_cam = R X + t. 3D output CSV `name_x, name_y, name_z, name_error, name_ncams, name_score, …, fnum` |
 | **OpenCV** | 0-based | FileStorage `.yml` / `.json`: per camera `camera_matrix`, `distortion_coefficients`, `image_width`, `image_height`, `rvec`, `tvec`, `R` |

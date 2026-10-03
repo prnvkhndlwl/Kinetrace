@@ -118,7 +118,10 @@ and confirm once.
 **Ubuntu:** double-click `run.sh` in the program folder and choose *Run in
 Terminal* — or open a terminal in the folder and type `./run.sh`. If the window
 needs a few system pieces that are not installed, the program installs them
-for you; that is the one step that asks for your password.
+for you; that is the one step that asks for your password (if it cannot ask,
+it prints the exact `sudo apt-get install …` line to run yourself). Ubuntu's
+own `python3` often comes without the `venv` part; the launcher notices and
+downloads a private Python of its own instead of failing.
 
 The program works out by itself which kind of computer it is on — NVIDIA
 graphics card or not, Mac or PC, Python already there or not — and fetches the
@@ -129,12 +132,16 @@ supporting software into its own folder (and, if the computer has no Python of
 its own, a private copy of that too, about 20 MB). That happens once, and it
 ends by printing a **system check**: what it found and what your computer can
 run. If the connection drops, just start it again — it keeps what it already
-installed and carries on from there. Later launches start in a few seconds.
+installed and carries on from there. (To redo the installation of the
+packages from scratch, run `python install.py --force` with the Python inside
+the program's `.venv`.) Later launches start in a few seconds.
 The first time you press the **Track** button, and the first time you click on
 an animal, it downloads one more piece each (a tracking model of 66 MB, a
 segmentation model of 617 MB): a window says what is downloading, how far it
 has got and about how long is left, and **Cancel** stops it — the next try
-carries on where it stopped. Every piece is checked before it is used (a file
+carries on where it stopped. A connection that is cut half way through resumes
+the same way, and a disk that is full is reported as a full disk (not as a
+network problem). Every piece is checked before it is used (a file
 that is not exactly the expected one is thrown away, never run). After that you
 never need an internet connection again, except to get a newer version when you
 ask for one.
@@ -180,7 +187,8 @@ ready, needs downloading, or still needs access or a token.
 Open **Help → Check for Updates…**. The program asks GitHub whether a newer
 version has been published. It sends nothing about you or your computer, and
 it never checks unless you ask. If there is one, you see what is new, and
-**Update now** installs it. Only the program's own files are replaced: your
+**Update now** installs it (a download cut off by a lost connection resumes where it
+stopped, and a full disk is named as such). Only the program's own files are replaced: your
 projects, downloaded models, unsaved-work copies, saved skeletons and settings
 are kept. **Restart now** then closes the program (asking first if you have
 unsaved work) and starts the new version. If the new version needs extra
@@ -362,8 +370,11 @@ tracked; you can also close it with **×**, and **View → Getting started
 strip** brings it back.
 
 **The middle** is your video. This is where you click on things. You can zoom
-with the mouse wheel (or **+** and **−**) and pan by dragging with the middle
-mouse button (or switch on **Pan**, key **H**, and drag with the left button).
+with the mouse wheel (or **+** and **−**) and pan by holding the left button and
+moving the mouse (the middle button works too, and so does the **Pan** tool,
+key **H**). A plain left **click** on the video places the point selected in the
+POINTS list; a short right click on a marker clears that point on that frame.
+Markers are never dragged, and a sideways swipe on a touchpad does not zoom.
 Press **R** at any time to fit the whole picture back in the window. With
 several cameras the videos share this space as a grid; the one you are working
 in is outlined, and clicking another switches to it (section 10). Short notices
@@ -415,7 +426,9 @@ to bring the names back. The Track button always keeps its words.
 - **SEGMENT** — once you have outlined the animal, a row with its name and a
   checkbox, a line counting its clicks and silhouettes, and the **Skeleton ▾**
   and **Clear segment** buttons. Click the name to **select** the segment: Track
-  tracks it only while it is selected (click again to unselect).
+  tracks it only while it is selected (click again to unselect). A segment you
+  have just made with **S** and a click already has its row selected, so Track
+  runs it without another click.
 - **POINTS** — every body part, each with a checkbox (show / hide), a small
   symbol saying how it is found (Step 4 below), and **AT**, **CT** or **MS**:
   the tracker that follows it — AllTracker, CoTracker3 or Moving spot
@@ -425,7 +438,9 @@ to bring the names back. The Track button always keeps its words.
   on its marker instead: a short right click there clears it on that frame).
   A name may not start with **= + -**
   or **@**: a spreadsheet opening an export would run it as a formula, so such
-  a name is refused (and taken off a name that arrives in a file).
+  a name is refused (and taken off a name that arrives in a file). Renaming a point
+  in capital letters only (`snout` → `Snout`) works, and the next save keeps its
+  data.
 
 Hide the panel with **Ctrl+1** (**View → Segment & Points panel**) if you want
 more room.
@@ -458,7 +473,9 @@ reading the file, checking its frame rate, checking that every frame can be read
 network drive longer (the card says so, and a copy on your own disk opens and
 plays much faster). **Cancel** (or **Esc**) stops it without changing anything
 that was already open. The same card appears when you open a project or add
-cameras; several cameras are read at the same time.
+cameras; several cameras are read at the same time. While it is up it holds
+the mouse and keyboard in every window of the program (a floated panel, the
+side-by-side view), not only the main one.
 
 The first frame appears. If a warning about "variable frame rate" appears, stop
 and fix the file first — see [section 2](#2-what-you-need-before-you-start).
@@ -502,7 +519,11 @@ Repeat until the outline matches the animal. It is worth getting this right —
 several landmarks are computed from this shape. For now only the frame you are
 on is outlined; the rest of the video follows when you press **Track**.
 
-Press **S** or **Esc** when you are done.
+Press **S** or **Esc** when you are done. (The new segment's row in the
+SEGMENT panel is selected for you, so Track will run it. Your clicks on the
+animal are not part of **Ctrl+Z**: take one back with *Remove this click* as
+above. If an earlier Ctrl+Z step was waiting, the status line tells you that a
+segment click has just replaced it.)
 
 > **Can you skip this step?** Yes — outlining is optional, and nothing else
 > waits for it. Skip it when you only want to follow clearly visible features
@@ -572,7 +593,14 @@ all — place the ones you need.
 select everything (every point and the segment), or click points in the POINTS
 list (Ctrl+click adds one, Shift+click a range) and the segment's name in
 SEGMENT. The Track button says what it will track: **Track · 3 points + segment ▶**.
-With nothing selected it tracks nothing and says so.
+With nothing selected it tracks nothing and says so. What is selected is part
+of your project: save, close and reopen it, and the same points (and the
+segment's row) are selected again.
+
+The segment may also come along without its row being selected: with the
+**Body** switch on (section 14), selecting a landmark that is kept on the
+silhouette brings the segment into the run, because that landmark cannot be
+followed without it.
 
 Each point is followed by **its own tracker**, shown beside its name (**AT**
 AllTracker, **CT** CoTracker3, **MS** Moving spot). One Track press handles a
@@ -580,7 +608,18 @@ mix: Moving spot points, ball markers and the segment run together with the
 AllTracker *or* CoTracker3 points; if both AllTracker and CoTracker3 points are
 selected, they run **one after the other** over the same frames (the button
 says *2 passes*), and a point that stops ends the run for all of them, so every
-point of the run ends on the same frame. One Ctrl+Z undoes it all.
+point of the run ends on the same frame. The pass that holds the head landmark
+goes first and makes the silhouettes; the second pass reuses them instead of
+outlining the animal a second time, so its on-body landmarks are kept on the
+same outlines. A pass whose points have no position on the frame you are on is
+left out, and the other still runs. One Ctrl+Z undoes it all.
+
+If you start in the middle of a stretch that is already tracked, the program
+asks before overwriting it, and counts **only the points being tracked** in
+that question. A point you placed by hand on the frame you start from keeps its
+white diamond. If a frame cannot be read once, the program tries it again; when
+the second try works, the message says so and asks you to press **Track ▶**
+again, instead of calling your file damaged.
 
 Press the blue **Track ▶** button (or the **T** key). If it looks grey instead
 of blue, nothing has a position on the frame you are on. Press it anyway and a
@@ -634,7 +673,11 @@ use?* in section 14) the stop comes on the very frame where the spot is not
 where its speed put it, or where two spots look alike: it does not wait and it
 never guesses. The track ends on the frame before. Click the spot where it is
 and press **Track ▶** again; clicking it on the next frame too gives it its
-speed. A spot that flies out of the picture simply ends, without a stop.
+speed. A spot that flies out of the picture simply ends, without a stop. When
+a run holds other points too, they keep every frame they were tracked up to
+the stop (they used to lose the last few). If your click was a little off a
+tiny spot, Moving spot stops at once rather than following a glint beside it:
+click it more precisely, or on a second frame.
 
 While an outline is on, the program also watches for these, and stops or turns
 the body part red rather than quietly exporting a wrong position:
@@ -675,7 +718,9 @@ Right-click its name in the POINTS list, or **hold the right mouse button** on
 its marker on the video for half a second (a short right click on the marker
 clears it on that frame only — see below), and besides **Rename point** and
 **Delete point** you get (hover an entry to see what it does). Wherever this
-manual says *right-click a point*, either way works.
+manual says *right-click a point*, either way works. (While the **Pan** tool,
+**H**, is on, a right click on a marker does nothing at all: the tool is for
+looking, never for editing.)
 
 **Several points at once:** select them (Ctrl+click in POINTS, **Ctrl+A** for
 all) and right-click one of them in the list, or hold the right button on one of
@@ -683,8 +728,10 @@ their markers. The menu then acts on **all of them** — track only these; clear
 them on this frame, in the selected frame window, or their whole tracks; delete
 them; mark them hidden here; hide or show them; give them a tracker; fill their
 gaps — and when the segment's row is selected too, its silhouette is cleared
-with them. Each is one Ctrl+Z step. A short right click on one of their markers
-clears all of them on this frame and keeps them selected.
+with them. Each is one Ctrl+Z step. A *short* right click on one of their
+markers clears all the selected **points** on this frame and keeps them
+selected; it never touches the silhouette, even when the segment's row is
+selected (use the menu for that).
 
 For one point:
 
@@ -796,8 +843,10 @@ its first / last hand-placed frame* with the frame numbers. **Shift+<** and
 position on at all. **Ctrl+Z** takes the last click back.
 
 A plain click only ever moves the point that is selected in the list. With
-nothing selected it does nothing, and a drag on empty picture does nothing
-either, so an accidental click cannot add points or edit a different one. To add
+nothing selected it does nothing (a click on a marker just selects that point),
+and holding the button and moving only pans the view, so an accidental click
+cannot add points or edit a different one. Two quick clicks count as two clicks,
+so you can digitize frame by frame as fast as you can press **F** and click. To add
 a *new* point, press **N** first. A body part that comes from the silhouette
 cannot be digitized by hand (see *Fixing a body part that has gone wrong*
 above). Your click is kept to a fraction of a pixel, in the same pixel
@@ -863,11 +912,13 @@ All of them are under the **View** menu and none of them changes any data.
   ago (solid ring) and will be one frame on (dashed ring), joined to the marker
   by a dotted line. A point that jumped stands out immediately.
 - **The loupe** (**L**) is a magnifier that follows your mouse over the video,
-  with a crosshair on the exact pixel. Use it when placing or dragging a point
-  at 4K: you can hit the right pixel without zooming the whole picture in.
+  with a crosshair on the exact pixel. Use it when placing a point at 4K: you
+  can hit the right pixel without zooming the whole picture in. It follows the
+  frame and the zoom you are on.
 - **Show segment midline** and **Show skeleton bones** switch the line down
   the centre of the outline, and the lines joining a skeleton's landmarks, on
-  or off.
+  or off. A bone is not drawn to a landmark that is hidden on that frame
+  (Shift+X), so no line points at a place you said is not really visible.
 
 ### Making a faint animal visible
 
@@ -920,10 +971,13 @@ what gets tracked, and background inside the outline pulls the centre off.
 
 **Ctrl+Z** (*Edit → Undo Last Run / Edit*) takes back the last change you made
 to the data, and every correction counts as one step of its own: a tracking run
-(or one semi-automatic step), a hand placement — a click, a drag, a Ctrl+click,
+(or one semi-automatic step), a hand placement — a click, a Ctrl+click,
 or an **N** click that continued a point — a **Shift+X** mark, clearing or
 hiding a stretch (body parts or silhouettes), deleting points, a change of a
-point's data source, a curve fill, or a snap onto the other cameras' rays.
+point's data source, a curve fill, or a snap onto the other cameras' rays. Your
+clicks with the segment tool (**S**) are the exception: **Ctrl+Z** does not take
+them back (right-click a click → *Remove this click* does), and the status line
+says so.
 
 > ⚠ **Undo is only one step deep.** There is no second undo, and removing the
 > segment cannot be undone at all (the program asks first). Before anything
@@ -1030,8 +1084,8 @@ Marking the same thing again later? The naming box offers the names you have
 already used. Pick one and it becomes another occurrence of that event, sharing
 its colour. The **Events** menu groups all occurrences of each name together.
 
-Click a ribbon to jump to that event. **Right-click it** to jump to its start or
-end, select its frames on the timeline (to clear or mark hidden), rename it, add
+Click a ribbon to jump to that event. **Right-click it** (also right after you
+have clicked it) to jump to its start or end, select its frames on the timeline (to clear or mark hidden), rename it, add
 a note to it, move its start or end to the frame you are on (*Set start to
 current frame*, *Set end to current frame*), or delete it. Events and notes are
 not part of **Ctrl+Z**: a deleted event stays deleted. Events are saved with
@@ -1049,7 +1103,8 @@ export. Right-click an event ribbon → *Edit note…* to add a note to an event
 Tell the program who you are once — **Edit → Annotator Name…** (also in
 Settings) — and every event and note you add records your name, so a lab with
 several people digitizing can see who marked what. The name is remembered on
-this computer for the next project.
+this computer for the next project, and applies to every camera of the project
+(not just the one you are working in).
 
 ---
 
@@ -1081,6 +1136,9 @@ first camera you load**. It is marked **(reference)** in the panel, its offset i
 **always 0**, and you cannot change it — there is nothing to change, it *is* the
 zero.
 
+(For the same reason the reference camera's offset box and its **◂ ▸**
+nudge buttons are greyed out.)
+
 Every other camera's offset then reads as one plain sentence:
 
 > **"when camera 1 is at its frame 0, this camera is at its frame N."**
@@ -1109,8 +1167,14 @@ the numbers just get measured from the new starting point.
    camera's offset is measured against. The base must be one of the ticked
    videos. Leave *Save the project now as* ticked and the project is saved at
    once as a file named after the folder, inside it — the file remembers which
-   videos you chose and which one is the base. Each camera is named after its
-   file. Then go on at step 3.
+   videos you chose and which one is the base. If a project of that name is
+   already there, the program asks before it saves over it (**No** leaves your
+   cameras open and unsaved, and *Save Project As…* lets you choose another
+   place). Each camera is named after its file; when files share a name (a
+   `GX010001.MP4` in each of eight camera folders), the cameras are named after
+   their folders instead (or get a *(2)* after the name), so every camera has
+   its own name — which matters, because camera offsets are matched by name.
+   Then go on at step 3.
    Otherwise: open the first camera's video normally. **This one becomes the
    reference**, so if it matters to you which camera the numbers are measured
    against, load that one first.
@@ -1147,7 +1211,8 @@ the numbers just get measured from the new starting point.
    that all cameras could see; it is the choice when a video has no sound
    track, and a good cross-check of the sound result. Reading a camera's
    stretch takes seconds from a local disk and a minute or two over a network
-   share.
+   share. It looks in exactly the window you ask for: *Around frame of …* and
+   the length you set, no more.
 
    Either way, GoPro-style file names carry the recording clock to the
    second, and the dialog uses it: it tells you what the clocks say and
@@ -1157,8 +1222,11 @@ the numbers just get measured from the new starting point.
    flash or the wand entering, tick *Use the whole recording instead*, widen
    the search, or switch method; a NONE row starts unticked). The line under
    the button also names a video with no sound track (use Motion for it), a
-   reference camera whose stretch is silent, and a camera that did not record
-   that stretch at all (choose a stretch every camera recorded). Press *Apply
+   reference camera whose stretch is silent, a file that could not be read at
+   all (hover its verdict for the reason: it is not the same as having no
+   sound), and a camera that did not record that stretch at all (choose a
+   stretch every camera recorded). **Cancel** stops a running search at once,
+   also while the sound is being read. Press *Apply
    the ticked offsets*. The hand check afterwards
    is the same as the manual way: step to a moment every camera saw and
    confirm it appears at the same time in each view.
@@ -1251,8 +1319,8 @@ them by name.
 marker) is placed in several cameras, you do not have to track it camera by
 camera: tick **Track ▾ → Every camera** and the Track button says how many
 cameras a run will cover ("Track ▶ · 3 cams"). Press Track (**T**) and the
-selected points — or all of them, as usual — are tracked in each camera that has
-them at this instant, **all cameras at the same time**, each one moving on live
+selected points (**Ctrl+A** selects all of them) are tracked in each camera that
+has them at this instant, **all cameras at the same time**, each one moving on live
 in its own view; a camera where a point was not placed is simply skipped for
 that point (with *View → Trails* on, each camera draws its trail as it goes).
 The Track ▾ menu stays open while you tick, so the run mode
@@ -1349,7 +1417,8 @@ board, pick the board video, check the boards — and its last page tells you to
 **save the lens file**, because there is no camera to attach it to yet; if you
 close it without saving, the program offers to save it for you. The wizard:
 
-1. Press *Save the checkerboard to print…* and print the file at **100 % /
+1. Press *Save the checkerboard to print…* (any folder works, also one with
+   accents in its name) and print the file at **100 % /
    "actual size"**. Glue it to something perfectly flat and stiff — foam
    board, a clipboard, a piece of glass. Measure one square with a ruler (it
    should be 24 mm) and type what you measure. If you use a board of your own,
@@ -1368,14 +1437,16 @@ close it without saving, the program offers to save it for you. The wizard:
    unusable, and the whole board — border included — should stay inside the
    picture. Turning the board is fine: the program recognises its corners by
    the black square beside them, so the axes stay attached to the board
-   however it is held.
+   however it is held. Holding the board still does not help: what counts is
+   how many *different* poses it was shown in, not how many frames.
 3. On the page *The checkerboard video*, press **Choose…** and pick that video.
    (The box starts with a video that is already open — usually the wand or
    animal recording, which has no board in it; replace it unless it is the
    board video.) Under *This is the lens of camera* pick the camera, check
    *Board size* (inner corners — 9 × 6 for the printed board), type the square
    you measured under *One square*, and leave *Lens type* on *Not sure* unless
-   you know. Press **Find the boards**: it finds the board on its own. The
+   you know. Press **Find the boards**: it finds the board on its own (the
+   board size cannot be changed while it is looking). The
    board video must have **exactly the same picture size** as that camera's
    video (same resolution and recording mode); if it does not, the page names
    both sizes and will not go on — film the board in the experiment's mode, or
@@ -1411,7 +1482,11 @@ stretched past where the board ever went: the board reached too little of the
 picture, so out in the corners the model has nothing to hold on to and would
 place a point at infinity. That happens most with the fisheye model. Film the
 board again pushed into every corner, or use the standard model if the report
-says it fits about as well. The wizard never picks a runaway model on its own.
+says it fits about as well. The wizard never picks a runaway model on its own: with *Lens type* on *Not
+sure* it fits both models to the very same boards, and when it leaves the
+fisheye out because it runs away at the edges, the report says so. The pixel
+limits in the verdicts are scaled by the picture's longer side, so a portrait
+video is judged like a landscape one.
 
 ---
 
@@ -1444,8 +1519,9 @@ Three things you can do:
 
 **Untick any board** you do not trust and it is left out of the fit. The
 buttons across the top do it in bulk: *Best spread* (the automatic choice),
-*All*, *None*, and *Drop the worst* (everything more than three times worse
-than the middle).
+*All* (every board is ticked, and every ticked board is used in the fit),
+*None*, and *Drop the worst* (everything more than three times worse than the
+middle).
 
 **Click a board** to open it full size and **drag a corner** onto where it
 really belongs. When you let go it snaps precisely onto the nearest true
@@ -1510,7 +1586,8 @@ five pages and explains each one:
    how many frames two or more cameras share; under 10 shared frames Next stays
    off.
 3. *The cameras* — leave the focal length on **Find it automatically** unless
-   you have calibrated these exact cameras before. Tick **Also estimate lens
+   you have calibrated these exact cameras before (it works when only some of
+   the cameras have a lens profile, too). Tick **Also estimate lens
    distortion** only for wide-angle or action cameras (GoPro-style) that have
    no lens profile, where straight lines look bent at the edges of the picture.
    Under *Lens correction* each camera has a row: **Calibrate…** opens the lens
@@ -1549,7 +1626,12 @@ five pages and explains each one:
 - **GOOD** — use it. The program checked that the recovered wand length hardly
   varies from frame to frame (the *wand score*, under 1 %), that the cameras
   agree with the tracked positions to about a pixel (the *reprojection error*),
-  and that the wand covered a fair part of every picture.
+  that the wand covered a fair part of every picture, that **every camera**
+  kept at least 30 usable observations (and at least half of its own), and
+  that no more than 5 % of all the clicks had to be set aside as outliers. A
+  camera that contributed only a handful of wand positions, or that lost half
+  of them to outlier rejection (usually a sync error), keeps the verdict from
+  reading GOOD, and the report names it.
 - **USABLE** — it will work, but the notes underneath say what is weak. Usually
   more wand frames in one camera, or the wand kept to one corner of the volume.
   It also reads USABLE when the calibration is sound but the world could not be
@@ -1605,7 +1687,8 @@ the message says how close they agree (normally within a thousandth of a
 pixel). Two things it tells you about when they happen: coefficients from
 easyWand or DLTdv often describe a **mirrored** world, which those formats
 cannot hold, so the exported world is mirrored in Z (and 3D points exported
-with it are mirrored the same way); and DLTdv's own lens correction is not
+with it are mirrored the same way; **3D → Set World Axes…** gives such a
+calibration a proper right-handed world instead, with nothing left to mirror); and DLTdv's own lens correction is not
 OpenCV's, so an OpenCV lens model is fitted to it and its largest error is
 named.
 
@@ -1632,8 +1715,10 @@ the CAMERAS panel) to get 3D back. Four steps, in this order:
    calibration counted pixels. **DLTdv and easyWand** count from 1 with y
    downwards, which is the first choice and almost always right; if your 3D
    comes out wrong by a constant amount, this setting is the first thing to
-   check. A Kinetrace `.kcal.json` states its own convention, and so does an
-   OpenCV-style camera file (below), so for those the choice is locked. When
+   check. The choice starts fresh for every file you open (it never carries over
+   from the last one). A Kinetrace `.kcal.json` states its own convention, and
+   so does an OpenCV-style camera file (below), so for those the choice is
+   locked. When
    the file records each camera's picture size, the dialog matches columns to
    cameras by size where it can and asks before accepting a column whose size
    differs from the video's; a `dltCoefs.csv` records no sizes, so match its
@@ -1648,8 +1733,8 @@ the CAMERAS panel) to get 3D back. Four steps, in this order:
    camera there, the program moves the origin to a point the cameras look at
    and tells you by how much (your 3D comes out in that shifted frame; an
    export of the calibration moves it back). An **Anipose** `calibration.toml`,
-   an **OpenCV** `.yml` / `.json` camera file and a **MATLAB** `.mat` with a
-   `cameras` struct are read the same way. The same entry is under
+   an **OpenCV** `.yml` / `.yaml` / `.xml` / `.json` camera file and a **MATLAB**
+   `.mat` with a `cameras` struct are read the same way. The same entry is under
    **File → Import → Calibration…**, beside **3D Points…** (landmarks
    triangulated in Anipose or DLTdv, or by another Kinetrace project — for the
    3D view and the kinematics export), **Camera Offsets…** (a CSV of each
@@ -1660,13 +1745,19 @@ the CAMERAS panel) to get 3D back. Four steps, in this order:
    camera's timing and keeps the ones where the cameras' rays meet most
    cleanly (the *residual*, in pixels, that it shows before and after). Do
    this after tracking, not before: it needs the tracks to measure anything.
-   The dialog starts with a verdict. **RELIABLE** means the tracks pin the
+   The search can take a while with many cameras, so a card counts the tests
+   as it goes and has a **Cancel** button (nothing changes if you cancel). The
+   dialog starts with a verdict. **RELIABLE** means the tracks pin the
    timing down: shifting any camera by half a frame makes the cameras
    disagree noticeably more, so the answer is real. **WEAK** means the
    disagreement barely changes with the timing (slow motion, few shared
    frames, noisy tracks): apply only if the numbers look plausible. **NOT
    SUPPORTED** means the tracks carry no timing information at all — do not
-   apply; line the cameras up from a flash or a clap instead. Each camera is
+   apply; line the cameras up from a flash or a clap instead. When the landmarks
+   simply do not move enough in the window to time anything (a still marker
+   looks the same at every offset), it says **flat: the landmarks do not move
+   enough to time it** and advises you not to apply: pick a stretch where
+   the animal moves. Each camera is
    labelled the same way, and a camera that shares no tracked landmark with
    the others in the window is left exactly as it was and says so. The
    question defaults to *No* unless the verdict is reliable. Offsets that are
@@ -1694,14 +1785,25 @@ the CAMERAS panel) to get 3D back. Four steps, in this order:
    visible, and the report says so. The same holds when nearly all positions
    (90 % or more) were seen by only two of your cameras: GOOD then reads
    USABLE. When more than half were, the report names every landmark that no
-   third camera ever saw — those have no cross-check at all.
+   third camera ever saw — those have no cross-check at all. If you want the
+   axes of the 3D world to be your own (an origin and an X direction you chose),
+   **3D → Set World Axes…** does that afterwards: see *Choosing the axes of the
+   3D world* below.
 4. **3D → Carve Volume at This Frame** (**Ctrl+4**). If the animal is outlined
    (section 4.3) in **three or more** cameras that look at it from clearly
    different directions, the program carves the space every outline agrees
    on — the animal's **volume**, shown as a solid in the 3D view with its
    size in the caption. Two outlines are not enough: they carve a long sliver
    along the line between the cameras whose size is not the animal's, so the
-   program declines and says why. Outlines only ever *cut away* space, so
+   program declines and says why. A camera that sees the *whole* animal now
+   also votes against the space outside its picture, so a tightly framed
+   camera no longer leaves a long two-camera sliver in the shape; where a
+   camera cuts the animal at its picture edge it cannot rule out what lies
+   beyond, and if more than about a tenth of the volume was checked by fewer
+   than three cameras the program warns you (*Volume partly checked by two
+   cameras only*): the size is then probably too large, so frame the whole
+   animal in every camera or carve at a moment when three see all of it.
+   Outlines only ever *cut away* space, so
    more cameras give a tighter shape, and a bad outline in one camera bites a
    piece off: check the silhouettes first. It needs step 3 first: the
    reconstructed landmarks tell it where in space to look. If the shape runs
@@ -1748,8 +1850,10 @@ calibration switches the first one on.
   agree: *3D rmse 0.84 px · 2 cams*. It is the reconstruction residual in
   pixels (DLTdv's definition — the number 3D → Reconstruct reports for every
   frame): green = good (under about 1.5 px at 1920 px wide), amber = usable,
-  red = one of the placements is off. The status bar says the same after each
-  click. The dashed lines turn faint in every camera from then on — they have
+  red = one of the placements is off. With only **two** cameras it never reads
+  better than amber ("ok"): a slip along the line joining the two views is
+  invisible to two cameras, so a low number cannot be called good. The status
+  bar says the same after each click. The dashed lines turn faint in every camera from then on — they have
   done their job. With only two cameras a slip *along* the other camera's line
   does not raise the rmse; a third camera does catch it.
 - **A ◇ once two cameras agree.** When two or more *other* cameras have the
@@ -1807,7 +1911,45 @@ calibration switches the first one on.
 reference camera, with a second file giving each position's residual, how
 many cameras saw it, and each camera's own error in pixels. Everything 3D is
 saved in the project, so reopening it brings the calibration, the offsets, the
-positions and the bands back.
+positions and the bands back. The 3D points you export always come in the same
+world as the cameras you export with **3D → Export Calibration…**, so the two
+can be used together in another program. A DLTdv xyzpts file keeps a frame with
+no 3D position as an empty frame, so every later frame stays on its own row.
+
+### Choosing the axes of the 3D world
+
+A calibration puts the origin and the axes somewhere: wherever the wand's
+centre was, with a vertical from a dropped ball, or at camera 1 if you gave it
+neither. If you want the world to mean something to you — the corner of a
+frame as (0, 0, 0), the long edge of a table as the X axis — use **3D → Set
+World Axes…**. It needs a 3D result first (**Ctrl+3**), because you pick the
+axes **from three landmarks** that were tracked in 3D. A pole's foot, three
+marks on the floor or the corners of a frame all work:
+
+1. **Origin (0, 0, 0)** — the landmark that becomes the new origin.
+2. **+X points toward** — a second landmark: the X axis runs from the origin
+   to it.
+3. **+Y points toward** — a third landmark, anywhere on the side where you
+   want +Y; the program makes Y exactly perpendicular to X.
+4. **+Z follows the right-hand rule** (point the fingers of your right hand
+   along +X and curl them towards +Y: your thumb is +Z). That also fixes a
+   mirrored world, which easyWand and DLTdv calibrations often have: the new
+   one is a proper right-handed world.
+
+Choose the three landmarks' positions **at the frame on screen**, or, for
+markers that never move (marks on the floor, a fixed pole), as **their median
+position over the whole 3D result**, which is steadier. The window says in
+plain words where each landmark lands (for example how far the +X landmark lies
+along X) and greys out OK until the three are different landmarks that all have
+a 3D position.
+
+What changes: the calibration and the 3D result are re-expressed in the new
+world. **What does not change:** the pictures, your tracks and every camera's
+pixels (each camera still projects every point to the same pixel as before).
+A volume you carved earlier is cleared, because it was in the old axes: carve
+it again (**Ctrl+4**). Afterwards **export the calibration and the 3D points
+again** to get them in the new world, and then every number you measure (a
+speed, a height) is along your axes.
 
 ---
 
@@ -1837,7 +1979,12 @@ project folder, in `.history`: that is your previous save. To go back to it,
 close the project and run `python -m kinetrace.convert previous name.kinetrace`
 (once: it goes back one save). If the program or the computer stops *while*
 saving, the next time you open the project it is put back as it was at the save
-before, and the program says so.
+before, and the program says so. A save only ever replaces or removes the
+files the previous save wrote: **your own files inside the project folder** (a
+spreadsheet you made from a table, a note, a copy of a folder) are never
+touched, and hidden files the operating system adds (`.DS_Store`, the `._…`
+files a Mac leaves on some drives) are ignored. A file in `.history` that is
+open in another program does not stop a save.
 
 **Unsaved work is kept safe every 30 seconds** — also while tracking is running
 and when you close the program — in a *recovery copy*, never in your project.
@@ -1849,7 +1996,9 @@ the computer crashes you lose at most half a minute. The status bar shows
   one, the video). The program finds the unsaved work and asks *Unsaved changes
   found* (or *Restore unsaved work?*). **Yes** carries on where you stopped;
   **No** opens the last save and keeps the unsaved work aside — nothing is
-  deleted.
+  deleted. If you open just one camera's video of a multi-camera session you
+  never saved, the unsaved work comes back with every camera, each on its own
+  video.
 * When the program starts and unsaved work is waiting, a notice says so over
   the video: **click the notice** to see the list and restore it. **File →
   Recover Unsaved Work…** shows the same list (everything waiting, newest
@@ -1877,11 +2026,17 @@ Unsaved Work…. Moving through the video, zooming and switching toggles are not
 changes that need saving: close without saving and the project still opens where
 you left it.
 
+**If the tidying after a save has a problem** (a leftover file that could not
+be removed, say), the program says *Saved. Not everything could be tidied up:*
+and what it was. Your save is complete, and the next save tries again.
+
 **If a save fails** — the folder is gone or read-only, the drive is
 disconnected, or one of the project's files is open in another program (a CSV
 in Excel, for example) — the program says so (*Could not save the project*) and
 the save undoes itself: the previous save is unchanged. Your work is still in the program and in its recovery copy: use
-**File → Save Project As…** to save it somewhere else.
+**File → Save Project As…** to save it somewhere else. If your very first save
+of a project failed, you can try the same name again: the half-made folder is
+no obstacle.
 
 **The project is readable without Kinetrace.** Open the folder: every table
 is a spreadsheet-style CSV file that Excel, MATLAB, R or Python open directly —
@@ -1893,7 +2048,8 @@ the segment's area and position per frame are in `silhouette/summary.csv`, the
 NumPy `.npy` arrays, which Python, MATLAB and R can read. The folder's
 `README.txt` says what every file is. If you edit a file by hand, close the
 project in Kinetrace first; the program reads your edit the next time it opens
-the project. (`.cache` holds copies for fast opening and can be deleted; leave
+the project, and a file it cannot read is named in the message (with the row,
+for a table). (`.cache` holds copies for fast opening and can be deleted; leave
 `.history` alone.)
 
 **One file, to e-mail or archive:** **File → Export Project as One File…**
@@ -1914,8 +2070,8 @@ A project does **not** contain the video itself, only where the video is on
 disk. Keep the videos beside the project folder, or put them inside it in a
 folder called `videos`, and move the whole lot together: you can move it
 anywhere, even to another computer or operating system, and the program finds
-each video again. If it cannot, it asks you
-to point it at each one (*Locate video*). If the video you pick has a different number of
+each video again. If it cannot (or the project holds no path for a video at
+all), it asks you to point it at each one (*Locate video*). If the video you pick has a different number of
 frames from the one the project remembers, it warns you: that is usually another
 cut or take, and the tracks would sit on the wrong frames.
 
@@ -1938,14 +2094,15 @@ its file-type list (*Save as type*).
 **With several cameras**, the 2D formats — every row above *ALL CAMERAS* in the
 table — export the camera you are working in. The suggested file name carries
 that camera's name (`myproject_cam2_tracks.csv`), and the message afterwards
-names the camera, so one camera's files never overwrite another's. Click the
+names the camera, so one camera's files never overwrite another's. (The
+overlay video's suggested name carries it too.) Click the
 next camera's picture and export again for each one.
 
 | Choose this | If you want |
 |---|---|
 | **Wide CSV** | the general-purpose table — one row per frame, `x`, `y` and a visible flag per body part. Opens in Excel. **Start here if unsure.** |
 | **DeepLabCut CSV** | to load your results into a DeepLabCut workflow |
-| **DLTdv8 xypts CSV** | to load one camera into DLTdv8. Written the way DLTdv8 writes its own files: pixels counted from 1, origin at the top-left, `NaN` where there is no data. The `_pointnames.csv` file beside it names the body parts and states this |
+| **DLTdv8 xypts CSV** | to load one camera into DLTdv8. Written the way DLTdv8 writes its own files: pixels counted from 1, origin at the top-left, `NaN` where there is no data. A DLTdv export is exactly two files: the points file and the `_pointnames.csv` beside it, which names the body parts (the real names, quoted properly even when one contains a comma) and states this |
 | **DLTdv xypts CSV, bottom-left origin** | the same for older DLTdv versions and Argus Clicker, which count y from the bottom edge. If a re-imported file lands upside down, you picked the wrong one of these two |
 | **Sparse TSV** | only the frames that actually have data — much smaller for sparse tracks |
 | **MATLAB (.mat)** | to load straight into MATLAB, including confidence, the silhouette, events and notes. Pixels are counted from 0 like the Wide CSV (the file's `pixel_convention` says so; add 1 for DLTdv8-style coordinates); `NaN` where there is no data |
@@ -1955,11 +2112,14 @@ next camera's picture and export again for each one.
 | **Silhouette outlines** | the segment's outline on every frame as polygons, in a JSON file (pixels counted from 0) |
 | **Silhouette masks** | one black-and-white PNG per frame with a silhouette (white = the segment), in a folder beside the name you chose — for other segmentation or measuring tools. Many thousands of frames make many thousands of files, so *Everything* leaves this one out |
 | **3D kinematics** | **speeds and accelerations.** The 3D positions smoothed, then velocity (X, Y, Z and speed) and acceleration per landmark, plus a report in words. See below |
-| **Everything** | every format above that applies, at once, sharing one base filename: the DLTdv8 file once (not the bottom-left variant), *ALL CAMERAS* only with two or more cameras, the 3D files only after a Reconstruct, and the kinematics with **Automatic** smoothing (it does not ask) |
+| **Everything** | every format above that applies, at once, sharing one base filename: the DLTdv8 file once (not the bottom-left variant), *ALL CAMERAS* only with two or more cameras, the 3D files only after a Reconstruct, and the kinematics with **Automatic** smoothing (it does not ask). It runs in the background with a count and a Cancel; if one format cannot be written (a `.mat` open in MATLAB, say) it goes on with the others and lists at the end what failed |
 
-Some extra files are written alongside automatically when they are relevant: your
-events and frame notes (`_events.csv`), and a summary of the silhouette per
-frame (`_segment.csv`). The MATLAB file carries both inside itself.
+Two extra files are written beside the plain **Wide CSV**, **DeepLabCut CSV**
+and **Sparse TSV** exports when they are relevant: your events and frame notes
+(`_events.csv`), and a summary of the silhouette per frame (`_segment.csv`).
+*Everything* writes them once, beside the Wide CSV. The DLTdv and 3D exports
+write only their own files, so a folder of xypts files for DLTdv holds nothing
+else. The MATLAB file carries both inside itself.
 
 **How to read the numbers.** Positions are in **pixels** of the original video.
 `x` counts from the left edge, `y` counts **downward from the top** edge — this
@@ -2021,7 +2181,10 @@ window selected on the timeline, or any range, and tick what to draw — the
 says. Half size is plenty for a talk and renders four times faster (it is the
 starting choice for footage wider than 2000 pixels). Rendering runs in the
 background — you can keep working, but edits you make while it renders are not
-in that video — and the original video is never modified. **Cancel** deletes the
+in that video — and the original video is never modified. The new video plays
+at the **video file's own frame rate** (a 240 fps camera whose file says 30 fps
+gives a slow-motion overlay that plays like the original file, even if you set
+its real rate in the CAMERAS panel). **Cancel** deletes the
 unfinished file. If the video ends early or a frame is damaged, the message says
 where it stopped and how many frames were written. Points you marked hidden are
 left out, like in the other exports.
@@ -2049,12 +2212,30 @@ belong to first.
 * A DLTdv / Argus file with several cameras goes into the cameras of your
   project in the file's order (add the videos first); otherwise the program
   asks which of the file's cameras is the one on screen.
-* The message afterwards says how many positions came in, and how many were
-  left out because they fell outside the picture or on frames the video does
-  not have — many of those usually means the wrong video. **Ctrl+Z** undoes an
-  import into one camera.
+* The message afterwards says how many positions were **written** (only what
+  actually went in is counted), and how many were left out because they fell
+  outside the picture or on frames the video does not have — many of those
+  usually means the wrong video. A landmark the file names that Kinetrace
+  keeps from the silhouette, or follows as a ball marker, is left as it is and
+  **named** in the message. A name that occurs twice in the file becomes two
+  points (*name (2)*) rather than being merged. **Ctrl+Z** undoes an import
+  into one camera.
 * One animal per video: a multi-animal DeepLabCut file or a SLEAP file with
   several tracks is refused with the reason (export one animal per file).
+
+The other **File → Import** entries (calibration, 3D points, offsets,
+silhouettes) work the same way: they say what they did, or why not.
+
+* **Camera Offsets…** matches the file's rows to your cameras by name and
+  measures every number against your project's **first** camera. If the file's
+  numbers were measured against another camera, they are re-based on yours (the
+  message says so): a table saying camA 120, camB 97, camC 130 becomes 0, −23,
+  10 when camA is your first camera. If the file has no row for your first camera it
+  cannot be re-based, and the program asks whether to apply the numbers as
+  written.
+* **Silhouettes (mask images)…** is all or nothing: if any image in the folder is
+  the wrong size or unreadable, nothing is stored and the message names that
+  file, so a half-imported segment never sits unnoticed in the project.
 
 **Without opening the program.** The same conversions run from a command
 window, which is handy for many files at once: `python -m kinetrace.convert`
@@ -2063,7 +2244,14 @@ Windows, `.venv/bin/python` on Linux and macOS) followed by what to do — for
 example `tracks results.csv out.csv --to dltdv --video clip.mp4`, or
 `check myproject.kinetrace` to be told whether a file made elsewhere is sound.
 `python -m kinetrace.convert --help` lists everything; the online guide's page
-*Working with other programs* explains each command.
+*Working with other programs* explains each command. Three things worth
+knowing: `convert tracks … --camera 2` refuses an all-cameras file (its rows
+are frames of the reference camera; `convert import PROJECT --tracks FILE`
+maps them through your project's camera offsets), `convert points3d …
+--calibration FILE` writes the 3D points in the same world as the cameras
+exported from that calibration, and `convert import … --out NEW.kinetrace`
+gives the new project an identity of its own, so its unsaved-work copies are
+never confused with the original's.
 
 ---
 
@@ -2157,7 +2345,10 @@ mistake one for the other later.
 The second choice on the page is how to find the person on each frame.
 
 **Automatically** runs a person detector first. This is the normal choice and it
-works on ordinary footage of real people.
+works on ordinary footage of real people. The first time, the window tells you
+that the detector (RT-DETR, 81 MB) will download before the run starts; **Stop**
+during that download or while a model loads simply ends the run with a plain
+notice.
 
 **Use the segment silhouette already in this view** uses the outline you drew
 with the segment tool (**S**) instead. Choose this when:
@@ -2168,6 +2359,8 @@ with the segment tool (**S**) instead. Choose this when:
 * you already segmented the person for something else.
 
 A frame with no silhouette is **left blank** — it is not filled in with a guess.
+In the person list such a run says *from the silhouette* instead of a detector
+confidence, because nothing was detected: you told it where the person is.
 That is deliberate, and it is the same rule the rest of the program follows.
 
 If you have several people in shot, raise **People** (up to 8) and each one keeps
@@ -2200,7 +2393,12 @@ this frame only.
 **Running again adds to what is there.** A later run — over the frames in
 between, over a window you selected, or one you stopped half way with **Stop** —
 replaces only the frames it actually looked at and keeps every other pose; the
-message says which frames were posed again. A run that cannot be combined with
+message says which frames were posed again. If a frame it looked at has nobody
+on it this time, that frame **keeps its earlier pose** rather than being
+blanked, and the message says how many frames and which. With several people,
+each person keeps their own column across re-runs: the new run recognises who
+is who from the poses already there, so person 1 does not turn into person 2
+on the frames you re-ran. A run that cannot be combined with
 the earlier poses (the other model, or a different number of **People**) asks
 first, because it would replace them all. Ctrl+Z takes back a whole run either
 way. If you switch to another camera while a run is going, the result is still
@@ -2233,14 +2431,21 @@ around. It follows the video: whatever frame you are on, that is what it shows.
   and clips without tilting your head. Turn it off to see the raw camera frame.
 
   **Body shape** draws the actual 3D body surface the model returned, instead of
-  a stick figure. Only a 3D model produces one, so the box is greyed out for the
+  a stick figure (drawn the right way out: you see the front of the body, which
+  is where the face and the skeleton's front are, in the window and in the saved
+  video alike). Only a 3D model produces one, so the box is greyed out for the
   2D model. You choose whether to keep it when you run the estimate (*Keep the
   3D body shape, not just the joints*); it costs about 110 kB per frame per
   person and every save of the project writes it again, so turn it off for a
   very long clip.
 * **Underneath** — the joint angles plotted against time, with a line marking
   where you are and the current value of each one on the right. Gaps in a line
-  are frames with no data; they are left as gaps rather than joined up.
+  are frames with no data; they are left as gaps rather than joined up. The
+  **Plot angles** menu in the window's top bar chooses which angles are drawn:
+  a whole group (arms, legs, trunk) or single angles out of all 14, up to **8
+  at a time** (ticking a ninth drops the oldest choice). Until you choose, it
+  plots the arm and leg flexions. This choice only affects the plot: the
+  **Angle numbers** tick and every export are separate.
 
 With several people, pick one in the **Person** list. Tick **Joint names** to
 label every joint, untick **Angle numbers** for a cleaner picture, or untick
@@ -2260,7 +2465,7 @@ spreadsheet header. You never have to guess.
 | Elbow flexion | arm straight | more bent |
 | Knee flexion | leg straight | more bent |
 | Hip flexion | thigh in line with the trunk | knee drawn forwards (negative = leg trailing behind) |
-| Shoulder flexion | upper arm alongside the trunk | arm swung forwards (negative = behind the body) |
+| Shoulder flexion | upper arm alongside the trunk | arm swung forwards (negative = behind the body). With the arm raised straight overhead it runs past 180 degrees and goes on, instead of flipping to −178 |
 | Ankle dorsiflexion | foot square to the shin | toes pulled up (negative = toes pointed) |
 | Trunk lean | this person's own average posture over the clip | leaning forwards |
 | Neck flexion | ears straight above the shoulders, in line with the trunk | head carried forwards. It is measured to the ears, so a nod of the head alone barely changes it |
@@ -2271,6 +2476,13 @@ Hips, shoulders and ankles are **signed** — they can go negative — because t
 joints swing both ways and a number that could not tell flexion from extension
 would be useless for a walk. The neck, trunk lean, thigh separation and the twist
 are signed too. Knees and elbows only fold one way, so they are never negative.
+
+**Which way is forwards, in a flat 2D picture.** A signed 2D angle needs to know
+which way the person faces. The program takes it from the nose and toes where
+they are seen; on a frame where the nose is hidden it uses the way the person
+**usually faces** over the clip, and where even that is unclear it leaves the
+signed angle **blank** rather than guess a sign that could be backwards. (With
+the 3D model none of this matters.)
 
 **Trunk lean is measured against the person, not the camera.** Its zero is that
 person's own average posture across the clip, so a camera mounted high and
@@ -2408,6 +2620,9 @@ on the last frame it was on the body; click it where it really is and press
 Track. Turn Body off for reference markers that are *supposed* to sit on the
 background, or right-click an individual point → **May leave the segment (free
 point)**. When a run stops this way, the message names the point and the frame.
+With Body on, selecting a landmark that is kept on the silhouette brings the
+segment into the run even if the segment's own row is not selected: without the
+outline there would be nothing to hold the landmark to.
 
 **ROI** (bottom bar, on by default) — when your animal is small in a big frame,
 the program works on a zoomed-in crop so it can see more detail. It decides for
@@ -2532,9 +2747,11 @@ right-click the point → *Test the point models on its clicks*:
    where a model was off without saying so; the rest are stops, where it said
    so. Fewer corrections win; on a tie AllTracker is recommended, because it
    needs no extra clicking.
-4. **Use** gives the winner to the point you tested (its row then shows AT /
-   CT / MS). For Moving spot it also keeps the settings it found on that point.
-   Ctrl+Z takes it back.
+4. The button reads **Use … for** *your point* (for example *Use Moving spot
+   (bright spot, 6 px) for P1*) and gives the winner to **that point only**: its
+   row then shows AT / CT / MS, and the project's default and your other points
+   are not changed. For Moving spot it also keeps the settings it found on that
+   point. Ctrl+Z takes it back.
 
 The program suggests this in two situations: when you have corrected a point
 by hand on 5 of the last 20 frames, and when a new point sits on a small,
@@ -2567,9 +2784,12 @@ by itself, start it again and open the Error Report: the session marked "did
 NOT end normally" is the one that closed, and the stack dump under it says
 where. Nothing in these files is ever sent anywhere (they can contain the names
 of your video files). The notice appears at most once every ten seconds even
-when several errors come together; the log keeps all of them.
+when several errors come together; the log keeps all of them. Two Kinetrace
+windows open at once share the same log without trouble.
 
-**The status bar says *cpu* although the computer has an NVIDIA card.** Open
+**The status bar says *cpu* although the computer has an NVIDIA card.** If the
+speed test of the graphics card failed once (a driver hiccup), the program
+tries it again at the next start: there is no file to delete. Open
 **Help → System Check…**: it says whether the card's driver is too old for the
 program's PyTorch (update the driver at nvidia.com/drivers, then restart the
 computer) or whether the CPU version was installed (delete the `.venv` folder
@@ -2647,33 +2867,24 @@ simply stay empty.
 away the stored pictures and re-reads the current one from the file. It never
 touches your tracked data.
 
-**"Tracking stopped: frame N of the video could not be decoded."** The video
-file is damaged at that frame (a copy that did not finish, a card error) or
-ends earlier than it claims. Everything tracked before that frame is kept and
-saved. Scrubbing onto such a frame shows it blank with a message; **Shift+C**
-tries again. Copy the file from the camera card again if you can; otherwise
-track up to the damaged frame, move past it, place the points again and track
-on.
+**"Tracking stopped: frame N of the video could not be read just now — press
+Track again."** One frame failed to read, but the program tried it a second
+time and it worked: the file is fine (a busy network drive, a hiccup). Nothing
+is lost; everything tracked before that frame is kept. Press **Track ▶** again
+to go on.
 
-**"This file does not state a usable frame rate…"** The video does not say how
-many frames per second it holds, so the program measured the rate from the
-frames' own time stamps or, when even those are missing, is **assuming** one;
-the message says which, and gives the number. Frame numbers and positions are
-not affected, but times, speeds, accelerations and camera sync all use that
-number: check it against the rate the camera was set to before trusting them,
-and correct it with the camera's **fps button** in the CAMERAS panel.
-
-**"Tracking stopped: frame N of the video could not be decoded."** The video
-file is damaged at that frame, although it goes on after it. Everything tracked
-up to the frame before it is kept, the playhead waits there, and a window
-(*Damaged frame in the video*) explains. To go on, go to a frame after the
-damaged one, place the points there again (select each in the POINTS list and
-click it on the video) and press **Track ▶**. Or make a clean copy with the
-command the window gives (`ffmpeg -i "clip.mp4" -c:v libx264 -crf 18
-fixed.mp4`) and open the copy; it starts as a new, empty session, so do this
-before tracking much. While scrubbing, the same damage shows as a blank
-picture with the message "frame N could not be decoded … The frame shows
-blank; Shift+C retries."
+**"Tracking stopped: frame N of the video could not be decoded."** Even a
+second try fails: the video file is damaged at that frame (a copy that did not
+finish, a card error), or ends earlier than it claims. Everything tracked up to
+the frame before it is kept and saved, the playhead waits there, and a window
+(*Damaged frame in the video*) explains. Scrubbing onto such a frame shows it
+blank with a message ("frame N could not be decoded … The frame shows blank;
+Shift+C retries."). Copy the file from the camera card again if you can. To go
+on with this one, go to a frame after the damaged one, place the points there
+again (select each in the POINTS list and click it on the video) and press
+**Track ▶**; or make a clean copy with the command the window gives (`ffmpeg -i
+"clip.mp4" -c:v libx264 -crf 18 fixed.mp4`) and open the copy, which starts as
+a new, empty session, so do this before tracking much.
 
 **Keyboard shortcuts do nothing.** The keys work wherever the keyboard focus
 happens to be — a number box, the POINTS list, the right panel even when you
@@ -2727,12 +2938,12 @@ roughly 15–20 frames per second on a good card with the CoTracker3 point model
 and about half that with AllTracker, the default (**Track ▾** chooses). An
 outline adds its own time on top.
 
-**It tracked only one body part when you wanted all of them.** Some points were
-selected in the POINTS list, which limits the run to those. Press **Esc** to
-clear the selection (press it again if the first press cancelled something
-else, such as the segment tool or a selected stretch of the timeline). The
-Track button always says what it is about to do: *Track ▶* for everything,
-*Track 2 sel. ▶* for two selected points.
+**It tracked only one body part when you wanted all of them (or nothing at all).**
+Track follows exactly what is selected: the points selected in the POINTS list,
+and the segment only while its row in SEGMENT is selected. Press **Ctrl+A** to
+select every point and the segment, then Track again. The Track button always
+says what it is about to do (*Track · 3 points + segment ▶*); with nothing
+selected it tracks nothing and a notice tells you to select something.
 
 **Speeds, times or camera matching are off by a round factor (8×, 33×…).**
 The file probably states a slow-motion playback rate instead of the rate the
@@ -2815,9 +3026,9 @@ loaded is the reference and its offset is always 0.
 default), CoTracker3 or Moving spot. Chosen in **Track ▾** and saved with the
 project.
 
-**Project (`.kinetrace`)** — a file holding all your work on a video, or on all
-the cameras of one recording, and how you left the program. Not the videos
-themselves.
+**Project (`.kinetrace`)** — a folder holding all your work on a video, or on
+all the cameras of one recording, and how you left the program (also
+exportable as one file). Not the videos themselves.
 
 **Region** — an outlined area (circle, rectangle or polygon) tracked as a whole
 and reported as its centre, rather than a single spot.
@@ -2833,6 +3044,10 @@ Optional: points track without it.
 **Visible** — whether the tracker judged a body part could be seen in that
 frame (a filled marker) or was covered for a moment (a hollow ring). A covered
 body part keeps its estimated position, and it is exported.
+
+**World axes** — the origin and the X, Y and Z directions of the 3D positions.
+A calibration chooses them; **3D → Set World Axes…** lets you choose them from
+three landmarks instead (Z follows the right-hand rule).
 
 ---
 
@@ -2851,11 +3066,10 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **F** / **B** | one frame forward / back |
 | **Shift+F** / **Shift+B** | jump by the step size set at the bottom |
 | **←** / **→** | one frame back / forward (with **Shift**: by the step size) |
-| **←** / **→** | one frame back / forward (**Shift**: jump by the step size) |
 | **Home** / **End** | first / last frame |
 | **Space** | play / pause the preview |
 | click or drag the timeline | go to that frame |
-| hold the left button and move (on the video) | pan the zoomed-in view — also when you start on a marker; a point is never dragged |
+| hold the left button and move (on the video) | pan the zoomed-in view — also when you start on a marker; markers are never dragged, so a drag can never move a point by accident |
 | type in the frame box | go to that frame number |
 | **O** | onion skin: ghosts of the previous / next frame |
 | **L** | loupe: magnifier under the cursor |
@@ -2868,15 +3082,14 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **N** | arm the crosshair — the next click places a point |
 | click (armed) | place a point, or continue the selected one where it has no data |
 | drag a circle (armed) | track a whole region as one point |
-| drag a marker | correct it on this frame (one **Ctrl+Z** step; a landmark derived from the outline cannot be moved by hand) |
-| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed |
+| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed (a click on a marker just selects that point). Two quick clicks are two clicks, so frame-by-frame digitizing never loses one. A landmark derived from the outline cannot be placed by hand |
 | **＋ New point** (POINTS panel) | a point with no position yet, selected — and in every camera's list |
 | **A** | with a calibration: place the selected point at the ◇, where two or more other cameras put it |
 | **Alt+click** | with a calibration: where this spot can be in the other cameras (nothing is edited) |
 | **Ctrl+click** | move the selected point here |
 | **Shift+<** / **Shift+>** | first / last frame the selected point has data on (nothing selected: the silhouette's) |
 | **,** / **.** | previous / next frame placed by hand for the selected point |
-| right-click a marker | clear that point on this frame only, and select it (one Ctrl+Z step) |
+| right-click a marker (a short click) | clear that point on this frame only, and select it (one Ctrl+Z step). On one of several selected markers: all the selected **points** on this frame, never the silhouette. Does nothing while the Pan tool (**H**) is on |
 | hold the right button on a marker (half a second), or right-click its name in POINTS | its menu: go to its first / last / hand-placed / doubtful frames; clear it on this frame, in the selected window, or entirely; fill its gaps between hand placements with a curve; with a calibration, snap it to the other cameras' rays, or place it at the ◇ |
 | **J** / **Shift+J** | next / previous low-confidence (red) stretch |
 | **Shift+X** | mark the selected point hidden on this frame (again to unmark) |
@@ -2890,7 +3103,8 @@ view keys work. Hover over any button or menu entry to see what it does.
 
 | Key | Does |
 |---|---|
-| **Track ▶** or **T** | start tracking from this frame (with Track ▾ → **Every camera**: in each camera that has the points) |
+| **Ctrl+A** | select everything to track: every point and the segment (Edit → Select Everything to Track) |
+| **Track ▶** or **T** | start tracking from this frame: **only what is selected** — the points selected in POINTS, and the segment only while its row is selected (with Track ▾ → **Every camera**: in each camera that has the points). Nothing selected = nothing tracked |
 | **Shift+T** | several cameras: this run in every camera that has the points here, all at the same time |
 | **X** or **Space** | stop (during **3D → Re-track Disagreeing Stretches** it stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run it stops every camera at once) |
 | **F** (semi-automatic mode) | track exactly one frame (in every camera with Track ▾ → Every camera) |
@@ -2900,18 +3114,17 @@ view keys work. Hover over any button or menu entry to see what it does.
 
 | Key | Does |
 |---|---|
-| wheel, **+** / **−** | zoom the video |
+| wheel, **+** / **−** | zoom the video (a sideways swipe on a touchpad does not zoom) |
 | **R** | fit the whole picture back in the window |
-| **H** (the Pan button) | left-drag pans instead of editing; press **H** again or **Esc** to stop — picking **Add** or **Segment** also stops it. Does nothing until a video is open |
+| **H** (the Pan button) | the tool for looking only: while it is on, a click or a right click on a marker edits nothing. Press **H** again or **Esc** to stop — picking **Add** or **Segment** also stops it. Does nothing until a video is open |
 | middle-drag | pan, at any time — even while tracking |
 | **Shift + +** / **Shift + −**, or **Ctrl+wheel** over the timeline | zoom the timeline's time axis |
 | **Ctrl+1** | show / hide the right panel |
 | **Ctrl+2** | show only the camera you are working on |
 | **Ctrl+Shift+2** | Active view only: only the working camera reads its video; the others stay where they are until Sync all views (again: back to Sync all views; also *View → Other cameras*) |
-| **Ctrl+3** / **Ctrl+4** | reconstruct the 3D landmarks / carve the volume at this frame |
-| **Ctrl+5** | show / hide the 3D view (drag to turn, wheel to zoom, middle-drag to move) |
 | **Ctrl+3** | reconstruct the 3D landmarks (needs a calibration of every camera) and show the 3D view |
 | **Ctrl+4** | carve the animal's volume at this frame from the cameras' outlines |
+| **3D → Set World Axes…** | choose the 3D world's origin, +X and +Y from three landmarks of the 3D result (+Z by the right-hand rule) |
 | **Ctrl+5** | show / hide the 3D view (drag to turn it, wheel to zoom, double-click to reset) |
 | **Ctrl+6** | show / hide the body side-by-side view (drag the pose to turn it round) |
 | **Shift+C** | fix a stale or garbled picture |
