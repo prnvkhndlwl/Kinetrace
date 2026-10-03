@@ -40,14 +40,12 @@ class OverlayOptions:
     names: bool = True
     bones: bool = True
     mask: bool = True
-    midline: bool = False
     trails: int = 30             # frames of trail, 0 = none
     frame_number: bool = True
     events: bool = True
     notes: bool = True
-    skip_hidden: bool = True     # cells marked hidden by hand are not drawn
     marker_px: int = 7           # marker radius in OUTPUT pixels
-    fps: float | None = None     # None = the video's own rate
+    fps: float | None = None     # None = the video file's own rate (the session's `file_fps`)
 
 
 def _bgr(color) -> tuple[int, int, int]:
@@ -72,7 +70,8 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
         bgr = cv2.resize(bgr, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
     out = bgr
     h, w = out.shape[:2]
-    font_scale = max(0.4, 0.55 * sc * (w / 1280.0) ** 0.5) if w >= 640 else 0.4
+    # (G123) `w` is already the scaled width: scaling by `sc` again gave a half-size 4K overlay the minimum font
+    font_scale = max(0.4, 0.55 * (w / 1280.0) ** 0.5) if w >= 640 else 0.4
     s = session
     T = s.n_frames
     if not (0 <= frame < T):
@@ -91,17 +90,11 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
                 cv2.fillPoly(layer, pts, col)
                 cv2.addWeighted(layer, float(mask_opacity), out, 1.0 - float(mask_opacity), 0, out)
                 cv2.polylines(out, pts, True, col, 1, cv2.LINE_AA)
-        if opts.midline:
-            ml = s.masks.midline.get(frame)
-            if ml is not None and len(ml) >= 2:
-                cv2.polylines(out, [np.round(np.asarray(ml, np.float64) * sc).astype(np.int32).reshape(-1, 1, 2)],
-                              False, _bgr(getattr(s.animal, "color", mask_color)), 2, cv2.LINE_AA)
 
     occ = s.occluded[frame] if getattr(s, "occluded", None) is not None else np.zeros(s.n_points, bool)
     pos = s.tracks[frame] * sc
     valid = s.tracked[frame] & np.isfinite(s.tracks[frame]).all(axis=1)
-    if opts.skip_hidden:
-        valid &= ~occ
+    valid &= ~occ                       # cells marked hidden by hand are not drawn
 
     # trails
     if opts.trails > 0:
@@ -111,7 +104,7 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
                 continue
             seg = s.tracks[lo:frame + 1, j]
             ok = s.tracked[lo:frame + 1, j] & np.isfinite(seg).all(axis=1)
-            if opts.skip_hidden:
+            if s.occluded is not None:
                 ok &= ~s.occluded[lo:frame + 1, j]
             if ok.sum() < 2:
                 continue
@@ -200,6 +193,7 @@ def freeze_session(s, start: int = 0, end: int | None = None) -> SimpleNamespace
     occ = getattr(s, "occluded", None)
     return SimpleNamespace(
         n_frames=s.n_frames, n_points=s.n_points, fps=s.fps, width=s.width, height=s.height,
+        file_fps=getattr(s, "file_fps", s.fps),
         tracks=s.tracks.copy(), tracked=s.tracked.copy(), visibility=s.visibility.copy(),
         occluded=None if occ is None else occ.copy(),
         points=[p.copy() for p in s.points],
@@ -269,6 +263,31 @@ class OverlayRenderer(QThread):
         except OSError:
             pass
 
+    def _output_fps(self, header_fps: float) -> float:
+        """The rate the overlay plays at (I226): the caller's `opts.fps`, else the
+        rate the app measured for the video FILE (`file_fps`: from its timestamps
+        when the header is wrong), else the container header's. A rate that is not a
+        positive finite number is refused with a sentence -- NaN used to give a
+        one-frame MP4 reported as complete."""
+        if self.opts.fps is not None:
+            candidates = [("the requested frame rate", self.opts.fps)]
+        else:
+            candidates = [("the frame rate measured for this video", getattr(self.session, "file_fps", None)),
+                          ("the frame rate in the session", getattr(self.session, "fps", None)),
+                          ("the frame rate in the video's header", header_fps)]
+        for what, v in candidates:
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(v) and v > 0:
+                return v
+            if self.opts.fps is not None:
+                raise RuntimeError(f"{what} is {v:g}: it must be a number above 0 frames per second")
+        raise RuntimeError("the video's frame rate is not known (none is stored in its file and none was "
+                           "measured), so the overlay cannot be timed. Set the camera's frame rate with the "
+                           "fps button in the CAMERAS panel first.")
+
     def run(self) -> None:
         from kinetrace.video_source import open_capture
         cap = None
@@ -278,7 +297,7 @@ class OverlayRenderer(QThread):
             cap = open_capture(self.video_path)
             if not cap.isOpened():
                 raise RuntimeError("could not open " + self.video_path)
-            fps = self.opts.fps or float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+            fps = self._output_fps(float(cap.get(cv2.CAP_PROP_FPS)))
             w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             sc = float(self.opts.scale)

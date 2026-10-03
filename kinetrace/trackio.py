@@ -12,15 +12,17 @@ Formats, recognised from their contents (`detect`), never from the name:
                         `*_pointnames.csv` sidecar says so (older DLTdv, Argus).
     SLEAP analysis CSV  track, frame_idx, instance.score, {node}.x, {node}.y, {node}.score
                         (one track: Kinetrace follows one animal per video).
-    Kinetrace tracks    frame, point, x, y[, confidence, visible, hand_placed,
-                        hidden, radius] - the project file's own tracks.csv.
+    Kinetrace tracks    a project folder's tracks/<landmark>.csv (frame, x, y[, confidence,
+                        visible, hand_placed, hidden, radius]), or an older project's
+                        tracks.csv (frame, point, x, y, ...).
 
 `read(path)` -> `Imported` (positions still in the file's pixel convention);
 `apply(session, imported, camera, frame_of_row)` converts to Kinetrace pixels
-(OpenCV pixel centres from 0), matches points BY NAME (a new name becomes a
-new point), writes every cell that has data inside the picture and returns a
-summary with a plain sentence. Cells the file has no data for are left as
-they are.
+(OpenCV pixel centres from 0), matches points BY NAME (through the same
+sanitiser the exporters write names with; a new name becomes a new point),
+writes every cell that has data inside the picture and returns a summary with
+a plain sentence. Cells the file has no data for are left as they are. A file
+that is recognised but damaged raises `TrackImportError` naming the file.
 """
 from __future__ import annotations
 
@@ -88,14 +90,19 @@ def _rows(text: str) -> list[list[str]]:
 def detect(path) -> str:
     """The format of a tracks file, from its first lines."""
     path = Path(path)
-    head = _text(path).split("\n", 3)
+    return _detect(_text(path), path.name)
+
+
+def _detect(text: str, name: str) -> str:
+    head = text.split("\n", 3)
     first = [c.strip().lower() for c in next(csv.reader([head[0]]))] if head and head[0] else []
     if ";" in (head[0] if head else "") and "," not in head[0]:
-        raise TrackImportError(f"{path.name}: separated by ';' - saved by a spreadsheet set to a "
+        raise TrackImportError(f"{name}: separated by ';' - saved by a spreadsheet set to a "
                                "comma-decimal locale. Save it with ',' separators and '.' decimals.")
     if first[:1] == ["scorer"]:
         return "dlc"
-    if first and all(_XYPTS.match(c) for c in first if c):
+    # (G73) at least one real column: a first line of only commas is no xypts header
+    if any(first) and all(_XYPTS.match(c) for c in first if c):
         return "dltdv"
     if "frame_idx" in first and ("node" in first or any(c.endswith(".x") for c in first)):
         return "sleap"
@@ -104,7 +111,7 @@ def detect(path) -> str:
     if first[:3] == ["frame", "x", "y"] and "point" not in first:
         return "kinetrace"          # one landmark's file of a project folder: tracks/<name>.csv (I145)
     raise TrackImportError(
-        f"{path.name}: not a tracks file Kinetrace recognises. It reads DeepLabCut CSV (header rows "
+        f"{name}: not a tracks file Kinetrace recognises. It reads DeepLabCut CSV (header rows "
         "scorer / bodyparts / coords), DLTdv / Argus xypts CSV (pt1_cam1_X ...), SLEAP analysis CSV "
         "(track, frame_idx, ...) and Kinetrace's own tracks (a project folder's tracks/<landmark>.csv: "
         "frame, x, y; or an older project's tracks.csv: frame, point, x, y).")
@@ -112,8 +119,18 @@ def detect(path) -> str:
 
 def read(path) -> Imported:
     path = Path(path)
-    kind = detect(path)
-    return {"dlc": _read_dlc, "dltdv": _read_dltdv, "sleap": _read_sleap, "kinetrace": _read_kinetrace}[kind](path)
+    text = _text(path)                  # the file is read once; detect and the reader share it
+    kind = _detect(text, path.name)
+    reader = {"dlc": _read_dlc, "dltdv": _read_dltdv, "sleap": _read_sleap, "kinetrace": _read_kinetrace}[kind]
+    try:
+        return reader(path, text)
+    except TrackImportError:
+        raise
+    except (ValueError, IndexError, KeyError, OverflowError) as e:
+        # (G73) a recognised file that is not what its header promises: a sentence naming it
+        raise TrackImportError(f"{path.name}: looks like a {KINDS[kind]} but cannot be read as one "
+                               f"({type(e).__name__}: {e}). Check that the file is complete and was "
+                               "not edited by hand.") from None
 
 
 def _floats(cells, where) -> np.ndarray:
@@ -126,7 +143,7 @@ def _floats(cells, where) -> np.ndarray:
 def _frames(cells, where) -> np.ndarray:
     try:
         fr = np.array([int(float(c)) for c in cells], np.int64)
-    except ValueError:
+    except (ValueError, OverflowError):
         raise TrackImportError(f"{where}: the first column must be frame numbers") from None
     if (fr < 0).any():
         raise TrackImportError(f"{where}: negative frame numbers")
@@ -134,19 +151,22 @@ def _frames(cells, where) -> np.ndarray:
 
 
 # ------------------------------------------------------------------ DeepLabCut
-def _read_dlc(path: Path) -> Imported:
-    rows = _rows(_text(path))
+def _read_dlc(path: Path, text: str) -> Imported:
+    rows = _rows(text)
     if len(rows) < 3:
         raise TrackImportError(f"{path.name}: a DeepLabCut CSV needs three header rows")
-    if rows[1] and rows[1][0].strip().lower() == "individuals":
+    first = [(r[0].strip().lower() if r else "") for r in rows[:3]]      # (G73) a blank row has no cells
+    if first[1] == "individuals":
         raise TrackImportError(
             f"{path.name}: a multi-animal DeepLabCut file. Kinetrace follows one animal per video: "
             "export each animal separately from DeepLabCut (or filter its CSV to one individual).")
-    if rows[1][0].strip().lower() != "bodyparts" or rows[2][0].strip().lower() != "coords":
+    if first[1] != "bodyparts" or first[2] != "coords":
         raise TrackImportError(f"{path.name}: expected header rows scorer / bodyparts / coords")
     parts, coords = rows[1][1:], [c.strip().lower() for c in rows[2][1:]]
     data = rows[3:]
-    if data and not re.fullmatch(r"\s*\d+(\.0*)?\s*", data[0][0] or "x"):
+    if not data:
+        raise TrackImportError(f"{path.name}: has the three header rows but no frames below them")
+    if data[0] and not re.fullmatch(r"\s*\d+(\.0*)?\s*", data[0][0] or "x"):
         raise TrackImportError(
             f"{path.name}: a DeepLabCut training-data file (image names, not frame numbers). "
             "Import the CSV DeepLabCut writes when it ANALYSES a video (one row per frame).")
@@ -184,35 +204,52 @@ def _read_dlc(path: Path) -> Imported:
 
 
 # ------------------------------------------------------------------ DLTdv / Argus
-def _sidecar(path: Path) -> tuple[list[str], bool, list[str]]:
-    """(point names by index, bottom-left?, notes) from `<stem>_pointnames.csv`."""
+def _sidecar(path: Path, n_pts: int) -> tuple[list[str], bool, list[str]]:
+    """(point names by index, bottom-left?, notes) from `<stem>_pointnames.csv`,
+    read by its HEADER (I175), CSV-quoted:
+      `index,name`   one camera: a row `pt<k>,<name>` per point, then `convention,...`;
+      `name,cameras` all cameras: the `n_pts` rows after the header ARE the names in
+                     order (whatever they are called: pt1, cam2, rows ...), then
+                     `convention,...`, `rows,...` and a `cam<k>,...` row per camera."""
     side = path.with_name(path.stem + "_pointnames.csv")
     if not side.is_file():
         return [], False, [f"No {side.name} beside it: points are named pt1, pt2, ... and the pixels are "
                            "read as DLTdv8's (first pixel = 1, origin top-left)."]
     rows = _rows(_text(side))
-    names, flip = [], False
-    for r in rows[1:]:
-        if not r:
-            continue
-        key = r[0].strip()
-        if key == "convention":
-            flip = "bottom-left" in ",".join(r[1:]).lower()
-        elif re.fullmatch(r"pt\d+", key) and len(r) > 1:        # single-camera sidecar: index,name
-            names.append(r[1].strip())
-        elif rows[0][:2] == ["name", "cameras"] and not re.fullmatch(r"cam\d+|rows", key):
-            names.append(key)                                   # all-cameras sidecar: name,cameras
-    return names, flip, []
+    head = [c.strip().lower() for c in rows[0]][:2] if rows else []
+    names: list[str] = []
+    if head == ["name", "cameras"]:
+        body = rows[1:]
+        names = [(r[0].strip() if r else "") for r in body[:n_pts]]
+        tail = body[n_pts:]
+    else:                                                       # single camera: index,name
+        tail = []
+        by_index: dict[int, str] = {}
+        for r in rows[1:]:
+            key = r[0].strip() if r else ""
+            m = re.fullmatch(r"pt(\d+)", key)
+            if m and len(r) > 1:
+                by_index[int(m.group(1))] = r[1].strip()
+            else:
+                tail.append(r)
+        names = [by_index.get(k, "") for k in range(1, (max(by_index) if by_index else 0) + 1)]
+    flip = any(r and r[0].strip() == "convention" and "bottom-left" in ",".join(r[1:]).lower() for r in tail)
+    notes = []
+    if any(not n for n in names):                               # a blank name: the point keeps ptK
+        notes.append(f"{side.name} leaves some points unnamed: they are called pt<k>, k = their column number.")
+    return names, flip, notes
 
 
-def _read_dltdv(path: Path) -> Imported:
-    rows = _rows(_text(path))
+def _read_dltdv(path: Path, text: str) -> Imported:
+    rows = _rows(text)
     header = [c.strip() for c in rows[0]]
     idx = {}
     for k, h in enumerate(header):
         m = _XYPTS.match(h)
         if m:
             idx[(int(m.group(1)), int(m.group(2)), m.group(3).lower())] = k
+    if not idx:
+        raise TrackImportError(f"{path.name}: no pt<k>_cam<j>_X / _Y columns in its first line")
     n_pts = max(p for p, _, _ in idx)
     n_cam = max(c for _, c, _ in idx)
     data = rows[1:]
@@ -225,21 +262,30 @@ def _read_dltdv(path: Path) -> Imported:
     xy = np.full((n_cam, R, n_pts, 2), np.nan, np.float32)
     for (p, c, ax), k in idx.items():
         xy[c - 1, :, p - 1, 0 if ax == "x" else 1] = _floats(colz[k], f"{path.name} {header[k]}")
-    names, flip, notes = _sidecar(path)
-    names = (names + [f"pt{i + 1}" for i in range(len(names), n_pts)])[:n_pts]
+    names, flip, notes = _sidecar(path, n_pts)
+    names = [names[i] if i < len(names) and names[i] else f"pt{i + 1}" for i in range(n_pts)]
     conf = np.where(np.isfinite(xy).all(-1), 1.0, 0.0).astype(np.float32)
     return Imported("dltdv", names, xy, conf, pixel_origin=1.0, flip_y=flip,
                     rows="reference" if n_cam > 1 else "frames", notes=notes)
 
 
 # ------------------------------------------------------------------ SLEAP
-def _read_sleap(path: Path) -> Imported:
+def _score(s: str, path: Path) -> float:
+    """A SLEAP instance score from its cell (G73: a non-number is a sentence, not a ValueError)."""
+    try:
+        return float(s)
+    except ValueError:
+        raise TrackImportError(f"{path.name}: the instance score {s.strip()!r} is not a number "
+                               "(leave it blank for a hand-labelled instance)") from None
+
+
+def _read_sleap(path: Path, text: str) -> Imported:
     """SLEAP 1.x's analysis CSV and sleap-io's layouts ("sleap", "instances",
     "points", "frames"), told apart by their headers as sleap-io itself does.
     Columns are found by name (the layouts differ in order). A user-labelled
     instance (blank instance score) is hand-placed and wins over a
     prediction on the same frame; otherwise the higher instance score wins."""
-    rows = _rows(_text(path))
+    rows = _rows(text)
     header = [h.strip() for h in rows[0]]
     data = rows[1:]
     short = next((i for i, r in enumerate(data) if len(r) != len(header)), None)
@@ -247,6 +293,10 @@ def _read_sleap(path: Path) -> Imported:
         raise TrackImportError(f"{path.name}: row {short + 2} has {len(data[short])} values, the header "
                                f"{len(header)}")
     col = {h: [r[k] for r in data] for k, h in enumerate(header)}
+    if "node" in col:
+        for need in ("x", "y"):
+            if need not in col:
+                raise TrackImportError(f"{path.name}: has a node column but no '{need}' column")
     n = len(data)
     fr_all = _frames(col["frame_idx"], path.name) if n else np.zeros(0, np.int64)
     blank = [""] * n
@@ -303,7 +353,7 @@ def _read_sleap(path: Path) -> Imported:
     best: dict[int, tuple] = {}
     for r in have:
         f, s = int(r[0]), r[2].strip()
-        rank = (1, 0.0) if not s else (0, float(s))
+        rank = (1, 0.0) if not s else (0, _score(s, path))
         if f not in best or rank > best[f]:
             best[f] = rank
     R = (max(best) + 1) if best else 0
@@ -314,7 +364,7 @@ def _read_sleap(path: Path) -> Imported:
     manual = np.zeros((1, R, N), bool)
     for f, tr, inst, node, x, y, s in have:
         f = int(f)
-        rank = (1, 0.0) if not inst.strip() else (0, float(inst))
+        rank = (1, 0.0) if not inst.strip() else (0, _score(inst, path))
         if rank != best[f]:
             continue
         j = ni[node]
@@ -327,9 +377,8 @@ def _read_sleap(path: Path) -> Imported:
 
 
 # ------------------------------------------------------------------ Kinetrace
-def _read_kinetrace(path: Path) -> Imported:
+def _read_kinetrace(path: Path, text: str) -> Imported:
     from kinetrace.session import PALETTE, PointMeta, formula_safe
-    text = _text(path)
     head = [c.strip().lower() for c in next(csv.reader([text.split("\n", 1)[0]]))] if text else []
     try:
         if "point" not in head:
@@ -358,8 +407,10 @@ def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
     session frame of file row r (None = row r is frame r; a multi-camera
     DLTdv file is in the reference camera's frames, so the app passes the
     project's frame mapping). Returns {new, updated, cells, outside, beyond,
-    sentence}."""
-    from kinetrace.session import PALETTE, PointMeta
+    skipped, duplicates, sentence}: `cells` counts what was WRITTEN, `skipped`
+    names the landmarks the file had data for that are not placed from a file
+    (silhouette-derived, ball markers)."""
+    from kinetrace.session import PALETTE, _sanitize, formula_safe, in_frame
     T, W, H = session.n_frames, session.width, session.height
     xy = imp.xy[camera].astype(np.float64)
     R, N = xy.shape[:2]
@@ -369,27 +420,44 @@ def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
     fr = rows if frame_of_row is None else np.array(
         [-1 if (f := frame_of_row(int(r))) is None else int(f) for r in rows], np.int64)
     has = np.isfinite(x) & np.isfinite(y)
-    inside = has & (x >= -0.5) & (x < W - 0.5) & (y >= -0.5) & (y < H - 0.5)
+    # (I254) pixel 0's outer half-pixel counts as pixel 0 (the canvas does the same),
+    # then the session's own picture rule: 0 <= x < W, 0 <= y < H
+    x = np.where((x >= -0.5) & (x < 0.0), 0.0, x)
+    y = np.where((y >= -0.5) & (y < 0.0), 0.0, y)
+    inside = in_frame(np.stack([x, y], axis=-1), W, H)
     in_video = (fr >= 0) & (fr < T)
     beyond = int((has & ~in_video[:, None]).sum())
     outside = int((has & in_video[:, None] & ~inside).sum())
     keep = inside & in_video[:, None]
-    index = {p.name: i for i, p in enumerate(session.points)}
-    new = updated = 0
+
+    def key(name: str) -> str:
+        return _sanitize(formula_safe(name))        # the form the exporters write a name in (I225)
+    index = {key(p.name): i for i, p in enumerate(session.points)}
+    claimed: set[int] = set()
+    new = updated = cells = duplicates = 0
+    skipped: list[tuple[str, str]] = []
     for j, name in enumerate(imp.names):
         rr = np.flatnonzero(keep[:, j])
         if not len(rr):
             continue
-        if name in index:
-            pid = index[name]
-            if session.points[pid].derived or session.points[pid].is_ball:
-                continue                    # a silhouette landmark / ball is not placed from a file
-            updated += 1
-        else:
-            pid = session._append_point(PointMeta(session.unique_name(name),
-                                                  PALETTE[len(session.points) % len(PALETTE)]))
-            index[name] = pid
+        pid = index.get(key(name))
+        if pid is not None and (session.points[pid].derived or session.points[pid].is_ball):
+            # a silhouette landmark / ball is not placed from a file (G72: and says so)
+            skipped.append((session.points[pid].name, "taken from the silhouette"
+                            if session.points[pid].derived else "a ball marker, tracked with SAM"))
+            continue
+        if pid is not None and pid in claimed:
+            pid = None                  # (I175) a name the file uses twice: its own point, never a merge
+            duplicates += 1
+        if pid is None:
+            pid = session._new_point(name, "point", color=PALETTE[len(session.points) % len(PALETTE)],
+                                     counted=False)
+            index.setdefault(key(name), pid)
             new += 1
+        else:
+            updated += 1
+        claimed.add(pid)
+        cells += len(rr)
         f = fr[rr]
         session.tracks[f, pid, 0], session.tracks[f, pid, 1] = x[rr, j], y[rr, j]
         session.tracked[f, pid] = True
@@ -397,16 +465,24 @@ def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
         session.visibility[f, pid] = True if imp.visible is None else imp.visible[camera, rr, j]
         session.manual[f, pid] = False if imp.manual is None else imp.manual[camera, rr, j]
         session.occluded[f, pid] = False if imp.hidden is None else imp.hidden[camera, rr, j]
-    cells = int(keep.sum())
     session._touch()
     parts = [f"{cells} position(s) of {new + updated} point(s) imported from the {imp.label}"
              + (f" ({new} new)" if new else "")]
+    skipped = list(dict.fromkeys(skipped))
+    if skipped:
+        shown = ", ".join(f"{nm} ({why})" for nm, why in skipped[:6]) + (" ..." if len(skipped) > 6 else "")
+        parts.append(f"{len(skipped)} landmark(s) in the file were left as they are because they are not "
+                     f"placed by hand: {shown}")
+    if duplicates:
+        parts.append(f"{duplicates} name(s) occur more than once in the file; each repeat became its own "
+                     "point (name (2), ...) instead of being merged")
     if outside:
         parts.append(f"{outside} fell outside the picture and were left out - if that is many, check that "
                      "this is the right video and the file's pixel convention")
     if beyond:
         parts.append(f"{beyond} are on frames this video does not have and were left out")
     return {"new": new, "updated": updated, "cells": cells, "outside": outside, "beyond": beyond,
+            "skipped": [nm for nm, _ in skipped], "duplicates": duplicates,
             "sentence": "; ".join(parts) + "."}
 
 
@@ -449,8 +525,11 @@ def import_masks_png(session, folder, progress=None) -> dict:
     """PNG masks (any image; nonzero = the segment) named with their frame
     number (the last number in the name: mask_000012.png, frame12.png) ->
     the camera's segment. They must be the video's size. -> {frames, sentence}.
-    `progress(done, total)` after each file (G52)."""
+    `progress(done, total)` after each file (G52). EVERY file is read and
+    checked before the session is touched (I224): one unreadable or wrongly
+    sized image refuses the whole folder with nothing stored."""
     import cv2
+    from kinetrace.segmenter import summarize_mask
     folder = Path(folder)
     files = []
     for p in sorted(folder.iterdir()) if folder.is_dir() else []:
@@ -462,7 +541,7 @@ def import_masks_png(session, folder, progress=None) -> dict:
         raise TrackImportError(f"{folder.name}: no mask images named with a frame number "
                                "(for example mask_000012.png)")
     T, W, H = session.n_frames, session.width, session.height
-    session.ensure_animal()
+    staged: list[tuple[int, dict]] = []     # outlines are compact: the images are not kept
     n = beyond = 0
     for f, p in files:
         if not 0 <= f < T:
@@ -474,11 +553,15 @@ def import_masks_png(session, folder, progress=None) -> dict:
         if img.shape != (H, W):
             raise TrackImportError(f"{p.name}: {img.shape[1]} x {img.shape[0]} pixels, the video is {W} x {H}. "
                                    "Masks must be the size of the video.")
-        session.masks.set(f, img > 0)
+        staged.append((f, summarize_mask(img > 0, 1.0, 1.0)))
         n += 1
         if progress is not None:
             progress(n + beyond, len(files))
-    session._touch()
+    if staged:
+        session.ensure_animal()
+        for f, d in staged:
+            session.masks.set_summary(f, d)
+        session._touch()
     sentence = f"{n} silhouette(s) imported from {folder.name}"
     if beyond:
         sentence += f"; {beyond} file(s) name frames this video does not have and were left out"

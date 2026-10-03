@@ -133,7 +133,15 @@ def validate_template(t: dict) -> tuple[dict, list[str]]:
     that is not a pair of known landmarks is dropped (session.bones() raised on
     it); a head that is not a landmark falls back to the first landmark."""
     problems: list[str] = []
-    marks = [str(m).strip() for m in (t.get("landmarks") or []) if str(m).strip()]
+    marks = []
+    for m in (t.get("landmarks") or []):
+        m = str(m).strip()
+        if not m:
+            continue
+        if m in marks:       # (G122) a name twice would become a stray "head (2)" point
+            problems.append(f"landmark '{m}' is listed more than once; the repeat is ignored")
+            continue
+        marks.append(m)
     out = dict(t)
     out.update({"name": str(t.get("name") or "custom"), "landmarks": marks,
                 "note": str(t.get("note") or ""), "derived": {}, "bones": []})
@@ -207,9 +215,19 @@ def template_by_name(name: str) -> dict | None:
     return next((t for t in all_templates() if t["name"] == name), None)
 
 
-def save_user_template(t: dict) -> Path:
+def user_template_path(name: str) -> Path:
+    """The file skeletons/<name>.json a template of that name is saved in."""
+    safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in name).strip() or "skeleton"
+    return SKELETON_DIR / f"{safe}.json"
+
+
+def save_user_template(t: dict, overwrite: bool = False) -> Path:
+    """Write `t` to skeletons/<name>.json. A template of that name already there
+    is NOT replaced unless `overwrite` (G122): FileExistsError (an OSError) says
+    so, and the caller asks the user before trying again with overwrite=True."""
+    p = user_template_path(t["name"])
     SKELETON_DIR.mkdir(parents=True, exist_ok=True)
-    safe = "".join(c if c.isalnum() or c in "-_ " else "_" for c in t["name"]).strip() or "skeleton"
-    p = SKELETON_DIR / f"{safe}.json"
+    if p.exists() and not overwrite:
+        raise FileExistsError(f"skeletons/{p.name} already exists")
     p.write_text(json.dumps(t, indent=2), encoding="utf-8")
     return p

@@ -1,14 +1,14 @@
 """Tracking session data model: point tracks, the segment silhouette, the
 skeleton, persistence, exports.
 
-Arrays are (T, N, ...) where T = video frame count and N = number of points.
-NaN in `tracks` (mirrored by `tracked == False`) means "no data for this
-point at this frame". Even a 40k-frame, 50-point session is ~20 MB, so the
-whole model lives in RAM; it is saved as part of a `.kinetrace` project file
-(projectfile.py).
+Arrays are (T, N, ...) where T = video frame count and N = number of points
+(the seven of `POINT_ARRAYS`). NaN in `tracks` (mirrored by `tracked ==
+False`) means "no data for this point at this frame". Even a 40k-frame,
+50-point session is ~20 MB, so the whole model lives in RAM; it is saved as
+part of a project folder (projectfile.py).
 
 What a session holds, beyond the tracks:
-- `confidence` (T, N): CoTracker3's per-frame track-correctness score in
+- `confidence` (T, N): the point model's per-frame track-correctness score in
   [0, 1] (1.0 for manual placements). Drives the timeline coloring and the
   auto-pause detector. Distinct from `visibility` — an occluded point keeps
   high confidence; a *lost* point does not.
@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
@@ -88,6 +89,36 @@ DEFAULT_UI_STATE: dict = {
 
 SOURCES = ("track", "silhouette", "ball")
 TRACKERS = ("alltracker", "cotracker3", "spot")   # a point's own tracker (G62); "" = the project default
+
+
+class PointArray(NamedTuple):
+    """One of the per-point (T, N, ...) arrays of a session (R15)."""
+    name: str          # the TrackingSession attribute, and the Snapshot field
+    dtype: type
+    fill: object       # an empty / cleared cell
+    tail: tuple = ()   # trailing shape of one (frame, point) cell
+
+    def empty(self, n_frames: int, n_points: int) -> np.ndarray:
+        return np.full((n_frames, n_points) + self.tail, self.fill, self.dtype)
+
+
+# THE list of the per-point arrays: allocation, a new / removed / reordered
+# point, clear_window, snapshot / restore and `restore_cells` all walk it, so a
+# new array is added here once (projectfile and the app still name them
+# themselves; verify_core's field-coverage check pins this table to Snapshot)
+POINT_ARRAYS: tuple[PointArray, ...] = (
+    PointArray("tracks", np.float32, np.nan, (2,)),
+    PointArray("visibility", bool, False),
+    PointArray("manual", bool, False),
+    PointArray("tracked", bool, False),
+    PointArray("confidence", np.float32, 0.0),
+    # hand-marked "hidden here": the data stays (so the mark can be undone) but
+    # the cell is NOT exported and NOT used for 3D
+    PointArray("occluded", bool, False),
+    # ball markers: the fitted circle's radius per frame (NaN elsewhere) so the
+    # canvas can draw the circle SAM found, not just its centre
+    PointArray("radius", np.float32, np.nan),
+)
 
 
 def in_frame(pts, w: float, h: float):
@@ -138,13 +169,13 @@ def _sanitize(name: str) -> str:
     return name.replace(",", "_").replace("\t", "_").replace("\n", " ").strip() or "point"
 
 
-def dltdv_convention_text(flip_y: bool, pixel_origin: float) -> str:
+def dltdv_convention_text(flip_y: bool, pixel_origin: float = 1.0) -> str:
     """One plain sentence naming the pixel convention an xypts file was
-    written in, for its sidecar and the export dialog."""
+    written in, for its sidecar and the export dialog. Both writers write
+    DLTdv8's first-pixel-1 numbering, so `pixel_origin` is always 1."""
     if flip_y:
         return "bottom-left origin; y counted from the bottom edge; first pixel = 1 (older DLTdv, Argus Clicker)"
-    return (f"top-left origin; first pixel = {pixel_origin:g} "
-            f"({'DLTdv8 / MATLAB' if abs(pixel_origin - 1.0) < 1e-9 else 'OpenCV / Kinetrace'})")
+    return "top-left origin; first pixel = 1 (DLTdv8 / MATLAB)"
 
 
 @dataclass
@@ -152,10 +183,10 @@ class PointMeta:
     name: str
     color: tuple[int, int, int]
     display: bool = True
-    kind: str = "point"     # "point" | "group" (future shapes: rect, polygon)
+    kind: str = "point"     # "point" | "group" (a region; its outline is `shape`)
     radius: float = 0.0     # group region radius in native px (0 for points)
     anchor: bool = False    # opt-in appearance re-anchor (NCC snap-back)
-    source: str = "track"   # "track" (CoTracker3) | "silhouette" (derived from the mask)
+    source: str = "track"   # "track" (the point model) | "silhouette" (derived from the mask) | "ball"
     spec: str = ""          # derivation spec for silhouette points (see skeletons.py)
     free: bool = False      # may leave the animal (exempt from the on-body constraint)
     shape: str = "circle"   # region outline: "circle" | "rect" | "polygon" (groups only)
@@ -283,17 +314,8 @@ class TrackingSession:
         self.file_fps = fps     # the rate the video file says (differs when a header lies, e.g. slow-motion files)
         self.width = width
         self.height = height
-        self.tracks = np.full((n_frames, 0, 2), np.nan, np.float32)
-        self.visibility = np.zeros((n_frames, 0), bool)
-        self.manual = np.zeros((n_frames, 0), bool)
-        self.tracked = np.zeros((n_frames, 0), bool)
-        self.confidence = np.zeros((n_frames, 0), np.float32)
-        # hand-marked "hidden here": the data stays (so the mark can be undone)
-        # but the cell is NOT exported and NOT used for 3D
-        self.occluded = np.zeros((n_frames, 0), bool)
-        # ball markers: the fitted circle's radius per frame (NaN elsewhere) so
-        # the canvas can draw the circle SAM found, not just its centre
-        self.radius = np.full((n_frames, 0), np.nan, np.float32)
+        for a in POINT_ARRAYS:      # tracks, visibility, manual, tracked, confidence, occluded, radius (R15)
+            setattr(self, a.name, a.empty(n_frames, 0))
         self.points: list[PointMeta] = []
         self.events: list[Event] = []
         self.notes: dict[int, dict] = {}    # frame -> {"text", "author", "time"}
@@ -364,27 +386,33 @@ class TrackingSession:
 
     def _append_point(self, meta: PointMeta) -> int:
         self.points.append(meta)
-        T = self.n_frames
-        self.tracks = np.concatenate([self.tracks, np.full((T, 1, 2), np.nan, np.float32)], axis=1)
-        self.visibility = np.concatenate([self.visibility, np.zeros((T, 1), bool)], axis=1)
-        self.manual = np.concatenate([self.manual, np.zeros((T, 1), bool)], axis=1)
-        self.tracked = np.concatenate([self.tracked, np.zeros((T, 1), bool)], axis=1)
-        self.confidence = np.concatenate([self.confidence, np.zeros((T, 1), np.float32)], axis=1)
-        self.occluded = np.concatenate([self.occluded, np.zeros((T, 1), bool)], axis=1)
-        self.radius = np.concatenate([self.radius, np.full((T, 1), np.nan, np.float32)], axis=1)
+        for a in POINT_ARRAYS:
+            setattr(self, a.name, np.concatenate([getattr(self, a.name), a.empty(self.n_frames, 1)], axis=1))
         return self.n_points - 1
+
+    def _new_point(self, name: str | None, default: str, color=None, counted: bool = True,
+                   unique: bool = True, **fields) -> int:
+        """The one way a point is born (R15): a column appended with `fields` as
+        its PointMeta. `name`, or `default` with `{n}` = the point counter AFTER
+        it is counted (P3, ball 3). `counted` = the point takes the next palette
+        colour and number (every placement but a camera's placeholder, which keeps
+        its origin's `color`); `unique` = the name goes through `unique_name`."""
+        if counted:
+            self._name_counter += 1
+        name = name or default.format(n=self._name_counter)
+        if unique:
+            name = self.unique_name(name)
+        if color is None:
+            color = PALETTE[(self._name_counter - 1) % len(PALETTE)]
+        return self._append_point(PointMeta(name, color, **fields))
 
     def add_point(self, frame: int, x: float, y: float,
                   kind: str = "point", radius: float = 0.0, name: str | None = None,
                   shape: str = "circle", outline=None) -> int:
-        self._name_counter += 1
-        prefix = "G" if kind == "group" else "P"
-        meta = PointMeta(self.unique_name(name or f"{prefix}{self._name_counter}"),
-                         PALETTE[(self._name_counter - 1) % len(PALETTE)],
-                         kind=kind, radius=float(radius),
-                         shape=shape if shape in ("circle", "rect", "polygon") else "circle",
-                         outline=None if outline is None else [[float(a), float(b)] for a, b in outline])
-        pid = self._append_point(meta)
+        pid = self._new_point(name, "G{n}" if kind == "group" else "P{n}",
+                              kind=kind, radius=float(radius),
+                              shape=shape if shape in ("circle", "rect", "polygon") else "circle",
+                              outline=None if outline is None else [[float(a), float(b)] for a, b in outline])
         self.set_position(frame, pid, x, y)
         return pid
 
@@ -392,17 +420,16 @@ class TrackingSession:
         """A ball marker: SAM segments the ball from this click, a circle is
         fitted per frame and its centre is the point (balls.py). The click is
         both the seed position and the first SAM prompt."""
-        self._name_counter += 1
-        meta = PointMeta(self.unique_name(name or f"ball {self._name_counter}"),
-                         PALETTE[(self._name_counter - 1) % len(PALETTE)], source="ball",
-                         ball_prompts={int(frame): [[float(x), float(y), 1]]})
-        pid = self._append_point(meta)
+        pid = self._new_point(name, "ball {n}", source="ball",
+                              ball_prompts={int(frame): [[float(x), float(y), 1]]})
         self.set_position(frame, pid, x, y)
         return pid
 
     def add_ball_prompt(self, pid: int, frame: int, x: float, y: float, label: int = 1) -> None:
         """Another SAM click on a ball on `frame` (a correction, or where the
-        ball reappeared). A positive click also becomes its hand-placed position."""
+        ball reappeared). A positive click also becomes its hand-placed position.
+        The frame's earlier clicks stay, negative ones too (I190): a hand
+        placement (`set_position`) is what replaces them, a second click does not."""
         q = self.points[pid]
         if not q.is_ball:
             return
@@ -410,7 +437,7 @@ class TrackingSession:
             q.ball_prompts = {}
         q.ball_prompts.setdefault(int(frame), []).append([float(x), float(y), int(label)])
         if label:
-            self.set_position(frame, pid, x, y)
+            self._place(frame, pid, x, y)
         self._touch()
 
     def ball_pids(self) -> list[int]:
@@ -425,10 +452,7 @@ class TrackingSession:
     def add_landmark(self, name: str, source: str = "track", spec: str = "") -> int:
         """A named point with no data yet (a skeleton landmark waiting to be
         placed, or a silhouette-derived one filled in by the next run)."""
-        self._name_counter += 1
-        meta = PointMeta(self.unique_name(name), PALETTE[(self._name_counter - 1) % len(PALETTE)],
-                         source=source if source in SOURCES else "track", spec=spec)
-        pid = self._append_point(meta)
+        pid = self._new_point(name, "point", source=source if source in SOURCES else "track", spec=spec)
         self._touch()
         return pid
 
@@ -438,10 +462,10 @@ class TrackingSession:
         THIS camera (project.sync_landmarks). A rectangle / polygon outline is that
         camera's own geometry, so the region arrives here as a circle of the same
         radius; ball clicks and the appearance lock are per camera too."""
-        m = PointMeta(meta.name, meta.color, True, meta.kind, meta.radius, False, meta.source,
-                      meta.spec, meta.free, meta.shape if meta.outline is None else "circle",
-                      tracker=meta.tracker)
-        pid = self._append_point(m)
+        pid = self._new_point(meta.name, "point", color=meta.color, counted=False, unique=False,
+                              kind=meta.kind, radius=meta.radius, source=meta.source, spec=meta.spec,
+                              free=meta.free, shape=meta.shape if meta.outline is None else "circle",
+                              tracker=meta.tracker)
         self._touch()
         return pid
 
@@ -449,21 +473,13 @@ class TrackingSession:
         """POINTS → ＋ New point: a named point with no data yet (G26), numbered and
         coloured like one placed with N + click. With several cameras the app
         gives it to every camera, then a click in each camera places it."""
-        self._name_counter += 1
-        meta = PointMeta(self.unique_name(f"P{self._name_counter}"),
-                         PALETTE[(self._name_counter - 1) % len(PALETTE)])
-        pid = self._append_point(meta)
+        pid = self._new_point(None, "P{n}")
         self._touch()
         return pid
 
     def _keep_columns(self, cols: list[int]) -> None:
-        self.tracks = self.tracks[:, cols]
-        self.visibility = self.visibility[:, cols]
-        self.manual = self.manual[:, cols]
-        self.tracked = self.tracked[:, cols]
-        self.confidence = self.confidence[:, cols]
-        self.occluded = self.occluded[:, cols]
-        self.radius = self.radius[:, cols]
+        for a in POINT_ARRAYS:
+            setattr(self, a.name, getattr(self, a.name)[:, cols])
 
     def remove_point(self, pid: int) -> None:
         self._keep_columns([i for i in range(self.n_points) if i != pid])
@@ -490,16 +506,21 @@ class TrackingSession:
         old = self.points[pid].name
         name = self.unique_name(desired, exclude_pid=pid)
         self.points[pid].name = name
-        sk = self.skeleton
-        if sk is not None and old in sk.get("landmarks", []):
-            sk["landmarks"] = [name if n == old else n for n in sk["landmarks"]]
-            sk["bones"] = [[name if n == old else n for n in b] for b in sk.get("bones", [])]
-            if sk.get("head") == old:
-                sk["head"] = name
-            if old in sk.get("derived", {}):
-                sk["derived"][name] = sk["derived"].pop(old)
+        self._rename_in_skeleton(old, name)
         self._touch()
         return name
+
+    def _rename_in_skeleton(self, old: str, new: str) -> None:
+        """The skeleton's landmark list, bones, head and derived rules name
+        points: they follow a point's new name."""
+        sk = self.skeleton
+        if sk is not None and old != new and old in sk.get("landmarks", []):
+            sk["landmarks"] = [new if n == old else n for n in sk["landmarks"]]
+            sk["bones"] = [[new if n == old else n for n in b] for b in sk.get("bones", [])]
+            if sk.get("head") == old:
+                sk["head"] = new
+            if old in sk.get("derived", {}):
+                sk["derived"][new] = sk["derived"].pop(old)
 
     def set_source(self, pid: int, source: str, spec: str = "") -> None:
         """Switch a point between appearance tracking and silhouette derivation.
@@ -508,8 +529,6 @@ class TrackingSession:
         source = source if source in SOURCES else "track"
         if source == "silhouette":
             meta.spec = spec
-            if meta.source != "silhouette" or spec != meta.spec:
-                pass
             self.clear_window([pid], 0, self.n_frames - 1)
         elif meta.source == "silhouette":
             self.clear_window([pid], 0, self.n_frames - 1)
@@ -517,13 +536,17 @@ class TrackingSession:
         meta.source = source
         self._touch()
 
-    def set_position(self, frame: int, pid: int, x: float, y: float) -> None:
-        """Manual placement/correction of one point at one frame."""
+    def _place(self, frame: int, pid: int, x: float, y: float) -> None:
+        """The cells of a hand placement (no prompt bookkeeping, no touch)."""
         self.tracks[frame, pid] = (x, y)
         self.visibility[frame, pid] = True
         self.manual[frame, pid] = True
         self.tracked[frame, pid] = True
         self.confidence[frame, pid] = 1.0  # user input is ground truth
+
+    def set_position(self, frame: int, pid: int, x: float, y: float) -> None:
+        """Manual placement/correction of one point at one frame."""
+        self._place(frame, pid, x, y)
         q = self.points[pid]
         if q.is_ball:
             # the hand-placed centre is where SAM is prompted on the next run
@@ -579,10 +602,8 @@ class TrackingSession:
             write = ~is_key
         else:
             write = ~is_key & ~self.tracked[f, pid]
-        if window is not None:
-            write &= (f >= min(window)) & (f <= max(window))
         # never write outside the picture
-        write &= (xy[:, 0] >= 0) & (xy[:, 0] < self.width) & (xy[:, 1] >= 0) & (xy[:, 1] < self.height)
+        write &= in_frame(xy, self.width, self.height)
         # nor into a frame the user marked hidden: that mark is a statement about
         # the footage, and filling it exported an invented position there (I17)
         self.last_interp_hidden_skipped = int((write & self.occluded[f, pid]).sum())
@@ -637,8 +658,6 @@ class TrackingSession:
             for a, b in reversed(runs):
                 if a < frame and not (a <= frame <= b):
                     return (a, b)
-                if a <= frame <= b:
-                    continue
         return None
 
     # ---- hand-marked occlusion --------------------------------------------
@@ -828,7 +847,12 @@ class TrackingSession:
                 if spec and not self.tracked[:, pid].any() and not self.points[pid].derived:
                     self.points[pid].source, self.points[pid].spec = "silhouette", spec
                 continue
-            new.append(self.add_landmark(name, "silhouette" if spec else "track", spec))
+            pid = self.add_landmark(name, "silhouette" if spec else "track", spec)
+            # (G122) the name the point really got ("a,b" beside "a_b" becomes
+            # "a,b (2)"): the skeleton's bones, head and rules must use it
+            self._rename_in_skeleton(name, self.points[pid].name)
+            existing[name] = pid        # a name listed twice is one point, not two
+            new.append(pid)
         self._touch()
         return new
 
@@ -893,6 +917,10 @@ class TrackingSession:
         ev = self.events[index]
         if name is not None and name.strip():
             ev.name = formula_safe(name, ev.name)
+            # (G121) one type, one colour: renamed to an existing type = that type's colour
+            same = next((e.color for i, e in enumerate(self.events) if i != index and e.name == ev.name), None)
+            if same is not None:
+                ev.color = same
         if note is not None:
             ev.note = note.strip()
             if ev.note and not ev.author:
@@ -959,41 +987,36 @@ class TrackingSession:
         if len(cols) == 0:
             return 0
         n = int(self.tracked[rows, cols].sum())
-        self.tracks[rows, cols] = np.nan
-        self.visibility[rows, cols] = False
-        self.manual[rows, cols] = False
-        self.tracked[rows, cols] = False
-        self.confidence[rows, cols] = 0.0
-        self.occluded[rows, cols] = False
-        self.radius[rows, cols] = np.nan
+        for a in POINT_ARRAYS:
+            getattr(self, a.name)[rows, cols] = a.fill
+        # (I190) a ball's SAM clicks in the window go with its data: the next run
+        # would otherwise prompt SAM at a click the user removed
+        for c in cols.tolist():
+            bp = self.points[c].ball_prompts
+            if bp:
+                for f in [f for f in bp if start <= f <= end]:
+                    del bp[f]
         self._touch()
         return n
 
     def snapshot(self) -> Snapshot:
-        return Snapshot(self.tracks.copy(), self.visibility.copy(), self.manual.copy(),
-                        self.tracked.copy(), self.confidence.copy(),
-                        [p.copy() for p in self.points],
-                        self.masks.copy() if self.masks is not None else None,
-                        self.animal is not None, self.occluded.copy(),
-                        self.body.copy() if self.body is not None else None,
-                        self.radius.copy(),
-                        json.loads(json.dumps(self.skeleton)) if self.skeleton else None)
+        return Snapshot(**{a.name: getattr(self, a.name).copy() for a in POINT_ARRAYS},
+                        points=[p.copy() for p in self.points],
+                        masks=self.masks.copy() if self.masks is not None else None,
+                        has_animal=self.animal is not None,
+                        body=self.body.copy() if self.body is not None else None,
+                        skeleton=json.loads(json.dumps(self.skeleton)) if self.skeleton else None)
 
     def restore(self, snap: Snapshot) -> None:
-        self.tracks = snap.tracks.copy()
-        self.visibility = snap.visibility.copy()
-        self.manual = snap.manual.copy()
-        self.tracked = snap.tracked.copy()
-        self.confidence = snap.confidence.copy()
-        self.occluded = (snap.occluded.copy() if snap.occluded is not None
-                         else np.zeros(self.tracked.shape, bool))
+        shape = snap.tracks.shape[:2]
+        for a in POINT_ARRAYS:
+            src = getattr(snap, a.name, None)      # an older snapshot has no occluded / radius
+            setattr(self, a.name, a.empty(*shape) if src is None else src.copy())
         self.points = [p.copy() for p in snap.points]
         # the skeleton names points: restored with them, or a rename / template
         # applied after the snapshot left bones and the head on names that no
         # longer exist (I22)
         self.skeleton = json.loads(json.dumps(snap.skeleton)) if snap.skeleton else None
-        self.radius = (snap.radius.copy() if snap.radius is not None
-                       else np.full(self.tracked.shape, np.nan, np.float32))
         if snap.has_animal and self.animal is not None:
             self.masks = snap.masks.copy() if snap.masks is not None else None
             if self.masks is None:
@@ -1001,6 +1024,25 @@ class TrackingSession:
         # A body track is restored whether or not there was one: undoing the
         # very first pose run has to be able to take it back to nothing.
         self.body = snap.body.copy() if snap.body is not None else None
+        self._touch()
+
+    def restore_cells(self, snap: Snapshot, pids, f0: int, f1: int) -> None:
+        """Put `snap`'s data back for the points `pids` on frames f0..f1 (a later
+        pass of a run ended earlier): every per-point array, nothing else. A point
+        id past either side's columns is left alone (R15; was the app's
+        `_restore_frames`)."""
+        f1 = min(int(f1), self.n_frames - 1)
+        f0 = max(int(f0), 0)
+        if f0 > f1 or not len(pids):
+            return
+        sl = slice(f0, f1 + 1)
+        for a in POINT_ARRAYS:
+            src, dst = getattr(snap, a.name, None), getattr(self, a.name)
+            if src is None:
+                continue
+            for q in pids:
+                if 0 <= q < src.shape[1] and q < dst.shape[1]:
+                    dst[sl, q] = src[sl, q]
         self._touch()
 
 
@@ -1053,8 +1095,7 @@ class TrackingSession:
             lines.append(",".join(cells))
         Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
 
-    def export_dltdv_csv(self, path: str | Path, flip_y: bool = False,
-                         pixel_origin: float = 1.0) -> None:
+    def export_dltdv_csv(self, path: str | Path, flip_y: bool = False) -> None:
         """DLTdv-style xypts CSV: pt{k}_cam1_X, pt{k}_cam1_Y per point, one
         row per frame, NaN where untracked.
 
@@ -1069,7 +1110,7 @@ class TrackingSession:
         header = ",".join(f"pt{k + 1}_cam1_X,pt{k + 1}_cam1_Y" for k in range(self.n_points))
         lines = [header]
         exp = self.exportable
-        po = float(pixel_origin)
+        po = 1.0                       # DLTdv8 numbers pixels from 1 (the only variant written)
         for t in range(self.n_frames):
             cells = []
             for j in range(self.n_points):
@@ -1083,10 +1124,12 @@ class TrackingSession:
         p = Path(path)
         p.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
         side = p.with_name(p.stem + "_pointnames.csv")
-        side.write_text("index,name\n" + "\n".join(f"pt{k + 1},{_sanitize(pt.name)}"
-                                                   for k, pt in enumerate(self.points))
-                        + f"\nconvention,{dltdv_convention_text(flip_y, po)}\n",
-                        encoding="utf-8", newline="")
+        import csv                     # (I175) quoted: a name with a comma survives the round trip
+        with open(side, "w", encoding="utf-8", newline="") as fh:
+            w = csv.writer(fh, lineterminator="\n")
+            w.writerow(["index", "name"])
+            w.writerows([f"pt{k + 1}", pt.name] for k, pt in enumerate(self.points))
+            w.writerow(["convention", dltdv_convention_text(flip_y, po)])
 
     def export_animal_csv(self, path: str | Path) -> None:
         """Segment silhouette per frame: presence, score, bbox, centroid, area,
