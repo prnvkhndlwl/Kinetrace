@@ -320,7 +320,7 @@ print("epipolar guides, snap to rays and per-camera disagreement band OK")
 from PySide6.QtWidgets import QInputDialog  # noqa: E402
 QInputDialog.getItem = staticmethod(lambda *a, **k: (a[3][0], True))
 kin_out = os.path.join(SCRATCH, "test3d_gui_kinematics.csv")
-written_k = win._export_one("kin", kin_out)
+written_k, _notes_k = win._export_one("kin", kin_out)
 assert len(written_k) == 2 and all(os.path.exists(w) for w in written_k), written_k
 assert "Smoothing: automatic" in open(written_k[1], encoding="utf-8").read()
 print("3D kinematics export OK")
@@ -390,7 +390,7 @@ print("project round trip with calibration + 3D OK")
 # 3D points for Anipose / DLTdv out, and back in through File -> Import -> 3D Points
 from kinetrace import calibio  # noqa: E402
 xa, xd = os.path.join(SCRATCH, "pts_anipose.csv"), os.path.join(SCRATCH, "pts_xyzpts.csv")
-assert win._export_one("xyz_anipose", xa) and win._export_one("xyz_dltdv", xd)
+assert win._export_one("xyz_anipose", xa)[0] and win._export_one("xyz_dltdv", xd)[0]
 assert os.path.exists(xd[:-4] + "_pointnames.csv")
 before = p.reconstruction
 QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (xd, ""))

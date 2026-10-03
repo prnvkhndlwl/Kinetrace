@@ -1616,6 +1616,11 @@ class MainWindow(QMainWindow):
         self.act_recon.setToolTip("Turn the landmarks tracked in two or more cameras (matched by name) into\n"
                                   "3D positions with the calibration, and say how well the cameras agree\n"
                                   "(GOOD / USABLE / NOT TRUSTWORTHY). Needs every camera calibrated.")
+        self.act_set_axes = QAction("Set World &Axes…", self, triggered=self._set_world_axes)      # (I170)
+        self.act_set_axes.setToolTip("Choose the 3D world yourself: three landmarks give the origin, the +X and the\n"
+                                     "+Y direction (+Z follows the right-hand rule). The calibration and the 3D\n"
+                                     "result are re-expressed in it; the pictures are not touched. Needs a 3D result\n"
+                                     "(Reconstruct, Ctrl+3).")
         self.act_retrack = QAction("Re-track &Disagreeing Stretches…", self, triggered=self._retrack_dialog)
         self.act_retrack.setToolTip("Where one camera's landmark disagrees with the others (the magenta band on\n"
                                     "the timeline), put it back on the other cameras' rays at the start of the\n"
@@ -1638,7 +1643,8 @@ class MainWindow(QMainWindow):
         self.act_import_calib.setToolTip(self.act_calib.toolTip())
         self._m_import.insertAction(self.act_import_xyz, self.act_import_calib)
         for a in (self.act_sync, None, self.act_lens, self.act_wand, self.act_calib, self.act_export_cal,
-                  self.act_offsets3d, None, self.act_recon, self.act_retrack, self.act_hull, None, self.act_view3d,
+                  self.act_offsets3d, None, self.act_recon, self.act_set_axes, self.act_retrack, self.act_hull, None,
+                  self.act_view3d,
                   self.act_export_mesh):
             m_3d.addSeparator() if a is None else m_3d.addAction(a)
 
@@ -7823,6 +7829,12 @@ class MainWindow(QMainWindow):
         project folder, `folder`) on a worker thread. wait=True returns (ok,
         error) after it finished, the window repainting meanwhile -- with the
         loading card (`title`) once it takes longer than a blink (G48)."""
+        prev = self._save_worker
+        if prev is not None and prev.isRunning():
+            # (I201) a recovery writer still running (the 30 s autosave started one while a
+            # question was open): finish it before the next writer; never drop it running
+            prev.wait(60000)
+            _retire(prev)
         w = _SaveWorker(frozen, path, folder, **kw)
         result = {}
 
@@ -7917,9 +7929,6 @@ class MainWindow(QMainWindow):
             return self._save_project_as()
         if self.project is None or self._saving:
             return False
-        if self._save_worker is not None and self._save_worker.isRunning():
-            self._save_worker.wait()
-        self._wait_for_exports()                 # it reads the folder this save rewrites (G42)
         path = self.project_path
         if path.is_file() and not self._keep_single_file:
             # a project saved before I145 is one zip: offer the folder (once per project)
@@ -7933,6 +7942,11 @@ class MainWindow(QMainWindow):
             if ans == QMessageBox.Cancel:
                 return False
             self._keep_single_file = ans == QMessageBox.No
+        # (I201) the question above comes first: a recovery copy the 30 s autosave starts while it
+        # is open is waited for here, not orphaned by the save's own writer
+        if self._save_worker is not None and self._save_worker.isRunning():
+            self._save_worker.wait()
+        self._wait_for_exports()                 # it reads the folder this save rewrites (G42)
         folder = self._project_layout() == "folder"
         self._saving = True
         try:
@@ -7968,7 +7982,15 @@ class MainWindow(QMainWindow):
         if stats is not None:
             n = max(0, stats["written"] - 1) + stats["removed"]      # kinetrace.json changes every time
             what = f" · {n} file{'s' if n != 1 else ''} updated" if n else " · nothing else changed"
-        self.statusBar().showMessage(f"Project saved ✓  {path.name}{extra}{what}", 5000)
+        tidy = (stats or {}).get("tidy_up")
+        if tidy:
+            # (G110) the save itself counted; only the tidying after it did not all work
+            self.statusBar().showMessage(f"Project saved ✓  {path.name}{extra}", 5000)
+            self.toast.show_message(
+                "Saved. Not everything could be tidied up: " + "; ".join(str(x) for x in tidy[:3])
+                + ". Nothing is lost; the next save tries again.", "warn", 10000)
+        else:
+            self.statusBar().showMessage(f"Project saved ✓  {path.name}{extra}{what}", 5000)
         if folder and self.project.exports:
             self._refresh_exports()
         return True
@@ -8036,7 +8058,7 @@ class MainWindow(QMainWindow):
                         "(Its last save stays in its .history folder until the next save.)",
                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                     return None
-            elif any(p.iterdir()):
+            elif not projectfile.holds_only_own_entries(p):      # (I244) a failed first save leaves only its .cache
                 QMessageBox.warning(self, "Save project",
                                     f"{p}\n\nis a folder that is not a Kinetrace project. Choose another name.")
                 return None
@@ -8090,7 +8112,8 @@ class MainWindow(QMainWindow):
         if self._save_worker is not None and self._save_worker.isRunning():
             self._save_worker.wait()
         self._sync_ui_state()
-        frozen = projectfile.freeze(self.project, self._ui_global_state(), self._project_id, target=out,
+        # (I243) the export is a COPY: its own project id, so it and the original never share a recovery slot
+        frozen = projectfile.freeze(self.project, self._ui_global_state(), projectfile.new_id(), target=out,
                                     layout="zip")
         self.statusBar().showMessage("Writing the single file…")
         self._saving = True                      # no Save / autosave write meanwhile (G48)
@@ -8135,8 +8158,7 @@ class MainWindow(QMainWindow):
         thread, from the saved folder itself (so they match it exactly)."""
         from kinetrace.autoexport import ExportsWorker
         self._wait_for_exports()
-        scorer = "Kinetrace_" + {"alltracker": "AllTracker", "cotracker3": "CoTracker3",
-                                 "spot": "MovingSpot"}.get(self._point_backend, "Kinetrace")
+        scorer = self._dlc_scorer()             # (R12) one rule with Ctrl+E
         w = ExportsWorker(self.project_path, list(self.project.exports), scorer)
         w.done.connect(self._on_exports_done)
         self._exports_worker = w
@@ -8164,6 +8186,10 @@ class MainWindow(QMainWindow):
             imp = self._in_background("Reading the tracks", lambda: trackio.read(path), detail=Path(path).name)
         except trackio.TrackImportError as e:
             QMessageBox.warning(self, "Cannot import these tracks", str(e))
+            return
+        except Exception as e:  # noqa: BLE001 - (G142) a failed READ in words, the traceback logged
+            QMessageBox.warning(self, "Cannot import these tracks",
+                                _plain_error(e, "The tracks could not be read", reading=True))
             return
         if self.session is None:
             QMessageBox.information(self, "Import tracks",
@@ -8194,18 +8220,40 @@ class MainWindow(QMainWindow):
         except calibio.CalibFormatError as e:
             QMessageBox.warning(self, "Cannot import these 3D points", str(e))
             return
+        except Exception as e:  # noqa: BLE001 - (G142)
+            QMessageBox.warning(self, "Cannot import these 3D points",
+                                _plain_error(e, "The 3D points could not be read", reading=True))
+            return
         if p.reconstruction is not None and QMessageBox.question(
                 self, "Replace the 3D result?", "This project already has a 3D result. Replace it with the "
                 "imported points?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        p.reconstruction = rec
+        self._drop_reconstruction(replacement=rec)           # (I242)
         p.dirty = True
-        self._hull_cache.clear()
-        self._update_disagreement()
-        self._refresh_view3d(force=True)
         self._apply_state()
         self.toast.show_message("3D points imported: " + "; ".join(notes) + ". Frames are the reference "
                                 f"camera's ({p.name(0)}).", "info", 10000)
+
+    def _drop_reconstruction(self, reason: str = "", replacement=None, had: bool | None = None) -> bool:
+        """(I242) The ONE place the 3D result is dropped (or replaced by an imported one) outside a
+        retime: the volumes carved from it, the magenta disagreement band and its Re-track tooltip,
+        the 3D window and the guides follow; `reason` says why in the status line when there was a
+        result to lose (`had`: it was there before a caller's own change dropped it). True when a
+        result was dropped."""
+        p = self.project
+        if p is None:
+            return False
+        if had is None:
+            had = p.reconstruction is not None
+        p.reconstruction = replacement
+        self._hull_cache.clear()
+        self._update_disagreement()
+        self._refresh_view3d(force=True)
+        self._refresh_guides()
+        if had and replacement is None and reason:
+            self.statusBar().showMessage(f"The 3D result was cleared: {reason} — press Ctrl+3 (3D → "
+                                         "Reconstruct) again", 8000)
+        return had and replacement is None
 
     def _import_offsets(self):
         """File -> Import -> Camera Offsets: offsets and rates from a CSV."""
@@ -8225,6 +8273,18 @@ class MainWindow(QMainWindow):
         except calibio.CalibFormatError as e:
             QMessageBox.warning(self, "Cannot import these offsets", str(e))
             return
+        except Exception as e:  # noqa: BLE001 - (G142)
+            QMessageBox.warning(self, "Cannot import these offsets",
+                                _plain_error(e, "The offsets could not be read", reading=True))
+            return
+        # (I169) read_offsets already re-based the rows on this project's first camera; a file with no
+        # row for it cannot be: its numbers are the file's own, applied only when the user says so
+        if getattr(rows, "reference_missing", False) and QMessageBox.question(
+                self, "Camera offsets",
+                f"The file has no row for {p.name(0)}, the reference camera of this project, so its numbers "
+                f"cannot be measured against {p.name(0)}.\n\nApply its numbers as written?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
         had_3d = p.reconstruction is not None
         for v, off, rate in rows:
             p.set_rate(v, rate)
@@ -8234,7 +8294,11 @@ class MainWindow(QMainWindow):
         self._after_retime(had_3d)
         self._refresh_companions()
         self._refresh_cameras()
-        self.toast.show_message(f"Offsets imported for {len(rows)} camera(s) from {Path(path).name}.", "info", 8000)
+        n = sum(1 for v, _o, _r in rows if v != 0)
+        rebased = (f" The file's numbers were measured against another camera, so they were re-based on "
+                   f"{p.name(0)}." if getattr(rows, "rebased", False) else "")
+        self.toast.show_message(f"Offsets imported for {n} camera(s) from {Path(path).name}.{rebased}",
+                                "info", 8000)
 
     def _import_masks(self):
         """File -> Import -> Silhouettes: mask images from another tool become
@@ -8257,6 +8321,10 @@ class MainWindow(QMainWindow):
                 detail=Path(folder).name, progress=True)
         except trackio.TrackImportError as e:
             QMessageBox.warning(self, "Cannot import these silhouettes", str(e))
+            return
+        except Exception as e:  # noqa: BLE001 - (G142)
+            QMessageBox.warning(self, "Cannot import these silhouettes",
+                                _plain_error(e, "The silhouettes could not be read", reading=True))
             return
         self._undo_snap = snap
         self.act_undo.setEnabled(snap is not None)
@@ -8354,11 +8422,12 @@ class MainWindow(QMainWindow):
     def _locate_video(self, want: Path, label: str) -> Path | None:
         """Ask the user where a project's video went (projects are portable;
         the footage next to them often is not)."""
-        if want.exists():
+        if want.is_file():          # (I208) Path("") is the current folder: it "exists" but is no video
             return want
         QMessageBox.information(
             self, "Locate video",
-            f"{label}'s video was not found at:\n{want}\n\nPlease locate it.")
+            f"{label}'s video was not found at:\n{want if str(want) not in ('', '.') else '(no path was stored)'}"
+            "\n\nPlease locate it.")
         vpath, _ = QFileDialog.getOpenFileName(self, f"Locate video for {label}", "", VIDEO_FILTER)
         return Path(vpath) if vpath else None
 
@@ -8400,12 +8469,14 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not open project", f"{path}\n\n{e}")
             return
         except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "Could not open project", _plain_error(e, f"{path} could not be read"))
+            QMessageBox.critical(self, "Could not open project",
+                                 _plain_error(e, f"{path} could not be read", reading=True))      # (G142)
             return
         pid = str(meta.get("project_id") or projectfile.new_id())
         saved_at = meta.get("saved_at")
         file_path: Path | None = Path(path)
         unsaved = False
+        decline_after: str | None = None       # (I209) the recovery set aside only once its copy is open
         if recovered is not None:
             # a recovery copy: Save goes back to the project it came from when
             # that file is still the save the work started from
@@ -8422,7 +8493,10 @@ class MainWindow(QMainWindow):
         else:
             found = recovery.find(pid)
             if found is not None and not found.get("damaged"):
-                same = found.get("base_saved_at") == saved_at
+                # (I168) a recovery made by a session that had a camera left out holds fewer cameras
+                # than this file: it is not "this project's unsaved changes" (Yes by default)
+                n_rec = len(found.get("videos") or [])
+                same = found.get("base_saved_at") == saved_at and (not n_rec or n_rec == proj.n_views)
                 ask = (f"Unsaved changes to this project from {found.get('written_at', 'earlier')} were found.\n\n"
                        "Restore them? (No opens the last saved version; the unsaved changes are kept in "
                        f"{recovery.folder()[0] / 'declined'}.)" if same else
@@ -8439,8 +8513,10 @@ class MainWindow(QMainWindow):
                         unsaved = True
                         if not same:
                             # it lives on as a new copy (its own id); the old recovery
-                            # is kept aside so this file stops offering it
-                            recovery.decline(pid)
+                            # is kept aside so this file stops offering it -- but only AFTER the
+                            # copy is open: a video not located or a Cancel used to strand the work
+                            # in declined/, which File → Recover does not list (I209)
+                            decline_after = pid
                             pid, file_path, saved_at = projectfile.new_id(), None, None
                     except projectfile.ProjectFileError as e:
                         recovery.quarantine(pid)
@@ -8459,9 +8535,6 @@ class MainWindow(QMainWindow):
                     for x in proj.sessions:
                         x.ui_state.update((state.get("tools") or {}))
                         x.dirty = False
-        if proj.n_views == 0:
-            QMessageBox.critical(self, "Could not open project", f"{path}\n\nNo camera views.")
-            return
         self._camera_entries = list(meta.get("_cameras") or [])
         # relative video paths start at the project folder itself (format 2) or at
         # the folder holding a single file; a recovery copy uses its project's
@@ -8510,6 +8583,8 @@ class MainWindow(QMainWindow):
             self._adopt_project(proj, info, located=located, infos=infos)
             if unsaved:
                 self.project.dirty = True
+            if decline_after is not None:
+                recovery.decline(decline_after)      # (I209) the copy is open: now the old recovery is set aside
             QTimer.singleShot(0, lambda: self._apply_layout(state.get("layout")))
 
         # every camera's video is located first (a moved one asks), then ALL are read
@@ -8527,6 +8602,8 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.critical(self, "Could not open video", f"{proj.name(proj.active)}:\n\n{ainfo}")
             return
+        if self._first_frame_token is not None:      # (G109) a previous open still waiting for its picture
+            self._first_frame_arrived()
         tok = self._busy_push(f"Opening {pname}", f"{n} camera{'s' if n != 1 else ''} read; building the "
                               "project…")
         self._attach_with_card(ainfo, adopt, tok)
@@ -8581,6 +8658,13 @@ class MainWindow(QMainWindow):
                     f"{s.n_frames}. If it is a different cut or another take, its tracks sit on the wrong "
                     "frames — locate the original video. The camera is limited to "
                     f"{runtimes[i].n_frames} frames meanwhile.")
+        # (I207) the WORKING camera too: its video may decode more frames than the project holds, and
+        # frames past the arrays raised IndexError on every repaint
+        sa = proj.sessions[active]
+        if runtimes[active].n_frames > sa.n_frames:
+            runtimes[active].n_frames = sa.n_frames
+            self.spin.setRange(0, sa.n_frames - 1)
+            self.spin.setSuffix(f" / {sa.n_frames - 1}")
         lost = [proj.name(i) for i in drop]
         for i in reversed(drop):       # descending keeps the indices valid
             del runtimes[i]
@@ -8592,6 +8676,9 @@ class MainWindow(QMainWindow):
             # file name (autosave only ever writes the recovery folder).
             kept = self.project_path
             self.project_path = None
+            # (I168) a detached project: its own id and no base save, so its recovery copy is never
+            # offered later as "unsaved changes to the full project" nor saved over it
+            self._project_id, self._saved_at, self._recovery_sig = projectfile.new_id(), None, None
             QMessageBox.warning(
                 self, "Opened without some cameras",
                 f"{', '.join(lost)}: the video was not found or could not be opened, so "
@@ -8643,8 +8730,7 @@ class MainWindow(QMainWindow):
             return
         p.calibration = dlg.result_calibration
         self._wand_result = (None, None)   # the last wand run's report is not this calibration's (I33)
-        p.reconstruction = None
-        self._hull_cache.clear()
+        self._drop_reconstruction("a new calibration was imported")      # (I242)
         p.dirty = True
         self._apply_state()
         self._guides_on()
@@ -8678,8 +8764,10 @@ class MainWindow(QMainWindow):
             # picker); the result is a lens FILE to attach later. It used to refuse
             # with "Open the checkerboard video first" (G9)
             wiz = LensWizard(self, None, "", None, str(Path.home()))
-            if wiz.exec() == QDialog.Accepted and wiz.result_profile is not None \
-                    and not getattr(wiz, "saved_path", ""):
+            accepted = wiz.exec() == QDialog.Accepted
+            profile, saved_to = wiz.result_profile, getattr(wiz, "saved_path", "")
+            wiz.deleteLater()            # (I249) it holds the scan (~93 MB of thumbnails): not for the session
+            if accepted and profile is not None and not saved_to:
                 if QMessageBox.question(
                         self, "Save the lens profile?",
                         "No video is open, so the profile is not attached to a camera and would be lost "
@@ -8688,30 +8776,33 @@ class MainWindow(QMainWindow):
                     path, _ = QFileDialog.getSaveFileName(self, "Save lens profile", str(Path.home() / "camera.klens.json"),
                                                           "Kinetrace lens (*.klens.json)")
                     if path:
-                        saved = wiz.result_profile.save(path)
+                        saved = profile.save(path)
                         self.toast.show_message(f"Lens profile saved: {Path(saved).name}. Load it for its camera "
                                                 "with 3D → Calibrate a Lens → I already have a lens file…",
                                                 "success", 9000)
             return
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
         wiz = LensWizard(self, p, self.info.path if self.info else "", p.active, start)
-        if wiz.exec() != QDialog.Accepted or wiz.result_profile is None or wiz.result_view is None:
+        accepted = wiz.exec() == QDialog.Accepted
+        profile, rview = wiz.result_profile, wiz.result_view
+        views = wiz.result_views() if accepted and profile is not None and rview is not None else []
+        wiz.deleteLater()                        # (I249) its scan and corner frames are not kept for the session
+        if not accepted or profile is None or rview is None:
             return
         from kinetrace.calibwizard import lens_size_mismatch
-        sv = p.sessions[wiz.result_view]
-        bad = lens_size_mismatch(wiz.result_profile, sv.width, sv.height, p.name(wiz.result_view))
+        sv = p.sessions[rview]
+        bad = lens_size_mismatch(profile, sv.width, sv.height, p.name(rview))
         if bad:                                  # a profile of another picture size (I31)
             QMessageBox.warning(self, "Lens profile not attached", bad[0].upper() + bad[1:])
             return
         while len(p.lenses) < p.n_views:
             p.lenses.append(None)
-        views = wiz.result_views()               # + the identical cameras it was shared with (G40)
-        for k in views:
-            p.lenses[k] = wiz.result_profile
+        for k in views:                          # the identical cameras it was shared with too (G40)
+            p.lenses[k] = profile
         p.dirty = True
-        v = str(wiz.result_profile.report.get("verdict", "loaded")).upper()
+        v = str(profile.report.get("verdict", "loaded")).upper()
         self.toast.show_message(
-            f"Lens profile attached to {', '.join(p.name(k) for k in views)} ({v}: {wiz.result_profile.summary()}). "
+            f"Lens profile attached to {', '.join(p.name(k) for k in views)} ({v}: {profile.summary()}). "
             "The wand calibration will use it; save the project to keep it.", "success", 9000)
 
     def _wand_wizard(self):
@@ -8720,11 +8811,11 @@ class MainWindow(QMainWindow):
         calibration (and can be exported for the animal projects)."""
         from kinetrace.calibwizard import WandWizard
         p = self.project
-        if self.state != READY:
-            return
         # one video is enough to OPEN the wizard (the wand may be tracked in
         # one camera for other reasons); the pages say what a calibration
-        # still needs. Only "no video at all" is refused here.
+        # still needs. Only "no video at all" is refused here -- with the guidance
+        # this entry is enabled to give, BEFORE the state check (G106: with no video
+        # open the state is IDLE and it used to return in silence).
         if p is None or p.n_views < 1:
             QMessageBox.information(
                 self, "Open a wand video first",
@@ -8737,14 +8828,15 @@ class MainWindow(QMainWindow):
                 "4. Then 3D → Calibrate Cameras with a Wand… again.\n\n"
                 "Help → User Manual (F1), section 10, walks through all of it.")
             return
+        if self.state != READY:
+            return
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
         wiz = WandWizard(self, p, start)
         if wiz.exec() != QDialog.Accepted or wiz.result_calibration is None:
             return
         p.calibration = wiz.result_calibration
         self._wand_result = (wiz.result, wiz.gravity)
-        p.reconstruction = None
-        self._hull_cache.clear()
+        self._drop_reconstruction("a new calibration was made")          # (I242)
         p.dirty = True
         self._apply_state()
         v = str(wiz.result.report.get("verdict", "?")).upper() if wiz.result is not None else "?"
@@ -8767,8 +8859,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.Accepted or not dlg.chosen():
             return
         keys = dlg.chosen()
-        base = Path(self.project_path or self.info.path)
-        start = str(base.with_suffix("")) + ".kcal.json"
+        start = self._default_output(".kcal.json", camera=False)       # one calibration for every camera (G119)
         path, _ = QFileDialog.getSaveFileName(self, "Export calibration — base name", start,
                                               "Kinetrace calibration (*.kcal.json);;All files (*)")
         if not path:
@@ -8778,8 +8869,9 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             if "kcal" in keys:
-                res, grav = getattr(self, "_wand_result", (None, None))
-                written += save_calibration_files(res, grav, stem + ".kcal.json", cal=p.calibration)
+                res, grav = self._wand_result
+                # written= is filled as each file lands, so an error half-way can say which exist (G113)
+                save_calibration_files(res, grav, stem + ".kcal.json", cal=p.calibration, written=written)
                 note = dlt_csv_caveat(p.calibration, list(p.names))
                 if note:
                     notes.append(note)       # with lens corrections the dltCoefs.csv is for lens-corrected pixels (I32)
@@ -8800,7 +8892,7 @@ class MainWindow(QMainWindow):
             if "lenses" in keys:
                 for i, prof in enumerate(p.lenses or []):
                     if prof is not None:
-                        safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in p.name(i))
+                        safe = self._safe_name(p.name(i))
                         calibio.write_lens(prof, f"{stem}_lens_{safe}.yml")
                         written.append(f"{stem}_lens_{safe}.yml")
             if "offsets" in keys:
@@ -8808,7 +8900,11 @@ class MainWindow(QMainWindow):
                 written.append(stem + "_offsets.csv")
         except Exception as e:      # noqa: BLE001
             QApplication.restoreOverrideCursor()
-            QMessageBox.critical(self, "Export calibration", _plain_error(e, "The calibration could not be written"))
+            done = ("\n\nFiles written before the error: " + ", ".join(Path(w).name for w in written)
+                    + ". The others were not written." if written else
+                    "\n\nNo file was written.")
+            QMessageBox.critical(self, "Export calibration",
+                                 _plain_error(e, "The calibration could not be written") + done)
             return
         QApplication.restoreOverrideCursor()
         names = ", ".join(Path(w).name for w in written)
@@ -8856,13 +8952,19 @@ class MainWindow(QMainWindow):
             return
         if self.state != READY:
             return
+        before, had_3d = list(p.offsets), p.reconstruction is not None
         dlg = SyncDialog(self, p, [rt.info.path for rt in self._views], self.current)
-        if dlg.exec() != QDialog.Accepted:
-            return
+        accepted = dlg.exec() == QDialog.Accepted
         n = getattr(dlg, "applied", 0)
-        p.dirty = True
-        p.reconstruction = None
-        self._hull_cache.clear()
+        dlg.deleteLater()                    # (G96) never kept for the session (read `applied` first)
+        if not accepted:
+            return
+        # (I242) the 3D result is dropped only when an offset really moved: ticking rows that hold
+        # the offsets already there changes nothing
+        moved = any(abs(a - b) > 1e-9 for a, b in zip(before, p.offsets))
+        if moved:
+            p.dirty = True
+            self._drop_reconstruction("the cameras' timing changed", had=had_3d)
         self._refresh_companions()
         self._refresh_cameras()
         self._apply_state()
@@ -8883,13 +8985,27 @@ class MainWindow(QMainWindow):
             self.toast.show_message("Nothing tracked in the overlap yet — track the cameras first.", "warn", 6000)
             return
         rep: dict = {}
+
+        def work(report, cancelled):
+            # (G76) a counted, stoppable search: the card shows the bar and a Cancel button
+            last = [0.0]
+
+            def progress(done, total):
+                now = time.monotonic()
+                if now - last[0] >= 0.1 or done >= total:      # not a signal per cost evaluation
+                    last[0] = now
+                    report(f"{done} of about {total} offset tests", done, total)
+            return estimate_offsets(p.sessions, p.calibration, p.rates, p.offsets, (t0, t1), report=rep,
+                                    progress=progress, cancelled=cancelled)
         try:           # a joint search over every camera: off the GUI thread (G50)
             offs, before, after = self._in_background(
-                "Estimating sub-frame offsets",
-                lambda: estimate_offsets(p.sessions, p.calibration, p.rates, p.offsets, (t0, t1), report=rep),
+                "Estimating sub-frame offsets", work, progress=True, cancellable=True,
                 detail=f"Testing offsets of every camera against the tracks of frames {t0}-{t1}…")
         except Exception as e:      # noqa: BLE001
             QMessageBox.critical(self, "Sub-frame offsets", _plain_error(e, "The offsets could not be estimated"))
+            return
+        if rep.get("verdict") == "cancelled":
+            self.toast.show_message("Cancelled: the camera offsets were not changed.", "info", 5000)
             return
         if not np.isfinite(before) or not np.isfinite(after):
             QMessageBox.information(self, "Sub-frame offsets",
@@ -8897,8 +9013,11 @@ class MainWindow(QMainWindow):
                                     "nothing to align. Track the same named landmarks in at least two cameras.")
             return
         per_view = rep.get("per_view", {})
+        # (G75) "flat" = the landmarks it shares barely move (nothing to time); "none" = it shares no
+        # landmark with another camera in this window (its offset is left as it was)
         words = {"sharp": "well determined", "weak": "weakly determined",
-                 "flat": "NOT determined -- do not trust", "none": "unchanged: no shared tracks here"}
+                 "flat": "flat: the landmarks do not move enough to time it -- do not trust",
+                 "none": "unchanged: shares no landmark with another camera here"}
         rows = "\n".join(f"  {p.name(i)}: {p.offsets[i]:+.3f} → {offs[i]:+.3f}   ({words.get(per_view.get(i), '')})"
                          for i in range(p.n_views) if i)
         # The estimator always returns SOME number; the report says whether the
@@ -8920,8 +9039,7 @@ class MainWindow(QMainWindow):
             return
         p.offsets = [float(o) for o in offs]
         p.dirty = True
-        p.reconstruction = None
-        self._hull_cache.clear()
+        self._drop_reconstruction()          # (I242) the reconstruction below makes a new one
         self._refresh_companions()
         self._refresh_cameras()
         self._reconstruct_3d(quiet=True)
@@ -8958,7 +9076,8 @@ class MainWindow(QMainWindow):
         # means and what to do, every time, and keep the verdict with the result.
         from kinetrace.calib import reconstruction_report
         widths = [s.width for s in p.sessions if s.width] or [1920]
-        rep = reconstruction_report(r, p.n_views, float(max(widths)))
+        heights = [s.height for s in p.sessions if s.height] or [0]
+        rep = reconstruction_report(r, p.n_views, float(max(widths)), float(max(heights)))     # long side (I250)
         self._recon_report = rep
         self._update_disagreement()             # per-camera disagreement onto the timeline
         self._refresh_guides()
@@ -8989,6 +9108,53 @@ class MainWindow(QMainWindow):
                     "(magenta band on the timeline). <b>3D → Re-track Disagreeing Stretches</b> puts the landmark "
                     "back on the other cameras' rays and re-tracks it, with a before / after verdict.",
                     "warn", 12000)
+
+    def _set_world_axes(self):
+        """3D → Set World Axes… (I170, owner 2026-10-03): the user picks the ORIGIN, the +X and the +Y
+        direction as three landmarks of the 3D result; +Z follows the right-hand rule. The calibration
+        and the 3D result are re-expressed in that world (calib.world_axes / .reframed): the pictures
+        are untouched, every camera projects every point to the same pixel as before, and exported
+        cameras and exported 3D points are in one world."""
+        from kinetrace import calib
+        p = self.project
+        if self.state == TRACKING:
+            return
+        if not self._need_calibration("Set World Axes"):
+            return
+        r = p.reconstruction
+        if r is None or r.n_frames == 0 or not np.isfinite(r.xyz).any():
+            QMessageBox.information(
+                self, "Set World Axes",
+                "The axes are chosen from three landmarks of the 3D result, and there is none yet.\n\n"
+                "Reconstruct first (Ctrl+3, 3D → Reconstruct 3D Landmarks), then choose the axes.")
+            return
+        flat = r.xyz.reshape(-1, 3)
+        probe = np.nanmedian(flat[np.isfinite(flat).all(axis=1)], axis=0)
+        lh = calib.world_is_left_handed(p.calibration, probe)
+        dlg = _WorldAxesDialog(self, r, self._reference_instant(), lh, p.calibration.unit or r.unit)
+        ok = dlg.exec() == QDialog.Accepted
+        axes = dlg.result_axes
+        dlg.deleteLater()
+        if not ok or axes is None:
+            return
+        B, o, note = axes
+        try:
+            cal2 = p.calibration.reframed(B, o, note)
+        except ValueError as e:          # the origin lies on a camera's image plane
+            QMessageBox.warning(self, "Set World Axes", str(e))
+            return
+        rec2 = r.reframed(B, o)
+        p.calibration = cal2
+        self._drop_reconstruction(replacement=rec2)
+        p.dirty = True
+        self._apply_state()
+        self._refresh_guides()
+        self.toast.show_message(
+            f"World axes set ({note[len('world: '):]}). +Z follows the right-hand rule"
+            + (" (the calibration's own world was mirrored; this one is not)" if lh else "")
+            + ". The pictures are unchanged: every camera projects every point to the same pixel as before. "
+            "A volume carved earlier was in the old axes and was cleared; carve it again (Ctrl+4). Export "
+            "the calibration and the 3D points again to get them in the new world.", "success", 14000)
 
     def _masks_at_instant(self, t: int):
         """(cameras, raw masks) at reference instant t — None where a camera
@@ -9068,6 +9234,16 @@ class MainWindow(QMainWindow):
                 "The volume still reaches the edge of the space searched around the landmarks after "
                 "enlarging it several times, so the reported volume is cut off (too small). Usually a "
                 "silhouette includes the background here; check each camera's silhouette at this frame.")
+        from kinetrace.hull import THIN_WARN_FRAC
+        thin = h.thin_fraction()
+        if thin > THIN_WARN_FRAC:                # (I172)
+            QMessageBox.warning(
+                self, "Volume partly checked by two cameras only",
+                f"{100 * thin:.0f} % of the volume was checked by fewer than 3 cameras: a camera cuts the "
+                "animal at its picture edge, so it cannot rule out the volume beyond it, and there the "
+                "hull rests on two cameras only (a long sliver along the line between them). The volume "
+                "is probably too large. Frame the whole animal in every camera, or carve at an instant "
+                "when it is fully in view of three.")
         self._hull_cache[t] = (verts, faces, h)
         self._apply_state()
         if not self.act_view3d.isChecked():
@@ -9099,8 +9275,7 @@ class MainWindow(QMainWindow):
             return
         scene = Scene3D()
         r = p.reconstruction
-        t = self.current if p.active == REFERENCE_VIEW else int(round(
-            p.map_frame_exact(p.active, REFERENCE_VIEW, self.current)))
+        t = self._reference_instant()       # (G107) the one rounding rule: the hull cache is keyed by it
         info = f"reference frame {t}"
         if r is not None:
             scene.points_all = r.xyz
@@ -9161,8 +9336,7 @@ class MainWindow(QMainWindow):
         self._undo_snap = s.snapshot()      # Ctrl+Z takes the whole run back
         self.act_undo.setEnabled(True)
         # target=: the result belongs to THIS camera, whatever is active when it ends (I83)
-        w = BodyPoseWorker(self.info.path, self.n_frames, opts, s.masks, float(s.fps or 0.0),
-                           target=s)
+        w = BodyPoseWorker(self.info.path, self.n_frames, opts, s.masks, target=s)    # (G78) fps is a no-op
         self._body_worker = w
         total = max(1, (opts.end - opts.start) // max(1, opts.step) + 1)
         dl = QProgressDialog("Looking for people…", "Stop", 0, total, self)
@@ -9176,6 +9350,7 @@ class MainWindow(QMainWindow):
         w.progress.connect(self._on_body_progress)
         w.finished_ok.connect(self._on_body_done)
         w.error.connect(self._on_body_error)
+        w.stopped.connect(lambda m: self.toast.show_message(m, "info", 6000))       # (G78) Stop = a notice
         w.finished.connect(self._end_body_run)
         dl.show()
         w.start()
@@ -9215,10 +9390,12 @@ class MainWindow(QMainWindow):
             self.timeline.update()
             return
         if not track.n_posed():
+            # (I183) merge_run's sentence says which frames kept their earlier pose
+            head = note if merged.n_posed() and note else (
+                "No person was found anywhere in that range." if not merged.n_posed() else
+                "No person was found anywhere in that range; the earlier poses were kept.")
             self.toast.show_message(
-                "No person was found anywhere in that range"
-                + ("; the earlier poses are unchanged. " if merged.n_posed() else ". ")
-                + "Try the segment tool (S) to draw round the person, then run again using "
+                head + " Try the segment tool (S) to draw round the person, then run again using "
                 "the silhouette.", "warn", 8000)
         else:
             self.toast.show_message(f"{merged.summary()}. {note}".strip(), "info", 8000)
@@ -9273,9 +9450,31 @@ class MainWindow(QMainWindow):
         bgr = None if rgb is None else cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         w.set_frame(self.current, bgr)
 
-    def _body_default_path(self, tail: str) -> str:
+    @staticmethod
+    def _safe_name(name: str) -> str:
+        """A camera / landmark name as a piece of a file name (R12: the two copies of this rule)."""
+        return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)
+
+    def _default_output(self, tail: str, camera: bool = True) -> str:
+        """The proposed file name of an export (G119, R12): the project (or video) name, the working
+        camera's name when the project has several -- every camera used to propose the SAME name and one
+        camera's file overwrote another's (I108) -- and `tail`. camera=False for what covers every camera
+        (the calibration, a mesh)."""
         base = Path(self.project_path or self.info.path)
-        return str(base.with_suffix("")) + tail
+        cam = ""
+        p = self.project
+        if camera and p is not None and p.n_views > 1:
+            cam = "_" + self._safe_name(p.name(p.active))
+        return str(base.with_suffix("")) + cam + tail
+
+    def _body_default_path(self, tail: str) -> str:
+        return self._default_output(tail)
+
+    @staticmethod
+    def _export_error(exc: BaseException, what: str) -> str:
+        """An export's failure in words: an OS error through plain_error (a file open in another
+        program, a full drive), a ValueError's own sentence as it is."""
+        return _plain_error(exc, what) if isinstance(exc, OSError) else str(exc)
 
     def _export_body_joints(self):
         s = self.session
@@ -9289,7 +9488,7 @@ class MainWindow(QMainWindow):
         try:
             s.export_body_joints_csv(path)
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Export", str(exc))
+            QMessageBox.warning(self, "Export", self._export_error(exc, "The joint positions could not be written"))
             return
         self.toast.show_message(f"Joint positions written to {Path(path).name}.", "info", 5000)
 
@@ -9310,7 +9509,7 @@ class MainWindow(QMainWindow):
             rep = Path(path).with_suffix("").as_posix() + "_report.txt"
             Path(rep).write_text(angle_report(s.body, float(s.fps or 0.0)), encoding="utf-8")
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(self, "Export", str(exc))
+            QMessageBox.warning(self, "Export", self._export_error(exc, "The joint angles could not be written"))
             return
         self.toast.show_message(
             f"Joint angles written to {Path(path).name}, with the conventions and the range "
@@ -9393,8 +9592,7 @@ class MainWindow(QMainWindow):
         if p is None or t not in self._hull_cache:
             self.toast.show_message("Carve the volume at this frame first (Ctrl+4).", "warn", 5000)
             return
-        base = Path(self.project_path or self.info.path)
-        start = str(base.with_suffix("")) + f"_hull_f{t}.obj"
+        start = self._default_output(f"_hull_f{t}.obj", camera=False)      # a volume of the whole scene (G119)
         path, chosen = QFileDialog.getSaveFileName(
             self, "Export mesh", start, "Wavefront OBJ (*.obj);;Stanford PLY (*.ply)")
         if not path:
@@ -9410,10 +9608,19 @@ class MainWindow(QMainWindow):
                     path += ".obj"
                 unit = p.calibration.unit if p.calibration else ""
                 save_obj(path, verts, faces, f"Kinetrace visual hull, reference frame {t}, unit {unit}")
-        except OSError as e:
+        except Exception as e:      # noqa: BLE001 - (R12) any failure in words, not only OSError
             QMessageBox.critical(self, "Export failed", _plain_error(e, "The mesh could not be written"))
             return
-        self.toast.show_message(f"Mesh written: {Path(path).name} ({len(faces)} triangles)", "info", 6000)
+        mirrored = ""
+        try:
+            from kinetrace.calib import world_is_left_handed
+            if p.calibration is not None and world_is_left_handed(p.calibration):
+                mirrored = (" This calibration's world is left-handed (mirrored), so the mesh is mirrored too: "
+                            "3D → Set World Axes… first gives it a right-handed world.")
+        except Exception:      # noqa: BLE001 - only a hint
+            pass
+        self.toast.show_message(f"Mesh written: {Path(path).name} ({len(faces)} triangles).{mirrored}",
+                                "info", 6000 if not mirrored else 12000)
 
     # ---------------------------------------------------------------- export
 
@@ -9437,18 +9644,57 @@ class MainWindow(QMainWindow):
         ("Everything — all of the above with one base name (*.csv)", ".csv", "all"),
     ]
 
-    def _export_one(self, key: str, path: str, cutoff="ask") -> list[str]:
-        """Write one format; returns the files written (sidecars included).
-        `cutoff`: the kinematics smoothing ("ask" = the question; `_export_dialog`
-        asks first and passes the answer, since the writing runs off the GUI thread)."""
+    DLTDV_KEYS = ("dltdv", "dltdv_bl", "multi", "xyz_dltdv")      # (owner 2026-10-03: DLTdv = points only)
+    SIDECAR_KEYS = ("wide", "dlc", "sparse")       # the 2D track exports that carry the events / segment files
+
+    def _dlc_scorer(self) -> str:
+        """The DeepLabCut 'scorer' name (R12: the one rule): the tracker every plain point was tracked
+        with when they all share one, else the project's default point model."""
+        names = {"alltracker": "AllTracker", "cotracker3": "CoTracker3", "spot": "MovingSpot"}
         s = self.session
+        kinds = ({self._tracker_of(i, s) for i in range(s.n_points)
+                  if not (s.points[i].derived or s.points[i].is_ball)} if s is not None else set())
+        kind = next(iter(kinds)) if len(kinds) == 1 else self._point_backend
+        return "Kinetrace_" + names.get(kind, "Kinetrace")
+
+    def _points_models(self):
+        """(I170) The exported cameras' models for the 3D points that go out beside them: 3D points are
+        ALWAYS written through `calibio.write_points3d(..., models=)`, so a left-handed calibration's
+        points are in the same (mirrored) world as the cameras Export Calibration writes. The probe is
+        the median of the finite points (as in Export Calibration). Returns (models or None, note)."""
+        from kinetrace import calibio
+        p = self.project
+        cal, r = p.calibration, p.reconstruction
+        if cal is None or not len(cal):
+            return None, ""
+        flat = r.xyz.reshape(-1, 3)
+        fin = flat[np.isfinite(flat).all(axis=1)]
+        probe = np.median(fin, axis=0) if len(fin) else None
+        try:
+            return calibio.to_models(cal, list(p.names), probe), ""
+        except calibio.CalibFormatError as e:
+            return None, (f"The points were written in Kinetrace's own world, not the exported cameras' "
+                          f"({e}).")
+
+    def _export_one(self, key: str, path: str, cutoff="auto", sidecars: bool = True,
+                    report=None, cancelled=None) -> tuple[list[str], list[str]]:
+        """Write one format -> (the files written, sentences for the user). Runs on a worker thread
+        (`_in_background`): it touches NO widget (R12) -- the caller shows the notes, asks the smoothing
+        question and owns every dialog. An empty list of files with a note = nothing to write (G108).
+        `cutoff`: the kinematics smoothing, asked by the caller. `sidecars`: the events / segment
+        files beside a 2D track export (only the formats in SIDECAR_KEYS carry them; DLTdv exports are
+        points only, owner 2026-10-03). `report` / `cancelled`: a progress line and a stop test."""
+        s = self.session
+        p = self.project
         written = [path]
+        notes: list[str] = []
+        no_3d = "No 3D reconstruction yet: run 3D -> Reconstruct 3D Landmarks (Ctrl+3) first."
+        no_sil = "No silhouette to export: segment the animal first (S)."
+        has_sil = s.masks is not None and s.masks.n_masked() > 0
         if key == "wide":
             s.export_csv(path)
         elif key == "dlc":
-            s.export_dlc_csv(path, scorer="Kinetrace_" + {"alltracker": "AllTracker", "cotracker3": "CoTracker3",
-                                                          "spot": "MovingSpot"}.get(self._point_backend,
-                                                                                    "Kinetrace"))
+            s.export_dlc_csv(path, scorer=self._dlc_scorer())
         elif key in ("dltdv", "dltdv_bl"):
             s.export_dltdv_csv(path, flip_y=(key == "dltdv_bl"))
             written.append(str(Path(path).with_name(Path(path).stem + "_pointnames.csv")))
@@ -9457,78 +9703,67 @@ class MainWindow(QMainWindow):
         elif key == "mat":
             s.export_mat(path)
         elif key == "multi":
-            # every camera in one file, landmarks matched BY NAME and each view
-            # sampled through its own offset — the input a 3D solver wants
-            return self.project.export_multi_dltdv(path)
-        elif key == "xyz":
-            r = self.project.reconstruction if self.project else None
-            if r is None:
-                # a 3D-only format on a project without 3D writes nothing: the
-                # "Everything" path skips it, a direct choice is told why
-                self.toast.show_message("No 3D reconstruction yet: run 3D -> Reconstruct 3D "
-                                        "Landmarks (Ctrl+3) first.", "warn", 7000)
-                return []
-            r.export_csv(path)
-            return [path, str(Path(path).with_name(Path(path).stem + "_xyzres.csv"))]
-        elif key in ("xyz_anipose", "xyz_dltdv"):
+            # every camera in one file, landmarks matched BY NAME and each view sampled through its own
+            # offset — the input a 3D solver wants
+            return p.export_multi_dltdv(path), notes
+        elif key in ("xyz", "xyz_anipose", "xyz_dltdv"):
             from kinetrace import calibio
-            r = self.project.reconstruction if self.project else None
+            r = p.reconstruction if p else None
             if r is None:
-                self.toast.show_message("No 3D reconstruction yet: run 3D -> Reconstruct 3D "
-                                        "Landmarks (Ctrl+3) first.", "warn", 7000)
-                return []
-            calibio.write_points3d(r, path, "anipose" if key == "xyz_anipose" else "dltdv")
+                return [], [no_3d]
+            models, mnote = self._points_models()
+            if mnote:
+                notes.append(mnote)
+            kind = {"xyz": "kinetrace", "xyz_anipose": "anipose", "xyz_dltdv": "dltdv"}[key]
+            left_out = calibio.write_points3d(r, path, kind, models=models)         # (I170)
+            if key == "xyz":
+                written.append(str(Path(path).with_name(Path(path).stem + "_xyzres.csv")))
             if key == "xyz_dltdv":
                 written.append(str(Path(path).with_name(Path(path).stem + "_pointnames.csv")))
+            if left_out:
+                notes.append(f"{left_out} instant(s) before reference frame 0 were left out: a DLTdv xyzpts "
+                             "file starts at frame 0.")
+            if models is not None and (models.mirrored or np.any(models.shift)):
+                notes.append("The 3D points are in the same world as the cameras Export Calibration writes"
+                             + (" -- a mirrored (left-handed) one; 3D -> Set World Axes… first gives the "
+                                "calibration a right-handed world" if models.mirrored else "") + ".")
         elif key == "sil_json":
-            if not trackio.export_masks_json(s, path):
-                self.toast.show_message("No silhouette to export: segment the animal first (S).", "warn", 7000)
-                return []
+            if not has_sil:
+                return [], [no_sil]                  # nothing is written, not even an empty file (G108)
+            trackio.export_masks_json(s, path)
         elif key == "sil_png":
             folder = str(Path(path).with_suffix("")) + "_masks"
             n = s.masks.n_masked() if s.masks is not None else 0
             if not n:
-                self.toast.show_message("No silhouette to export: segment the animal first (S).", "warn", 7000)
-                return []
-            dlg = QProgressDialog(f"Writing {n} mask images…", "Cancel", 0, n, self)
-            dlg.setWindowTitle("Export silhouette masks")
-            dlg.setMinimumDuration(400)
+                return [], [no_sil]
 
             def step(done, total):
-                dlg.setValue(done)
-                QApplication.processEvents()
-                return not dlg.wasCanceled()
+                if report is not None:
+                    report(f"{done} of {total} mask images", done, total)
+                return not (cancelled is not None and cancelled())
             wrote = trackio.export_masks_png(s, folder, step)
-            dlg.close()
             if wrote < n:
-                self.statusBar().showMessage(f"Mask export cancelled after {wrote} of {n} images", 8000)
-            return [folder]                  # the files written: here the folder that holds them
+                return ([folder] if wrote else []), [f"Cancelled: {wrote} of {n} mask images were written."]
+            return [folder], notes                   # the files written: here the folder that holds them
         elif key == "kin":
             from kinetrace.kinematics import export_kinematics
-            p = self.project
             r = p.reconstruction if p else None
             if r is None:
-                self.toast.show_message("No 3D reconstruction yet: run 3D -> Reconstruct 3D "
-                                        "Landmarks (Ctrl+3) first.", "warn", 7000)
-                return []
-            if cutoff == "ask":
-                cutoff = self._ask_smoothing() if not getattr(self, "_export_all_running", False) else "auto"
-            if cutoff is False:
-                return []
+                return [], [no_3d]
             fps = float(p.sessions[0].fps) if p.sessions else float(self.info.fps)
             unit = (p.calibration.unit if p.calibration is not None and p.calibration.unit else "") or r.unit or ""
-            return export_kinematics(path, r, fps, unit, cutoff)
-        stem = str(Path(path).with_suffix(""))
-        if key != "mat":
+            return export_kinematics(path, r, fps, unit, cutoff), notes
+        if sidecars and key in self.SIDECAR_KEYS:
+            stem = str(Path(path).with_suffix(""))
             if s.events or s.notes:            # frame notes live in this file too (I125)
                 side = stem + "_events.csv"
                 s.export_events_csv(side)
                 written.append(side)
-            if s.masks is not None and s.masks.n_masked() > 0:
+            if has_sil:
                 side = stem + "_segment.csv"
                 s.export_animal_csv(side)
                 written.append(side)
-        return written
+        return written, notes
 
     def _ask_smoothing(self):
         """How to smooth before differentiating: "auto" (residual analysis), a
@@ -9558,13 +9793,7 @@ class MainWindow(QMainWindow):
     def _export_dialog(self):
         if self.session is None:
             return
-        base = Path(self.project_path or self.info.path)
-        cam = ""
-        if self.project is not None and self.project.n_views > 1:
-            # every camera used to get the same default name, and one camera's
-            # files overwrote another's (I108)
-            cam = "_" + "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in self.project.name(self.project.active))
-        start = str(base.with_suffix("")) + cam + "_tracks.csv"
+        start = self._default_output("_tracks.csv")          # + the camera's name in a multi-camera project
         filters = ";;".join(f[0] for f in self.EXPORT_FORMATS)
         path, chosen = QFileDialog.getSaveFileName(self, "Export tracks", start, filters)
         if not path:
@@ -9572,7 +9801,9 @@ class MainWindow(QMainWindow):
         label, suffix, key = next((f for f in self.EXPORT_FORMATS if f[0] == chosen),
                                   self.EXPORT_FORMATS[0])
         written: list[str] = []
-        stopped = {"at": None}
+        notes: list[str] = []
+        errors: list[str] = []
+        stopped = None
         try:
             if key == "all":
                 stem = str(Path(path).with_suffix(""))
@@ -9590,50 +9821,78 @@ class MainWindow(QMainWindow):
                     tag = {"wide": "", "dlc": "_dlc", "dltdv": "_dltdv", "sparse": "",
                            "mat": "", "multi": "_allcams", "xyz": "_xyz", "kin": "_kinematics",
                            "xyz_anipose": "_points3d_anipose", "xyz_dltdv": "_xyzpts", "sil_json": "_silhouette"}[k]
-                    jobs.append((lab.split(" (")[0], k, stem + tag + suf))
+                    # the events / segment files once, beside the wide CSV; none beside DLTdv files
+                    jobs.append((lab.split(" (")[0], k, stem + tag + suf, k == "wide"))
 
                 def write_all(report, cancelled):
-                    out = []
-                    for i, (lab, k, dest) in enumerate(jobs):
+                    out = {"written": [], "notes": [], "errors": [], "stopped": None}
+                    for i, (lab, k, dest, side) in enumerate(jobs):
                         if cancelled():
-                            stopped["at"] = i
+                            out["stopped"] = i
                             break
                         report(f"File {i + 1} of {len(jobs)}: {lab}", i, len(jobs))
-                        out += self._export_one(k, dest, cutoff="auto")   # kinematics: automatic smoothing
+                        try:       # one format failing (a .mat open in MATLAB) does not stop the others (G108)
+                            files, nts = self._export_one(k, dest, cutoff="auto", sidecars=side)
+                        except Exception as e:  # noqa: BLE001
+                            out["errors"].append(f"{lab}: " + _plain_error(e, "could not be written", short=True))
+                            continue
+                        out["written"] += files
+                        out["notes"] += nts
                     return out
                 # every format in turn, off the GUI thread, counted and stoppable (G49)
-                written = self._in_background("Exporting everything", write_all, total=len(jobs),
-                                              progress=True, cancellable=True)
+                res = self._in_background("Exporting everything", write_all, total=len(jobs),
+                                          progress=True, cancellable=True)
+                written, notes, errors, stopped = res["written"], res["notes"], res["errors"], res["stopped"]
             else:
                 if not path.lower().endswith(suffix):
                     path += suffix
-                needs_3d = key in ("xyz", "kin", "xyz_anipose", "xyz_dltdv")
-                no_data = ((needs_3d and (self.project is None or self.project.reconstruction is None))
-                           or (key == "sil_json" and (self.session.masks is None or not self.session.masks.n_masked())))
-                if key == "sil_png" or no_data:
-                    written = self._export_one(key, path)     # its own progress dialog / its sentence
-                else:
-                    cutoff = self._ask_smoothing() if key == "kin" else "auto"
+                cutoff = "auto"
+                if key == "kin" and self.project is not None and self.project.reconstruction is not None:
+                    cutoff = self._ask_smoothing()       # asked here, on the GUI thread
                     if cutoff is False:
                         return
-                    written = self._in_background(f"Exporting {Path(path).name}",      # off the GUI thread (G49)
-                                                  lambda: self._export_one(key, path, cutoff=cutoff),
-                                                  detail=label.split(" (")[0])
+                if key == "sil_png":      # thousands of files: counted, with a Cancel on the card
+                    written, notes = self._in_background(
+                        f"Exporting {Path(path).name}",
+                        lambda report, cancelled: self._export_one(key, path, cutoff=cutoff, report=report,
+                                                                   cancelled=cancelled),
+                        detail=label.split(" (")[0], progress=True, cancellable=True)
+                else:
+                    written, notes = self._in_background(f"Exporting {Path(path).name}",      # off the GUI thread (G49)
+                                                         lambda: self._export_one(key, path, cutoff=cutoff),
+                                                         detail=label.split(" (")[0])
         except Exception as e:  # noqa: BLE001
             msg = _plain_error(e, "The export could not be written")
             self.toast.show_message("Export failed: " + msg.split("\n")[0], "error", 8000)
             QMessageBox.critical(self, "Export failed", msg)
             return
-        if stopped["at"] is not None:
+        if errors:
+            done = (f"Written: {', '.join(dict.fromkeys(Path(w).name for w in written))}." if written
+                    else "Nothing was written.")
+            self.toast.show_message(f"Export finished with {len(errors)} error(s).", "error", 8000)
+            QMessageBox.warning(self, "Some files could not be written",
+                                "These formats failed:\n\n" + "\n".join(f"  {x}" for x in errors)
+                                + f"\n\n{done}")
+            return
+        if stopped is not None:
             self.toast.show_message(f"Export stopped: {len(dict.fromkeys(written))} file(s) written before Cancel.",
                                     "warn", 8000)
+            return
+        if any(n.startswith("Cancelled") for n in notes):
+            self.toast.show_message(" ".join(n for n in notes if n.startswith("Cancelled")), "warn", 8000)
+            return
+        if not written:
+            # nothing to write (no 3D, no silhouette): the reason only, never "Exported" (G108)
+            self.toast.show_message(" ".join(notes) or "Nothing was exported.", "warn", 7000)
             return
         n = int(self.session.tracked.any(axis=1).sum())
         names = ", ".join(dict.fromkeys(Path(w).name for w in written))
         which = (f" (2D files: camera {self.project.name(self.project.active)})"
                  if self.project is not None and self.project.n_views > 1 else "")
         self.statusBar().showMessage(f"Exported {n} tracked frames ✓  {names}{which}", 8000)
-        self.toast.show_message(f"Exported: {names}{which}", "success", 7000)
+        extra = ("<br>" + "<br>".join(dict.fromkeys(notes))) if notes else ""
+        self.toast.show_message(f"Exported: {names}{which}{extra}", "info" if notes else "success",
+                                12000 if notes else 7000)
         self._autosave()
 
     def _export_overlay(self):
@@ -9644,13 +9903,12 @@ class MainWindow(QMainWindow):
         s = self.session
         if s is None or self.state != READY or self._overlay is not None:
             return
-        base = Path(self.project_path or self.info.path)
-        default = str(base.with_suffix("")) + "_overlay.mp4"
+        default = self._default_output("_overlay.mp4")           # + the camera's name (G119)
         dlg = OverlayDialog(self, s, default, self.current, self.timeline.sel_range, n_frames=self.n_frames)
         if dlg.exec() != QDialog.Accepted or dlg.result_options is None:
             return
         opts, out = dlg.result_options, dlg.result_path
-        bones = s.bones() if self.act_show_bones.isChecked() else []
+        bones = s.bones()            # the dialog's "Skeleton bones" tick decides, not the View toggle (I44)
         r = OverlayRenderer(s, self.info.path, out, opts, bones, self._mask_opacity)
         total = opts.end - opts.start + 1
         prog = QProgressDialog(f"Rendering {total} frames to {Path(out).name}…", "Cancel", 0, total, self)
@@ -9746,7 +10004,7 @@ class MainWindow(QMainWindow):
         try:
             save_token(tok)
         except OSError as e:
-            self.toast.show_message(f"Could not store the token: {e}", "error")
+            self.toast.show_message(_plain_error(e, "Could not store the token", short=True), "error")
             return
         dlg.token.clear()
         dlg.token.setPlaceholderText("token stored")
@@ -9754,6 +10012,63 @@ class MainWindow(QMainWindow):
                                 "downloaded.", "success")
 
     # ----------------------------------------------------------------- close
+
+    def _ask_save_before_close(self):
+        """The close question: Save / Discard / Cancel (Esc and the window's x mean Cancel, G140)."""
+        name = self.project_path.name if self.project_path else "this project"
+        return QMessageBox.question(
+            self, "Save changes?",
+            f"Save the changes to {name} before closing?\n\n{self._changes_text()}If you don't save, "
+            "the unsaved work is dropped.",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
+
+    def _stop_runs_for_close(self) -> None:
+        """Everything still running is stopped for the close, in an order that loses nothing: the
+        tracking run first (its last rows land), then a Body run (its queued result is merged BEFORE the
+        question, I198), the overlay render, an unfinished re-track (put back), the mask preview. Every
+        thread waited for goes through _retire: one that outlives its wait is kept until it ends, never
+        dropped running (the I112 / I133 abort)."""
+        # (I197) nothing may START during the close: the pause below ends the run "normally", and a
+        # second pass of a two-pass run or the next re-track stretch used to begin inside closeEvent
+        self._user_paused = True
+        self._passes = None
+        self._multi = None                   # closing: no camera after this one starts (G29)
+        st = self._retrack
+        self._retrack = None
+        if st is not None:
+            st["jobs"] = []
+        if self.state == TRACKING and self.worker is not None:
+            self.worker.request_pause()
+            # let its last rows land (queued chunk_ready / finished) before the save
+            t_end = time.time() + 20.0
+            while self.worker is not None and not self.worker.wait(100) and time.time() < t_end:
+                QApplication.processEvents()
+            QApplication.processEvents()
+        if self._overlay is not None:
+            if self._overlay.isRunning():
+                self._overlay.request_cancel()
+                self._overlay.wait(10000)
+            _retire(self._overlay)
+            self._overlay = None
+        for th in (self._body_worker, self._body_video):
+            if th is not None and th.isRunning():
+                th.request_cancel()
+                th.wait(10000)
+            _retire(th)
+        # a stopped Body run still ends in finished_ok: its result is merged (the sender is still the
+        # current worker) before the question and the save, instead of thrown away (I198)
+        QApplication.processEvents()
+        self._body_worker = self._body_video = None
+        if st is not None:
+            # a half-done automatic re-track has no Keep / Undo on exit: put it back (I107)
+            try:
+                self._retrack_restore(st)
+            except Exception:       # noqa: BLE001
+                pass
+        if self._preview is not None:
+            self._preview.cancelled = True          # between chunks: it ends with a sentence, no 15 s wait
+            self._preview.wait(15000)
+            _retire(self._preview)
 
     def closeEvent(self, ev):
         if self._first_frame_token is not None:
@@ -9767,57 +10082,33 @@ class MainWindow(QMainWindow):
             ev.ignore()
             QTimer.singleShot(250, self.close)
             return
-        if self._overlay is not None and self._overlay.isRunning():
-            self._overlay.request_cancel()
-            self._overlay.wait(10000)
-            self._overlay = None
-        for th in (self._body_worker, self._body_video):
-            if th is not None and th.isRunning():
-                th.request_cancel()
-                th.wait(10000)
-        self._body_worker = self._body_video = None
-        self._multi = None                   # closing: no camera after this one starts (G29)
-        if self.state == TRACKING and self.worker is not None:
-            self.worker.request_pause()
-            # let its last rows land (queued chunk_ready / finished) before the save
-            t_end = time.time() + 20.0
-            while self.worker is not None and not self.worker.wait(100) and time.time() < t_end:
-                QApplication.processEvents()
-            QApplication.processEvents()
-        if self._retrack is not None:
-            # a half-done automatic re-track has no Keep / Undo on exit: put it back (I107)
-            st = self._retrack
-            self._retrack = None
-            try:
-                self._retrack_restore(st)
-            except Exception:       # noqa: BLE001
-                pass
-        if self._preview is not None:
-            self._preview.wait(15000)
-        # Unsaved changes: ask. Save writes the project file; Don't Save drops
-        # the unsaved work; any other answer (or a dialog closed some other
-        # way) keeps it in the recovery folder, so nothing is lost silently.
-        if self.project is not None and self.project.dirty:
-            name = self.project_path.name if self.project_path else "this project"
-            r = QMessageBox.question(
-                self, "Save changes?",
-                f"Save the changes to {name} before closing?\n\n{self._changes_text()}If you don't save, "
-                "the unsaved work is dropped. (Closing this dialog keeps it for File → Recover Unsaved "
-                "Work….)",
-                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
-            if r == QMessageBox.Cancel:
+        # (I198) with something still running and unsaved work, ASK first: Cancel then leaves
+        # the run (a Body run of hours, an overlay render, a re-track) going
+        live = bool((self.state == TRACKING and self.worker is not None) or self._retrack is not None
+                    or (self._overlay is not None and self._overlay.isRunning())
+                    or any(th is not None and th.isRunning() for th in (self._body_worker, self._body_video)))
+        answer = None
+        if live and self.project is not None and self.project.dirty:
+            answer = self._ask_save_before_close()
+            if answer == QMessageBox.Cancel:
                 ev.ignore()
                 return
-            if r == QMessageBox.Save:
-                if not self._save_project():
-                    ev.ignore()
-                    return
-            elif r == QMessageBox.Discard:
-                if self._save_worker is not None and self._save_worker.isRunning():
-                    self._save_worker.wait()
-                recovery.discard(self._project_id)
-            else:
-                self._autosave(wait=True)
+        self._stop_runs_for_close()
+        # Unsaved changes: Save writes the project; Discard drops the unsaved work; Cancel keeps the
+        # window open. (Esc / x are Cancel: nothing is dropped silently.)
+        if answer is None and self.project is not None and self.project.dirty:
+            answer = self._ask_save_before_close()
+            if answer == QMessageBox.Cancel:
+                ev.ignore()
+                return
+        if answer == QMessageBox.Save:
+            if not self._save_project():
+                ev.ignore()
+                return
+        elif answer == QMessageBox.Discard:
+            if self._save_worker is not None and self._save_worker.isRunning():
+                self._save_worker.wait()
+            recovery.discard(self._project_id)
         else:
             self._leave_project()
         if self._save_worker is not None and self._save_worker.isRunning():
@@ -9841,15 +10132,130 @@ class MainWindow(QMainWindow):
         probe = getattr(self, "_dev_probe", None)
         if probe is not None and probe.isRunning():
             probe.wait(30000)
+            _retire(probe)
         # the video probe (a slow frame-count check on a 4K file or a share) and
-        # any thread that outlived its earlier wait (I109, I112)
-        for th in [getattr(self, "_probe", None)] + list(_ORPHANS):
+        # any thread that outlived its earlier wait (I109, I112), also the ones the folder import,
+        # the point-model test and the sync dialog keep for the same reason (I198)
+        later = []
+        for modname in ("kinetrace.pointtest", "kinetrace.syncdialog"):
+            mod = sys.modules.get(modname)
+            later += list(getattr(mod, "_ORPHANS", []) if mod is not None else [])
+        for th in [getattr(self, "_probe", None)] + list(_ORPHANS) + later:
             try:
                 if th is not None and th.isRunning():
                     th.wait(30000)
             except RuntimeError:
                 pass
+        fi = sys.modules.get("kinetrace.folderimport")
+        if fi is not None:
+            fi.wait_orphans(30000)
         ev.accept()
+
+
+class _WorldAxesDialog(QDialog):
+    """3D → Set World Axes… (I170): the origin, the +X and the +Y direction as three landmarks of the 3D
+    result (their positions at the instant on screen, or their median over the whole result for markers
+    that do not move). `result_axes` = (B, o, note) for `Calibration.reframed` once accepted."""
+
+    def __init__(self, parent, rec, instant: int, left_handed: bool, unit: str = ""):
+        from PySide6.QtWidgets import QComboBox, QRadioButton
+        super().__init__(parent)
+        self.setWindowTitle("Set world axes")
+        self._rec, self._t, self._lh, self._unit = rec, int(instant), bool(left_handed), unit or "units"
+        self.result_axes = None
+        lay = QVBoxLayout(self)
+        intro = QLabel(
+            "Choose the 3D world yourself with three landmarks (a corner of a frame, three marks on the "
+            "floor, a pole): the <b>origin</b> becomes (0, 0, 0), <b>+X</b> points from it towards the second "
+            "landmark, <b>+Y</b> towards the third (made perpendicular to X), and <b>+Z</b> follows the "
+            "right-hand rule. The calibration and the 3D result are re-expressed in that world; the "
+            "pictures and every pixel a camera sees are not touched.")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        form = QFormLayout()
+        names = list(rec.names)
+        self.cb_origin, self.cb_x, self.cb_y = QComboBox(), QComboBox(), QComboBox()
+        for cb, label in ((self.cb_origin, "Origin (0, 0, 0)"), (self.cb_x, "+X points toward"),
+                          (self.cb_y, "+Y points toward")):
+            cb.addItems(names)
+            form.addRow(label, cb)
+        lay.addLayout(form)
+        self.rb_now = QRadioButton(f"Their positions at the instant on screen (reference frame {self._t})")
+        self.rb_median = QRadioButton("Their median position over the whole 3D result (markers that do not move)")
+        lay.addWidget(self.rb_now)
+        lay.addWidget(self.rb_median)
+        # three landmarks that have a position at the instant, else the median mode
+        finite = [j for j in range(len(names)) if np.isfinite(self._pos(j, False)).all()]
+        if len(finite) >= 3:
+            self.rb_now.setChecked(True)
+            pick = finite[:3]
+        else:
+            self.rb_median.setChecked(True)
+            pick = [j for j in range(len(names)) if np.isfinite(self._pos(j, True)).all()][:3]
+        for cb, j in zip((self.cb_origin, self.cb_x, self.cb_y), pick):
+            cb.setCurrentIndex(j)
+        self.preview = QLabel("")
+        self.preview.setWordWrap(True)
+        self.preview.setTextFormat(Qt.RichText)
+        lay.addWidget(self.preview)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self._accept)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+        for w in (self.cb_origin, self.cb_x, self.cb_y):
+            w.currentIndexChanged.connect(self._update)
+        self.rb_now.toggled.connect(self._update)
+        self._update()
+
+    def _pos(self, j: int, median: bool | None = None) -> np.ndarray:
+        """Landmark j's position: at the instant, or its median over the result (NaN if none)."""
+        r = self._rec
+        median = self.rb_median.isChecked() if median is None else median
+        if median:
+            a = np.asarray(r.xyz[:, j], np.float64)
+            a = a[np.isfinite(a).all(axis=1)]
+            return np.median(a, axis=0) if len(a) else np.full(3, np.nan)
+        k = self._t - int(r.t0)
+        return np.asarray(r.xyz[k, j], np.float64) if 0 <= k < r.n_frames else np.full(3, np.nan)
+
+    def _compute(self):
+        """-> (B, o, note, text); B is None when the choice cannot make axes (text says why)."""
+        from kinetrace import calib
+        js = [self.cb_origin.currentIndex(), self.cb_x.currentIndex(), self.cb_y.currentIndex()]
+        names = [self._rec.names[j] for j in js]
+        if len(set(js)) < 3:
+            return None, None, "", "Choose three different landmarks."
+        pts = [self._pos(j) for j in js]
+        for nm, pt in zip(names, pts):
+            if not np.isfinite(pt).all():
+                where = "anywhere in the 3D result" if self.rb_median.isChecked() else f"at reference frame {self._t}"
+                return None, None, "", f"{nm} has no 3D position {where}: choose another landmark (or the median option)."
+        try:
+            B, o = calib.world_axes(pts[0], pts[1], pts[2], self._lh)
+        except ValueError as e:
+            return None, None, "", str(e)[0].upper() + str(e)[1:] + "."
+        when = ("median over the 3D result" if self.rb_median.isChecked() else f"frame {self._t}")
+        note = f"world: origin = {names[0]}, +X toward {names[1]}, +Y toward {names[2]} ({when})"
+        dx, dy = float(np.linalg.norm(pts[1] - pts[0])), float(np.linalg.norm(pts[2] - pts[0]))
+        text = (f"<b>{names[0]}</b> becomes (0, 0, 0); <b>{names[1]}</b> lies {dx:.4g} {self._unit} along +X; "
+                f"<b>{names[2]}</b> lies in the XY plane ({dy:.4g} {self._unit} from the origin). ")
+        if self._lh:
+            text += ("The calibration's present world is mirrored (left-handed); the new one is right-handed, "
+                     "so exported cameras and points need no mirroring.")
+        return B, o, note, text
+
+    def _update(self, *_):
+        B, o, note, text = self._compute()
+        ok = B is not None
+        self.preview.setText(text if ok else f"<span style='color:{theme.AMBER}'>{text}</span>")
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(ok)
+
+    def _accept(self):
+        B, o, note, _ = self._compute()
+        if B is None:
+            return
+        self.result_axes = (B, o, note)
+        self.accept()
 
 
 def main():
