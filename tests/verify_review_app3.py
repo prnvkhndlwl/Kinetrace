@@ -517,7 +517,11 @@ def _g107():
     win._goto(3, force=True)
     win._refresh_view3d(force=True)
     txt = win.view3d.info.text()
-    check("reference frame 3" in txt and win._reference_instant() == 3, f"half-way instants round up: {txt[:50]!r}")
+    # 2.5 is a tie: the way back to the reference rounds DOWN, like map_frame (I19 / I258), so the 3D
+    # window, the hull key and the reference camera's tile all name frame 2
+    ref_tile = p.map_frame(1, 0, 3)
+    check("reference frame 2" in txt and win._reference_instant() == 2 == ref_tile,
+          f"half-way instants follow map_frame: {txt[:50]!r}, tile {ref_tile}")
     win._set_active_view(0)
     p.set_offset(1, 0.0)
 
