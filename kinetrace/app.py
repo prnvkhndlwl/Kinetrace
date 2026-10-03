@@ -13,6 +13,7 @@ import sys
 import time
 import traceback
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -612,6 +613,21 @@ class _ResizeHook(QObject):
         if ev.type() == QEvent.Resize:
             self._cb()
         return False
+
+
+@dataclass
+class _OpenPlan:
+    """What opening a project decided (R9, `MainWindow._decide_unsaved_work`): the project to adopt
+    and its state, the id and the save it came from, where Save goes (None = nowhere yet), whether
+    it holds unsaved work, and the recovery to set aside once its copy is open (I209)."""
+    proj: Project
+    state: dict
+    meta: dict
+    pid: str
+    saved_at: str | None
+    file_path: Path | None
+    unsaved: bool
+    decline_after: str | None
 
 
 class MainWindow(QMainWindow):
@@ -8941,17 +8957,58 @@ class MainWindow(QMainWindow):
             self._busy_pop(ptok)             # the camera open, if it started, holds its own level
 
     def _open_project_impl(self, path: str, recovered: dict | None, pname: str):
+        """Open a project in five steps (R9): read it, decide about unsaved work, work out where its
+        files are, find and read every camera's video, adopt it once the working camera is open."""
         self._leave_project()
-        try:           # off the GUI thread: the card's spinner keeps turning (G47)
-            proj, state, meta = self._in_background(f"Opening {pname}", lambda: projectfile.read(path),
-                                                    detail="Reading the project file…")
+        got = self._read_project(path, pname)
+        if got is None:
+            return
+        plan = self._decide_unsaved_work(path, recovered, pname, *got)
+        self._set_project_home(path, recovered, plan)
+        proj = plan.proj
+        located = self._locate_project_videos(proj)
+        if located is None:
+            return
+        # every camera's video is located first (a moved one asks), then ALL are read
+        # at once off the GUI thread -- the working one no longer waits in front of the
+        # others (2 x 4K cameras: 5.1 -> ~2.6 s; each used to freeze the window 2.4 s)
+        video = located[proj.active]
+        n = proj.n_views
+        infos = self._probe_many([v for v in located.values() if v], f"Opening {pname}",
+                                 self._open_hint(str(video), "project"))
+        ainfo = infos.get(str(video), "cancelled")
+        if isinstance(ainfo, str):
+            if ainfo == "cancelled":
+                self.statusBar().showMessage(f"Opening {pname} cancelled — nothing was changed", 5000)
+            else:
+                QMessageBox.critical(self, "Could not open video", f"{proj.name(proj.active)}:\n\n{ainfo}")
+            return
+        if self._first_frame_token is not None:      # (G109) a previous open still waiting for its picture
+            self._first_frame_arrived()
+        tok = self._busy_push(f"Opening {pname}", f"{n} camera{'s' if n != 1 else ''} read; building the "
+                              "project…")
+        self._attach_with_card(ainfo, lambda info: self._adopt_opened_project(info, plan, located, infos), tok)
+
+    def _read_project(self, path: str, pname: str):
+        """Step 1 of opening a project: read it off the GUI thread (the card's spinner keeps turning,
+        G47). (project, state, meta), or None after saying why it cannot be opened."""
+        try:
+            return self._in_background(f"Opening {pname}", lambda: projectfile.read(path),
+                                       detail="Reading the project file…")
         except projectfile.ProjectFileError as e:
             QMessageBox.critical(self, "Could not open project", f"{path}\n\n{e}")
-            return
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Could not open project",
                                  _plain_error(e, f"{path} could not be read", reading=True))      # (G142)
-            return
+        return None
+
+    def _decide_unsaved_work(self, path: str, recovered: dict | None, pname: str, proj: Project, state: dict,
+                             meta: dict) -> _OpenPlan:
+        """Step 2: what the project opens as -- the file as it was saved, a recovery copy the user
+        chose (`recovered`), or this file's unsaved changes / another copy's, after asking. Returns
+        the plan: the project to adopt (re-read from the recovery copy when it was chosen), its id and
+        the save it came from, where Save goes, whether it is unsaved, and a recovery to set aside
+        once its copy is open (I209)."""
         pid = str(meta.get("project_id") or projectfile.new_id())
         saved_at = meta.get("saved_at")
         file_path: Path | None = Path(path)
@@ -9015,6 +9072,12 @@ class MainWindow(QMainWindow):
                     for x in proj.sessions:
                         x.ui_state.update((state.get("tools") or {}))
                         x.dirty = False
+        return _OpenPlan(proj, state, meta, pid, saved_at, file_path, unsaved, decline_after)
+
+    def _set_project_home(self, path: str, recovered: dict | None, plan: _OpenPlan) -> None:
+        """Step 3: where the project's own files are, so its videos are looked for there
+        (`_find_video`), and the notice when its last save was cut short."""
+        meta, file_path = plan.meta, plan.file_path
         self._camera_entries = list(meta.get("_cameras") or [])
         # relative video paths start at the project folder itself (format 2) or at
         # the folder holding a single file; a recovery copy uses its project's
@@ -9031,62 +9094,52 @@ class MainWindow(QMainWindow):
                                     "stopped while saving), so the project was put back as it was at the save "
                                     "before. Anything since then is in File → Recover Unsaved Work….",
                                     "warn", 15000)
-        master = proj.sessions[proj.active]
+
+    def _locate_project_videos(self, proj: Project) -> dict | None:
+        """Step 4: every camera's video on this computer, the working camera's first: {view: path, or
+        None when it was not found and the user did not locate it}. None = the working camera's video
+        is missing: nothing is opened (the project file is unchanged)."""
         video = self._find_video(proj.active, proj)
         if video is None:
             self.statusBar().showMessage(
                 f"Project not opened: the video of {proj.name(proj.active)} was not located. Open the project "
                 "again and point to the video when asked (the project file is unchanged)", 10000)
-            return
-
-        def adopt(info: VideoInfo):
-            if info.n_frames != master.n_frames:
-                if getattr(info, "header_frames", 0) == master.n_frames and info.n_frames < master.n_frames:
-                    # the project was saved when the header's count was trusted;
-                    # the extra rows never had a picture behind them
-                    QMessageBox.information(
-                        self, "Shorter than its header says",
-                        f"This video's file header claims {info.header_frames} frames but only "
-                        f"{info.n_frames} can be decoded, and the project was saved with the header's "
-                        f"count. Nothing is lost: the last {info.header_frames - info.n_frames} frame(s) "
-                        "never had a picture. They stay blank in the timeline.")
-                else:
-                    QMessageBox.warning(
-                        self, "Video mismatch",
-                        f"The selected video has {info.n_frames} frames but the project "
-                        f"expects {master.n_frames}. Loading anyway — verify your tracks. If this is "
-                        "a different cut of the same recording, the tracks will sit on the wrong frames.")
-            master.video_path = info.path
-            self.project_path = file_path
-            self._keep_single_file = False
-            self._project_id, self._saved_at, self._recovery_sig = pid, saved_at, None
-            self._adopt_project(proj, info, located=located, infos=infos)
-            if unsaved:
-                self.project.dirty = True
-            if decline_after is not None:
-                recovery.decline(decline_after)      # (I209) the copy is open: now the old recovery is set aside
-            QTimer.singleShot(0, lambda: self._apply_layout(state.get("layout")))
-
-        # every camera's video is located first (a moved one asks), then ALL are read
-        # at once off the GUI thread -- the working one no longer waits in front of the
-        # others (2 x 4K cameras: 5.1 -> ~2.6 s; each used to freeze the window 2.4 s)
+            return None
         located = {i: (str(video) if i == proj.active else self._find_video(i, proj)) for i in range(proj.n_views)}
-        located = {i: (str(v) if v is not None else None) for i, v in located.items()}
-        n = proj.n_views
-        infos = self._probe_many([v for v in located.values() if v], f"Opening {pname}",
-                                 self._open_hint(str(video), "project"))
-        ainfo = infos.get(str(video), "cancelled")
-        if isinstance(ainfo, str):
-            if ainfo == "cancelled":
-                self.statusBar().showMessage(f"Opening {pname} cancelled — nothing was changed", 5000)
+        return {i: (str(v) if v is not None else None) for i, v in located.items()}
+
+    def _adopt_opened_project(self, info: VideoInfo, plan: _OpenPlan, located: dict, infos: dict) -> None:
+        """Step 5, run once the working camera's video is open: check its length, take over the
+        project's identity (id, the save it came from, where Save goes), build the views
+        (`_adopt_project`) and set aside the recovery it replaced."""
+        proj = plan.proj
+        master = proj.sessions[proj.active]
+        if info.n_frames != master.n_frames:
+            if getattr(info, "header_frames", 0) == master.n_frames and info.n_frames < master.n_frames:
+                # the project was saved when the header's count was trusted;
+                # the extra rows never had a picture behind them
+                QMessageBox.information(
+                    self, "Shorter than its header says",
+                    f"This video's file header claims {info.header_frames} frames but only "
+                    f"{info.n_frames} can be decoded, and the project was saved with the header's "
+                    f"count. Nothing is lost: the last {info.header_frames - info.n_frames} frame(s) "
+                    "never had a picture. They stay blank in the timeline.")
             else:
-                QMessageBox.critical(self, "Could not open video", f"{proj.name(proj.active)}:\n\n{ainfo}")
-            return
-        if self._first_frame_token is not None:      # (G109) a previous open still waiting for its picture
-            self._first_frame_arrived()
-        tok = self._busy_push(f"Opening {pname}", f"{n} camera{'s' if n != 1 else ''} read; building the "
-                              "project…")
-        self._attach_with_card(ainfo, adopt, tok)
+                QMessageBox.warning(
+                    self, "Video mismatch",
+                    f"The selected video has {info.n_frames} frames but the project "
+                    f"expects {master.n_frames}. Loading anyway — verify your tracks. If this is "
+                    "a different cut of the same recording, the tracks will sit on the wrong frames.")
+        master.video_path = info.path
+        self.project_path = plan.file_path
+        self._keep_single_file = False
+        self._project_id, self._saved_at, self._recovery_sig = plan.pid, plan.saved_at, None
+        self._adopt_project(proj, info, located=located, infos=infos)
+        if plan.unsaved:
+            self.project.dirty = True
+        if plan.decline_after is not None:
+            recovery.decline(plan.decline_after)      # (I209) the copy is open: now the old recovery is set aside
+        QTimer.singleShot(0, lambda: self._apply_layout(plan.state.get("layout")))
 
     def _adopt_project(self, proj: Project, active_info: VideoInfo, located: dict | None = None,
                        infos: dict | None = None):
