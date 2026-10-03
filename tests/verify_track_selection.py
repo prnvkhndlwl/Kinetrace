@@ -102,6 +102,8 @@ pump()
 win.act_select_all.trigger()
 pump()
 assert sorted(win._selected_pids()) == [0, 1, 2] and "3 points" in win.btn_track.text()
+win._goto(0, force=True)       # (G80: Ctrl+A now has a current point, and N + click continues it when it has
+                               # no position on the frame -- every point has one on frame 0)
 win._on_add(500, 400)          # adding a point selects just the new one (no pile-up)
 pump()
 assert win._selected_pids() == [3], win._selected_pids()

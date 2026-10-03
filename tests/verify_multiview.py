@@ -188,14 +188,14 @@ click(A, *ua)                                        # a plain click places the 
 assert sa.tracked[F, 0] and sa.manual[F, 0]
 # (G28) placed in two cameras: the 3D rmse beside it in both, the lines faint everywhere
 tri = win._triangulate(win._observations(name, F, exclude=-1))
-assert tri is not None and tri["views"] == [0, 1] and tri["residual"] < 2.0 and tri["verdict"] == "good", tri
+assert tri is not None and tri["views"] == [0, 1] and tri["residual"] < 2.0 and tri["verdict"] == "ok", tri   # two cameras cap at ok (G83)
 for cv in (A, B):
     nt = cv._guides.notes
     assert len(nt) == 1 and f"3D rmse {tri['residual']:.2f} px · 2 cams" in nt[0][2], nt
     assert cv._guides.dim, "the lines are faint once two cameras have the point"
 assert C._guides.dim and not C._guides.notes, "camC has no position: faint lines + the diamond, no rmse"
 assert "3D rmse" in win.statusBar().currentMessage(), win.statusBar().currentMessage()
-print(f"G28: placed in two cameras, both show '3D rmse {tri['residual']:.2f} px · 2 cams' (good) and every "
+print(f"G28: placed in two cameras, both show '3D rmse {tri['residual']:.2f} px · 2 cams' (ok: two cameras cannot be good, G83) and every "
       "camera's lines turn faint OK")
 pr = C._guides.preds
 assert len(pr) == 1 and C._guides.dim, "camC shows the diamond; its lines step back"
