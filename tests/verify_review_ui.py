@@ -352,8 +352,8 @@ def r4_dead_drag_code_gone():
     gone = [n for n in ("_dragging", "_drag_moved", "_panning", "_plain_press", "_trails", "update_marker")
             if hasattr(c, n)]
     check("R4 the pre-G59 marker-drag code is gone", not gone, gone)
-    check("R4 the two signals the app still connects stay",
-          hasattr(c, "point_moved") and hasattr(c, "move_committed"))
+    check("R4 the two signals nobody emits (and the app no longer connects) are gone",
+          not hasattr(c, "point_moved") and not hasattr(c, "move_committed"))
     check("R4 Follow is off by default on a bare canvas", c._follow_enabled is False)
 
 

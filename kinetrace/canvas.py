@@ -419,8 +419,6 @@ class VideoCanvas(QGraphicsView):
     region_requested = Signal(str, object)         # ("rect" | "polygon", [[x, y], ...]) armed drag / clicks
     occluded_toggled = Signal(int, bool)           # (pid, hidden on this frame)
     point_selected = Signal(int)
-    point_moved = Signal(int, float, float)        # never emitted since G59 (markers are not dragged); app.py still connects it
-    move_committed = Signal(int, float, float)     # never emitted since G59; app.py still connects it
     reposition_requested = Signal(float, float)    # Ctrl+click
     clear_frame_requested = Signal(int)            # right click on a marker: clear it on this frame (G59)
     delete_requested = Signal(int)
