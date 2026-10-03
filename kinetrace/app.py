@@ -7820,6 +7820,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._retrack_next)
 
     def _on_track_finished_impl(self, last: int, was_paused: bool):
+        if self.worker is None:
+            # the run was torn down with its video (_teardown_video) and its queued end
+            # arrived afterwards: there is nothing left to finish
+            return
         self.worker.wait(2000)
         reason = getattr(self.worker, "_autopause_reason", "")
         ball_ended = dict(getattr(self.worker, "_ball_ended", {}) or {})
