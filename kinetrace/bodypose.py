@@ -35,13 +35,37 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from kinetrace.body import BodyRig, RIGS, canon, rig_of
+from kinetrace.body import BOX_DETECTOR, BOX_FRAME, BOX_GIVEN, BOX_UNKNOWN, BodyRig, RIGS, canon, rig_of
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 HF_DIR = MODELS_DIR / "hf"
 os.environ.setdefault("HF_HOME", str(HF_DIR))
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+
+
+class BodyBackendError(RuntimeError):
+    """A backend that cannot be used, in a sentence for the user (what is
+    missing and what to do) -- shown as it is, not as a library's exception."""
+
+
+def hf_kwargs(repo: str) -> dict:
+    """from_pretrained's arguments for one of OUR Hugging Face models (I195):
+    the pinned commit (`downloads.hf_load_args`), the cache INSIDE models/hf
+    whatever the user's own HF_HOME says (`setdefault` above keeps theirs, but
+    downloads are written to models/hf/hub, so a load that looked in their
+    cache failed after a successful download), and the token saved in Settings
+    when there is one."""
+    from kinetrace.downloads import hf_load_args
+    kw = dict(hf_load_args(repo))
+    kw["cache_dir"] = str(HF_DIR / "hub")
+    try:
+        tok = (HF_DIR / "token").read_text(encoding="utf-8").strip()
+    except OSError:
+        tok = ""
+    if tok:
+        kw["token"] = tok
+    return kw
 
 # Where a SAM 3D Body GitHub checkout goes. `demo.py` there uses pyrootutils to
 # put the repo root on sys.path; we do the same thing explicitly.
@@ -166,15 +190,18 @@ def code_available(key: str) -> bool:
     return (S3DB_REPO / "sam_3d_body" / "sam_3d_body_estimator.py").exists()
 
 
-def hub_cached(repo: str) -> bool:
-    snaps = HF_DIR / "hub" / ("models--" + repo.replace("/", "--")) / "snapshots"
-    if not snaps.exists():
-        return False
-    return any(any(p.glob("*.safetensors")) or any(p.glob("*.ckpt"))
-               for p in snaps.iterdir() if p.is_dir())
+DETECTOR_LABEL = "the person detector (RT-DETR v2, 81 MB)"
 
 
-def backend_status(key: str, device: str | None = None) -> tuple[str, str]:
+def detector_cached() -> bool:
+    """The person detector is on disk: a hand-supplied models/rtdetr, or the
+    pinned commit in models/hf (G135)."""
+    from kinetrace import downloads
+    return (MODELS_DIR / "rtdetr" / "config.json").exists() or downloads.hf_cached(DETECTOR_REPO)
+
+
+def backend_status(key: str, device: str | None = None,
+                   use_detector: bool = True) -> tuple[str, str]:
     """('ready' | 'download' | 'needs-code' | 'needs-weights' | 'needs-gpu',
     plain English), without touching the network or torch. Every branch says
     what the user must DO.
@@ -183,8 +210,16 @@ def backend_status(key: str, device: str | None = None) -> tuple[str, str]:
     None reads the app's cached hardware probe (`device.cached_device`), and
     an unprobed machine is not gated. SAM 3D Body is 'needs-gpu' anywhere but
     CUDA: Meta's code moves its tensors with `.cuda()`, so on a CPU-only PC or
-    a Mac the run would fail after the model had loaded."""
+    a Mac the run would fail after the model had loaded.
+
+    'ready' means a run will not have to download anything (G135): every
+    repository it needs, at the pinned commit, is on disk -- the pose model and,
+    when `use_detector` (the default: the dialog's "automatically" choice and
+    the usual run), the RT-DETR person detector both backends share. For a SAM
+    3D Body backend 'download' can only mean that detector."""
+    from kinetrace import downloads
     spec = BACKENDS[key]
+    detector_missing = use_detector and not detector_cached()
     if spec.kind == "sam3d_body":
         from kinetrace.device import cached_device, supports_sam3d_body
         dev = device if device is not None else cached_device()
@@ -201,6 +236,9 @@ def backend_status(key: str, device: str | None = None) -> tuple[str, str]:
     if spec.kind == "sam3d_body":
         ckpt, mhr = s3db_parts(key)
         if ckpt is not None and mhr is not None:
+            if detector_missing:
+                return ("download", f"{spec.label} is ready ({spec.size} already in "
+                                    f"{ckpt.parent}); {DETECTOR_LABEL} will download on first use.")
             return ("ready", f"{spec.label} is ready ({spec.size} already in "
                              f"{ckpt.parent}).")
         if ckpt is not None and mhr is None:
@@ -216,16 +254,25 @@ def backend_status(key: str, device: str | None = None) -> tuple[str, str]:
                 f"{spec.label} weights are gated. Request access at "
                 f"https://huggingface.co/{spec.repo}, then download model.ckpt and "
                 f"assets/mhr_model.pt into {MODELS_DIR / key}.")
-    if local_dir(key) is not None or hub_cached(spec.repo):
+    need = []
+    if not (local_dir(key) is not None or downloads.hf_cached(spec.repo)):
+        need.append(f"the pose model ({spec.size})")
+    if detector_missing:
+        need.append(DETECTOR_LABEL)
+    if not need:
         return ("ready", f"{spec.label} is ready.")
-    return ("download", f"{spec.label} will download {spec.size} on first use.")
+    if need[0].startswith("the pose model") and len(need) == 1:
+        return ("download", f"{spec.label} will download {spec.size} on first use.")
+    return ("download", f"{spec.label} will download {' and '.join(need)} on first use.")
 
 
 def preferred_backend() -> str:
     """SAM 3D Body when the user has supplied code and weights -- it is the
-    only backend that gives 3D from one camera -- else the ungated 2D one."""
+    only backend that gives 3D from one camera -- else the ungated 2D one. (A
+    SAM 3D Body backend reporting 'download' is only waiting for the shared
+    detector, G135: it is still the one to prefer.)"""
     for k in ("sam-3d-body-dinov3", "sam-3d-body-vith"):
-        if backend_status(k)[0] == "ready":
+        if backend_status(k)[0] in ("ready", "download"):
             return k
     return DEFAULT_BACKEND
 
@@ -247,6 +294,9 @@ class PersonPose:
     vertices: np.ndarray | None = None        # (V, 3) mesh, when the backend has one
     focal: float = float("nan")               # px, the backend's own estimate
     cam_t: np.ndarray | None = None           # (3,) metres, body origin in the camera frame
+    # where `bbox` came from (body.BOX_*, G136): `score` is a detector confidence
+    # only when this is BOX_DETECTOR
+    box_source: int = BOX_UNKNOWN
 
 
 def _clip_box(box, w: int, h: int, pad: float = 0.0) -> np.ndarray:
@@ -305,8 +355,7 @@ class _PersonDetector:
         self._torch = torch
         local = MODELS_DIR / "rtdetr"
         path = str(local) if local.is_dir() and (local / "config.json").exists() else DETECTOR_REPO
-        from kinetrace.downloads import hf_load_args
-        kw = {} if path != DETECTOR_REPO else hf_load_args(DETECTOR_REPO)   # the pinned commit (I154)
+        kw = {} if path != DETECTOR_REPO else hf_kwargs(DETECTOR_REPO)   # pinned commit (I154), models/hf (I195)
         self.proc = AutoImageProcessor.from_pretrained(path, **kw)
         self.model = RTDetrV2ForObjectDetection.from_pretrained(path, **kw).to(device).eval()
         self.device = device
@@ -348,8 +397,7 @@ class ViTPoseEstimator(BodyEstimator):
         self._torch = torch
         self.backend = spec.key
         path = str(local_dir(spec.key) or spec.repo)
-        from kinetrace.downloads import hf_load_args
-        kw = {} if path != spec.repo else hf_load_args(spec.repo)       # the pinned commit (I154)
+        kw = {} if path != spec.repo else hf_kwargs(spec.repo)          # pinned commit (I154), models/hf (I195)
         self.proc = AutoProcessor.from_pretrained(path, **kw)
         self.model = VitPoseForPoseEstimation.from_pretrained(path, **kw).to(device).eval()
         self.device = device
@@ -378,6 +426,7 @@ class ViTPoseEstimator(BodyEstimator):
     def step(self, bgr, boxes=None, masks=None) -> list[PersonPose]:
         h, w = bgr.shape[:2]
         found: list[tuple[np.ndarray, float]] = []
+        src = BOX_GIVEN                       # where the boxes came from (G136)
         if boxes:
             found = [(_clip_box(b, w, h), 1.0) for b in boxes if b is not None][:self.max_people]
         elif masks:
@@ -387,10 +436,12 @@ class ViTPoseEstimator(BodyEstimator):
                     found.append((_clip_box(bb, w, h, pad=0.08), 1.0))
         elif self.detector is not None:
             found = self.detector.detect(bgr, self.max_people)
+            src = BOX_DETECTOR
         if not found:
             if not self.allow_full_frame:
                 return []
             found = [(np.array([0, 0, w - 1, h - 1], np.float32), 1.0)]
+            src = BOX_FRAME
 
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         # the processor wants COCO xywh, one list of boxes per image
@@ -405,7 +456,7 @@ class ViTPoseEstimator(BodyEstimator):
             kp = np.asarray(r["keypoints"], np.float32).reshape(-1, 2)
             sc = np.asarray(r["scores"], np.float32).reshape(-1)
             people.append(PersonPose(joints2d=kp, conf=sc, bbox=found[k][0],
-                                     score=float(found[k][1])))
+                                     score=float(found[k][1]), box_source=src))
         return people
 
 
@@ -448,9 +499,9 @@ class Sam3DBodyEstimator(BodyEstimator):
 
         paths = s3db_checkpoint(spec.key)
         if paths is None:
-            raise RuntimeError(backend_status(spec.key)[1])
+            raise BodyBackendError(backend_status(spec.key)[1])
         if not code_available(spec.key):
-            raise RuntimeError(backend_status(spec.key)[1])
+            raise BodyBackendError(backend_status(spec.key)[1])
         ckpt, mhr = paths
         if str(S3DB_REPO) not in sys.path:
             sys.path.insert(0, str(S3DB_REPO))
@@ -493,6 +544,7 @@ class Sam3DBodyEstimator(BodyEstimator):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         kw = {}
         det_scores: list[float] = []
+        src = BOX_GIVEN                       # where the boxes came from (G136)
         if boxes:
             kw["bboxes"] = np.asarray([_clip_box(b, w, h) for b in boxes], np.float32)
         elif masks:
@@ -513,9 +565,12 @@ class Sam3DBodyEstimator(BodyEstimator):
                 return []
             kw["bboxes"] = np.asarray([b for b, _ in found], np.float32)
             det_scores = [s for _, s in found]
+            src = BOX_DETECTOR
         if "bboxes" not in kw and not self.allow_full_frame:
             # same rule as the 2D backend: no prompt must never become a pose
             return []
+        if "bboxes" not in kw:
+            src = BOX_FRAME
         if self.intrinsics is not None:
             kw["cam_int"] = self._torch.as_tensor(self.cam_int_for(w, h),
                                                   dtype=self._torch.float32)
@@ -544,7 +599,8 @@ class Sam3DBodyEstimator(BodyEstimator):
                 vertices=None if verts is None else np.asarray(verts, np.float32),
                 focal=float(np.ravel(d.get("focal_length", [np.nan]))[0]),
                 cam_t=None if d.get("pred_cam_t") is None
-                else np.asarray(d["pred_cam_t"], np.float32).reshape(-1)))
+                else np.asarray(d["pred_cam_t"], np.float32).reshape(-1),
+                box_source=src))
         return people
 
 
@@ -557,14 +613,14 @@ def make_estimator(backend: str, device=None, max_people: int = 1,
     downloads the weights with progress(label, done_bytes, total_bytes) (G45)."""
     spec = BACKENDS.get(backend)
     if spec is None:
-        raise RuntimeError(f"unknown body backend {backend!r}")
+        raise BodyBackendError(f"unknown body backend {backend!r}")
     import torch
     if device is None:
         from kinetrace.device import pick_device
         device = pick_device()[0]          # CUDA, else Apple's GPU, else the CPU
-    state, why = backend_status(backend, str(device))
+    state, why = backend_status(backend, str(device), use_detector)
     if state in ("needs-code", "needs-weights", "needs-gpu"):
-        raise RuntimeError(why)
+        raise BodyBackendError(why)
     torch.hub.set_dir(str(MODELS_DIR))
     from kinetrace import downloads
     if use_detector and not ((MODELS_DIR / "rtdetr") / "config.json").exists():
@@ -618,6 +674,19 @@ class PersonMatcher:
         self.last: list[np.ndarray | None] = [None] * self.n
         self.last_frame: list[int | None] = [None] * self.n
         self.age: list[int] = [10 ** 9] * self.n
+
+    def seed(self, boxes, frames) -> None:
+        """Start from people already found (I180): column c holds `boxes[c]`
+        (x0, y0, x1, y1, or None) last seen on video frame `frames[c]`. A run
+        over part of a video that already has poses then gives each person
+        their own column back; a fresh matcher takes the biggest box first and
+        swapped the people of a two-person clip."""
+        for c, (b, f) in enumerate(zip(boxes, frames)):
+            if c >= self.n or b is None:
+                continue
+            self.last[c] = np.asarray(b, np.float32)
+            self.last_frame[c] = None if f is None else int(f)
+            self.age[c] = 0
 
     def _reserved(self, c: int) -> bool:
         return self.last[c] is not None and self.age[c] <= self.patience

@@ -809,9 +809,13 @@ check(m2_.n_posed() == 24 and np.allclose(m2_.joints2d[2, 0], cu17[2] + 50)
 check("Stopped early" in note2, "and says it was stopped")
 nobody = body.BodyTrack(sh.T, coco, 1)
 nobody.examined, nobody.runs = np.array([7]), [(7, 7, 1)]
-m3_, _ = body.merge_run(old, nobody)
-check(not m3_.has(7) and m3_.n_posed() == 23,
-      "a frame the run looked at and found nobody on becomes blank")
+m3_, note3 = body.merge_run(old, nobody)
+# (I183, owner decision) a miss is not evidence the person left: the earlier
+# pose stays, and the message counts and names the frame that kept it
+check(m3_.has(7) and m3_.n_posed() == 24 and np.allclose(m3_.joints2d[7, 0], cu17[7]),
+      "a frame the run looked at and found nobody on KEEPS its earlier pose (I183)")
+check("7" in note3 and "No person was found on 1 frame" in note3 and "keeps the earlier pose" in note3,
+      "and the message counts and names it", note3)
 other = body.BodyTrack(sh.T, mhr, 1)
 other.set_person(4, 0, joints3d=X[4], joints2d=U[4], conf=np.ones(70), score=0.9)
 other.examined = np.array([4])
