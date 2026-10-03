@@ -58,6 +58,7 @@ LOW_CONF = 0.5     # below this a tracked span gets the warning overlay
 # colors come from the shared design tokens so the painted panel and the
 # styled widgets read as one surface
 from kinetrace import theme as _t  # noqa: E402
+from kinetrace.widgets import WheelSteps  # noqa: E402
 
 BG = QColor(_t.BG_WINDOW)
 LANE_BG = QColor("#2C2C33")
@@ -78,6 +79,13 @@ SELECTION_WEAK = _t.with_alpha(_t.ACCENT, 18)        # same window, lanes it won
 SELECTION_EDGE = _t.with_alpha(_t.ACCENT, 230)
 STRIP_TRACK = _t.with_alpha("#FFFFFF", 22)           # scroll strip background
 STRIP_THUMB = _t.with_alpha(_t.ACCENT, 160)          # scroll strip view window
+
+
+def disagree_threshold(width: float) -> float:
+    """The px above which a camera "disagrees" with the others in 3D: 5 px at
+    1920 px wide, more for a wider picture (the Reconstruct bands scale the same
+    way). The one rule: the timeline's band and the app's reports use it."""
+    return 5.0 * max(1.0, float(width) / 1920.0)
 
 
 class TimelinePanel(QWidget):
@@ -123,6 +131,7 @@ class TimelinePanel(QWidget):
         self._drag_select_y: float | None = None
         self._pan_last_x: float | None = None
         self._strip_drag = False
+        self._wheel = WheelSteps()
         self.setMouseTracking(True)
         self.setMinimumHeight(EVENTS_H + LANE_H + 6)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -135,13 +144,13 @@ class TimelinePanel(QWidget):
     def set_disagreement(self, arr: np.ndarray | None, threshold_px: float | None = None) -> None:
         """(T, N) per-cell reprojection error of THIS camera against the others
         (NaN = no 3D), from the app after a reconstruction; cells above the
-        threshold (default 5 px scaled by picture width / 1920) get a magenta
-        band. None clears it."""
+        threshold (default `disagree_threshold`: 5 px scaled by picture width /
+        1920) get a magenta band. None clears it."""
         self._disagree = None if arr is None else np.asarray(arr, np.float32)
         if threshold_px is not None:
             self._disagree_px = float(threshold_px)
         elif self.session is not None and getattr(self.session, "width", 0):
-            self._disagree_px = 5.0 * max(1.0, self.session.width / 1920.0)
+            self._disagree_px = disagree_threshold(self.session.width)
         self._cache_key = None
         self.update()
 
@@ -151,7 +160,7 @@ class TimelinePanel(QWidget):
         self._cache_key = None
         self.pending_event = None
         self.clear_selection()
-        self._view = (0, max(1, (session.n_frames - 1) if session is not None else 1))
+        self._set_view(0, (session.n_frames - 1) if session is not None else 0)     # the whole video
         self._laid_out_n = session.n_points if session is not None else 0
         self.updateGeometry()
         self.update()
@@ -159,10 +168,13 @@ class TimelinePanel(QWidget):
     def _set_view(self, new0: int, span: int) -> None:
         """Move the displayed frame window to [new0, new0+span], clamped to the
         video. The ONE place that assigns _view — it invalidates the column
-        cache and repaints, so no caller can forget and paint stale coverage."""
-        T = self.session.n_frames
-        span = int(np.clip(span, 1, max(T - 1, 1)))
-        new0 = int(np.clip(new0, 0, T - 1 - span))
+        cache and repaints, so no caller can forget and paint stale coverage.
+        A span of 0 is a one-frame video (no session = nothing to show): it used
+        to be forced to 1, a second row the arrays do not have (I217)."""
+        T = self.session.n_frames if self.session is not None else 0
+        lo = 1 if T > 1 else 0
+        span = int(np.clip(span, lo, max(T - 1, lo)))
+        new0 = int(np.clip(new0, 0, max(T - 1 - span, 0)))
         if (new0, new0 + span) != self._view:
             self._view = (new0, new0 + span)
             self._cache_key = None
@@ -239,8 +251,7 @@ class TimelinePanel(QWidget):
             # lane count changed: the layout caches sizeHint, so a bare
             # update() would leave new lanes clipped below the widget
             self._laid_out_n = n
-            self._scroll = int(np.clip(self._scroll, 0,
-                                       max(0, n - self._max_rows())))
+            self._clamp_scroll()
             self.updateGeometry()
         self.update()
 
@@ -277,10 +288,12 @@ class TimelinePanel(QWidget):
     # as points spread over (v1 - v0) intervals, so when zoomed in up to half a
     # painted cell clicked / selected the NEIGHBOUR frame (I49).
     def _frame_at(self, x: float) -> int:
+        """The frame whose cell is under `x`, clipped to the frames of the VIEW (a
+        drag past the lane's edge stays on its last cell)."""
         v0, v1 = self._view
         cells = max(v1 - v0 + 1, 1)
         t = v0 + np.floor((x - GUTTER_W) * cells / self._lane_w())
-        return int(np.clip(t, 0, self.session.n_frames - 1))
+        return int(np.clip(t, max(v0, 0), min(v1, self.session.n_frames - 1)))
 
     def _x_of(self, frame: int) -> float:
         """Centre of `frame`'s cell (playhead, ticks, note marks)."""
@@ -302,8 +315,21 @@ class TimelinePanel(QWidget):
         # lane stack, and that strip must not select an off-screen point
         return row if row in self._visible_rows() else None
 
+    def _clamp_scroll(self) -> None:
+        """Keep the first visible row where a full page of lanes still fits: after
+        the panel was enlarged the old scroll left lanes hidden above and the
+        wheel had nothing to scroll (G90)."""
+        n = self.session.n_points if self.session is not None else 0
+        self._scroll = int(np.clip(self._scroll, 0, max(0, n - self._max_rows())))
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self.session is not None:
+            self._clamp_scroll()
+
     def _visible_rows(self) -> range:
         n = self.session.n_points if self.session is not None else 0
+        self._clamp_scroll()
         return range(self._scroll, min(n, self._scroll + self._max_rows()))
 
     def _row_rect_y(self, row: int) -> tuple[int, int]:
@@ -403,21 +429,23 @@ class TimelinePanel(QWidget):
             return
         T = self.session.n_frames
         v0, v1 = self._view
-        span = v1 - v0
-        new_span = int(np.clip(round(span / factor), MIN_SPAN, max(T - 1, 1)))
-        if new_span == span:
+        cells = v1 - v0 + 1                 # the view shows span + 1 cells (I49)
+        new_cells = int(np.clip(round(cells / factor), min(MIN_SPAN + 1, T), max(T, 1)))
+        if new_cells == cells:
             return
         if anchor_x is None:
             anchor_x = self._x_of(self.current)
-        anchor_f = self._frame_at(anchor_x)
         frac = float(np.clip((anchor_x - GUTTER_W) / self._lane_w(), 0.0, 1.0))
-        self._set_view(round(anchor_f - frac * new_span), new_span)
+        # the instant under the pointer stays under it: its fractional frame
+        # position in the old view, then the same fraction of the new one
+        under = v0 + frac * cells
+        self._set_view(round(under - frac * new_cells), new_cells - 1)
 
     def zoom_fit(self) -> None:
         """Show the whole video (undo any time zoom)."""
         if self.session is None:
             return
-        self._set_view(0, max(1, self.session.n_frames - 1))
+        self._set_view(0, max(self.session.n_frames - 1, 0))
 
     def zoom_time_keyboard(self, factor: float) -> None:
         """Shift + +/-: anchor at the pointer when it is over the panel,
@@ -461,7 +489,7 @@ class TimelinePanel(QWidget):
     def _pan_time(self, dx_px: float) -> None:
         v0, v1 = self._view
         span = v1 - v0
-        df = int(round(-dx_px / self._lane_w() * span))
+        df = int(round(-dx_px / self._lane_w() * (span + 1)))        # a pixel = (span + 1) / width frames
         if df:
             self._set_view(v0 + df, span)
 
@@ -788,67 +816,66 @@ class TimelinePanel(QWidget):
         if self._drag_seek and (ev.buttons() & Qt.LeftButton):
             self.seek_requested.emit(self._frame_at(x))
             return
-        # hover tooltip: frame + timestamp + what's under the cursor
-        if x >= GUTTER_W:
-            f = self._frame_at(x)
-            ts = f" · {f / self.session.fps:.2f}s" if self.session.fps else ""
-            hit = self._event_at(x, y)
-            note_f = self._note_at(x, y)
-            if note_f is not None:
-                n = self.session.notes[note_f]
-                who = f" — {n.get('author')}" if n.get("author") else ""
-                self.setToolTip(f"note at frame {note_f}{who}: {n.get('text', '')}\n"
-                                "(right-click to edit or delete)")
-            elif hit is not None:
-                e = self.session.events[hit]
-                same = [i for i, ev2 in enumerate(self.session.events)
-                        if ev2.name == e.name]
-                occ = (f" (occurrence {same.index(hit) + 1} of {len(same)})"
-                       if len(same) > 1 else "")
-                note = f"\n{e.note}" if e.note else ""
-                who = f" — {e.author}" if e.author else ""
-                self.setToolTip(f"{e.name}: frames {e.start}–{e.end}{occ}{who}{note}\n— click to "
-                                "select + jump, right-click for options")
-            elif self._in_animal_lane(y):
-                m = self.session.masks
-                if m is not None and m.has(f):
-                    self.setToolTip(f"frame {f}{ts} · {self.session.animal.name}: silhouette "
-                                    f"{int(m.area[f])} px², score {m.score[f]:.1f} — "
-                                    "Shift+drag along this lane + Delete removes the "
-                                    "silhouettes there")
+        self.setToolTip(self._tooltip_at(x, y))
+
+    def _tooltip_at(self, x: float, y: float) -> str:
+        """Hover text: frame + timestamp + what's under the cursor."""
+        if x < GUTTER_W:
+            return ""
+        f = self._frame_at(x)
+        ts = f" · {f / self.session.fps:.2f}s" if self.session.fps else ""
+        hit = self._event_at(x, y)
+        note_f = self._note_at(x, y)
+        if note_f is not None:
+            n = self.session.notes[note_f]
+            who = f" — {n.get('author')}" if n.get("author") else ""
+            return (f"note at frame {note_f}{who}: {n.get('text', '')}\n"
+                    "(right-click to edit or delete)")
+        if hit is not None:
+            e = self.session.events[hit]
+            same = [i for i, ev2 in enumerate(self.session.events)
+                    if ev2.name == e.name]
+            occ = (f" (occurrence {same.index(hit) + 1} of {len(same)})"
+                   if len(same) > 1 else "")
+            note = f"\n{e.note}" if e.note else ""
+            who = f" — {e.author}" if e.author else ""
+            return (f"{e.name}: frames {e.start}–{e.end}{occ}{who}{note}\n— click to "
+                    "select + jump, right-click for options")
+        if self._in_animal_lane(y):
+            m = self.session.masks
+            if m is not None and m.has(f):
+                return (f"frame {f}{ts} · {self.session.animal.name}: silhouette "
+                        f"{int(m.area[f])} px², score {m.score[f]:.1f} — "
+                        "Shift+drag along this lane + Delete removes the "
+                        "silhouettes there")
+            return (f"frame {f}{ts} · {self.session.animal.name}: no silhouette "
+                    "here (press S and click it, then Track)")
+        row = self._row_at(y)
+        if row is not None and self.session.occluded[f, row]:
+            return (f"frame {f}{ts} · {self.session.points[row].name}: marked "
+                    "HIDDEN by hand — kept, but not exported and not used for 3D "
+                    "(Shift+X or the right-click menu unmarks it)")
+        if row is not None and self.session.tracked[f, row]:
+            c = self.session.confidence[f, row]
+            src = " (from silhouette)" if self.session.points[row].derived else ""
+            hand = " · placed by hand" if self.session.manual[f, row] else ""
+            dis = ""
+            if self._disagree is not None and f < self._disagree.shape[0] \
+                    and row < self._disagree.shape[1] and np.isfinite(self._disagree[f, row]):
+                e = float(self._disagree[f, row])
+                if e > self._disagree_px:     # the magenta band (I52)
+                    dis = (f"\nMAGENTA: in 3D this camera disagrees with the others by {e:.1f} px "
+                           f"(limit {self._disagree_px:.1f}) — the point has probably slid onto "
+                           "another spot here. Right-click it on the video → Snap to the other "
+                           "cameras' rays, or 3D → Re-track Disagreeing Stretches.")
                 else:
-                    self.setToolTip(f"frame {f}{ts} · {self.session.animal.name}: no silhouette "
-                                    "here (press S and click it, then Track)")
-            else:
-                row = self._row_at(y)
-                if row is not None and self.session.occluded[f, row]:
-                    self.setToolTip(f"frame {f}{ts} · {self.session.points[row].name}: marked "
-                                    "HIDDEN by hand — kept, but not exported and not used for 3D "
-                                    "(Shift+X or the right-click menu unmarks it)")
-                elif row is not None and self.session.tracked[f, row]:
-                    c = self.session.confidence[f, row]
-                    src = " (from silhouette)" if self.session.points[row].derived else ""
-                    hand = " · placed by hand" if self.session.manual[f, row] else ""
-                    dis = ""
-                    if self._disagree is not None and f < self._disagree.shape[0] \
-                            and row < self._disagree.shape[1] and np.isfinite(self._disagree[f, row]):
-                        e = float(self._disagree[f, row])
-                        if e > self._disagree_px:     # the magenta band (I52)
-                            dis = (f"\nMAGENTA: in 3D this camera disagrees with the others by {e:.1f} px "
-                                   f"(limit {self._disagree_px:.1f}) — the point has probably slid onto "
-                                   "another spot here. Right-click it on the video → Snap to the other "
-                                   "cameras' rays, or 3D → Re-track Disagreeing Stretches.")
-                        else:
-                            dis = f" · agrees with the other cameras ({e:.1f} px)"
-                    self.setToolTip(f"frame {f}{ts} · {self.session.points[row].name}{src} "
-                                    f"· conf {c:.2f}{hand}{dis}" + ("" if dis.startswith("\n") else
-                                    " — Shift+drag along this lane + Delete removes its track there"))
-                else:
-                    self.setToolTip(f"frame {f}{ts} · Shift+drag across frames AND lanes: "
-                                    "select, then Delete clears those lanes there "
-                                    "· Shift+± / Ctrl+wheel: zoom time")
-        else:
-            self.setToolTip("")
+                    dis = f" · agrees with the other cameras ({e:.1f} px)"
+            return (f"frame {f}{ts} · {self.session.points[row].name}{src} "
+                    f"· conf {c:.2f}{hand}{dis}" + ("" if dis.startswith("\n") else
+                    " — Shift+drag along this lane + Delete removes its track there"))
+        return (f"frame {f}{ts} · Shift+drag across frames AND lanes: "
+                "select, then Delete clears those lanes there "
+                "· Shift+± / Ctrl+wheel: zoom time")
 
     def mouseReleaseEvent(self, ev):
         self._drag_seek = False
@@ -861,93 +888,116 @@ class TimelinePanel(QWidget):
         if self.session is None:
             ev.accept()
             return
-        if ev.modifiers() & Qt.ControlModifier:
-            factor = TIME_ZOOM_STEP if ev.angleDelta().y() > 0 else 1 / TIME_ZOOM_STEP
-            self.zoom_time(factor, ev.position().x())
+        n = self._wheel.take(ev)        # a horizontal swipe (y == 0) does nothing (G131)
+        if n == 0:
+            pass
+        elif ev.modifiers() & Qt.ControlModifier:
+            self.zoom_time(TIME_ZOOM_STEP ** n, ev.position().x())
         elif self.session.n_points > self._max_rows():
-            step = -1 if ev.angleDelta().y() > 0 else 1
-            self._scroll = int(np.clip(self._scroll + step, 0,
-                                       self.session.n_points - self._max_rows()))
+            self._scroll = self._scroll - n
+            self._clamp_scroll()
             self.update()
         ev.accept()
+
+    # ---------------------------------------------------------- context menus
+    # The hit-test order is fixed: a note mark, then an event ribbon (both on the
+    # events lane), then the frame-window selection, then the bare ruler. Before
+    # G88 the selection came first, so after a click on an event (which selects
+    # its window) a right click on it only offered the bulk clear.
 
     def contextMenuEvent(self, ev):
         if self.session is None:
             return
         x, y = ev.pos().x(), ev.pos().y()
-        # inside the frame-window selection: offer the bulk clear
-        if self.sel_range is not None and x >= GUTTER_W:
-            f = self._frame_at(x)
-            f0, f1 = self.sel_range
-            if f0 <= f <= f1:
-                rows, seg = self.sel_rows, self.sel_seg
-                has_animal = self.session.animal is not None
-                menu = QMenu(self)
-                # the marquee's own target comes first and carries the (Del)
-                # badge, so the menu and the key never disagree
-                what = self._sel_hint().replace("Del clears ", "")
-                act_default = menu.addAction(f"Clear {what} in frames {f0}–{f1} (Del)")
-                menu.addSeparator()
-                act_pts = menu.addAction(
-                    f"Clear tracked points in frames {f0}–{f1}"
-                    + ("" if rows else " (panel selection)"))
-                act_masks = None
-                act_both = None
-                if has_animal:
-                    act_masks = menu.addAction(
-                        f"Clear {self.session.animal.name}'s silhouettes in frames {f0}–{f1}")
-                    act_both = menu.addAction(f"Clear both in frames {f0}–{f1}")
-                menu.addSeparator()
-                act_hide = menu.addAction(
-                    f"Mark HIDDEN in frames {f0}–{f1} (kept, not exported)"
-                    + ("" if rows else " — panel selection"))
-                act_unhide = menu.addAction(f"Unmark hidden in frames {f0}–{f1}")
-                menu.addSeparator()
-                act_all = menu.addAction("Extend selection to every lane")
-                act_cancel = menu.addAction("Cancel selection (Esc)")
-                chosen = _pop(menu, ev.globalPos())
-                if chosen == act_hide:
-                    self.occlude_requested.emit(f0, f1, rows if rows else None, True)
-                elif chosen == act_unhide:
-                    self.occlude_requested.emit(f0, f1, rows if rows else None, False)
-                elif chosen == act_default:
-                    self._emit_default_clear(f0, f1)
-                elif chosen == act_pts:
-                    self.clear_requested.emit(f0, f1, rows if rows else None)
-                elif act_masks is not None and chosen == act_masks:
-                    self.clear_masks_requested.emit(f0, f1)
-                elif act_both is not None and chosen == act_both:
-                    self.clear_both_requested.emit(f0, f1, rows if rows else None)
-                elif chosen == act_all:
-                    self.select_all_lanes()
-                elif chosen == act_cancel:
-                    self.clear_selection()
-                return
+        pos = ev.globalPos()
         note_f = self._note_at(x, y)
         if note_f is not None:
-            menu = QMenu(self)
-            act_edit = menu.addAction(f"Edit note at frame {note_f}…")
-            act_go = menu.addAction(f"Jump to frame {note_f}")
-            act_del = menu.addAction("Delete note")
-            chosen = _pop(menu, ev.globalPos())
-            if chosen == act_edit:
-                self.note_requested.emit(note_f)
-            elif chosen == act_go:
-                self.seek_requested.emit(note_f)
-            elif chosen == act_del:
-                self.session.set_note(note_f, "")
-                self.events_changed.emit()
-            self.update()
+            self._note_menu(note_f, pos)
             return
         hit = self._event_at(x, y)
-        if hit is None:
-            if x >= GUTTER_W and y < EVENTS_H:
-                f = self._frame_at(x)
-                menu = QMenu(self)
-                act_note = menu.addAction(f"Add a note at frame {f}… (Shift+N at the playhead)")
-                if _pop(menu, ev.globalPos()) == act_note:
-                    self.note_requested.emit(f)
+        if hit is not None:
+            self._event_menu(hit, pos)
             return
+        if self._selection_menu(x, pos):
+            return
+        if x >= GUTTER_W and y < EVENTS_H:
+            self._ruler_menu(self._frame_at(x), pos)
+
+    def _selection_menu(self, x: float, pos) -> bool:
+        """Inside the frame-window selection: the bulk clear / hide. False when
+        `x` is outside the selection."""
+        if self.sel_range is None or x < GUTTER_W:
+            return False
+        f = self._frame_at(x)
+        f0, f1 = self.sel_range
+        if not (f0 <= f <= f1):
+            return False
+        rows = self.sel_rows
+        has_animal = self.session.animal is not None
+        menu = QMenu(self)
+        # the marquee's own target comes first and carries the (Del)
+        # badge, so the menu and the key never disagree
+        what = self._sel_hint().replace("Del clears ", "")
+        act_default = menu.addAction(f"Clear {what} in frames {f0}–{f1} (Del)")
+        menu.addSeparator()
+        act_pts = menu.addAction(
+            f"Clear tracked points in frames {f0}–{f1}"
+            + ("" if rows else " (panel selection)"))
+        act_masks = None
+        act_both = None
+        if has_animal:
+            act_masks = menu.addAction(
+                f"Clear {self.session.animal.name}'s silhouettes in frames {f0}–{f1}")
+            act_both = menu.addAction(f"Clear both in frames {f0}–{f1}")
+        menu.addSeparator()
+        act_hide = menu.addAction(
+            f"Mark HIDDEN in frames {f0}–{f1} (kept, not exported)"
+            + ("" if rows else " — panel selection"))
+        act_unhide = menu.addAction(f"Unmark hidden in frames {f0}–{f1}")
+        menu.addSeparator()
+        act_all = menu.addAction("Extend selection to every lane")
+        act_cancel = menu.addAction("Cancel selection (Esc)")
+        chosen = _pop(menu, pos)
+        if chosen == act_hide:
+            self.occlude_requested.emit(f0, f1, rows if rows else None, True)
+        elif chosen == act_unhide:
+            self.occlude_requested.emit(f0, f1, rows if rows else None, False)
+        elif chosen == act_default:
+            self._emit_default_clear(f0, f1)
+        elif chosen == act_pts:
+            self.clear_requested.emit(f0, f1, rows if rows else None)
+        elif act_masks is not None and chosen == act_masks:
+            self.clear_masks_requested.emit(f0, f1)
+        elif act_both is not None and chosen == act_both:
+            self.clear_both_requested.emit(f0, f1, rows if rows else None)
+        elif chosen == act_all:
+            self.select_all_lanes()
+        elif chosen == act_cancel:
+            self.clear_selection()
+        return True
+
+    def _note_menu(self, note_f: int, pos) -> None:
+        menu = QMenu(self)
+        act_edit = menu.addAction(f"Edit note at frame {note_f}…")
+        act_go = menu.addAction(f"Jump to frame {note_f}")
+        act_del = menu.addAction("Delete note")
+        chosen = _pop(menu, pos)
+        if chosen == act_edit:
+            self.note_requested.emit(note_f)
+        elif chosen == act_go:
+            self.seek_requested.emit(note_f)
+        elif chosen == act_del:
+            self.session.set_note(note_f, "")
+            self.events_changed.emit()
+        self.update()
+
+    def _ruler_menu(self, f: int, pos) -> None:
+        menu = QMenu(self)
+        act_note = menu.addAction(f"Add a note at frame {f}… (Shift+N at the playhead)")
+        if _pop(menu, pos) == act_note:
+            self.note_requested.emit(f)
+
+    def _event_menu(self, hit: int, pos) -> None:
         e = self.session.events[hit]
         menu = QMenu(self)
         act_jump_s = menu.addAction(f"Jump to start ({e.start})")
@@ -961,7 +1011,7 @@ class TimelinePanel(QWidget):
         act_end = menu.addAction("Set end to current frame")
         menu.addSeparator()
         act_del = menu.addAction("Delete event")
-        chosen = _pop(menu, ev.globalPos())
+        chosen = _pop(menu, pos)
         if chosen == act_jump_s:
             self.seek_requested.emit(e.start)
         elif chosen == act_jump_e:
@@ -975,7 +1025,7 @@ class TimelinePanel(QWidget):
                 self.events_changed.emit()
         elif chosen == act_note:
             text, ok = QInputDialog.getMultiLineText(
-                self, "Event note", f"Note for \u201c{e.name}\u201d (frames {e.start}\u2013{e.end}):", e.note)
+                self, "Event note", f"Note for “{e.name}” (frames {e.start}–{e.end}):", e.note)
             if ok:
                 self.session.update_event(hit, note=text)
                 self.events_changed.emit()

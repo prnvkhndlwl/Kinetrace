@@ -77,8 +77,8 @@ QAbstractSpinBox, QLineEdit {{
 }}
 QAbstractSpinBox:focus, QLineEdit:focus {{ border-color: {ACCENT}; }}
 QAbstractSpinBox:disabled {{ color: {TEXT_DISABLED}; }}
-/* the step buttons: a visible column with a hairline, arrows drawn by
-   SpinArrowStyle (a styled sub-control loses Fusion's own arrow glyphs) */
+/* the step buttons: a visible column with a hairline, arrows are
+   generated PNGs (spin_arrow_rules: a styled sub-control loses Fusion's own arrow glyphs) */
 QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
     subcontrol-origin: border; width: 16px; border: none;
     border-left: 1px solid {HAIRLINE}; background: rgba(255,255,255,0.04);

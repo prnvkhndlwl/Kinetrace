@@ -12,16 +12,15 @@ fastest way to switch cameras. Each canvas carries a small caption with the
 camera name, its own frame number and its offset, and the active one is
 outlined in the accent color.
 
-The grid owns no data: `MainWindow` feeds it frames and points. It does own
-the per-view decode runtimes (cache + seek thread), because their lifetime is
-exactly the lifetime of a view's canvas.
+The grid owns no data: `MainWindow` feeds it frames and points, and keeps
+the per-view decode runtimes (cache + seek thread) itself.
 """
 
 from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from kinetrace import theme
@@ -44,16 +43,29 @@ class _ViewCell(QWidget):
         # the caption must never dictate the window width (the QLabel pitfall
         # that once forced a 3376 px minimum) — ignore its width entirely
         self.caption.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
-        lay.addWidget(self.caption)
-        lay.addWidget(self.canvas, 1)
+        # a QSS border on a plain QWidget is only painted with WA_StyledBackground,
+        # and the children must leave room for it: a 1 px margin while framed (G127)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(0)
+        self._lay.addWidget(self.caption)
+        self._lay.addWidget(self.canvas, 1)
         self.set_active(False)
 
-    def set_active(self, active: bool) -> None:
-        edge = theme.ACCENT if active else theme.HAIRLINE
-        self.setStyleSheet(f"_ViewCell {{ border: 1px solid {edge}; }}")
+    def set_frame(self, framed: bool) -> None:
+        """Framed (several views): a 1 px outline in `set_active`'s colour; a lone
+        view is bare, as it always was."""
+        m = 1 if framed else 0
+        self._lay.setContentsMargins(m, m, m, m)
+        if not framed:
+            self.setStyleSheet("")
+
+    def set_active(self, active: bool, framed: bool = True) -> None:
+        self.set_frame(framed)
+        if framed:
+            edge = theme.ACCENT if active else theme.HAIRLINE
+            self.setStyleSheet(f"_ViewCell {{ border: 1px solid {edge}; }}")
         self.caption.setStyleSheet(
             f"color: {theme.TEXT if active else theme.TEXT_DIM}; "
             f"background: {theme.BG_WINDOW}; padding: 0 6px;")
@@ -152,11 +164,7 @@ class ViewGrid(QWidget):
         self._lay.setContentsMargins(0, 0, 0, 0)
         for cell in self._cells:
             cell.caption.setVisible(not single)
-            cell.setStyleSheet("" if single else cell.styleSheet())
-        if single:                       # a lone view keeps the bare old look
-            self._cells[self._active].setStyleSheet("")
-        else:
-            self.set_active(self._active)
+            cell.set_active(cell.index == self._active, framed=not single)   # a lone view: no frame
 
     # ----------------------------------------------------------------- active
 
@@ -166,10 +174,7 @@ class ViewGrid(QWidget):
         self._active = i
         single = len(self.visible_indices()) <= 1
         for cell in self._cells:
-            if single:
-                cell.setStyleSheet("")
-            else:
-                cell.set_active(cell.index == i)
+            cell.set_active(cell.index == i, framed=not single)
         if self._solo:
             self._relayout()
 
