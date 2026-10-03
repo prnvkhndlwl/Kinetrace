@@ -13,10 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import cv2
 import numpy as np
 from PySide6.QtCore import QEventLoop, Qt, QThread, Signal
-from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QProgressBar, QPushButton, QRadioButton,
                                QSizePolicy, QSpinBox, QTextBrowser, QVBoxLayout, QWidget, QWizard,
@@ -24,7 +22,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
 
 from kinetrace import lens, theme
 from kinetrace.errors import plain_error
-from kinetrace.boardreview import BoardReview
+from kinetrace.boardreview import BoardReview, pixmap
 
 VERDICT_COLORS = {"good": theme.GREEN, "ok": "#FFD60A", "poor": theme.RED}
 VERDICT_WORDS = {"good": "GOOD — attach this profile to the camera",
@@ -77,28 +75,38 @@ def _dim(label: QLabel) -> QLabel:
     return label
 
 
-def _pix(bgr: np.ndarray, max_w: int = 420) -> QPixmap:
-    h, w = bgr.shape[:2]
-    sc = min(1.0, max_w / w)
-    if sc < 1.0:
-        bgr = cv2.resize(bgr, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
-        h, w = bgr.shape[:2]
-    rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-    return QPixmap.fromImage(QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).copy())
+def stop_page_threads(wiz) -> None:
+    """Cancel, then WAIT for, the worker of every page of a wizard before it
+    goes away - the one `done()` of the lens and the wand wizard (I200, R20). A
+    QThread whose Python wrapper is collected while Qt still owns it takes the
+    process down at exit with 0xC0000409; a worker is cancelled first so it
+    stops at its next step, and the wait has no cap: the old 15 s cap closed the
+    lens wizard over a scan that was still running."""
+    for pid in wiz.pageIds():
+        th = getattr(wiz.page(pid), "_thread", None)
+        if th is None:
+            continue
+        if hasattr(th, "cancel"):
+            th.cancel()
+        if th.isRunning():
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                th.wait()
+            finally:
+                QApplication.restoreOverrideCursor()
 
 
 class _LensThread(QThread):
+    """Looks for the board in the video: the scan only. The boards are then
+    reviewed and a subset chosen before anything is fitted to them (the fit is
+    the review page's, off this thread)."""
     progress = Signal(float, str)
-    finished_ok = Signal(object, object)      # ScanResult, LensProfile
+    finished_ok = Signal(object)              # ScanResult
     error = Signal(str)
 
-    def __init__(self, video: str, pattern: tuple[int, int], square: float, model: str,
-                 fit: bool = True):
+    def __init__(self, video: str, pattern: tuple[int, int]):
         super().__init__()
-        self.video, self.pattern, self.square, self.model = video, pattern, square, model
-        # `fit` False stops after the scan, so the boards can be reviewed and
-        # a subset chosen before anything is fitted to them.
-        self.fit = bool(fit)
+        self.video, self.pattern = video, pattern
         self._cancel = False
 
     def cancel(self):
@@ -118,13 +126,8 @@ class _LensThread(QThread):
                                 "whole board is in the picture and sharp, and that it is the board this wizard "
                                 "printed (or any plain black-and-white checkerboard).")
                 return
-            if not self.fit:
-                self.progress.emit(1.0, f"{len(scan.corners)} boards found")
-                self.finished_ok.emit(scan, None)
-                return
-            self.progress.emit(0.9, f"{len(scan.corners)} boards found — fitting the lens")
-            prof = lens.calibrate_lens(scan.corners, self.pattern, self.square, scan.size, self.model)
-            self.finished_ok.emit(scan, prof)
+            self.progress.emit(1.0, f"{len(scan.corners)} boards found")
+            self.finished_ok.emit(scan)
         except Exception as e:      # noqa: BLE001
             self.error.emit(str(e))
 
@@ -185,7 +188,12 @@ lenses (chosen automatically). The report's thresholds are conservative on purpo
         path, _ = QFileDialog.getSaveFileName(self, "Save checkerboard", start, "PNG image (*.png)")
         if not path:
             return
-        wmm, hmm = lens.save_checkerboard_png(path)
+        try:
+            wmm, hmm = lens.save_checkerboard_png(path)
+        except Exception as e:      # noqa: BLE001
+            # (I222) a folder that cannot be written, a full drive: said on the page, not a crash notice
+            self.note.setText(plain_error(e, "The checkerboard could not be saved", short=True))
+            return
         self.note.setText(f"Saved {Path(path).name}: {wmm:.0f} × {hmm:.0f} mm at 300 dpi — print at 100 %, "
                           "landscape, on A4 or Letter.")
 
@@ -313,6 +321,13 @@ class VideoPage(QWizardPage):
     def _pattern_changed(self, *_):
         self.pattern_note.setText(lens.orientation_note(self.pattern()))
         self.pattern_note.setVisible(bool(self.pattern_note.text()))
+        if self.wiz.scan is not None and self.pattern() != tuple(self.wiz.pattern):
+            # (G115) the boards were found for ANOTHER board size: they are not this board's corners
+            self.wiz.scan = None
+            self.wiz.used_boards = None
+            self.wiz.result_profile = None
+            self.status.setText("The board size changed: press 'Find the boards' again.")
+            self.completeChanged.emit()
 
     def square_m(self) -> float:
         return float(self.square.value()) * UNITS[self.unit.currentIndex()][1]
@@ -325,38 +340,55 @@ class VideoPage(QWizardPage):
         if not video or not Path(video).exists():
             self.status.setText("Choose the video of the board first.")
             return
-        self.btn_run.setEnabled(False)
-        self.btn_load.setEnabled(False)
+        self._lock_inputs(True)
         self.bar.setValue(0)
         self.wiz.result_profile = None
         self.wiz.scan = None
         self.wiz.used_boards = None
         self._loaded_path = None
         self.completeChanged.emit()
-        th = _LensThread(video, self.pattern(), self.square_m(), self.model(), fit=False)
+        th = _LensThread(video, self.pattern())
         th.progress.connect(lambda f, m: (self.bar.setValue(int(1000 * f)), self.status.setText(m)))
         th.finished_ok.connect(self._done)
         th.error.connect(self._fail)
         self._thread = th
         th.start()
 
+    def _lock_inputs(self, scanning: bool):
+        """While the scan runs, the board size and its buttons stay as they were
+        when it started (G115: a size changed mid-scan made OpenCV raise, or fitted
+        boards found for another size)."""
+        for w_ in (self.btn_run, self.btn_load, self.cols, self.rows):
+            w_.setEnabled(not scanning)
+
     def _fail(self, msg: str):
-        self.btn_run.setEnabled(True)
-        self.btn_load.setEnabled(True)
+        self._lock_inputs(False)
         self.status.setText("Calibration failed: " + msg)
 
-    def _done(self, scan, prof):
-        self.btn_run.setEnabled(True)
-        self.btn_load.setEnabled(True)
+    def _done(self, scan):
+        self._lock_inputs(False)
         self.bar.setValue(1000)
         self.wiz.scan = scan
-        self.wiz.pattern = self.pattern()
-        self.wiz.square = self.square_m()
-        self.wiz.model = self.model()
-        self.wiz.result_profile = prof          # None: the review page fits
+        # (G115) the board size the scan USED, not whatever the boxes show now
+        th = self._thread
+        self.wiz.pattern = tuple(th.pattern) if th is not None else self.pattern()
+        for box, v in ((self.cols, self.wiz.pattern[0]), (self.rows, self.wiz.pattern[1])):
+            box.blockSignals(True)                  # the boxes show the size the boards were found for
+            box.setValue(int(v))
+            box.blockSignals(False)
+        self._pattern_changed()
+        self._read_settings()
+        self.wiz.result_profile = None          # the review page fits
         self.wiz.result_view = self._view()
         self._show_scan_status()
         self.completeChanged.emit()
+
+    def _read_settings(self):
+        """The square size and lens type as the boxes show them NOW: read when Next
+        is pressed, not when the scan ended (G115: a fisheye chosen after the scan
+        was ignored)."""
+        self.wiz.square = self.square_m()
+        self.wiz.model = self.model()
 
     def _view(self) -> int | None:
         return int(self.cam.currentData()) if self.cam.count() else None
@@ -411,14 +443,10 @@ class VideoPage(QWizardPage):
         view = self._view()
         self.wiz.result_profile = None
         try:
-            if path.lower().endswith((".json", ".yml", ".yaml")):
-                from kinetrace import calibio
-                prof, which = calibio.read_lens(path), ""      # Kinetrace or OpenCV lens file
-            else:
-                # (I80) the file's line for THIS camera, or a refusal -- never
-                # the last line reused for a camera the file does not list
-                name = self.wiz.project.name(view) if (self.wiz.project is not None and view is not None) else ""
-                prof, which = lens.argus_profile_for(path, view if view is not None else 0, name)
+            # (I80) an Argus file gives THIS camera its own line, or a refusal -- never the last
+            # line reused for a camera the file does not list; the dispatch is the wand wizard's too
+            name = self.wiz.project.name(view) if (self.wiz.project is not None and view is not None) else ""
+            prof, which = lens.read_lens_for(path, view if view is not None else 0, name)
         except Exception as e:      # noqa: BLE001
             self.status.setText(f"Could not read {Path(path).name}: {e}")
             self.completeChanged.emit()
@@ -446,6 +474,8 @@ class VideoPage(QWizardPage):
         if problem:
             self.status.setText(problem)
             return False
+        if self.wiz.scan is not None:
+            self._read_settings()                  # (G115) the lens type and square as set NOW
         return True
 
     def nextId(self) -> int:
@@ -473,6 +503,7 @@ class ReviewPage(QWizardPage):
                          "Untick any you do not trust, or click one to drag a corner.")
         lay = QVBoxLayout(self)
         self.review = BoardReview()
+        self.review.runner = lambda fn: _off_thread(self.wiz, fn)      # "Best spread" off the GUI thread too
         self.review.changed.connect(self._review_changed)
         lay.addWidget(self.review, 1)
         row = QHBoxLayout()
@@ -488,21 +519,26 @@ class ReviewPage(QWizardPage):
         # (ticked boards, corner-edit revision) the current profile was fitted from
         self._fitted: tuple | None = None
 
-    def _mark_fitted(self, idx: list[int], prof) -> None:
-        self._fitted = (tuple(idx), self.review.corner_rev)
+    def _mark_fitted(self, idx: list[int], prof, rev: int) -> None:
+        """Record what `prof` was fitted from: the ticked boards and the corner-edit
+        revision READ BEFORE the fit started (G114: read after it, an edit that
+        landed meanwhile counted as fitted)."""
+        self._fitted = (tuple(idx), int(rev))
         # the boards the fit really used, in scan numbering: calibrate_lens may
-        # thin the given views to a spread and set a few aside (I78)
+        # set a few aside (I78)
         used = (prof.report or {}).get("views_used")
         self.wiz.used_boards = ([idx[k] for k in used if 0 <= k < len(idx)] if used is not None
                                 else list(idx))
+
+    def _now(self) -> tuple:
+        return (tuple(self.review.chosen()), self.review.corner_rev)
 
     def _review_changed(self):
         # (I74) the profile belongs to the boards it was fitted from. Unticking
         # a board or dragging a corner after the fit makes it stale: Next waits
         # for a refit, or for the choice to be put back as it was.
         was = self._ready
-        now = (tuple(self.review.chosen()), self.review.corner_rev)
-        self._ready = self._fitted is not None and now == self._fitted
+        self._ready = self._fitted is not None and self._now() == self._fitted
         if was and not self._ready:
             self.status.setText("The boards changed since the fit: press 'Fit the lens from the ticked "
                                 "boards' before going on.")
@@ -518,25 +554,28 @@ class ReviewPage(QWizardPage):
             return
         self.status.setText(f"Choosing a good spread of the {len(scan.corners)} boards and fitting the lens "
                             "(a few seconds)…")
+        pattern, square, model = self.wiz.pattern, self.wiz.square, self.wiz.model
+        corners = list(scan.corners)
+        rev = self.review.corner_rev
 
         def work():
-            idx, err, why = lens.auto_select(scan.corners, self.wiz.pattern, self.wiz.square,
-                                             scan.size, self.wiz.model)
+            idx, err, why = lens.auto_select(corners, pattern, square, scan.size, model)
             prof = None
             if idx:
                 try:
-                    prof = lens.calibrate_lens([scan.corners[i] for i in idx], self.wiz.pattern,
-                                               self.wiz.square, scan.size, self.wiz.model)
+                    prof = lens.calibrate_lens([corners[i] for i in idx], pattern, square, scan.size, model,
+                                               max_views=max(len(idx), lens.MAX_VIEWS))
+                    # the errors of the profile that is SHOWN, not of the provisional fit auto_select made
+                    err = lens.per_view_errors(corners, pattern, square, prof)
                 except Exception:                               # noqa: BLE001
                     prof = None
             return idx, err, why, prof
         idx, err, why, prof = _off_thread(self.wiz, work)
-        self.review.set_scan(scan, self.wiz.pattern, self.wiz.square, prof, idx, err,
-                             model=self.wiz.model)
+        self.review.set_scan(scan, pattern, square, prof, idx, err, model=model)
         if prof is not None:
             self.wiz.result_profile = prof
-            self._mark_fitted(idx, prof)
-            self._ready = True
+            self._mark_fitted(idx, prof, rev)
+            self._ready = self._now() == self._fitted
             self.status.setText(f"Fitted: {prof.summary()}")
         else:
             self.status.setText(why)
@@ -550,28 +589,36 @@ class ReviewPage(QWizardPage):
             return
         self.btn_fit.setEnabled(False)
         self.status.setText(f"Fitting from {len(idx)} boards…")
+        # (G114) the corners this fit is made from, and their revision, are read HERE, before the
+        # off-thread fit: an edit that lands during it must make the profile stale, not "fitted"
+        rev = self.review.corner_rev
+        pattern, square, model = self.wiz.pattern, self.wiz.square, self.wiz.model
+        chosen = [scan.corners[i].copy() for i in idx]
+        everything = list(scan.corners)
 
         def work():
-            prof = lens.calibrate_lens([scan.corners[i] for i in idx], self.wiz.pattern,
-                                       self.wiz.square, scan.size, self.wiz.model)
-            return prof, lens.per_view_errors(scan.corners, self.wiz.pattern, self.wiz.square, prof)
+            # (G116) every ticked board is fitted: the boards were CHOSEN, so calibrate_lens must not
+            # thin them to a 40-view spread behind a "Fitted from 120 boards"
+            prof = lens.calibrate_lens(chosen, pattern, square, scan.size, model, max_views=len(chosen))
+            return prof, lens.per_view_errors(everything, pattern, square, prof)
         try:
             prof, err = _off_thread(self.wiz, work)
         except Exception as exc:                                # noqa: BLE001
             self.btn_fit.setEnabled(True)
             self.status.setText(plain_error(exc, "The lens could not be fitted from these boards", short=True))
             return
-        self.review.prof = prof
-        self.review.errors = err
-        for i, tile in enumerate(self.review._tiles):
-            tile.set_error(err[i])
-            tile.set_pixmap(self.review._tile_image(i))
-        self.review._summarise("refitted")
+        self.review.set_fit(prof, err, "refitted")
         self.wiz.result_profile = prof
-        self._mark_fitted(idx, prof)
-        self._ready = True
+        self._mark_fitted(idx, prof, rev)
+        self._ready = self._now() == self._fitted
         self.btn_fit.setEnabled(True)
-        self.status.setText(f"Fitted from {len(idx)} boards: {prof.summary()}")
+        n_used = len(self.wiz.used_boards or idx)
+        left = len(idx) - n_used
+        self.status.setText(
+            f"Fitted from {n_used} of the {len(idx)} ticked boards: {prof.summary()}"
+            + (f" ({left} fitted far worse than the rest and were set aside: untick them to make that "
+               "your choice.)" if left else "")
+            + ("" if self._ready else " The boards changed while it was fitting: press the button again."))
         self.completeChanged.emit()
 
     def isComplete(self) -> bool:
@@ -656,15 +703,15 @@ class ResultPage(QWizardPage):
                          "resolution.</p>")
         self.report.setHtml("".join(parts))
         if scan is not None and scan.sample_bgr is not None:
-            self.pic_before.setPixmap(_pix(scan.sample_bgr))
-            self.pic_after.setPixmap(_pix(lens.undistort_image(scan.sample_bgr, prof)))
+            self.pic_before.setPixmap(pixmap(scan.sample_bgr, max_w=420))
+            self.pic_after.setPixmap(pixmap(lens.undistort_image(scan.sample_bgr, prof), max_w=420))
             # (I78) light up the boards the profile was fitted from -- a fresh
             # diversity pick here showed unticked boards as used and could
             # contradict the report's coverage figure
             used = self.wiz.used_boards
             if used is None:
                 used = self.wiz.page_review.review.chosen()
-            self.pic_cov.setPixmap(_pix(lens.coverage_image(scan, used)))
+            self.pic_cov.setPixmap(pixmap(lens.coverage_image(scan, used), max_w=420))
         else:
             for w_ in (self.pic_before, self.pic_after, self.pic_cov):
                 w_.clear()
@@ -706,7 +753,12 @@ class ResultPage(QWizardPage):
         path, _ = QFileDialog.getSaveFileName(self, "Save lens profile", start, "Kinetrace lens (*.klens.json)")
         if not path:
             return
-        saved = prof.save(path)
+        try:
+            saved = prof.save(path)
+        except Exception as e:      # noqa: BLE001
+            # (I222) a read-only folder, a full drive: said on the page, not a crash notice
+            self.saved.setText(plain_error(e, "The lens file could not be saved", short=True))
+            return
         self.wiz.saved_path = str(saved)
         self.saved.setText("Saved " + Path(saved).name)
 
@@ -751,19 +803,9 @@ class LensWizard(QWizard):
         return [self.result_view] + (list(pr.share_views) if pr.share.isChecked() else [])
 
     def done(self, r):
-        # Wait for any page's worker before the wizard (and then the
-        # interpreter) goes away. A QThread whose Python wrapper is collected
-        # while Qt still owns it takes the process down at exit with
-        # 0xC0000409, which reads as a failed test even though everything
-        # passed.
-        for pid in self.pageIds():
-            th = getattr(self.page(pid), "_thread", None)
-            if th is None:
-                continue
-            if hasattr(th, "cancel"):
-                th.cancel()
-            if th.isRunning():
-                th.wait(15000)
-        self.page_review.review.stop_reader()       # the corner editor's frame read (I81)
+        # a scan still running is cancelled and WAITED for, however long (I200); so is a corner
+        # editor's frame read in flight (I81)
+        stop_page_threads(self)
+        self.page_review.review.stop_reader()
         super().done(r)
 

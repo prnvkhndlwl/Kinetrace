@@ -26,21 +26,21 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog
                                QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QRadioButton, QSpinBox,
                                QTextBrowser, QVBoxLayout, QWidget, QWizard, QWizardPage)
 
+from kinetrace import lens as _lens
 from kinetrace import theme
+from kinetrace import wand as _wand
 from kinetrace import wanddata as wd
+from kinetrace.errors import plain_error
+from kinetrace.lenswizard import VERDICT_COLORS, _dim, stop_page_threads
 
 UNITS = [("metres (m)", "m"), ("centimetres (cm)", "cm"), ("millimetres (mm)", "mm"), ("inches (in)", "in"),
          ("wand lengths (not measured yet: enter 1)", "wand")]   # every distance then reads in wand lengths
-VERDICT_COLORS = {"good": theme.GREEN, "ok": "#FFD60A", "poor": theme.RED}
 VERDICT_WORDS = {"good": "GOOD — you can trust this calibration",
                  "ok": "USABLE — but read the notes below",
                  "poor": "NOT GOOD ENOUGH — fix what the notes say and calibrate again"}
-
-
-def _dim(label: QLabel) -> QLabel:
-    label.setWordWrap(True)
-    label.setStyleSheet(f"color: {theme.TEXT_DIM};")
-    return label
+# the wand frames: the wizard goes on from MIN_FRAMES, a stable result wants GOOD_FRAMES (G137: the
+# intro said "30 is the minimum" while 10 passed - one wording everywhere)
+MIN_FRAMES, GOOD_FRAMES = 10, 30
 
 
 def lens_size_mismatch(prof, width: int, height: int, cam_name: str) -> str | None:
@@ -48,19 +48,15 @@ def lens_size_mismatch(prof, width: int, height: int, cam_name: str) -> str | No
     else the sentence that says why it cannot be used (I31): its focal length
     and centre are in the other size's pixels, and with every camera profiled
     both are HELD FIXED in the solve - a 1280 x 960 profile on 640 x 480
-    cameras turned a sound rig into verdict poor with the blame on the wand."""
+    cameras turned a sound rig into verdict poor with the blame on the wand.
+    The ONE size rule is `lens.size_mismatch` (R19); this is its wizard form."""
     if prof is None or not width or not height:
         return None
-    if (int(prof.width), int(prof.height)) == (int(width), int(height)):
-        return None
-    return (f"this lens profile is for {int(prof.width)}×{int(prof.height)} pictures, but {cam_name} records "
-            f"{int(width)}×{int(height)}: its focal length and centre are in the other size's pixels. "
-            "Calibrate the lens from a checkerboard video filmed in the SAME recording mode (resolution "
-            "and field of view) as this camera.")
+    return _lens.size_mismatch((prof.width, prof.height), (width, height), cam_name,
+                               "this lens profile was measured on")
 
 
 def _same_lens(a, b) -> bool:
-    from kinetrace import lens as _lens
     return _lens.same_profile(a, b)
 
 
@@ -70,7 +66,6 @@ def share_targets(project, view: int, prof=None) -> tuple[list[int], list[int]]:
     the same picture size. Returns (without a profile, with a DIFFERENT one) -
     the second only after the user agrees. `prof` = the profile (default: the
     one attached to `view`)."""
-    from kinetrace import lens as _lens
     lenses = list(getattr(project, "lenses", []) or [])
     if prof is None:
         prof = lenses[view] if view < len(lenses) else None
@@ -88,6 +83,14 @@ def share_targets(project, view: int, prof=None) -> tuple[list[int], list[int]]:
         elif not _lens.same_profile(other, prof):
             replace.append(c)
     return fill, replace
+
+
+def _clear_grid(grid) -> None:
+    """Empty a QGridLayout, deleting the widgets it held."""
+    while grid.count():
+        it = grid.takeAt(0)
+        if it.widget():
+            it.widget().deleteLater()
 
 
 def _guess_wand_names(names: list[str]) -> tuple[str | None, str | None]:
@@ -137,7 +140,7 @@ class _CalibThread(QThread):
         self.progress.emit(float(f), str(m), self.gen)
 
     def run(self):
-        from kinetrace import wand
+        wand = _wand
         try:
             res = wand.calibrate_wand(progress=self._note, **self.kwargs)
             grav = None
@@ -179,8 +182,12 @@ class _CalibThread(QThread):
             self.finished_ok.emit(res, grav, self.gen)
         except _Cancelled:
             return
+        except wand.WandError as e:
+            self.error.emit(str(e), self.gen)           # already written for the user (G112)
         except Exception as e:      # noqa: BLE001
-            self.error.emit(str(e), self.gen)
+            # (G112) anything else ("index 3 is out of bounds") is a program fault, not a message
+            # for the user: a sentence, and the traceback in the error log
+            self.error.emit(plain_error(e, "The calibration could not be completed"), self.gen)
 
 
 class IntroPage(QWizardPage):
@@ -209,7 +216,8 @@ in the CAMERAS panel), with their offsets aligned;</li>
 <li>the two wand ends tracked as two landmarks with the <b>same names in every camera</b>
 (for example <i>wand A</i> and <i>wand B</i>): place them with N (or Add ▾ → Ball marker
 for a ball on the wand's end), press Track, correct
-where needed. A few hundred frames spread over the recording is ideal; 30 is the minimum;</li>
+where needed. A few hundred frames spread over the recording is ideal; the wizard goes on from
+{MIN_FRAMES} frames, but a stable result wants at least {GOOD_FRAMES};</li>
 <li>optionally, a small object <b>dropped</b> in view of the cameras (a ball) tracked as
 another landmark — it tells the program which way is up and gives an independent check
 of the scale; or three reference points on the floor.</li>
@@ -338,19 +346,22 @@ class WandPage(QWizardPage):
             return
         lines.append(f"<p>Frames where two or more cameras see both ends: <b>{self._n_frames}</b></p>")
         self.table.setText("".join(lines))
-        if self._n_frames < 10:
-            self.warn.setText("<span style='color:%s'>Too few frames. Track the wand ends in at least two "
-                              "cameras on the same stretch of the recording.</span>" % theme.RED)
-        elif self._n_frames < 30:
-            self.warn.setText("<span style='color:#FFD60A'>Under 30 shared frames: it will run, but the "
-                              "result will be rough. More frames, spread over the recording, help most.</span>")
+        if self._n_frames < MIN_FRAMES:
+            self.warn.setText(f"<span style='color:{theme.RED}'>Too few frames (at least {MIN_FRAMES} are needed). "
+                              "Track the wand ends in at least two cameras on the same stretch of the "
+                              "recording.</span>")
+        elif self._n_frames < GOOD_FRAMES:
+            self.warn.setText(f"<span style='color:#FFD60A'>Under {GOOD_FRAMES} shared frames: it will run, but "
+                              "the result will be rough. More frames, spread over the recording, help most."
+                              "</span>")
         else:
             self.warn.setText("")
         self.completeChanged.emit()
 
     def isComplete(self) -> bool:
         a, b = self.end_a.currentText(), self.end_b.currentText()
-        return bool(a and b and a != b and self.length.value() > 0 and getattr(self, "_n_frames", 0) >= 10)
+        return bool(a and b and a != b and self.length.value() > 0
+                    and getattr(self, "_n_frames", 0) >= MIN_FRAMES)
 
 
 class CamerasPage(QWizardPage):
@@ -407,10 +418,7 @@ class CamerasPage(QWizardPage):
         old_f = [sp.value() for sp in self._spins] if len(self._spins) == p.n_views else None
         unticked = {self.extras.item(i).text() for i in range(self.extras.count())
                     if self.extras.item(i).checkState() != Qt.Checked}
-        while self.grid.count():
-            it = self.grid.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        _clear_grid(self.grid)
         self._spins = []
         for c, s in enumerate(p.sessions):
             self.grid.addWidget(QLabel(f"{p.name(c)}  ({s.width}×{s.height})"), c, 0)
@@ -441,10 +449,7 @@ class CamerasPage(QWizardPage):
     # ---- lens profiles per camera -------------------------------------------
     def _refresh_lens_rows(self):
         p = self.wiz.project
-        while self.lens_grid.count():
-            it = self.lens_grid.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        _clear_grid(self.lens_grid)
         self.lens_labels = []
         self.lens_buttons = []
         for c in range(p.n_views):
@@ -516,15 +521,17 @@ class CamerasPage(QWizardPage):
         from kinetrace.lenswizard import LensWizard
         p = self.wiz.project
         lw = LensWizard(self, p, p.sessions[c].video_path, c, self.wiz.start_dir)
-        if lw.exec() == QWizard.Accepted and lw.result_profile is not None and lw.result_view is not None:
-            v = lw.result_view
+        accepted = lw.exec() == QWizard.Accepted
+        prof, v, views = lw.result_profile, lw.result_view, (lw.result_views() if accepted else [])
+        lw.deleteLater()            # (I249) the wizard holds its scan (~93 MB of thumbnails): release it
+        if accepted and prof is not None and v is not None:
             s = p.sessions[v]
-            bad = lens_size_mismatch(lw.result_profile, s.width, s.height, p.name(v))
+            bad = lens_size_mismatch(prof, s.width, s.height, p.name(v))
             if bad:
                 self._refuse_lens(v, bad)
                 return
-            for k in lw.result_views():          # + the cameras it is shared with (G40)
-                p.lenses[k] = lw.result_profile
+            for k in views:          # + the cameras it is shared with (G40)
+                p.lenses[k] = prof
             p.dirty = True
         self._refresh_lens_rows()
 
@@ -555,21 +562,15 @@ class CamerasPage(QWizardPage):
         self._refresh_lens_rows()
 
     def _load_lens(self, c: int):
-        from kinetrace import lens as _lens
         from kinetrace.lenswizard import LENS_FILTER
         p = self.wiz.project
         path, _ = QFileDialog.getOpenFileName(self, "Lens profile", self.wiz.start_dir, LENS_FILTER)
         if not path:
             return
         try:
-            if path.lower().endswith((".json", ".yml", ".yaml")):
-                from kinetrace import calibio
-                prof, which = calibio.read_lens(path), ""      # Kinetrace or OpenCV lens file
-            else:
-                # the SAME line rule as the lens wizard (lens.argus_profile_for, I80):
-                # the file's camera column decides, a camera it has no line for is
-                # refused instead of being given the last line (I31)
-                prof, which = _lens.argus_profile_for(path, c, p.name(c))
+            # the lens wizard's own dispatch (R19): for an Argus file the camera column decides
+            # which line this camera gets, a camera it has no line for is refused (I80, I31)
+            prof, which = _lens.read_lens_for(path, c, p.name(c))
         except Exception as e:      # noqa: BLE001
             self.lens_labels[c].setText(f"could not read {Path(path).name}: {e}")
             return
@@ -605,37 +606,42 @@ class CamerasPage(QWizardPage):
         s = p.sessions[c]
         return None if lens_size_mismatch(prof, s.width, s.height, p.name(c)) else prof
 
+    def usable_lenses(self) -> list:
+        """`usable_lens` for every camera, in project order (R20: the list that
+        seven callers each built for themselves)."""
+        return [self.usable_lens(c) for c in range(self.wiz.project.n_views)]
+
     def lens_models(self) -> list:
-        p = self.wiz.project
-        return [(l.undistort_model() if l is not None else None)
-                for l in (self.usable_lens(c) for c in range(p.n_views))]
+        return [(l.undistort_model() if l is not None else None) for l in self.usable_lenses()]
 
     def lens_summaries(self) -> list:
-        p = self.wiz.project
-        return [(l.summary() if l is not None else None)
-                for l in (self.usable_lens(c) for c in range(p.n_views))]
+        return [(l.summary() if l is not None else None) for l in self.usable_lenses()]
 
     def focal(self) -> list[float] | None:
         """Per-camera starting focal lengths: the lens profile's where there
-        is one, the user's values or a width-based guess elsewhere; None when
-        nothing is known (the wand core then searches)."""
+        is one, the user's values where they chose "I know it"; NaN for a
+        camera with neither (I221: "find it automatically" on a rig where only
+        some cameras have a profile - the solve then searches the grid for those
+        cameras alone; a width-based guess here made it skip the search and fail
+        for most rigs). None when no camera's focal length is known."""
         p = self.wiz.project
-        lenses = [self.usable_lens(c) for c in range(p.n_views)]
-        if not any(l is not None for l in lenses) and not self.r_known.isChecked():
+        lenses = self.usable_lenses()
+        known = self.r_known.isChecked()
+        if not any(l is not None for l in lenses) and not known:
             return None
         out = []
         for c, l in enumerate(lenses):
             if l is not None:
                 out.append(l.f_square)
-            elif self.r_known.isChecked() and c < len(self._spins):
+            elif known and c < len(self._spins):
                 out.append(float(self._spins[c].value()))
             else:
-                out.append(1.0 * p.sessions[c].width)
+                out.append(float("nan"))
         return out
 
     def principal(self) -> list | None:
         p = self.wiz.project
-        lenses = [self.usable_lens(c) for c in range(p.n_views)]
+        lenses = self.usable_lenses()
         if not any(l is not None for l in lenses):
             return None
         return [(l.principal if l is not None else ((s.width - 1) / 2.0, (s.height - 1) / 2.0))
@@ -643,7 +649,7 @@ class CamerasPage(QWizardPage):
 
     def all_lensed(self) -> bool:
         p = self.wiz.project
-        return p.n_views > 0 and all(self.usable_lens(c) is not None for c in range(p.n_views))
+        return p.n_views > 0 and all(l is not None for l in self.usable_lenses())
 
     def focal_free_per_camera(self):
         """What `calibrate_wand(estimate_focal=...)` gets (I144). A camera
@@ -653,8 +659,7 @@ class CamerasPage(QWizardPage):
         differ by up to ~1 %), a camera with its own profile keeps it."""
         if not self.all_lensed():
             return True
-        p = self.wiz.project
-        lenses = [self.usable_lens(c) for c in range(p.n_views)]
+        lenses = self.usable_lenses()
         free = [any(j != c and _same_lens(lenses[j], l) for j in range(len(lenses))) for c, l in enumerate(lenses)]
         return free if any(free) else False
 
@@ -685,7 +690,7 @@ class FramePage(QWizardPage):
                                    "measured fall checks the scale")
         self.r_axes = QRadioButton("Three reference points: an origin, a point along +X, a point in the "
                                    "XY plane")
-        self.r_none = QRadioButton("Neither — use camera 1's own axes (fine for shapes and distances)")
+        self.r_none = QRadioButton(f"Neither — use {wiz.project.name(0)}'s own axes (fine for shapes and distances)")
         self.r_none.setChecked(True)
         lay.addWidget(self.r_drop)
         self.g_drop = QWidget()
@@ -960,8 +965,9 @@ class RunPage(QWizardPage):
         foc = w.page_cams.focal()
         return (w.page_wand.end_a.currentText(), w.page_wand.end_b.currentText(),
                 float(w.page_wand.length.value()), str(w.page_wand.unit.currentData()),
-                None if foc is None else tuple(float(v) for v in foc),
-                tuple(id(w.page_cams.usable_lens(c)) for c in range(p.n_views)),
+                # NaN = "not known" (I221) must compare equal to itself, which a float NaN does not
+                None if foc is None else tuple(float(v) if np.isfinite(v) else None for v in foc),
+                tuple(_lens.profile_key(l) for l in w.page_cams.usable_lenses()),      # by content, R20
                 bool(w.page_cams.distort.isChecked()), tuple(w.page_cams.extra_names()), frame)
 
     def initializePage(self):
@@ -971,10 +977,13 @@ class RunPage(QWizardPage):
         unit = w.page_wand.unit.currentData()
         mode = w.page_frame.mode()
         how = {"drop": f"vertical from the dropped object “{w.page_frame.drop_name.currentText()}”",
-               "axes": "axes from three reference points", "none": "camera 1's axes"}[mode]
+               "axes": "axes from three reference points", "none": f"{w.project.name(0)}'s axes"}[mode]
         n_lens = sum(1 for m in w.page_cams.lens_models() if m is not None)
-        foc = ("focal lengths found automatically" if w.page_cams.focal() is None
-               else (f"lens profiles on {n_lens} camera(s)" if n_lens else "focal lengths from your values"))
+        f0 = w.page_cams.focal()
+        guessed = [] if f0 is None else [w.project.name(c) for c, v in enumerate(f0) if not np.isfinite(v)]
+        foc = ("focal lengths found automatically" if f0 is None
+               else (f"lens profiles on {n_lens} camera(s)" if n_lens else "focal lengths from your values")
+               + (f"; focal lengths found automatically for {', '.join(guessed)}" if guessed else ""))
         dist = ""
         if w.page_cams.distort.isChecked():
             # (I35) say what the tick really does once some cameras have a profile
@@ -1028,10 +1037,14 @@ class RunPage(QWizardPage):
                 out[:, c] = m.undistort(sl.reshape(-1, 2)).reshape(sl.shape)
             return out
 
+        raw_uv, raw_bg = uv, bg                    # the clicks as digitized: coverage is measured on these
         uv = _und(uv)
         bg = _und(bg)
         kwargs = dict(wand_uv=uv, wand_length=float(w.page_wand.length.value()),
                       sizes=[(s.width, s.height) for s in p.sessions],
+                      # (I247) coverage on the RAW points (a straightened box over the raw picture area read
+                      # 33-52 % for a 25 % box); (I248) the report names the REFERENCE frame of an outlier
+                      coverage_uv=raw_uv, coverage_bg_uv=raw_bg, frame_ids=frames,
                       focal=w.page_cams.focal(), principal=w.page_cams.principal(), bg_uv=bg,
                       estimate_focal=w.page_cams.focal_free_per_camera(),     # (I144) shared lenses refine
                       estimate_distortion=w.page_cams.distortion_per_camera(),
@@ -1052,7 +1065,6 @@ class RunPage(QWizardPage):
                     "x": _und(wd.collect_at(p, x, t)[None])[0],
                     "xy": _und(wd.collect_at(p, y, t)[None])[0],
                     "names": f"{o}, {x} and {y}", "t": int(t)}
-        self._frames = frames
         self._gen += 1
         self._run_key = self._settings_key()
         self.btn_run.setEnabled(False)
@@ -1091,7 +1103,7 @@ class RunPage(QWizardPage):
         if gen != self._gen:                  # a run for settings that have changed since (I28)
             return
         self.status.setText("")
-        self.report.setHtml(f"<p style='color:{theme.RED}'><b>Calibration failed.</b> {msg}</p>"
+        self.report.setHtml(f"<p style='color:{theme.RED}'><b>Calibration failed.</b> {msg.replace(chr(10), '<br>')}</p>"
                             "<p>Usual causes: a camera that shares too few wand frames with the "
                             "others (track more of the wand in it), the two wand names swapped in one "
                             "camera, or cameras whose offsets are not aligned (CAMERAS panel).</p>")
@@ -1119,7 +1131,17 @@ class RunPage(QWizardPage):
                                               "Kinetrace calibration (*.kcal.json)")
         if not path:
             return
-        written = save_calibration_files(self.wiz.result, self.wiz.gravity, path)
+        written: list[str] = []
+        try:
+            save_calibration_files(self.wiz.result, self.wiz.gravity, path, written=written)
+        except Exception as e:      # noqa: BLE001
+            # (G113) a dltCoefs.csv open in Excel / MATLAB, a read-only folder, a full drive: the page
+            # says what happened and which files were written before it, instead of a crash notice
+            msg = plain_error(e, "The calibration files could not be saved", short=True)
+            if written:
+                msg += ". Written before that: " + ", ".join(Path(w).name for w in written) + " (incomplete set)"
+            self.status.setText(msg)
+            return
         msg = "Saved: " + ", ".join(Path(w).name for w in written)
         note = dlt_csv_caveat(self.wiz.result_calibration)
         if note:
@@ -1131,7 +1153,8 @@ class RunPage(QWizardPage):
 
 
 # the calibration file itself (no Qt) lives in calibio; these names stay here too
-from kinetrace.calibio import KCAL_VERSION, calibration_to_kcal, dlt_csv_matlab, load_kcal  # noqa: E402,F401
+from kinetrace.calibio import calibration_to_kcal, dlt_csv_matlab, load_kcal  # noqa: E402,F401
+
 
 def _lensed_cameras(cal) -> list[tuple[int, float]]:
     """(camera index, how far its lens correction moves the picture's border
@@ -1211,12 +1234,14 @@ def _same_cameras(res, cal) -> bool:
                                     for x, y in zip(a, b))
 
 
-def save_calibration_files(res, grav, path: str, cal=None) -> list[str]:
+def save_calibration_files(res, grav, path: str, cal=None, written: list | None = None) -> list[str]:
     """`*.kcal.json` (everything, for Kinetrace), `*_dltCoefs.csv` (MATLAB
     1-based pixels, for DLTdv / easyWand users), `*_report.txt` when there is
     a report and `*_dltCoefs_README.txt` when a camera carries a lens
     correction the csv cannot hold (I32). `res` may be None when exporting an
-    imported calibration (`cal` then required)."""
+    imported calibration (`cal` then required). `written`, when given, is
+    appended to AS EACH FILE LANDS, so a caller that catches an error half-way
+    can say which files exist (G113)."""
     if cal is None:
         cal = res.to_calibration()
     elif res is not None and not _same_cameras(res, cal):
@@ -1228,21 +1253,23 @@ def save_calibration_files(res, grav, path: str, cal=None) -> list[str]:
     p = Path(path)
     if not p.name.lower().endswith(".kcal.json"):
         p = p.with_name(p.stem + ".kcal.json")
+    out = written if written is not None else []
     p.write_text(json.dumps(calibration_to_kcal(cal, report, grav), indent=1), encoding="utf-8")
+    out.append(str(p))
     stem = p.name[:-len(".kcal.json")]
     csv = p.with_name(stem + "_dltCoefs.csv")
     dlt_csv_matlab(cal, csv)
-    written = [str(p), str(csv)]
+    out.append(str(csv))
     readme = _dlt_readme(cal, csv.name, names)
     if readme:
         rd = p.with_name(stem + "_dltCoefs_README.txt")
         rd.write_text(readme, encoding="utf-8")
-        written.append(str(rd))
+        out.append(str(rd))
     if report:
         rp = p.with_name(stem + "_report.txt")
         rp.write_text(report_text(report, grav, dlt_csv_caveat(cal, names)), encoding="utf-8")
-        written.append(str(rp))
-    return written
+        out.append(str(rp))
+    return list(out)
 
 
 def report_text(report: dict, grav: dict | None, csv_note: str | None = None) -> str:
@@ -1264,6 +1291,16 @@ def report_text(report: dict, grav: dict | None, csv_note: str | None = None) ->
     return "\n".join(lines) + "\n"
 
 
+def gravity_colour(pct_off: float) -> str:
+    """Colour of the gravity check's figure from how many % away from g it is, with
+    wand.py's own bands: green while the sentence says "consistent", amber up to the
+    point where the verdict is capped, red beyond (G137: the colours used 3 % / 8 %
+    against sentences that used 2 % / 5 %)."""
+    if pct_off <= _wand.G_CONSISTENT_PCT:
+        return theme.GREEN
+    return "#FFD60A" if pct_off <= _wand.G_SUSPECT_PCT else theme.RED
+
+
 def report_html(report: dict, grav: dict | None, project, unit: str) -> str:
     v = str(report.get("verdict", "poor"))
     col = VERDICT_COLORS.get(v, theme.RED)
@@ -1273,7 +1310,7 @@ def report_html(report: dict, grav: dict | None, project, unit: str) -> str:
         # (I25) the drop was not used: say so instead of printing a ratio as if it had been
         parts.append(f"<p><b>Gravity check:</b> <span style='color:{theme.RED}'>not used</span> — "
                      f"{grav.get('why', 'the dropped object did not fall freely on those frames')}. "
-                     "The world keeps camera 1's axes; the note above says what to change.</p>")
+                     f"The world keeps {project.name(0)}'s axes; the note above says what to change.</p>")
     elif grav:
         g_exp = grav.get("g_expected")
         ratio = grav.get("g_ratio")
@@ -1288,7 +1325,8 @@ def report_html(report: dict, grav: dict | None, project, unit: str) -> str:
                             if L_m else "") + "</p>")
         else:
             ratio = float(ratio)
-            gcol = theme.GREEN if abs(ratio - 1) <= 0.03 else ("#FFD60A" if abs(ratio - 1) <= 0.08 else theme.RED)
+            # (G137) the bands the sentences use (wand.py: consistent <= 2 %, suspect > 5 %)
+            gcol = gravity_colour(abs(ratio - 1.0) * 100.0)
             parts.append(f"<p><b>Gravity check:</b> the dropped object accelerated at "
                          f"<span style='color:{gcol}'>{g_meas:.2f} {unit}/s²</span> "
                          f"against the expected {float(g_exp):.2f} {unit}/s² — a ratio of "
@@ -1379,24 +1417,6 @@ class WandWizard(QWizard):
         self.setButtonText(QWizard.FinishButton, "Use this calibration")
 
     def done(self, r):
-        # Wait for any page's worker before the wizard (and then the
-        # interpreter) goes away. A QThread whose Python wrapper is collected
-        # while Qt still owns it takes the process down at exit with
-        # 0xC0000409, which reads as a failed test even though everything
-        # passed. A running solve is CANCELLED first (I36): it stops at its next
-        # step, so the wait is short and never gives up on a thread still running
-        # (the old 15 s cap froze the window, then left the solve running).
-        from PySide6.QtGui import QGuiApplication
-        for pid in self.pageIds():
-            th = getattr(self.page(pid), "_thread", None)
-            if th is None:
-                continue
-            if hasattr(th, "cancel"):
-                th.cancel()
-            if th.isRunning():
-                QGuiApplication.setOverrideCursor(Qt.WaitCursor)
-                try:
-                    th.wait()
-                finally:
-                    QGuiApplication.restoreOverrideCursor()
+        # a running solve is CANCELLED first and waited for (I36, I200): `stop_page_threads`
+        stop_page_threads(self)
         super().done(r)
