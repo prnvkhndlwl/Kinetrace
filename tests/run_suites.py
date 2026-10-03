@@ -40,7 +40,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_spots",
        # the 2026-10-02 code review's regression checks (each fails on the code before its fixes)
        "verify_review_persist", "verify_review_data", "verify_review_3d", "verify_review_calib",
-       "verify_review_body", "verify_review_infra", "verify_review_ui", "verify_review_app1", "verify_review_app3"]
+       "verify_review_body", "verify_review_infra", "verify_review_ui", "verify_review_app1", "verify_review_app3",
+       "verify_review_leftovers"]
 # the synthetic test videos are generated on demand (deterministic; not stored in the repo)
 TEST_VIDEOS = {
     "test600.mp4": ([], None),

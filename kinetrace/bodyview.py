@@ -691,45 +691,14 @@ class _Stopped(Exception):
     """The user pressed Stop before the run had anything to keep (G78)."""
 
 
-class _FrameReader:
-    """One decoder for frames wanted in increasing order (I232, R17): it seeks
-    to the first, skips cheaply between sampled frames, and remembers the FIRST
-    frame it could not read (`failed`). The pose run and the video export each
-    carried a copy of this loop that told a damaged file from a user's Stop by
-    nothing -- the run said 'stopped early', the export said 'written'."""
-
-    def __init__(self, path: str, first: int):
-        from kinetrace.video_source import open_capture
-        self.cap = open_capture(path)
-        if not self.cap.isOpened():
-            self.cap.release()
-            raise BodyRunProblem("could not open " + str(path))
-        self.reset(first)
-
-    def reset(self, first: int) -> None:
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(first))
-        self.nxt = int(first)
-        self.failed: int | None = None
-
-    def read(self, f: int):
-        """Frame `f` (BGR), or None -- then `failed` is the first frame that
-        did not decode. `f` must not be lower than the one before."""
-        if self.failed is not None:
-            return None
-        while self.nxt < f:                              # sampled run: skip cheaply
-            if not self.cap.grab():
-                self.failed = self.nxt
-                return None
-            self.nxt += 1
-        ok, bgr = self.cap.read()
-        if not ok:
-            self.failed = int(f)
-            return None
-        self.nxt = int(f) + 1
-        return bgr
-
-    def release(self) -> None:
-        self.cap.release()
+def _FrameReader(path: str, first: int):
+    """`video_source.FrameReader` (the one shared frame reader, R17), with a failure to open the
+    video as the run's own sentence."""
+    from kinetrace.video_source import FrameReader, VideoOpenError
+    try:
+        return FrameReader(path, first)
+    except VideoOpenError as e:
+        raise BodyRunProblem(str(e)) from None
 
 
 def _prior_boxes(existing: BodyTrack | None, opts: "BodyRunOptions"):

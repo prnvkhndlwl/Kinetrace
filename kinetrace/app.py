@@ -958,6 +958,7 @@ class MainWindow(QMainWindow):
         menu_add.addAction(self.act_add_ball)
         self._place_kind = "point"          # what the next armed click creates: "point" | "ball"
         self._retrack = None                # an automatic epipolar re-track in progress (see _retrack_start)
+        self._stopping_for_close = False    # `_stop_runs_for_close` is running: no window opens meanwhile
         self._retrack_last = None
         self.btn_add.setMenu(menu_add)
 
@@ -1892,6 +1893,7 @@ class MainWindow(QMainWindow):
         self.act_offsets3d.setEnabled(live3d)
         self.act_sync.setEnabled(live3d)
         self.act_recon.setEnabled(live3d)
+        self.act_set_axes.setEnabled(live3d)        # clickable like the others; it explains what it needs
         has_rec = bool(has_cal and self.project is not None and self.project.reconstruction is not None
                        and self.project.reconstruction.per_cam is not None)
         self.act_retrack.setEnabled(has_rec and not tracking)
@@ -3043,7 +3045,7 @@ class MainWindow(QMainWindow):
         self._apply_state()            # multi-camera actions (sync, import calibration) light up
         if added:
             self._refresh_point_list()             # the working camera may have gained landmarks too (I234)
-        self._drop_3d_results("a camera was added", had_3d, had_hull)    # (I206) the camera set changed
+        self._drop_reconstruction("a camera was added", had=had_3d, had_hull=had_hull)    # (I206) the camera set changed
         if getattr(info, "fps_note", ""):
             self.toast.show_message(f"{self.project.name(i)}: {info.fps_note}", "warn", 12000)
         cal = self.project.calibration
@@ -3097,7 +3099,7 @@ class MainWindow(QMainWindow):
         self.grid.set_active(p.active)
         self._apply_active_view(target if target is not None else p.session.current_frame)
         self._enter_camera_tools(add_on)
-        self._drop_3d_results("a camera was removed", had_3d, had_hull)       # (I206)
+        self._drop_reconstruction("a camera was removed", had=had_3d, had_hull=had_hull)       # (I206)
 
     def _set_active_view(self, i: int):
         """Switch the camera being worked on. The playhead follows through the
@@ -3132,7 +3134,10 @@ class MainWindow(QMainWindow):
         self._update_disagreement()            # the band is per camera: recompute for this one
         j = p.session.pid_by_name(keep) if keep is not None else None
         if j is not None:
-            self.point_list.setCurrentRow(j)   # selects it (and shows its epipolar guides)
+            from PySide6.QtCore import QItemSelectionModel
+            # selects it (and shows its epipolar guides); ClearAndSelect: a bare setCurrentRow only
+            # replaces the last selection operation (G66)
+            self.point_list.setCurrentRow(j, QItemSelectionModel.ClearAndSelect)
         for nm in keep_all:
             q = p.session.pid_by_name(nm)
             if q is not None and q < self.point_list.count():
@@ -3240,25 +3245,9 @@ class MainWindow(QMainWindow):
             had_hull = bool(self._hull_cache)
         # (I206) the carved volumes are keyed by reference instant and made with the old
         # timing: dropped on EVERY retime, with or without a 3D result
-        self._drop_3d_results("camera timing changed", had_3d and self.project is not None
-                              and self.project.reconstruction is None, had_hull)
-
-    def _drop_3d_results(self, why: str, had_3d: bool, had_hull: bool) -> None:
-        """The 3D layer's results no longer match the cameras (a camera added or
-        removed, the timing changed): clear the carved volumes, refresh the band, the
-        3D view and the menus, and say what was dropped. `had_3d`: the project dropped
-        its reconstruction (it does that itself); `had_hull`: volumes were carved."""
-        self._hull_cache.clear()
-        if not (had_3d or had_hull):
-            return
-        self._update_disagreement()
-        self._refresh_view3d()
-        self._apply_state()
-        gone = " and ".join(x for x, on in (("the 3D result", had_3d), ("the carved volume", had_hull)) if on)
-        self.statusBar().showMessage(
-            f"{why[:1].upper() + why[1:]}: {gone} made earlier {'were' if ' and ' in gone else 'was'} cleared — "
-            + " and ".join(x for x, on in (("press Ctrl+3 (3D → Reconstruct)", had_3d),
-                                           ("carve with Ctrl+4", had_hull)) if on) + " again", 8000)
+        self._drop_reconstruction("camera timing changed",
+                                  had=had_3d and self.project is not None and self.project.reconstruction is None,
+                                  had_hull=had_hull)
 
     def _align_view_here(self, i: int):
         """Take what camera `i` is showing right now as the match for the active
@@ -3403,12 +3392,24 @@ class MainWindow(QMainWindow):
                 th.wait(10000)
             _retire(th)
         self._body_worker = self._body_video = None
+        # (I197) a pause ends the run "normally": nothing of the video that is going may start a
+        # second pass, the next camera or the next re-track stretch inside the new one (as the close does)
+        self._user_paused = True
+        self._passes = None
+        self._multi = None
+        st = self._retrack
+        if st is not None:
+            st["jobs"] = []
+            self._retrack = None             # its Keep / Undo question is about the project that is going
         if self.worker is not None:
             self.worker.request_pause()
             self.worker.wait(5000)
             _retire(self.worker)
             self.worker = None
+        else:
+            self._user_paused = False        # nothing ran: no pause is pending
         if self._preview is not None:
+            self._preview.cancelled = True   # (I197) between chunks: it ends at once, not after the 15 s wait
             self._preview.wait(15000)
             _retire(self._preview)
             self._preview = None
@@ -3534,6 +3535,12 @@ class MainWindow(QMainWindow):
         if not self._hotkey(ev):
             super().keyPressEvent(ev)
 
+    def _fresh_track_blocked(self):
+        """Why Track cannot start HERE, judged now (G66): the button's verdict is refreshed first, so a
+        semi-automatic F never trusts a stale one."""
+        self._update_track_button()
+        return self._track_blocked
+
     def _hotkey(self, ev) -> bool:
         """The hotkey table. Returns True when the key was one of ours."""
         if self._loading:
@@ -3547,7 +3554,7 @@ class MainWindow(QMainWindow):
             if (self._track_mode == "semi" and self.state == READY
                     and self.session is not None
                     and self.current < self.n_frames - 1
-                    and self._track_blocked is None):
+                    and self._fresh_track_blocked() is None):
                 self._toggle_tracking()             # one step (in every camera with Track ▾ → Every camera)
             else:
                 self._goto(self.current + 1)
@@ -6406,32 +6413,35 @@ class MainWindow(QMainWindow):
         """Move landmark `pid` at this frame onto the other cameras' epipolar
         line(s): the nearest point with one camera, their crossing with two or
         more. Flagged hand-placed, one undo step; Track re-seeds from it."""
-        from kinetrace.calib import intersect_polylines
+        from kinetrace import retrack
         s = self.session
         if s is None or self.state != READY or not (0 <= pid < s.n_points) or s.points[pid].derived:
             return
-        guides = self._epipolar_guides(pid)
-        if not guides:
-            self.statusBar().showMessage(
-                f"{s.points[pid].name}: no other camera has it at this instant (or no calibration)", 6000)
+        p = self.project
+        name = s.points[pid].name
+        none_msg = f"{name}: no other camera has it at this instant (or no calibration)"
+        if not self._guides_ready():
+            self.statusBar().showMessage(none_msg, 6000)
             return
         cur = s.tracks[self.current, pid]
-        near = cur if np.isfinite(cur).all() else np.array([s.width / 2.0, s.height / 2.0])
         info: dict = {}
-        target = intersect_polylines([g[0] for g in guides], near, info)
-        if target is None or not np.isfinite(target).all():
+        # (R14) the hand snap is `retrack.ray_target` with its own rules: polylines cut exactly at the
+        # picture's edges, the observations read at the fractional frame among the calibrated cameras
+        got = retrack.ray_target(p, p.active, name, self.current, margin=0.0, info=info,
+                                 observations=self._observations(name, self.current, exclude=p.active))
+        if got is None:
+            if "outside_px" in info:
+                # the rays cross OUTSIDE this picture: clipping that onto the edge stored
+                # a hand placement where the part is not (I9)
+                self.statusBar().showMessage(
+                    f"{name}: the other cameras put it {info['outside_px']:.0f} px outside this camera's "
+                    f"picture at frame {self.current} — out of the picture means no data here; clear it on "
+                    "this frame instead", 8000)
+            elif not info.get("n_lines"):
+                self.statusBar().showMessage(none_msg, 6000)
             return
-        from kinetrace.retrack import edge_tolerance, outside_by
-        off = outside_by(target, s.width, s.height)
-        if off > edge_tolerance(s.width):
-            # the rays cross OUTSIDE this picture: clipping that onto the edge stored
-            # a hand placement where the part is not (I9)
-            self.statusBar().showMessage(
-                f"{s.points[pid].name}: the other cameras put it {off:.0f} px outside this camera's picture at "
-                f"frame {self.current} — out of the picture means no data here; clear it on this frame instead",
-                8000)
-            return
-        x, y = float(np.clip(target[0], 0, s.width - 1)), float(np.clip(target[1], 0, s.height - 1))
+        n_cams = int(got[1])
+        x, y = float(got[0][0]), float(got[0][1])
         self._undo_snap = s.snapshot()
         s.set_position(self.current, pid, x, y)
         self._refresh_overlay()
@@ -6439,7 +6449,7 @@ class MainWindow(QMainWindow):
         self.act_undo.setEnabled(True)
         moved = float(np.linalg.norm(np.array([x, y]) - cur)) if np.isfinite(cur).all() else float("nan")
         self.statusBar().showMessage(
-            f"{s.points[pid].name} snapped onto {len(guides)} camera{'s' if len(guides) != 1 else ''}' rays at "
+            f"{s.points[pid].name} snapped onto {n_cams} camera{'s' if n_cams != 1 else ''}' rays at "
             f"frame {self.current}" + (f" (moved {moved:.1f} px)" if np.isfinite(moved) else "")
             + (" — the cameras stand in a line, so their rays coincide here: it was moved onto the line "
                "only; check its place ALONG the line by eye" if info.get("mode") == "parallel" else "")
@@ -6673,6 +6683,8 @@ class MainWindow(QMainWindow):
         mode (`_track_step`)."""
         if self.state == TRACKING:
             self._pause_tracking()
+            return
+        if self._loading:                            # (G71) a video / project is opening: nothing starts
             return
         self._update_track_button()                  # the reason must be about THIS frame
         blocked = getattr(self, "_track_blocked", None)
@@ -7515,7 +7527,7 @@ class MainWindow(QMainWindow):
             "spot</b> often follows it better than AllTracker. If it is a mark on an animal you can see, stay with "
             "AllTracker. To find out, click it on 20 frames in a row, then <b>Track ▾ → Test the point models on "
             "my clicks</b>. <b>Click here</b> to read when to use which.", "info", 15000,
-            on_click=lambda: self._show_manual("Which point model should I use?"))
+            on_click=lambda: self._show_manual(MANUAL_WHICH_MODEL))     # (item 3)
 
     TRACKER_TAGS = {"alltracker": "AT", "cotracker3": "CT", "spot": "MS"}
     TRACKER_NAMES = {"alltracker": "AllTracker", "cotracker3": "CoTracker3", "spot": "Moving spot"}
@@ -7789,7 +7801,6 @@ class MainWindow(QMainWindow):
                 nm = (s.points[pid].name if s is not None and 0 <= pid < s.n_points
                       else "the segment" if pid < 0 else f"point {pid}")
                 res.update(fail=fail, pid=pid, why={"exit": f"{nm} left the segment",
-                                                    "apart": f"{nm} too far from the other balls",
                                                     "spot": f"{nm} was not found (Moving spot)"}
                            .get(reason, f"{nm} was lost"))
             st["results"].append(res)
@@ -7857,16 +7868,6 @@ class MainWindow(QMainWindow):
                     "leaves the picture never stops the run.", "warn", 15000)
                 self.statusBar().showMessage(f"Stopped: the ball {name} was lost at frame {fail_frame}", 12000)
                 return
-            if reason == "apart" and self.session and pid < self.session.n_points:
-                from kinetrace.balls import CROP as _BALL_CROP
-                self.toast.show_message(
-                    f"Stopped at frame {fail_frame}: the ball <b>{name}</b> is too far from the other ball "
-                    f"markers to be followed with them (the balls of one run share a {_BALL_CROP}-pixel window). "
-                    "Clicking it again will not help: select this ball alone in the POINTS panel and press "
-                    "Track, then do the same for each other ball.", "warn", 15000)
-                self.statusBar().showMessage(f"Stopped: the ball {name} is too far from the others at frame "
-                                             f"{fail_frame}", 12000)
-                return
             if reason == "spot" and self.session and pid < self.session.n_points:
                 why = spot_ended.get(pid, (fail_frame, "missing"))[1]
                 if why == "ambiguous":
@@ -7928,9 +7929,7 @@ class MainWindow(QMainWindow):
         if ended:
             # auto-pause off: the run went on, but these tracks stopped inside the
             # picture and nothing said so (I127)
-            parts = [f"<b>{s.points[pid].name}</b> at frame {f}"
-                     + (" (too far from the other balls: track it on its own)" if why == "apart" else "")
-                     for pid, f, why in ended]
+            parts = [f"<b>{s.points[pid].name}</b> at frame {f}" for pid, f, why in ended]
             self.toast.show_message(
                 "Ball markers lost inside the picture (auto-pause is off, so the run went on): "
                 + ", ".join(parts) + ". Their tracks end there. Select one, Add ▾ → Ball marker, click it "
@@ -7948,6 +7947,7 @@ class MainWindow(QMainWindow):
         if self._passes is not None and self._multi is None:
             self._passes = None                 # an error ends a two-pass run (G63)
         decode_at = getattr(self.worker, "decode_failed_at", None) if self.worker is not None else None
+        transient = bool(getattr(self.worker, "decode_transient", False)) if self.worker is not None else False
         dl_failed = getattr(self._model_worker, "download_failed", None)
         if self._multi is not None:
             # every camera run so far is kept (one Ctrl+Z still undoes them all);
@@ -7974,6 +7974,15 @@ class MainWindow(QMainWindow):
             # a damaged frame mid-video, not a failure of the model: everything
             # before it was emitted and is kept (I40)
             self._goto(max(0, min(decode_at - 1, self.n_frames - 1)), force=True)
+            if transient:
+                # (I240) a fresh capture reads it: a hiccup (a slow drive), not a damaged file
+                self.toast.show_message(f"Tracking stopped: frame {decode_at} of the video could not be read "
+                                        "just now — press Track again. Everything before it is kept.",
+                                        "warn", 12000)
+                self.statusBar().showMessage(f"Stopped: frame {decode_at} could not be read just now — "
+                                             "press Track again", 12000)
+                QMessageBox.warning(self, "A frame could not be read just now", tb[-1500:])
+                return
             self.toast.show_message(f"Tracking stopped: frame {decode_at} of the video could not be decoded. "
                                     "Everything before it is kept.", "warn", 12000)
             self.statusBar().showMessage(f"Stopped: frame {decode_at} could not be decoded", 12000)
@@ -8301,8 +8310,7 @@ class MainWindow(QMainWindow):
             recovery.write_view(self._project_id, {
                 "state": self._ui_global_state(),
                 "cameras": [{"current_frame": int(x.current_frame),
-                             "ui": {k: x.ui_state.get(k) for k in ("selected", "zoom", "center_x", "center_y",
-                                                                   "user_zoomed", "timeline")}}
+                             "ui": {k: x.ui_state.get(k) for k in projectfile.VIEW_KEYS}}      # (G103)
                             for x in self.project.sessions]}, self._saved_at)
 
     def _project_layout(self) -> str:
@@ -8621,26 +8629,40 @@ class MainWindow(QMainWindow):
         self.toast.show_message("3D points imported: " + "; ".join(notes) + ". Frames are the reference "
                                 f"camera's ({p.name(0)}).", "info", 10000)
 
-    def _drop_reconstruction(self, reason: str = "", replacement=None, had: bool | None = None) -> bool:
-        """(I242) The ONE place the 3D result is dropped (or replaced by an imported one) outside a
-        retime: the volumes carved from it, the magenta disagreement band and its Re-track tooltip,
-        the 3D window and the guides follow; `reason` says why in the status line when there was a
-        result to lose (`had`: it was there before a caller's own change dropped it). True when a
-        result was dropped."""
+    def _drop_reconstruction(self, reason: str = "", replacement=None, had: bool | None = None,
+                             had_hull: bool | None = None) -> bool:
+        """(I242, I206) The ONE place the 3D layer's results are dropped (or the reconstruction is
+        replaced by an imported / re-framed one): the volumes carved from it, the magenta
+        disagreement band and its Re-track tooltip, the 3D window, the guides and the menus follow, and
+        `reason` says why in the status line when there was something to lose. `had`: the result was
+        there before the CALLER's own change, which already dropped it (a retime, a camera added or
+        removed: the project does that itself); None = it is dropped here. `had_hull`: volumes were
+        carved before that change (None = look at the cache now). True when a result was dropped."""
         p = self.project
         if p is None:
             return False
         if had is None:
             had = p.reconstruction is not None
-        p.reconstruction = replacement
+            p.reconstruction = replacement
+        elif replacement is not None:
+            p.reconstruction = replacement
+        if had_hull is None:
+            had_hull = bool(self._hull_cache)
         self._hull_cache.clear()
+        if replacement is None and not (had or had_hull):
+            return False
         self._update_disagreement()
         self._refresh_view3d(force=True)
         self._refresh_guides()
-        if had and replacement is None and reason:
-            self.statusBar().showMessage(f"The 3D result was cleared: {reason} — press Ctrl+3 (3D → "
-                                         "Reconstruct) again", 8000)
-        return had and replacement is None
+        self._apply_state()
+        dropped = had and replacement is None
+        if reason and (dropped or had_hull):
+            gone = " and ".join(x for x, on in (("the 3D result", dropped), ("the carved volume", had_hull)) if on)
+            self.statusBar().showMessage(
+                f"{reason[:1].upper() + reason[1:]}: {gone} made earlier {'were' if ' and ' in gone else 'was'} "
+                "cleared — " + " and ".join(x for x, on in (("press Ctrl+3 (3D → Reconstruct)", dropped),
+                                                            ("carve with Ctrl+4", had_hull)) if on) + " again", 8000)
+        return dropped
 
     def _import_offsets(self):
         """File -> Import -> Camera Offsets: offsets and rates from a CSV."""
@@ -9549,7 +9571,7 @@ class MainWindow(QMainWindow):
         p = self.project
         masks = []
         for c, s in enumerate(p.sessions):
-            f = int(round(p.local_frame(c, t)))
+            f = int(p.local_index(c, t))        # map_frame's tie rule, not Python's half-to-even (I258)
             masks.append(s.masks.rasterize(f, s.height, s.width)
                          if s.masks is not None and s.masks.has(f) else None)
         return masks
@@ -9786,7 +9808,7 @@ class MainWindow(QMainWindow):
                 "the silhouette.", "warn", 8000)
         else:
             self.toast.show_message(f"{merged.summary()}. {note}".strip(), "info", 8000)
-            if self.body_win is None:
+            if self.body_win is None and not self._stopping_for_close:      # not while the window closes
                 self.act_body_view.setChecked(True)
                 self._toggle_body_view(True)
         self.timeline.update()
@@ -10415,6 +10437,13 @@ class MainWindow(QMainWindow):
         question, I198), the overlay render, an unfinished re-track (put back), the mask preview. Every
         thread waited for goes through _retire: one that outlives its wait is kept until it ends, never
         dropped running (the I112 / I133 abort)."""
+        self._stopping_for_close = True        # a Body result landing now is merged, but opens no window
+        try:
+            self._stop_runs_for_close_steps()
+        finally:
+            self._stopping_for_close = False
+
+    def _stop_runs_for_close_steps(self) -> None:
         # (I197) nothing may START during the close: the pause below ends the run "normally", and a
         # second pass of a two-pass run or the next re-track stretch used to begin inside closeEvent
         self._user_paused = True

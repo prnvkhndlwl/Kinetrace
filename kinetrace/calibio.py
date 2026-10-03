@@ -654,11 +654,13 @@ def load_kcal(path):
     return cal
 
 
-def dlt_csv_matlab(cal, path) -> None:
+def dlt_csv_matlab(cal, path, pixel_origin_out: float = 1.0) -> None:
     """dltCoefs.csv for DLTdv / easyWand users: 11 rows, one column per camera,
     converted to MATLAB's 1-based pixels when the calibration was fitted on
-    0-based ones (u' = u + 1: L1..L3 += L9..L11, L4 += 1; same for v)."""
-    cols = [c.coefs_for_origin(1.0) for c in cal.cameras]       # (R14) the one pixel-convention shift
+    0-based ones (u' = u + 1: L1..L3 += L9..L11, L4 += 1; same for v).
+    `pixel_origin_out` = the convention written (1.0 = MATLAB, 0.0 = Kinetrace's own); (R20)
+    `wand.export_dlt_csv` is this function."""
+    cols = [c.coefs_for_origin(pixel_origin_out) for c in cal.cameras]       # (R14) the one pixel-convention shift
     np.savetxt(str(path), np.stack(cols, axis=1), delimiter=",", fmt="%.12g")
 
 # ------------------------------------------------------------------ lens profiles
@@ -690,8 +692,26 @@ def write_lens(profile, path) -> None:
 
 def read_lens(path, view: int = 0):
     """A lens profile: Kinetrace .klens.json, OpenCV .yml / .json, or an Argus
-    profile (.txt; the line for camera `view`)."""
-    import cv2
+    profile (.txt; the line for camera `view`). (R19) The dispatch is
+    `lens.read_lens_for` -- the one both wizards use; the structured formats come
+    back here through `read_lens_file`."""
+    from kinetrace import lens
+    name = Path(path).name
+    if not Path(path).is_file():
+        raise CalibFormatError(f"{name}: cannot be read (no such file)")
+    try:
+        prof, why = lens.read_lens_for(path, view)
+    except ValueError as e:                              # an Argus text that has no camera lines
+        raise CalibFormatError(f"{name}: not a lens file Kinetrace reads (.klens.json, OpenCV .yml / .json, "
+                               f"Argus .txt) ({e})") from None
+    if prof is None:
+        raise CalibFormatError(why)
+    return prof
+
+
+def read_lens_file(path):
+    """The structured lens formats (called by `lens.read_lens_for`): Kinetrace .klens.json or
+    an OpenCV FileStorage .yml / .yaml / .xml / .json, read by content."""
     from kinetrace import lens
     name = Path(path).name
     if not Path(path).is_file():
@@ -701,11 +721,6 @@ def read_lens(path, view: int = 0):
             return lens.LensProfile.load(path)          # Kinetrace's own (.klens.json)
         except (ValueError, KeyError, TypeError):
             pass                                        # else an OpenCV FileStorage JSON
-    if Path(path).suffix.lower() == ".txt":
-        prof, why = lens.argus_profile_for(path, view)
-        if prof is None:
-            raise CalibFormatError(why)
-        return prof
     try:
         fs = _fs_read(path)                          # (I222) by content: non-ASCII paths, a missing file said as missing
     except CalibFormatError as e:
@@ -776,8 +791,9 @@ def read_offsets(path, project) -> OffsetRows:
     except ProjectFileError as e:
         raise CalibFormatError(str(e)) from None
     out = OffsetRows()
-    by_name = {project.name(i): i for i in range(project.n_views)}
-    for k in range(n):
+    all_names = [project.name(i) for i in range(project.n_views)]
+    by_name = {nm: i for i, nm in enumerate(all_names) if all_names.count(nm) == 1}     # (I223) a name two
+    for k in range(n):                                  # cameras share tells nothing: those go by camera number
         v = None
         if cols.get("name") is not None and cols["name"][k] in by_name:
             v = by_name[cols["name"][k]]

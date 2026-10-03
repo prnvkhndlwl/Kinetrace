@@ -318,6 +318,52 @@ def open_capture(path: str) -> cv2.VideoCapture:
     return cv2.VideoCapture(path)
 
 
+class VideoOpenError(RuntimeError):
+    """A video that could not be opened; the message is a sentence."""
+
+
+class FrameReader:
+    """One decoder for frames wanted in increasing order (I232, R17): it seeks to
+    the first, skips cheaply between sampled frames, and remembers the FIRST frame
+    it could not read (`failed`). The pose run, the side-by-side export and the
+    overlay export each carried a copy of this loop; none could tell a damaged
+    file from a user's Stop, so a run said 'stopped early' and an export said
+    'written'. One per thread (a VideoCapture is not thread-safe); `cap` is
+    exposed for the properties (fps, size)."""
+
+    def __init__(self, path: str, first: int = 0):
+        self.cap = open_capture(str(path))
+        if not self.cap.isOpened():
+            self.cap.release()
+            raise VideoOpenError("could not open " + str(path))
+        self.reset(first)
+
+    def reset(self, first: int) -> None:
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(first))
+        self.nxt = int(first)
+        self.failed: int | None = None
+
+    def read(self, f: int):
+        """Frame `f` (BGR), or None -- then `failed` is the first frame that
+        did not decode. `f` must not be lower than the one before."""
+        if self.failed is not None:
+            return None
+        while self.nxt < f:                              # sampled run: skip cheaply
+            if not self.cap.grab():
+                self.failed = self.nxt
+                return None
+            self.nxt += 1
+        ok, bgr = self.cap.read()
+        if not ok:
+            self.failed = int(f)
+            return None
+        self.nxt = int(f) + 1
+        return bgr
+
+    def release(self) -> None:
+        self.cap.release()
+
+
 class VideoSource:
     """Sequential + random frame access. One instance per thread."""
 

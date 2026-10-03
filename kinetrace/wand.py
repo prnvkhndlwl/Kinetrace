@@ -1420,20 +1420,9 @@ def export_dlt_csv(res_or_cal, path, pixel_origin_out: float = 1.0) -> None:
     """Write a DLTdv / easyWand style `dltCoefs.csv`: 11 rows, one column per
     camera, no header. The coefficients are converted to `pixel_origin_out`
     (1.0 = MATLAB pixels): with u' = u + d the numerator gains d x the
-    denominator, i.e. L1..3 += d L9..11, L4 += d (and the v row likewise)."""
-    cams = res_or_cal.cameras
-    cols = []
-    for cam in cams:
-        L = np.asarray(cam.coefs, np.float64).reshape(11).copy()
-        d = float(pixel_origin_out) - float(getattr(cam, "pixel_origin", 0.0))
-        if d != 0.0:
-            L[0:3] += d * L[8:11]
-            L[3] += d
-            L[4:7] += d * L[8:11]
-            L[7] += d
-        cols.append(L)
-    M = np.stack(cols, axis=1)
-    lines = [",".join(f"{v:.12g}" for v in row) for row in M]
-    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
+    denominator, i.e. L1..3 += d L9..11, L4 += d (and the v row likewise).
+    (R20) One writer: `calibio.dlt_csv_matlab`."""
+    from .calibio import dlt_csv_matlab
+    dlt_csv_matlab(res_or_cal, path, pixel_origin_out)
 
 

@@ -361,6 +361,18 @@ def hf_cached(repo: str) -> bool:
     return any((hub / rev).glob("*.safetensors")) if (hub / rev).is_dir() else False
 
 
+def hf_token() -> str:
+    """The Hugging Face token saved in Settings (models/hf/token, the file `segmenter.save_token`
+    writes), '' when there is none or HF_TOKEN is set (the Hub reads that itself). A gated SAM 3
+    download needs it whichever HF_HOME the user's environment has (I195)."""
+    if os.environ.get("HF_TOKEN"):
+        return ""
+    try:
+        return (MODELS_DIR / "hf" / "token").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def hf_snapshot(repo: str, label: str, progress=None, cancel=lambda: False) -> None:
     """Download `repo` at its pinned commit into models/hf, reporting bytes
     (the Hub's own progress bars, re-routed) and stoppable between chunks."""
@@ -393,8 +405,12 @@ def hf_snapshot(repo: str, label: str, progress=None, cancel=lambda: False) -> N
         def display(self, *a, **k):
             return None
 
+    kw = {}
+    tok = hf_token()
+    if tok:
+        kw["token"] = tok
     try:
-        snapshot_download(repo, revision=hf_revision(repo), tqdm_class=_Bar, cache_dir=hf_cache_dir())
+        snapshot_download(repo, revision=hf_revision(repo), tqdm_class=_Bar, cache_dir=hf_cache_dir(), **kw)
     except DownloadCancelled:
         raise
     except Exception as e:  # noqa: BLE001 - the Hub's many errors, as one sentence
