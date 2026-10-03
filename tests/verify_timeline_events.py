@@ -264,10 +264,9 @@ print("event ribbon jump OK (incl. single-frame ribbon hit)")
 c2 = win.canvas
 c2._press_scene = QPointF(50, 50)
 c2._press_view = QPointF(50, 50)
-c2._circle_active = True
-c2._dragging = 0
+c2._g, c2._gbutton = "circle", Qt.LeftButton      # R5: one gesture state (was _circle_active / _dragging flags)
 c2.set_interactive(False)
-assert c2._press_scene is None and c2._dragging is None and not c2._circle_active, \
+assert c2._press_scene is None and c2._g == "none", \
     "set_interactive(False) must cancel in-flight gestures"
 c2.set_interactive(True)
 print("gesture cancel on disable OK")

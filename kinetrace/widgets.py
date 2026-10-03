@@ -1,22 +1,54 @@
-"""Small reusable UI pieces: toast notifications and the settings dialog.
+"""Small reusable UI pieces: the toast, the loading card, the elided label, the
+onboarding strip, the in-app manual and the settings dialog.
 
 Toast: a non-blocking message that floats over the video for a few seconds
 — for things the user must not miss (auto-pause, a model download, an error)
 without a modal dialog stealing focus mid-work. The status bar keeps the
-transient chatter; toasts are for the important stuff.
+transient chatter; toasts are for the important stuff. LoadingOverlay: the
+card shown while videos / a project open (G31).
 """
 from __future__ import annotations
 
+import html
+import re
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
-from PySide6.QtGui import QIcon, QTextCursor
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QIcon, QTextCursor
+from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                                QPushButton, QSlider, QTextBrowser, QToolButton, QVBoxLayout,
                                QWidget)
 
 from kinetrace import theme
+
+# a notice that carries HTML markup: the tags the app's notices use, so an error text with
+# a "<class 'x'>" in it is still shown as typed
+_TAG = re.compile(r"</?(?:b|i|u|em|strong|code|tt|br|p|a|span|ul|ol|li|h[1-6])\b[^<>]*>", re.I)
+
+
+class WheelSteps:
+    """Mouse-wheel notches from `angleDelta().y()` (120 units a notch). A
+    horizontal swipe has y == 0 and gives nothing (it used to read as "zoom
+    out", G131); a touchpad's small deltas add up until they make a notch."""
+
+    NOTCH = 120
+
+    def __init__(self):
+        self._acc = 0
+
+    def take(self, ev) -> int:
+        """Whole notches this event completes: + = wheel up / away, - = down, 0 = none."""
+        dy = ev.angleDelta().y()
+        if dy == 0:
+            return 0
+        if self._acc * dy < 0:               # the other way: start over
+            self._acc = 0
+        self._acc += dy
+        n = int(self._acc / self.NOTCH)      # towards zero
+        self._acc -= n * self.NOTCH
+        return n
+
 
 LEVEL_RANK = {"info": 0, "success": 1, "warn": 2, "error": 3}
 LEVEL_COLORS = {
@@ -39,42 +71,56 @@ class Toast(QLabel):
         self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("click to dismiss")
+        self.setTextFormat(Qt.RichText)
         self._level = "info"
-        self._action = None                 # what a click does besides closing (G39)
-        self._action_text = ""              # the notice that owns it
+        # the notices on screen, oldest first: [text, level, action] -- the action
+        # is what a click does besides closing (G39) and stays with ITS notice
+        self._notices: list[list] = []
         self.hide()
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.hide)
         host.installEventFilter(self)
 
+    SHOWN = 2          # notices kept on screen together: the latest two (G10)
+
+    @staticmethod
+    def _rich(text: str) -> str:
+        """A notice as rich text: HTML one stays as it is, a plain one is escaped
+        (its '<' / '&' shown as typed) with its line breaks kept (G89)."""
+        return text if _TAG.search(text) else html.escape(text, quote=False).replace("\n", "<br>")
+
     def show_message(self, text: str, level: str = "info", ms: int = 6000, on_click=None) -> None:
         """`on_click` = what clicking the notice does (then it closes); without
         one a click only closes it (G39: a notice that says what can be done
         should do it when clicked)."""
-        own = text
         # a second notice while one is still up used to REPLACE it, so the
         # first (often the verdict) was never read (G10): keep the latest two
-        prev = self.text() if (self.isVisible() and self._timer.isActive()) else ""
-        kept = ""
-        if prev and text not in prev.split("\n\n"):
-            kept = prev.split("\n\n")[-1]
-            text = kept + "\n\n" + text
+        live = self.isVisible() and self._timer.isActive()
+        if not live:
+            self._notices = []
+        else:
             ms = max(ms, self._timer.remainingTime())
-            if LEVEL_RANK.get(self._level, 0) > LEVEL_RANK.get(level, 0):
-                level = self._level
-        if on_click is not None:
-            self._action, self._action_text = on_click, own
-        elif not (kept and kept == self._action_text):
-            self._action, self._action_text = None, ""   # the notice with the action is gone
-        self.setToolTip("click to open it" if self._action is not None else "click to dismiss")
+        for n in self._notices:
+            if n[0] == text:             # the same notice again: refresh ITS entry, not the pair (G89)
+                n[1] = level
+                if on_click is not None:
+                    n[2] = on_click
+                break
+        else:
+            self._notices.append([text, level, on_click])
+            del self._notices[:-self.SHOWN]
+        # the colour is the most severe of the notices SHOWN, not of one that scrolled out
+        level = max((n[1] for n in self._notices), key=lambda lv: LEVEL_RANK.get(lv, 0))
+        has_action = any(n[2] is not None for n in self._notices)
+        self.setToolTip("click to open it" if has_action else "click to dismiss")
         self._level = level
         bg, fg, edge = LEVEL_COLORS.get(level, LEVEL_COLORS["info"])
         self.setStyleSheet(
             f"QLabel {{ background: {bg}; color: {fg}; border: 1px solid {theme.HAIRLINE};"
             f" border-left: 4px solid {edge}; border-radius: 6px; padding: 8px 14px;"
             f" font-size: 10pt; }}")
-        self.setText(text)
+        self.setText("<br><br>".join(self._rich(n[0]) for n in self._notices))
         self._place()
         self.show()
         self.raise_()
@@ -82,7 +128,8 @@ class Toast(QLabel):
 
     def mousePressEvent(self, ev):
         self.hide()
-        action, self._action, self._action_text = self._action, None, ""
+        action = next((n[2] for n in reversed(self._notices) if n[2] is not None), None)
+        self._notices = []
         if action is not None:
             QTimer.singleShot(0, action)      # after the press is over: it may open a dialog
 
@@ -256,9 +303,6 @@ class LoadingOverlay(QWidget):
         self._cancel_cb = None
         self.set_passive(False)
         self.hide()
-
-    def is_busy(self) -> bool:
-        return self._busy
 
     # ------------------------------------------------------------ internals
 
@@ -483,6 +527,9 @@ class ManualDialog(QDialog):
         self.contents.setMaximumWidth(250)
         self.contents.setToolTip("Jump to a section")
         self.contents.currentRowChanged.connect(self._jump)
+        # the current entry clicked again must jump too (currentRowChanged does not
+        # fire for it: after scrolling away the same entry did nothing, G130)
+        self.contents.itemClicked.connect(lambda item: self._jump(self.contents.row(item)))
         lay.addWidget(self.contents)
 
         right = QVBoxLayout()
@@ -550,6 +597,15 @@ class ManualDialog(QDialog):
             self._scroll_to(int(item.data(Qt.UserRole)))
 
     def _on_anchor(self, url) -> None:
+        # a link with no fragment (the manual's file link) is not an in-document
+        # jump: open it, resolved against the manual's own folder (G130)
+        if url.scheme() or url.path():
+            target = url
+            if url.isRelative() or url.scheme() == "file":
+                local = url.toLocalFile() if url.scheme() == "file" else url.path()
+                target = QUrl.fromLocalFile(str((MANUAL_PATH.parent / local).resolve()))
+            QDesktopServices.openUrl(target)
+            return
         frag = url.fragment() or url.toString().lstrip("#")
         pos = self._anchors.get(_slug(frag))
         if pos is not None:

@@ -100,6 +100,7 @@ class _CameraRow(QWidget):
         self.spin.setFocusPolicy(Qt.ClickFocus)
         self.spin.editingFinished.connect(self.spin.clearFocus)
         row.addWidget(self.spin)
+        self.nudges: list[QToolButton] = []
         for text, delta, tip in (("◂", -1, "one frame earlier"), ("▸", +1, "one frame later")):
             b = QToolButton()
             b.setText(text)
@@ -107,6 +108,7 @@ class _CameraRow(QWidget):
             b.setProperty("compact", True)       # theme: tight padding, the row must fit the panel
             b.clicked.connect(lambda _=False, d=delta: self.spin.setValue(self.spin.value() + d))
             row.addWidget(b)
+            self.nudges.append(b)
         self.rate = QLabel("")                # "×2" for a camera at twice the reference rate
         self.rate.setStyleSheet(f"color: {theme.TEXT_DIM};")
         self.rate.setToolTip("Frames of this camera per frame of the reference camera\n"
@@ -151,6 +153,8 @@ class _CameraRow(QWidget):
         # one you happen to be working in — its offset means the same thing
         # either way ("its frame when the reference is at frame 0").
         self.spin.setEnabled(not reference)
+        for b in self.nudges:               # the arrows only move the box: off with it (G128)
+            b.setEnabled(not reference)
         self.spin.setToolTip(
             "This camera is the reference: every other offset is measured\n"
             "against it, so it is 0 by definition. To retime the set, change\n"

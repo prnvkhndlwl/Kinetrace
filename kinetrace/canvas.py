@@ -17,8 +17,10 @@ Gestures (active only when interaction is enabled; G59, owner 2026-10-02):
 Add (N) armed: click = a new point (or continue the selected one), drag = a
 circle region tracked as a group (Add ▾ picks circle / rectangle / polygon: a
 rectangle is a drag, a polygon is click-click-click + Enter).
-Segment tool (A, armed): click = "this is the segment", Shift+click = "not the
+Segment tool (S, armed): click = "this is the segment", Shift+click = "not the
 segment", drag = box around it; right-click a prompt marker to remove it.
+One gesture at a time (`_g`: none / pan / plain / armed / circle / rect / poly /
+animal / box / rpress); a gesture whose mouse button is no longer held is dropped.
 Overlays: the segment's silhouette (translucent fill + outline), its midline,
 prompt markers, and skeleton bones between landmarks. Motion overlays (one
 `_MotionOverlay` item per canvas): fading trajectory trails (past solid,
@@ -36,9 +38,11 @@ import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QCursor, QImage, QPainter, QPainterPath, QPen,
                            QPixmap, QPolygonF, QTransform)
-from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem,
+from PySide6.QtWidgets import (QApplication, QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem,
                                QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene,
                                QGraphicsSimpleTextItem, QGraphicsView, QLabel, QMenu)
+
+from kinetrace.widgets import WheelSteps
 
 HIT_RADIUS_PX = 14      # screen px within which a click grabs a point
 MARKER_RADIUS = 3.0     # screen px (3 by default, was 7)
@@ -290,7 +294,17 @@ class _Loupe(QLabel):
         half_x, half_y = win / sx / 2, win / sy / 2
         src = QRect(int(round(cx - half_x)), int(round(cy - half_y)),
                     max(2, int(round(2 * half_x))), max(2, int(round(2 * half_y))))
-        crop = pixmap.copy(src)
+        # the crop is ALWAYS src-sized: near the picture's edge the part that is
+        # outside stays black and the visible part sits at its offset. QPixmap.copy
+        # of a rect past the edge returns a smaller image, which scaled to the
+        # loupe stretched it and put the crosshair ~10 native px off (G85)
+        crop = QPixmap(src.size())
+        crop.fill(QColor(0, 0, 0))
+        vis = src.intersected(pixmap.rect())
+        if not vis.isEmpty():
+            p0 = QPainter(crop)
+            p0.drawPixmap(vis.topLeft() - src.topLeft(), pixmap.copy(vis))
+            p0.end()
         img = crop.scaled(LOUPE_PX, LOUPE_PX, Qt.IgnoreAspectRatio, Qt.FastTransformation)
         painter = QPainter(img)
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -405,8 +419,8 @@ class VideoCanvas(QGraphicsView):
     region_requested = Signal(str, object)         # ("rect" | "polygon", [[x, y], ...]) armed drag / clicks
     occluded_toggled = Signal(int, bool)           # (pid, hidden on this frame)
     point_selected = Signal(int)
-    point_moved = Signal(int, float, float)        # live while dragging
-    move_committed = Signal(int, float, float)     # on release
+    point_moved = Signal(int, float, float)        # never emitted since G59 (markers are not dragged); app.py still connects it
+    move_committed = Signal(int, float, float)     # never emitted since G59; app.py still connects it
     reposition_requested = Signal(float, float)    # Ctrl+click
     clear_frame_requested = Signal(int)            # right click on a marker: clear it on this frame (G59)
     delete_requested = Signal(int)
@@ -452,7 +466,6 @@ class VideoCanvas(QGraphicsView):
         self._native_size: tuple[int, int] | None = None  # (w, h)
         self._marker_radius = MARKER_RADIUS  # screen px, user-adjustable
         self._markers: list[_Marker] = []
-        self._trails: list[QGraphicsPathItem] = []
         self._regions: list[QGraphicsPathItem] = []       # dashed region outlines (circle/rect/polygon)
         self._occluded = np.zeros(0, bool)
         self._region_shape = "circle"       # Add ▾: what an armed drag draws
@@ -472,62 +485,55 @@ class VideoCanvas(QGraphicsView):
         self._interactive = True
         self._switchable = False   # a view-only companion a click switches to (pointing hand, not busy)
         self._user_zoomed = False
-        self._follow_enabled = True   # mirrors the ⌖ Follow toggle
+        self._follow_enabled = False  # mirrors the ⌖ Follow toggle (off by default: the view moves only when asked)
         self._selected: int | None = None
-        self._dragging: int | None = None
-        self._drag_moved = False
-        self._panning = False
         self._pan_mode = False   # ✋: left-drag pans instead of editing points
         self._place_mode = False  # N: next click places a point (crosshair)
         self._click_only = False  # ball marker: armed clicks ignore the region shape
-        self._plain_press = False  # unarmed left press on the video (annotate on release, pan on a move)
-        self._press_hit: int | None = None   # the marker under an unarmed left press, if any
-        # right press on a marker: a click clears it on this frame, a long press opens its menu (G59)
-        self._rpress: tuple | None = None    # (pid, global pos) while the right button is down
+        # THE gesture in progress (R5): exactly one at a time, so a lost release
+        # cannot leave a second flag behind. A gesture that owns a mouse button
+        # (`_gbutton`) ends the moment that button is no longer held.
+        #   pan    middle drag / ✋ drag / a plain press that moved
+        #   plain  unarmed left press: a click places the SELECTED point, a move pans (G59)
+        #   armed  armed (N) left press: a click adds a point / continues one
+        #   circle / rect   an armed press that moved: a region group is being drawn
+        #   poly   polygon corners being clicked (Enter / double-click closes; no button held)
+        #   animal / box    segment tool press / its drag (S)
+        #   rpress right press on a marker: a click clears it here, a long press opens its menu (G59)
+        self._g = "none"
+        self._gbutton = Qt.NoButton
+        self._pan_last = QPointF()
+        self._press_scene: QPointF | None = None      # native px of the press (clamped onto the picture)
+        self._press_view: QPointF | None = None       # viewport px of the press
+        self._press_hit: int | None = None            # the marker under an unarmed left press, if any
+        self._press_shift = False                     # Shift at the press (segment tool: "not the segment", G86)
+        self._rpress: tuple | None = None             # (pid, global pos) while the right button is down
         self._rpress_timer = QTimer(self)
         self._rpress_timer.setSingleShot(True)
         self._rpress_timer.setInterval(LONG_PRESS_MS)
         self._rpress_timer.timeout.connect(self._on_long_right_press)
-        self._animal_mode = False  # A: clicks/boxes prompt the animal segmentation
-        self._pan_last = QPointF()
+        self._animal_mode = False  # S: clicks/boxes prompt the animal segmentation
+        self._wheel = WheelSteps()
+        self._cursor_view: QPointF | None = None      # last cursor position over the viewport (the loupe, G85)
         self._positions = np.zeros((0, 2), np.float32)
         self._metas: list = []
         self._bones: list[tuple[int, int]] = []
         self._mask_rect: QRectF | None = None   # segment bbox on this frame (follow target)
-        # deferred click / circle-drag gesture state
-        self._press_scene: QPointF | None = None
-        self._press_view: QPointF | None = None
-        self._circle_active = False
-        self._circle_preview = QGraphicsEllipseItem()
+        # previews of the gesture being drawn: circle, segment box, rectangle, polygon
         pen = QPen(QColor(255, 255, 255, 200), 1.5, Qt.DashLine)
         pen.setCosmetic(True)
-        self._circle_preview.setPen(pen)
-        self._circle_preview.setBrush(QBrush(QColor(255, 255, 255, 30)))
-        self._circle_preview.setZValue(20)
-        self._circle_preview.setVisible(False)
-        self._scene.addItem(self._circle_preview)
-        # animal tool: box-drag preview
-        self._box_active = False
-        self._box_preview = QGraphicsRectItem()
-        self._box_preview.setPen(pen)
-        self._box_preview.setBrush(QBrush(QColor(255, 255, 255, 25)))
-        self._box_preview.setZValue(20)
-        self._box_preview.setVisible(False)
-        self._scene.addItem(self._box_preview)
-        # armed rectangle / polygon region previews
-        self._rect_preview = QGraphicsRectItem()
-        self._rect_preview.setPen(pen)
-        self._rect_preview.setBrush(QBrush(QColor(255, 255, 255, 30)))
-        self._rect_preview.setZValue(20)
-        self._rect_preview.setVisible(False)
-        self._scene.addItem(self._rect_preview)
-        self._poly_preview = QGraphicsPathItem()
-        self._poly_preview.setPen(pen)
-        self._poly_preview.setBrush(QBrush(QColor(255, 255, 255, 30)))
-        self._poly_preview.setZValue(20)
-        self._poly_preview.setVisible(False)
-        self._scene.addItem(self._poly_preview)
-        self._rect_active = False
+
+        def preview(item, alpha: int):
+            item.setPen(pen)
+            item.setBrush(QBrush(QColor(255, 255, 255, alpha)))
+            item.setZValue(20)
+            item.setVisible(False)
+            self._scene.addItem(item)
+            return item
+        self._circle_preview = preview(QGraphicsEllipseItem(), 30)
+        self._box_preview = preview(QGraphicsRectItem(), 25)
+        self._rect_preview = preview(QGraphicsRectItem(), 30)
+        self._poly_preview = preview(QGraphicsPathItem(), 30)
         # motion overlay (trails + onion skin) and the loupe
         self._motion = _MotionOverlay()
         self._scene.addItem(self._motion)
@@ -541,6 +547,10 @@ class VideoCanvas(QGraphicsView):
         self._stale.setVisible(False)
         self._scene.addItem(self._stale)
         self._loupe = _Loupe(self.viewport())
+        # the loupe shows what is under a STILL cursor too: it redraws when the picture
+        # slides under it (scroll) or changes (frame, points, filter, zoom; G85)
+        self.horizontalScrollBar().valueChanged.connect(self._refresh_loupe)
+        self.verticalScrollBar().valueChanged.connect(self._refresh_loupe)
         self.viewport().setMouseTracking(True)
         self.setMouseTracking(True)
         # animal overlays: silhouette, midline, prompt markers, skeleton bones
@@ -681,8 +691,11 @@ class VideoCanvas(QGraphicsView):
             return
         path = QPainterPath()
         n = len(self._positions)
+
+        def shown(i: int) -> bool:           # a landmark ticked off in POINTS has no bones (G129)
+            return i >= len(self._metas) or bool(getattr(self._metas[i], "display", True))
         for a, b in self._bones:
-            if a < n and b < n and np.isfinite(self._positions[a]).all() \
+            if a < n and b < n and shown(a) and shown(b) and np.isfinite(self._positions[a]).all() \
                     and np.isfinite(self._positions[b]).all():
                 path.moveTo(float(self._positions[a][0]), float(self._positions[a][1]))
                 path.lineTo(float(self._positions[b][0]), float(self._positions[b][1]))
@@ -693,12 +706,14 @@ class VideoCanvas(QGraphicsView):
         self._bones_item.setVisible(not path.isEmpty())
 
     def set_animal_mode(self, enabled: bool) -> None:
-        """A: clicks and box-drags prompt the segment segmentation instead of
+        """S: clicks and box-drags prompt the segment segmentation instead of
         editing points. Stays armed until toggled off (several clicks are
         normal when refining a mask)."""
         self._animal_mode = enabled
         if enabled:
             self._place_mode = False
+            if self._g == "poly":
+                self.cancel_gesture()
         else:
             self.cancel_gesture()
         self._update_cursor()
@@ -730,11 +745,13 @@ class VideoCanvas(QGraphicsView):
             self._pixitem.setTransform(QTransform().scale(nw / w, nh / h))
         else:
             self._pixitem.setTransform(QTransform())
+        self._refresh_loupe()
 
     def fit(self) -> None:
         if self._native_size:
             self.fitInView(QRectF(-0.5, -0.5, *self._native_size), Qt.KeepAspectRatio)
             self._user_zoomed = False
+            self._refresh_loupe()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -747,9 +764,11 @@ class VideoCanvas(QGraphicsView):
         self._interactive = enabled
         if not enabled:
             # a gesture must not survive into TRACKING: its release would
-            # commit an edit at whatever frame the render tick reached
-            self.cancel_gesture()
+            # commit an edit at whatever frame the render tick reached (a pan is
+            # view-only and goes on)
+            self.cancel_gesture(keep_pan=True)
         self._update_cursor()
+        self._refresh_loupe()
 
     def set_switchable(self, on: bool) -> None:
         """A view-only companion that a click makes the working camera: it shows
@@ -764,6 +783,7 @@ class VideoCanvas(QGraphicsView):
         if enabled:
             self.cancel_gesture()
         self._update_cursor()
+        self._refresh_loupe()
 
     def set_place_mode(self, enabled: bool) -> None:
         """N: arm point placement. A stray click must never edit the data —
@@ -803,13 +823,16 @@ class VideoCanvas(QGraphicsView):
             rgb, prev = self._raw_rgb, self._prev_rgb
             shown = apply_display_filter(rgb, kind, prev) if kind != "none" else rgb
             self._pixitem.setPixmap(QPixmap.fromImage(np_to_qimage(shown)))
+            self._refresh_loupe()
 
     def display_filter(self) -> str:
         return self._display_filter
 
     def set_loupe(self, enabled: bool) -> None:
         self._loupe_enabled = bool(enabled)
-        if not enabled:
+        if enabled:
+            self._refresh_loupe()
+        else:
             self._loupe.hide()
 
     def set_trails(self, length: int, future: bool) -> None:
@@ -837,14 +860,25 @@ class VideoCanvas(QGraphicsView):
         self.region_requested.emit("polygon", pts)
         return True
 
+    def _refresh_loupe(self, *_) -> None:
+        """Redraw the loupe at the last cursor position (the cursor did not move, the
+        picture, the markers, the zoom or the scroll did), or hide it when the cursor
+        is gone or interaction is revoked (G85)."""
+        if not self._loupe_enabled:
+            return
+        if self._cursor_view is None:
+            self._loupe.hide()
+            return
+        self._update_loupe(self._cursor_view, self.mapToScene(self._cursor_view.toPoint()))
+
     def _update_loupe(self, view_pos, scene_pt: QPointF) -> None:
         if not (self._loupe_enabled and self._interactive and self._native_size
-                and not self._pan_mode and self._in_video(scene_pt)):
+                and not self._pan_mode and self._g != "pan" and self._in_video(scene_pt)):
             self._loupe.hide()
             return
         marker = None
         color = None
-        pid = self._dragging if self._dragging is not None else self._selected
+        pid = self._selected
         if pid is not None and pid < len(self._positions) and np.isfinite(self._positions[pid]).all():
             marker = QPointF(float(self._positions[pid][0]), float(self._positions[pid][1]))
             if pid < len(self._metas):
@@ -960,10 +994,7 @@ class VideoCanvas(QGraphicsView):
         mo.update()
         self._draw_bones()
         self._apply_follow()
-
-    def update_marker(self, pid: int, x: float, y: float) -> None:
-        if 0 <= pid < len(self._markers):
-            self._markers[pid].setPos(x, y)
+        self._refresh_loupe()
 
     def set_marker_size(self, px: float) -> None:
         """Marker radius in screen px. Small markers let the user see the exact
@@ -1146,25 +1177,56 @@ class VideoCanvas(QGraphicsView):
         that outer half-pixel became a point that tracking blanked (I126)."""
         return QPointF(max(0.0, p.x()), max(0.0, p.y()))
 
-    def cancel_gesture(self) -> None:
-        """Abort any in-progress gesture: circle drag, deferred click, box drag,
-        or marker drag (Esc, interaction disabled, point set changed)."""
+    def _clamp_pic(self, p: QPointF) -> QPointF:
+        """`p` pulled onto the picture: a rectangle / segment-box drag that ends
+        beyond the edge ends AT it, as the press is (I216)."""
+        w, h = self._native_size
+        return QPointF(min(max(0.0, p.x()), w - 0.5), min(max(0.0, p.y()), h - 0.5))
+
+    # --------------------------------------------------------------- gestures
+    # ONE gesture at a time (`_g`, see __init__). Each press / move / release
+    # handler below acts on the gesture it belongs to, and every move checks that
+    # the gesture's mouse button is still held: a release that never arrived (a
+    # modal dialog opened mid-drag) used to leave the canvas panning for good (G87).
+
+    _BUTTON_GESTURES = ("pan", "plain", "armed", "circle", "rect", "animal", "box", "rpress")
+
+    def cancel_gesture(self, keep_pan: bool = False) -> None:
+        """Abort any in-progress gesture: pan, circle / rectangle / polygon / box
+        drag, deferred click, right press (Esc, interaction disabled, point set
+        changed). `keep_pan`: leave a pan alone (it only moves the view)."""
+        if keep_pan and self._g == "pan":
+            return
+        was_pan = self._g == "pan"
+        self._g = "none"
+        self._gbutton = Qt.NoButton
         self._press_scene = None
         self._press_view = None
-        self._circle_active = False
-        self._circle_preview.setVisible(False)
-        self._box_active = False
-        self._box_preview.setVisible(False)
-        self._plain_press = False
         self._press_hit = None
+        self._press_shift = False
         self._rpress = None
         self._rpress_timer.stop()
-        self._rect_active = False
-        self._rect_preview.setVisible(False)
+        for item in (self._circle_preview, self._box_preview, self._rect_preview, self._poly_preview):
+            item.setVisible(False)
         self._poly_pts = []
-        self._poly_preview.setVisible(False)
-        self._dragging = None
-        self._drag_moved = False
+        if was_pan:
+            self._update_cursor()
+
+    def _start_pan(self, button, start: QPointF) -> None:
+        self._g = "pan"
+        self._gbutton = button
+        self._pan_last = start
+        self._loupe.hide()
+        self.setCursor(Qt.ClosedHandCursor)
+
+    def _press(self, ev, sp: QPointF | None, g: str, hit: int | None = None) -> None:
+        """Begin a deferred gesture: the release (or a move) decides what it is."""
+        self._g = g
+        self._gbutton = ev.button()
+        self._press_scene = self._onpic(sp) if sp is not None else None
+        self._press_view = ev.position()
+        self._press_hit = hit
+        self._press_shift = bool(ev.modifiers() & Qt.ShiftModifier)    # the segment tool's "not the segment" (G86)
 
     def mousePressEvent(self, ev):
         # announced before anything else: in a multi-camera grid a click on a
@@ -1172,8 +1234,9 @@ class VideoCanvas(QGraphicsView):
         # until then, so no edit can be lost by the switch
         was_interactive = self._interactive
         self.view_clicked.emit()
-        armed_here = self._interactive and self._place_mode and ev.button() == Qt.LeftButton
-        if not was_interactive and ev.button() != Qt.MiddleButton and not self._pan_mode and not armed_here:
+        btn = ev.button()
+        armed_here = self._interactive and self._place_mode and btn == Qt.LeftButton
+        if not was_interactive and btn != Qt.MiddleButton and not self._pan_mode and not armed_here:
             # a click on a view-only (companion) tile only SWITCHES to it: the
             # switch makes it interactive synchronously, and the same press then
             # hand-placed its selected point (I110). With Add armed the click is
@@ -1181,22 +1244,21 @@ class VideoCanvas(QGraphicsView):
             # places the point in the camera clicked (G20) -- before, it was
             # swallowed and the NEXT click, unarmed, placed nothing
             return
-        if ev.button() == Qt.MiddleButton or \
-                (ev.button() == Qt.LeftButton and self._pan_mode and self._native_size):
-            self._panning = True
-            self._pan_button = ev.button()
-            self._pan_last = ev.position()
-            self.setCursor(Qt.ClosedHandCursor)
+        if self._g in self._BUTTON_GESTURES:
+            if btn != self._gbutton and (ev.buttons() & self._gbutton):
+                super().mousePressEvent(ev)        # another button while one is held: not a new gesture
+                return
+            self.cancel_gesture()                  # its release never came: start over (G87)
+        if btn == Qt.MiddleButton or (btn == Qt.LeftButton and self._pan_mode and self._native_size):
+            self._start_pan(btn, ev.position())
             return
         sp = self.mapToScene(ev.position().toPoint())
         if self._animal_mode and self._interactive and self._native_size:
-            if ev.button() == Qt.LeftButton and self._in_video(sp):
+            if btn == Qt.LeftButton and self._in_video(sp):
                 # deferred: release decides between a click (prompt) and a box drag
-                self._press_scene = self._onpic(sp)
-                self._press_view = ev.position()
-                self._box_active = False
+                self._press(ev, sp, "animal")
                 return
-            if ev.button() == Qt.RightButton:
+            if btn == Qt.RightButton:
                 k = self._hit_prompt(sp)
                 if k is not None:
                     menu = QMenu(self)
@@ -1209,7 +1271,7 @@ class VideoCanvas(QGraphicsView):
                 return
             super().mousePressEvent(ev)
             return
-        if ev.button() == Qt.LeftButton and self._interactive and self._native_size:
+        if btn == Qt.LeftButton and self._interactive and self._native_size:
             if ev.modifiers() & Qt.AltModifier and not self._place_mode:
                 # look-here: never an edit, so it cannot pass for a placement (G21)
                 if self._in_video(sp):
@@ -1226,39 +1288,28 @@ class VideoCanvas(QGraphicsView):
                 # unarmed (G59): the release decides -- a click places the
                 # selected point (on a marker too), a press held and moved
                 # pans the view, starting on a marker as anywhere else
-                # (markers are no longer dragged: a click places the point)
-                self._press_scene = self._onpic(sp) if self._in_video(sp) else None
-                self._press_view = ev.position()
-                self._press_hit = hit
-                self._plain_press = True
-                self._circle_active = False
-                self._rect_active = False
+                # (markers are not dragged: a click places the point)
+                self._press(ev, sp if self._in_video(sp) else None, "plain", hit)
                 return
             if self._in_video(sp):
-                if self._place_mode and self._region_shape == "polygon" and not self._click_only:
+                if self._region_shape == "polygon" and not self._click_only:
                     # polygon region: every click adds a corner; Enter closes
                     # it (>= 3 corners), Esc cancels. Double-click also closes.
+                    self._g = "poly"
                     self._poly_pts.append(self._onpic(sp))
                     self._draw_poly_preview(sp)
                     return
                 # deferred: release decides between a click (add point) and a
-                # circle / rectangle drag (add region group). Unarmed, a clean
-                # click is a manual annotation of the SELECTED point at this
-                # frame (the app decides; nothing selected = nothing edited) —
-                # a drag without N does nothing at all.
-                self._press_scene = self._onpic(sp)
-                self._press_view = ev.position()
-                self._circle_active = False
-                self._rect_active = False
-                self._plain_press = not self._place_mode
+                # circle / rectangle drag (add region group); a drag without N
+                # does nothing at all
+                self._press(ev, sp, "armed")
                 return
-        if ev.button() == Qt.RightButton and self._interactive and self._native_size:
-            # never during a left press / pan: the menu's popup grab would swallow
-            # the release and leave the gesture armed forever
-            busy = self._dragging is not None or self._plain_press or self._panning
-            hit = self._hit_test(sp) if not busy else None
+        if btn == Qt.RightButton and self._interactive and self._native_size and self._g != "poly":
+            hit = self._hit_test(sp)
             if hit is not None:
                 # G59: a click clears this point on this frame, a long press opens its menu
+                self._g = "rpress"
+                self._gbutton = Qt.RightButton
                 self._rpress = (hit, ev.globalPosition().toPoint())
                 self._rpress_timer.start()
                 return
@@ -1269,152 +1320,116 @@ class VideoCanvas(QGraphicsView):
         if self._rpress is None:
             return
         pid, pos = self._rpress
-        self._rpress = None
+        self.cancel_gesture()
+        # never while another button is down: the popup's grab would swallow that
+        # button's release (G87)
+        if QApplication.mouseButtons() & (Qt.LeftButton | Qt.MiddleButton):
+            return
         if self._interactive:
             self._context_menu(pid, pos)
 
     def mouseMoveEvent(self, ev):
-        if self._panning:
+        g = self._g
+        if g in self._BUTTON_GESTURES and not (ev.buttons() & self._gbutton):
+            self.cancel_gesture()                  # its button was released out of our sight (G87)
+            g = "none"
+        self._cursor_view = ev.position()
+        if g == "pan":
             delta = ev.position() - self._pan_last
             self._pan_last = ev.position()
             self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(delta.x()))
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(delta.y()))
             return
+        sp = self.mapToScene(ev.position().toPoint())
         if self._loupe_enabled:
-            self._update_loupe(ev.position(), self.mapToScene(ev.position().toPoint()))
-        if self._poly_pts and self._place_mode:
-            self._draw_poly_preview(self.mapToScene(ev.position().toPoint()))
+            self._update_loupe(ev.position(), sp)
+        if g == "poly" and self._place_mode:
+            self._draw_poly_preview(sp)
             return
-        if not self._interactive and (self._dragging is not None
-                                      or self._press_scene is not None):
-            self.cancel_gesture()  # interaction revoked mid-gesture
+        if g != "none" and not self._interactive:
+            self.cancel_gesture()                  # interaction revoked mid-gesture
             return
-        if self._dragging is not None:
-            sp = self.mapToScene(ev.position().toPoint())
-            if self._in_video(sp):
-                self._drag_moved = True
-                sp = self._onpic(sp)
-                self.update_marker(self._dragging, sp.x(), sp.y())
-                self.point_moved.emit(self._dragging, sp.x(), sp.y())
-            return
-        if self._press_scene is not None and self._animal_mode:
-            if (not self._box_active
-                    and (ev.position() - self._press_view).manhattanLength() > DRAG_CIRCLE_PX):
-                self._box_active = True
+        moved = (g in ("plain", "animal", "armed")
+                 and (ev.position() - self._press_view).manhattanLength() > DRAG_CIRCLE_PX)
+        if g in ("animal", "box"):
+            if moved:
+                self._g = g = "box"
                 self._box_preview.setVisible(True)
-            if self._box_active:
-                sp = self.mapToScene(ev.position().toPoint())
-                self._box_preview.setRect(QRectF(self._press_scene, sp).normalized())
+            if g == "box":
+                self._box_preview.setRect(QRectF(self._press_scene, self._clamp_pic(sp)).normalized())
             return
-        if self._plain_press:
-            if (ev.position() - self._press_view).manhattanLength() > DRAG_CIRCLE_PX:
+        if g == "plain":
+            if moved:
                 # press, hold and move = pan (G59); a drag is never a placement
                 start = self._press_view
                 self.cancel_gesture()
-                self._panning = True
-                self._pan_button = Qt.LeftButton
-                self._pan_last = start
-                self.setCursor(Qt.ClosedHandCursor)
+                self._start_pan(Qt.LeftButton, start)
                 self.mouseMoveEvent(ev)
             return
-        if self._press_scene is not None and self._click_only:
-            return                   # a ball marker: a click, never a region gesture (I48)
-        if self._press_scene is not None and self._region_shape == "rect":
-            if (not self._rect_active
-                    and (ev.position() - self._press_view).manhattanLength() > DRAG_CIRCLE_PX):
-                self._rect_active = True
-                self._rect_preview.setVisible(True)
-            if self._rect_active:
-                sp = self.mapToScene(ev.position().toPoint())
-                self._rect_preview.setRect(QRectF(self._press_scene, sp).normalized())
-            return
-        if self._press_scene is not None:
-            if (not self._circle_active
-                    and (ev.position() - self._press_view).manhattanLength() > DRAG_CIRCLE_PX):
-                self._circle_active = True
-                self._circle_preview.setVisible(True)
-            if self._circle_active:
-                sp = self.mapToScene(ev.position().toPoint())
-                r = float(np.hypot(sp.x() - self._press_scene.x(),
-                                   sp.y() - self._press_scene.y()))
+        if g in ("armed", "circle", "rect"):
+            if self._click_only:
+                return                   # a ball marker: a click, never a region gesture (I48)
+            if moved:
+                self._g = g = "rect" if self._region_shape == "rect" else "circle"
+                (self._rect_preview if g == "rect" else self._circle_preview).setVisible(True)
+            if g == "rect":
+                self._rect_preview.setRect(QRectF(self._press_scene, self._clamp_pic(sp)).normalized())
+            elif g == "circle":
+                r = float(np.hypot(sp.x() - self._press_scene.x(), sp.y() - self._press_scene.y()))
                 c = self._press_scene
                 self._circle_preview.setRect(c.x() - r, c.y() - r, 2 * r, 2 * r)
             return
         super().mouseMoveEvent(ev)
 
     def mouseReleaseEvent(self, ev):
-        if ev.button() == Qt.RightButton and self._rpress is not None:
-            pid = self._rpress[0]
-            self._rpress = None
-            self._rpress_timer.stop()
-            if self._interactive:              # a short right click: clear it on this frame (G59)
-                self.point_selected.emit(pid)
-                self.clear_frame_requested.emit(pid)
+        g = self._g
+        if g not in self._BUTTON_GESTURES or ev.button() != self._gbutton:
+            super().mouseReleaseEvent(ev)
             return
-        if self._panning and ev.button() == getattr(self, "_pan_button", Qt.MiddleButton):
-            self._panning = False
+        if g == "pan":
+            self._g = "none"
+            self._gbutton = Qt.NoButton
             self._update_cursor()
             return
-        if not self._interactive and (self._dragging is not None
-                                      or self._press_scene is not None):
-            self.cancel_gesture()  # never commit an edit after interaction was revoked
-            return
-        if ev.button() == Qt.LeftButton and self._dragging is not None:
-            pid = self._dragging
-            self._dragging = None
-            if self._drag_moved:
-                sp = self.mapToScene(ev.position().toPoint())
-                if self._in_video(sp):
-                    sp = self._onpic(sp)
-                    self.move_committed.emit(pid, sp.x(), sp.y())
-            return
-        if ev.button() == Qt.LeftButton and self._press_scene is not None and self._animal_mode:
-            press = self._press_scene
-            was_box = self._box_active
+        if g == "rpress":
+            pid = self._rpress[0]
             self.cancel_gesture()
-            sp = self.mapToScene(ev.position().toPoint())
-            if was_box:
-                r = QRectF(press, sp).normalized()
+            if self._interactive and not self._pan_mode:   # a short right click: clear it on this frame (G59);
+                self.point_selected.emit(pid)              # with the pan tool on, point editing is suspended (G91)
+                self.clear_frame_requested.emit(pid)
+            return
+        press, hit, shift = self._press_scene, self._press_hit, self._press_shift
+        self.cancel_gesture()
+        if not self._interactive:
+            return                             # never commit an edit after interaction was revoked
+        sp = self.mapToScene(ev.position().toPoint())
+        if g in ("animal", "box"):
+            if g == "box":
+                r = QRectF(press, self._clamp_pic(sp)).normalized()
                 if min(r.width(), r.height()) >= MIN_BOX_PX:
                     self.animal_box.emit(r.left(), r.top(), r.right(), r.bottom())
                     return
-            positive = not bool(ev.modifiers() & Qt.ShiftModifier)
-            self.animal_click.emit(press.x(), press.y(), positive)
-            return
-        if ev.button() == Qt.LeftButton and self._plain_press:
-            press, hit = self._press_scene, self._press_hit
-            self.cancel_gesture()
+            self.animal_click.emit(press.x(), press.y(), not shift)
+        elif g == "plain":
             if self._selected is None and hit is not None:
                 self.point_selected.emit(hit)       # nothing to place: the click picks the point
             elif press is not None:
                 self.annotate_requested.emit(press.x(), press.y())
-            return
-        if ev.button() == Qt.LeftButton and self._press_scene is not None and self._rect_active:
-            press = self._press_scene
-            self.cancel_gesture()
-            sp = self.mapToScene(ev.position().toPoint())
-            r = QRectF(press, sp).normalized()
+        elif g == "rect":
+            r = QRectF(press, self._clamp_pic(sp)).normalized()
             if min(r.width(), r.height()) >= MIN_GROUP_RADIUS:
                 self.region_requested.emit("rect", [[r.left(), r.top()], [r.right(), r.top()],
                                                     [r.right(), r.bottom()], [r.left(), r.bottom()]])
             else:
                 self.add_requested.emit(press.x(), press.y())
-            return
-        if ev.button() == Qt.LeftButton and self._press_scene is not None:
-            press = self._press_scene
-            was_circle = self._circle_active
-            self.cancel_gesture()
-            sp = self.mapToScene(ev.position().toPoint())
-            if was_circle:
-                r = float(np.hypot(sp.x() - press.x(), sp.y() - press.y()))
-                if r >= MIN_GROUP_RADIUS:
-                    self.group_requested.emit(press.x(), press.y(), r)
-                else:  # a wobbly click, not a region
-                    self.add_requested.emit(press.x(), press.y())
-            else:
+        elif g == "circle":
+            r = float(np.hypot(sp.x() - press.x(), sp.y() - press.y()))
+            if r >= MIN_GROUP_RADIUS:
+                self.group_requested.emit(press.x(), press.y(), r)
+            else:  # a wobbly click, not a region
                 self.add_requested.emit(press.x(), press.y())
-            return
-        super().mouseReleaseEvent(ev)
+        else:                                  # armed: a clean click
+            self.add_requested.emit(press.x(), press.y())
 
     def _draw_poly_preview(self, cursor: QPointF | None) -> None:
         if not self._poly_pts:
@@ -1430,30 +1445,33 @@ class VideoCanvas(QGraphicsView):
         self._poly_preview.setVisible(True)
 
     def mouseDoubleClickEvent(self, ev):
-        if ev.button() == Qt.LeftButton and self._poly_pts and self._place_mode:
-            # the double-click's second press already added a duplicate corner
-            if len(self._poly_pts) >= 2:
-                a, b = self._poly_pts[-1], self._poly_pts[-2]
-                if abs(a.x() - b.x()) < 1e-6 and abs(a.y() - b.y()) < 1e-6:
-                    self._poly_pts.pop()
+        if ev.button() == Qt.LeftButton and self._g == "poly" and self._place_mode:
+            # the pair's first click already added the corner: close the polygon
             if not self.finish_polygon():
                 self.cancel_gesture()
             return
-        super().mouseDoubleClickEvent(ev)
+        # Qt delivers the second press of a quick pair ONLY as a double-click event:
+        # it is a press like any other, or a fast second click was lost (G65)
+        self.mousePressEvent(ev)
 
     def leaveEvent(self, ev):
+        self._cursor_view = None
         self._loupe.hide()
         super().leaveEvent(ev)
 
     def wheelEvent(self, ev):
         if self._native_size is None:
             return
-        factor = ZOOM_STEP if ev.angleDelta().y() > 0 else 1 / ZOOM_STEP
+        n = self._wheel.take(ev)
+        if n == 0:
+            return                       # a horizontal swipe is no zoom (G131)
+        factor = ZOOM_STEP ** n
         current = self.transform().m11()
         if 0.02 < current * factor < 60:
             self.scale(factor, factor)
             self._user_zoomed = True
             self._apply_follow()
+            self._refresh_loupe()
 
     def zoom_step(self, factor: float) -> None:
         """Keyboard zoom (+/-), anchored under the mouse pointer when it is
@@ -1476,6 +1494,7 @@ class VideoCanvas(QGraphicsView):
         self.setTransformationAnchor(prev)
         self._user_zoomed = True
         self._apply_follow()
+        self._refresh_loupe()
 
     def _build_context_menu(self, pid: int) -> tuple[QMenu, dict]:
         """Point context menu, shared by the canvas right-click and the point
