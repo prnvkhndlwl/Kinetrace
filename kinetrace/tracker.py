@@ -71,7 +71,7 @@ from PySide6.QtCore import QThread, Signal
 from kinetrace import alltracker_backend as at_backend
 from kinetrace.downloads import DownloadError
 from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, get_segmenter,
-                                     score_to_confidence, summarize_mask)
+                                     score_to_confidence, summarize_mask, working_size)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
 from kinetrace.session import in_frame
 from kinetrace.video_source import FrameCache, ReadAhead, VideoSource
@@ -426,7 +426,7 @@ class TrackingWorker(QThread):
                  derived: list[DerivedSpec] | None = None,
                  head_pid: int | None = None, on_body_pids=None, constrain_pids=None,
                  point_backend: str = "cotracker3", balls: list[BallSpec] | None = None,
-                 spots: list[SpotSpec] | None = None):
+                 spots: list[SpotSpec] | None = None, stored_masks=None):
         super().__init__()
         self.video_path = video_path
         self.start_frame = start_frame
@@ -457,6 +457,16 @@ class TrackingWorker(QThread):
         # physical constraint: these tracked points can never leave the animal's
         # silhouette — predictions outside it are snapped to the nearest mask pixel
         self.constrain = set(constrain_pids or [])
+        # (I185) The second pass of a two-pass run (AllTracker points, then CoTracker3 points)
+        # runs no SAM: the silhouettes the first pass just made are the mask source, as a
+        # CONSTRAINT only -- on-body rules (nudge, exit stop, off-body / merged demotion) and
+        # the same support points / ROI bounding box a live segment gives the run; no masks
+        # are emitted, no derived landmark is computed. `stored_masks` = anything with
+        # `has(frame)` and `rasterize(frame, h, w)` (a segmenter.MaskTrack: the session's
+        # silhouettes). A live segment (`animal`) wins when both are given.
+        self._stored = stored_masks if self.animal is None else None
+        self._stored_last = start_frame - 1
+        self._stored_work: tuple[int, int] | None = None     # (w, h) working size, set once the frame size is known
         if self.animal is None and self.derived:
             raise ValueError("silhouette-derived points need a segment to derive from")
         if not self.specs and self.animal is None and not self.balls and not self.spots:
@@ -571,6 +581,8 @@ class TrackingWorker(QThread):
             raise RuntimeError(f"Could not decode frame {self.start_frame}")
         nh, nw = probe.shape[:2]
         self._frame_wh = (nw, nh)
+        if self._stored is not None:
+            self._stored_setup(nw, nh)
         if self.animal is not None:
             engine = get_segmenter(self.animal.backend, **dl)
             self._seg = engine.new_session(self.start_frame, (nw, nh))
@@ -827,6 +839,8 @@ class TrackingWorker(QThread):
             first = src.get_frame(seg_start)
             if first is not None:
                 self._seg_step(seg_start, first)
+        elif self._stored is not None and seg_start > self._stored_last:
+            self._stored_step(seg_start)                          # (I185)
         # support queries: a sparse grid inside the animal's mask so the joint
         # solve is anchored to the body; never emitted, re-sampled every segment
         q_seeds += list(self._support_points(seg_start))
@@ -1132,6 +1146,10 @@ class TrackingWorker(QThread):
         summ = summarize_mask(mask, sxy if sxy is not None else fm.scale, score)
         summ["frame"] = abs_idx
         self._summ[abs_idx] = summ
+        self._prune_masks(abs_idx)
+
+    def _prune_masks(self, abs_idx: int) -> None:
+        """Forget the per-frame mask state older than MASK_HIST frames."""
         for k in [k for k in self._mask_hist if k < abs_idx - MASK_HIST]:
             del self._mask_hist[k]
             self._summ.pop(k, None)
@@ -1143,6 +1161,34 @@ class TrackingWorker(QThread):
             self._anchor_lost.discard(k)
             for hist in self._derived_hist.values():
                 hist.pop(k, None)
+
+    def _stored_setup(self, nw: int, nh: int) -> None:
+        """(I185) The working size and per-axis native / working scale the live segmenter would
+        report for this frame size (`FrameMasks.scale_xy`, I61)."""
+        self._frame_wh = (nw, nh)
+        ww, wh = working_size(nw, nh)
+        self._stored_work = (ww, wh)
+        self._sxy = np.asarray((nw / ww, nh / wh), np.float32)
+
+    def _stored_step(self, abs_idx: int) -> None:
+        """(I185) What `_seg_step` does for one frame, from a STORED silhouette instead of SAM:
+        rebuild the frame's working-resolution mask from the stored outline (the way the app
+        builds a resume mask: `rasterize` at `working_size`) and file it with its summary where
+        the constraint code looks (`_mask_hist`, `_summ`). A frame with no stored silhouette (or
+        an empty one) gets NO entry, and every consumer then skips it: no constraint on that
+        frame, never a crash. Nothing is emitted."""
+        self._stored_last = abs_idx
+        st = self._stored
+        ww, wh = self._stored_work
+        nw, _nh = self._frame_wh
+        if st.has(abs_idx):
+            mask = st.rasterize(abs_idx, wh, ww)
+            if mask.any():
+                summ = summarize_mask(mask, self._sxy, 1.0)
+                summ["frame"] = abs_idx
+                self._mask_hist[abs_idx] = (mask, nw / ww)      # (mask, scale) as FrameMasks.scale
+                self._summ[abs_idx] = summ
+        self._prune_masks(abs_idx)
 
     def _support_points(self, frame: int) -> np.ndarray:
         """A sparse grid of native-px points inside the segment's mask at `frame`."""
@@ -1400,7 +1446,7 @@ class TrackingWorker(QThread):
             # from the previous segment would name that segment's query indices
             self._snapped.pop(w0 + i, None)
             self._collapsed.pop(w0 + i, None)
-        if not self.constrain or self.animal is None:
+        if not self.constrain or (self.animal is None and self._stored is None):   # (I185)
             return
         qs = []
         landmark_qs: list[tuple[int, np.ndarray]] = []    # (query, native seed) of skeleton POINTS
@@ -1512,7 +1558,7 @@ class TrackingWorker(QThread):
         """A skeleton point that sits outside the (dilated) segment mask has
         drifted onto the background: cap its confidence so the timeline turns
         red and auto-pause can stop the run. Coordinates are left alone."""
-        if not self.on_body or self.animal is None:
+        if not self.on_body or (self.animal is None and self._stored is None):   # (I185)
             return
         L = out_tr.shape[0]
         cols = [a for a, sp in enumerate(self.specs) if sp.pid in self.on_body]
@@ -1551,7 +1597,7 @@ class TrackingWorker(QThread):
         _demote_off_body two of them could sit on one pixel at full
         confidence (I117). Columns come from `_q2col`, not the spec index
         (I116)."""
-        if not self.constrain or self.animal is None:
+        if not self.constrain or (self.animal is None and self._stored is None):   # (I185)
             return
         for i in range(out_cf.shape[0]):
             merged = self._collapsed.get(w0 + i)
@@ -1616,6 +1662,8 @@ class TrackingWorker(QThread):
         re-reads frames the segmenter already did)."""
         if self._seg is not None and abs_idx > self._seg_last:
             self._seg_step(abs_idx, native)
+        if self._stored is not None and abs_idx > self._stored_last:
+            self._stored_step(abs_idx)                            # (I185)
         if self._ball_trk is not None and abs_idx > self._ball_last:
             self._ball_step(abs_idx, native)
         if self._spot_run is not None and abs_idx > self._spot_last:
