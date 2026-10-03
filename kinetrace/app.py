@@ -50,6 +50,22 @@ PROJECT_SUFFIX = projectfile.SUFFIX
 # the manual heading Help / Track ▾ open at (R11: it was spelled out three times)
 MANUAL_WHICH_MODEL = "Which point model should I use?"
 
+_AT_AVAILABLE: dict = {}        # the `available` function asked -> True once it said so (R23)
+
+
+def _alltracker_available() -> bool:
+    """`alltracker_backend.available()` (a file stat) asked once per process, not per selected point
+    on every playhead move and twice per row at every list rebuild (R23). Only a True answer is
+    kept (the vendored code does not disappear while the app runs; a missing one may be fetched
+    meanwhile), and it is keyed by the function, so a test that replaces `available` is asked."""
+    fn = alltracker_backend.available
+    if _AT_AVAILABLE.get(fn):
+        return True
+    ok = bool(fn())
+    if ok:
+        _AT_AVAILABLE[fn] = True
+    return ok
+
 IDLE, READY, TRACKING = range(3)
 VIDEO_FILTER = "Videos (*.mp4 *.avi *.mov *.mkv *.m4v *.wmv *.webm *.mpg *.mpeg);;All files (*)"
 TRACKS_FILTER = ("Tracks - DeepLabCut, SLEAP, DLTdv / Argus, Kinetrace (*.csv);;All files (*)")
@@ -1104,8 +1120,9 @@ class MainWindow(QMainWindow):
                                         "AllTracker + Segment; a target small enough to be one point -> Moving "
                                         "spot; a round marker -> Ball marker")
         menu_track.addAction(self.act_which_model)
-        self.act_pm_alltracker.setEnabled(alltracker_backend.available())
-        if not alltracker_backend.available():
+        at_ok = _alltracker_available()
+        self.act_pm_alltracker.setEnabled(at_ok)
+        if not at_ok:
             # the installer fetches AllTracker's code; say how to get it instead of a silent grey entry
             self.act_pm_alltracker.setToolTip(
                 "AllTracker is not installed yet, so CoTracker3 is used. Start Kinetrace with run.bat / "
@@ -2032,7 +2049,7 @@ class MainWindow(QMainWindow):
         s = s if s is not None else self.session
         t = s.points[pid].tracker if s is not None and 0 <= pid < s.n_points else ""
         t = t if t in TRACKERS else self._point_backend
-        if t == "alltracker" and not alltracker_backend.available():
+        if t == "alltracker" and not _alltracker_available():
             t = "cotracker3"
         return t
 
@@ -2208,7 +2225,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _preferred_point_backend() -> str:
-        return "alltracker" if alltracker_backend.available() else "cotracker3"
+        return "alltracker" if _alltracker_available() else "cotracker3"
 
     def _set_point_backend(self, key: str):
         """Track ▾ -> Point model: applies to the next run, at any time, and is
@@ -5609,7 +5626,7 @@ class MainWindow(QMainWindow):
             a = sub.addAction(name + self.TRACKER_HINTS[key])
             a.setCheckable(True)
             a.setChecked(bool(pids) and all(self._tracker_of(q) == key for q in pids))
-            a.setEnabled(bool(pids) and (key != "alltracker" or alltracker_backend.available())
+            a.setEnabled(bool(pids) and (key != "alltracker" or _alltracker_available())
                          and (key != "spot" or point_kind))
             out[a] = key
         sub.menuAction().setEnabled(bool(pids))
@@ -6131,18 +6148,23 @@ class MainWindow(QMainWindow):
         uv = sc.tracks[fr, j]
         return np.asarray(uv, np.float64) if np.isfinite(uv).all() else None
 
-    def _guides_into(self, target: int, name: str, f: int, trusted: list | None = None) -> list:
+    def _guides_into(self, target: int, name: str, f: int, trusted: list | None = None,
+                     obs: list | None = None, depth=None) -> list:
         """The lines in camera `target`, cut exactly at its picture's edges
         (I132); `trusted`, if given, receives each line's (M,) mask -- False
-        where the lens model is guessing."""
+        where the lens model is guessing. `obs` / `depth`: what `_observations(..., exclude=target)`
+        and `_guide_depth(f)` give, when the caller (`_refresh_guides`) has them already (R23)."""
         from kinetrace.calib import epipolar_polyline
         p = self.project
         dst = self._cal_cam(target)
         if dst is None:
             return []
-        depth = self._guide_depth(f)
+        if depth is None:
+            depth = self._guide_depth(f)
+        if obs is None:
+            obs = self._observations(name, f, exclude=target)
         out = []
-        for c, cal, uv in self._observations(name, f, exclude=target):
+        for c, cal, uv in obs:
             info: dict = {}
             try:
                 pts = epipolar_polyline(cal, dst, uv, depth, margin=0.0, info=info)
@@ -6155,20 +6177,20 @@ class MainWindow(QMainWindow):
                     trusted.append(tr if tr is not None and len(tr) == len(pts) else np.ones(len(pts), bool))
         return out
 
-    def _prediction(self, target: int, name: str, f: int) -> dict | None:
+    def _prediction(self, target: int, name: str, f: int, obs: list | None = None, depth=None) -> dict | None:
         """Where landmark `name` is in camera `target` according to the OTHER
         calibrated cameras (G23): their rays triangulated (DLT, DLTdv's residual)
         and projected into `target`. None with fewer than two of them; otherwise
         {"xy", "residual", "angle_deg", "views", "why"} -- `why` a reason in
         words when the point must NOT be offered: the rays nearly parallel (the
         crossing is noise), the cameras disagreeing (one is misplaced), or the
-        point behind / outside this camera's picture."""
+        point behind / outside this camera's picture. `obs` / `depth`: as for `_guides_into` (R23)."""
         from kinetrace.calib import PARALLEL_LINES_DEG, front_sign
         p = self.project
         dst = self._cal_cam(target)
         if dst is None:
             return None
-        tri = self._triangulate(self._observations(name, f, exclude=target))
+        tri = self._triangulate(obs if obs is not None else self._observations(name, f, exclude=target))
         if tri is None:
             return None
         xyz, res, widest, views = tri["xyz"], tri["residual"], tri["angle_deg"], tri["views"]
@@ -6180,7 +6202,7 @@ class MainWindow(QMainWindow):
         why = None
         thr = self._residual_bands(views)[1]
         L = np.asarray(dst.coefs, np.float64).reshape(11)
-        probe = self._guide_depth(f)
+        probe = depth if depth is not None else self._guide_depth(f)
         if widest < PARALLEL_LINES_DEG:
             why = (f"{who} see it along nearly the same line ({widest:.1f}°), so they cannot say where on "
                    "that line it is — place it on the dashed line by eye")
@@ -6288,6 +6310,7 @@ class MainWindow(QMainWindow):
         tri = self._triangulate(allobs)
         placed_at = {c: uv for c, _cal, uv in allobs}
         verdict_col = {"good": theme.GREEN, "ok": theme.AMBER, "poor": theme.RED}
+        depth, have_depth = None, False     # this instant's, asked once for every camera's lines (R23)
         for t, cv in enumerate(canvases):
             lines, faint, preds, notes = [], [], [], []
             if t in visible and not self._tile_stale(t):
@@ -6299,8 +6322,12 @@ class MainWindow(QMainWindow):
                                   + (" · rays nearly parallel" if tri["angle_deg"] < 5.0 else ""),
                                   (q.red(), q.green(), q.blue())))
                 if name is not None:
+                    if not have_depth:
+                        depth, have_depth = self._guide_depth(self.current), True
+                    obs_t = [o for o in allobs if o[0] != t]      # = _observations(..., exclude=t)
                     masks: list = []
-                    for (pts, col, lab), tr in zip(self._guides_into(t, name, self.current, masks), masks):
+                    for (pts, col, lab), tr in zip(self._guides_into(t, name, self.current, masks,
+                                                                     obs=obs_t, depth=depth), masks):
                         # the parts where the lens model is guessing are drawn faint (I132);
                         # each run overlaps the one before by a point, so the line stays whole
                         edges = np.flatnonzero(np.diff(tr.astype(np.int8))) + 1
@@ -6311,7 +6338,7 @@ class MainWindow(QMainWindow):
                                 lab = ""                    # the camera's name once
                             else:
                                 faint.append((seg, col))
-                    pr = self._prediction(t, name, self.current)
+                    pr = self._prediction(t, name, self.current, obs=obs_t, depth=depth)
                     if pr is not None and pr["why"] is None:
                         st = p.sessions[t]
                         j = st.pid_by_name(name)
@@ -7468,8 +7495,8 @@ class MainWindow(QMainWindow):
             return
         mf = [int(f) for f in s.manual_frames(pid) if np.isfinite(s.tracks[f, pid]).all()]
         clicks = {f: s.tracks[f, pid].astype(np.float64) for f in mf}
-        models = [("alltracker", alltracker_backend.available(),
-                   "" if alltracker_backend.available() else "not installed yet (see the Track ▾ menu)"),
+        at_ok = _alltracker_available()
+        models = [("alltracker", at_ok, "" if at_ok else "not installed yet (see the Track ▾ menu)"),
                   ("cotracker3", True, "")]
         dlg = PointModelTest(self, q.name, self.info.path, self.cache, self.n_frames,
                              (self.info.width, self.info.height), clicks, models, self.btn_roi.isChecked(),
@@ -8138,7 +8165,7 @@ class MainWindow(QMainWindow):
         self.btn_mask.setChecked(bool(st.get("show_mask", True)))
         self.btn_onbody.setChecked(bool(st.get("on_body", True)))
         pb = str(st.get("point_backend", "") or "")
-        if pb == "alltracker" and not alltracker_backend.available():
+        if pb == "alltracker" and not _alltracker_available():
             pb = "cotracker3"
         self._point_backend = pb if pb in self._pm_acts else self._preferred_point_backend()
         self._pm_acts[self._point_backend].setChecked(True)
