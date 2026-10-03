@@ -74,8 +74,9 @@ class BodyRig:
     joints: list[str]
     bone_names: list[tuple[str, str]]
     # Which world axis points up in this backend's 3D output, as a unit vector.
-    # Only the handful of angles measured against gravity use it; every
-    # limb angle is intrinsic and needs no convention at all.
+    # The pose panel uses it to stand a figure up when the joints are too few
+    # to find the body's own axis; every angle is intrinsic (a limb angle) or
+    # relative to the subject's own median upright (`lean`).
     up: tuple[float, float, float] = (0.0, -1.0, 0.0)
     units: str = "m"
 
@@ -101,11 +102,6 @@ class BodyRig:
             if i is not None and j is not None:
                 out.append((i, j))
         return out
-
-    def up_vector(self) -> np.ndarray:
-        v = np.asarray(self.up, np.float64)
-        n = np.linalg.norm(v)
-        return v / n if n > 1e-12 else np.array([0.0, -1.0, 0.0])
 
 
 # The body bones every rig shares (fingers are deliberately left out: they are
@@ -231,9 +227,7 @@ class AngleDef:
                       both ways and an unsigned angle cannot tell flexion from
                       extension -- it reports +22 deg for both, which turns a
                       gait cycle into nonsense.
-      * "axis"     -- the signed lean of the segment a->b away from the rig's
-                      up axis, in the same sagittal sense.
-      * "segments" -- the signed angle from segment a->b to segment c->d about
+      * "segments"-- the signed angle from segment a->b to segment c->d about
                       the subject's left-right axis. Needed wherever the two
                       limbs do not share a joint: the foot's axis is heel to
                       toe, not ankle to toe.
@@ -248,6 +242,12 @@ class AngleDef:
     The reported value is `scale * raw + offset`, which is how one piece of
     geometry serves several clinical conventions (a knee's raw interior angle
     is 180 deg when straight; physios write that as 0 deg of flexion).
+
+    A signed angle is then folded into the window `fold` = (lo, hi], hi = lo +
+    360 (I181): (-180, 180] for most, but a shoulder swings past the branch cut
+    at 180 deg with the arm overhead (its normal range runs to ~200), so its
+    window is (-90, 270] and the value goes on from 178 to 182 instead of
+    wrapping to -178 (which gave a 356 deg range and a -5000 deg/s spike).
     """
     name: str
     kind: str
@@ -257,6 +257,7 @@ class AngleDef:
     zero_means: str = ""
     needs_3d: bool = False
     group: str = ""
+    fold: tuple[float, float] = (-180.0, 180.0)
 
 
 # Virtual joints: a reference of the form "mid(a,b)" is the midpoint of two
@@ -282,10 +283,12 @@ ANGLE_DEFS: list[AngleDef] = [
              -1.0, 180.0, "0 deg = arm straight; larger = more bent", group="arm"),
     AngleDef("left shoulder flexion", "sagittal", ("left_hip", "left_shoulder", "left_elbow"),
              -1.0, 0.0, "0 deg = upper arm alongside the trunk; positive = arm swung "
-                        "forwards, negative = behind the body", group="arm"),
+                        "forwards, negative = behind the body; about 180 = arm overhead, "
+                        "and it carries on past that", group="arm", fold=(-90.0, 270.0)),
     AngleDef("right shoulder flexion", "sagittal", ("right_hip", "right_shoulder", "right_elbow"),
              -1.0, 0.0, "0 deg = upper arm alongside the trunk; positive = arm swung "
-                        "forwards, negative = behind the body", group="arm"),
+                        "forwards, negative = behind the body; about 180 = arm overhead, "
+                        "and it carries on past that", group="arm", fold=(-90.0, 270.0)),
     AngleDef("left knee flexion", "joint", ("left_hip", "left_knee", "left_ankle"),
              -1.0, 180.0, "0 deg = leg straight; larger = more bent", group="leg"),
     AngleDef("right knee flexion", "joint", ("right_hip", "right_knee", "right_ankle"),
@@ -375,7 +378,8 @@ def median_axis(xyz: np.ndarray, rig: BodyRig, a: str, b: str) -> np.ndarray | N
 def _lateral_axis(xyz: np.ndarray, rig: BodyRig) -> np.ndarray | None:
     """The subject's own left-pointing axis, per frame: hips for preference
     (they twist least), shoulders as the fallback. (..., 3) unit vectors, NaN
-    where neither pair is available."""
+    on a frame whose pair is missing or collapsed; None when the rig has
+    neither pair at all."""
     for a, b in (("right_hip", "left_hip"), ("right_shoulder", "left_shoulder")):
         pa, pb = _resolve(a, xyz, rig), _resolve(b, xyz, rig)
         if pa is None or pb is None:
@@ -393,7 +397,15 @@ def _facing_sign_2d(xyz: np.ndarray, rig: BodyRig) -> np.ndarray:
     increasing x, -1 towards decreasing x, from the nose (or the toes) against
     the pelvis. In an image there is no out-of-plane axis to sign an angle
     with, so this is the honest substitute -- and it is only meaningful for a
-    subject filmed side on, which is stated wherever 2D angles are shown."""
+    subject filmed side on, which is stated wherever 2D angles are shown.
+
+    (I182) A frame where the cue is not seen (the nose is hidden, or scored
+    as unseen) used to fall back to +1 -- right for a subject facing right,
+    but it flipped every signed angle of one facing left. It now takes the
+    direction the person faced for MOST of the clip, when one direction holds
+    at least `FACING_MAJORITY` of the frames that show it; a clip that turns
+    round about as often as not has no such direction, and the signed 2D
+    angles are left blank (NaN) on the frames without a cue."""
     hips = _resolve("mid(left_hip,right_hip)", xyz, rig)
     if hips is None:
         return np.ones(xyz.shape[:-2])
@@ -405,12 +417,36 @@ def _facing_sign_2d(xyz: np.ndarray, rig: BodyRig) -> np.ndarray:
     if ahead is None:
         return np.ones(xyz.shape[:-2])
     dx = ahead[..., 0] - hips[..., 0]
-    return np.where(np.isfinite(dx) & (np.abs(dx) > 1e-9), np.sign(dx), 1.0)
+    seen = np.isfinite(dx) & (np.abs(dx) > 1e-9)
+    sign = np.where(seen, np.sign(dx), 0.0)
+    n_pos, n_neg = int((sign > 0).sum()), int((sign < 0).sum())
+    n = n_pos + n_neg
+    fallback = np.nan
+    if n and max(n_pos, n_neg) >= FACING_MAJORITY * n:
+        fallback = 1.0 if n_pos >= n_neg else -1.0
+    return np.where(seen, sign, fallback)
+
+
+# The share of the frames that show which way the subject faces that one
+# direction must hold for it to stand in on the frames that do not (I182).
+FACING_MAJORITY = 0.65
+
+
+def _fold(val: np.ndarray, window: tuple[float, float]) -> np.ndarray:
+    """`val` brought into the half-open window (lo, hi], hi = lo + 360. A value
+    already inside is returned untouched (no float round-off); NaN stays NaN."""
+    lo = float(window[0])
+    hi = lo + 360.0
+    with np.errstate(invalid="ignore"):
+        inside = (val > lo) & (val <= hi)
+        wrapped = hi - ((hi - val) % 360.0)
+    return np.where(inside, val, wrapped)
 
 
 def _signed(u: np.ndarray, v: np.ndarray, axis: np.ndarray | None,
             flat_sign: np.ndarray | None = None) -> np.ndarray:
-    """Signed angle from u to v, degrees in (-180, 180].
+    """Signed angle from u to v, degrees in [-180, 180] (arctan2's range; the
+    caller folds the transformed value into the angle's own window).
 
     In 3D the sign is the right-hand rule about `axis` (the subject's left),
     so a limb swinging towards the face reads positive on both sides of the
@@ -496,15 +532,6 @@ def joint_angles(xyz: np.ndarray, rig: BodyRig,
     defs = applicable_angles(rig, bool(have_3d))
     lead = xyz.shape[:-2]
     out = np.full(lead + (len(defs),), np.nan)
-    up = rig.up_vector()
-    if dim < 3:
-        # Dropping the third component can leave a degenerate axis (a rig whose
-        # up is +Z has no image-plane up at all). Image rows grow downwards, so
-        # the honest fallback for 2D is "up the picture".
-        up = up[:dim]
-        if np.linalg.norm(up) <= 1e-9:
-            up = np.array([0.0, -1.0][:dim])
-        up = up / np.linalg.norm(up)
     lateral = _lateral_axis(xyz, rig) if dim >= 3 else None
     flat = _facing_sign_2d(xyz, rig) if dim < 3 else None
     for k, d in enumerate(defs):
@@ -515,8 +542,6 @@ def joint_angles(xyz: np.ndarray, rig: BodyRig,
             raw = _interior(pts[0], pts[1], pts[2])
         elif d.kind == "sagittal":
             raw = _signed(pts[0] - pts[1], pts[2] - pts[1], lateral, flat)
-        elif d.kind == "axis":
-            raw = _signed(np.broadcast_to(up, pts[1].shape), pts[1] - pts[0], lateral, flat)
         elif d.kind == "segments":
             raw = _signed(pts[1] - pts[0], pts[3] - pts[2], lateral, flat)
         elif d.kind == "lean":
@@ -533,23 +558,26 @@ def joint_angles(xyz: np.ndarray, rig: BodyRig,
             continue
         val = d.scale * raw + d.offset
         if d.kind != "joint":
-            # A signed angle comes out of atan2 in (-180, 180]. The hip's two
+            # A signed angle comes out of atan2 in [-180, 180]. The hip's two
             # segments point nearly opposite ways, so the raw value sits right
             # on that branch cut and a leg trailing behind reads +338 instead
             # of -22 -- a 360 deg jump in the middle of every stride. Fold the
-            # transformed value back into (-180, 180], where every anatomical
-            # angle belongs.
-            val = (val + 180.0) % 360.0 - 180.0
+            # transformed value back into the angle's own window (`d.fold`,
+            # (-180, 180] unless the angle's normal range crosses 180: the
+            # shoulder, I181), where every anatomical value of it belongs.
+            val = _fold(val, d.fold)
         out[..., k] = val
     return defs, out
 
 
-def angular_velocity(angles: np.ndarray, fps: float, step: int = 1) -> np.ndarray:
+def angular_velocity(angles: np.ndarray, fps: float, step=1) -> np.ndarray:
     """deg/s over the frame axis (axis 0), by central differences between each
     value's nearest measured neighbours, one-sided where only one exists.
 
-    `step` is how far apart the run sampled its frames (`BodyTrack.step`). A
-    neighbour further away than that is across a real gap and is not used.
+    `step` is how far apart the run sampled its frames: one number, or one per
+    frame (`BodyTrack.frame_steps()`, I231 -- a track made of a dense run and a
+    sparse re-check has both). A neighbour further away than that (the larger
+    of the two frames' steps) is across a real gap and is not used.
     (I90) Differencing ADJACENT frames only gave a run sampled every Nth
     frame no velocity at all, because its neighbours are always blank. With
     step 1 and no gaps this is the plain central difference. A frame with no
@@ -558,7 +586,11 @@ def angular_velocity(angles: np.ndarray, fps: float, step: int = 1) -> np.ndarra
     v = np.full(a.shape, np.nan)          # C-contiguous, so reshape below is a view
     if a.shape[0] < 2 or fps <= 0:
         return v
-    gap = max(1, int(step or 1))
+    st = np.asarray(1 if step is None else step)
+    per_frame = st.ndim > 0 and len(st) == a.shape[0]
+    gap = max(1, int(st)) if st.ndim == 0 else 1
+    if per_frame:
+        st = np.maximum(st.astype(np.int64), 1)
     flat_a = a.reshape(a.shape[0], -1)
     flat_v = v.reshape(a.shape[0], -1)
     for c in range(flat_a.shape[1]):
@@ -566,7 +598,8 @@ def angular_velocity(angles: np.ndarray, fps: float, step: int = 1) -> np.ndarra
         if len(idx) < 2:
             continue
         val = flat_a[idx, c]
-        near = np.diff(idx) <= gap                    # neighbour i -> i+1 usable
+        allowed = np.maximum(st[idx[:-1]], st[idx[1:]]) if per_frame else gap
+        near = np.diff(idx) <= allowed                # neighbour i -> i+1 usable
         has_prev = np.r_[False, near]
         has_next = np.r_[near, False]
         prev = np.r_[0, np.arange(len(idx) - 1)]
@@ -606,6 +639,15 @@ def range_of_motion(angles: np.ndarray) -> dict[str, np.ndarray]:
 # and is never treated as low. (I86)
 MIN_JOINT_CONF = 0.15
 
+# Where a person's box on a frame came from (`BodyTrack.box_src`, G136). Only a
+# detector's score says how sure the model is that this is a person: a box
+# taken from the segment silhouette or drawn by hand carries 1.0, which is
+# "the user said so", not "detected with 100 % confidence".
+BOX_UNKNOWN = 0      # a track made before this was recorded: counted as detected
+BOX_DETECTOR = 1
+BOX_GIVEN = 2        # the segment silhouette, or a box the caller drew
+BOX_FRAME = 3        # no box at all: the whole frame was taken as the person
+
 
 class BodyTrack:
     """Every body pose in one video: (frames x people x joints).
@@ -615,6 +657,8 @@ class BodyTrack:
     detection is NaN rather than a repeat of the last pose. `n_people` is
     fixed when the track is made; the estimator run decides it.
     """
+
+    decode_failed: int | None = None     # see __init__: transient, run track only (I232)
 
     def __init__(self, n_frames: int, rig: BodyRig | str = DEFAULT_RIG, n_people: int = 1):
         self.n_frames = int(n_frames)
@@ -626,6 +670,7 @@ class BodyTrack:
         self.conf = np.zeros((T, P, J), np.float32)
         self.score = np.full((T, P), np.nan, np.float32)       # detection / person score
         self.bbox = np.full((T, P, 4), -1, np.float32)         # native px x0,y0,x1,y1
+        self.box_src = np.zeros((T, P), np.int8)               # BOX_* (G136)
         self.focal = np.full(T, np.nan, np.float32)            # px, the model's own estimate
         # Where the body's own origin sits in the CAMERA frame (metres, x right,
         # y down, z away from the camera), per frame and person. SAM 3D Body
@@ -663,7 +708,9 @@ class BodyTrack:
         self._cache: dict = {}
         # Transient, set by `BodyPoseWorker` and read by `merge_run`: the frames
         # the run actually put through the model, and whether it was stopped.
-        # Not persisted.
+        # Not persisted. (The first frame the video would not decode,
+        # `decode_failed`, is a class attribute set on the run's track only and
+        # removed again by `merge_run`, so a stored track never carries it.)
         self.examined: np.ndarray | None = None
         self.stopped_early = False
 
@@ -701,7 +748,7 @@ class BodyTrack:
     # ----------------------------------------------------------------- write
     def set_person(self, frame: int, person: int, *, joints2d=None, joints3d=None,
                    conf=None, score: float = np.nan, bbox=None, focal: float = np.nan,
-                   vertices=None, faces=None, cam_t=None) -> None:
+                   vertices=None, faces=None, cam_t=None, box_source: int = BOX_UNKNOWN) -> None:
         if not (0 <= frame < self.n_frames and 0 <= person < self.n_people):
             return
         if faces is not None and self.faces is None:
@@ -721,6 +768,7 @@ class BodyTrack:
             # zero would hide every joint and every angle (I86)
             self.conf[frame, person] = np.nan
         self.score[frame, person] = float(score)
+        self.box_src[frame, person] = int(box_source)
         if bbox is not None:
             self.bbox[frame, person] = np.asarray(bbox, np.float32).reshape(4)
         if np.isfinite(focal):
@@ -745,6 +793,7 @@ class BodyTrack:
         self.conf[a:b + 1] = 0.0
         self.score[a:b + 1] = np.nan
         self.bbox[a:b + 1] = -1
+        self.box_src[a:b + 1] = 0
         self.focal[a:b + 1] = np.nan
         self.cam_t[a:b + 1] = np.nan
         self._version += 1
@@ -767,6 +816,7 @@ class BodyTrack:
         self.conf[f] = 0.0
         self.score[f] = np.nan
         self.bbox[f] = -1
+        self.box_src[f] = 0
         self.focal[f] = np.nan
         self.cam_t[f] = np.nan
         self._version += 1
@@ -778,6 +828,7 @@ class BodyTrack:
         bt.conf = self.conf.copy()
         bt.score = self.score.copy()
         bt.bbox = self.bbox.copy()
+        bt.box_src = self.box_src.copy()
         bt.focal = self.focal.copy()
         bt.cam_t = self.cam_t.copy()
         bt.names = list(self.names)
@@ -810,20 +861,48 @@ class BodyTrack:
     def n_posed(self) -> int:
         return int(np.isfinite(self.score).any(axis=1).sum())
 
+    def detected_frames(self, person: int) -> np.ndarray:
+        """The frames this person's box came from the detector (or from a run
+        that did not record the source: those were counted as detected)."""
+        ok = np.isfinite(self.score[:, person])
+        src = self.box_src[:, person]
+        return np.nonzero(ok & ((src == BOX_DETECTOR) | (src == BOX_UNKNOWN)))[0]
+
     def person_score(self, person: int) -> float:
-        """Mean detector confidence for one person over the frames they appear
-        on. A weak box still yields a confident-looking body -- a top-down
-        model always returns one -- so this is the number that says whether a
-        column is a real person or a coat stand."""
-        s = self.score[:, person]
-        s = s[np.isfinite(s)]
+        """Mean detector confidence for one person over the frames the DETECTOR
+        found them on (G136). A weak box still yields a confident-looking body
+        -- a top-down model always returns one -- so this is the number that
+        says whether a column is a real person or a coat stand. A frame whose
+        box came from the segment silhouette carries 1.0 because the user chose
+        it, not because anything was detected: averaging those in made a
+        silhouette-driven column read '100 %', and diluted the real scores of a
+        later detector run. NaN when no frame was detected."""
+        fr = self.detected_frames(person)
+        s = self.score[fr, person]
         return float(s.mean()) if len(s) else float("nan")
 
     def person_label(self, person: int) -> str:
         nm = self.names[person] if person < len(self.names) else f"person {person + 1}"
         sc = self.person_score(person)
         n = len(self.frames(person))
-        return nm if not np.isfinite(sc) else f"{nm}  ({n} frames, found {sc:.0%})"
+        if np.isfinite(sc):
+            return f"{nm}  ({n} frames, found {sc:.0%})"
+        return f"{nm}  ({n} frames, from the silhouette)" if n else nm
+
+    def frame_steps(self) -> np.ndarray:
+        """(T,) int: how far apart the run that posed each frame sampled its
+        frames (I231). From `runs`: a frame is on the grid (first, first + step,
+        ...) of every run that covers it, and the densest such run decides --
+        a dense run plus a sparse re-check is still a dense track, which one
+        number for the whole track (the largest step) used to turn into 'played
+        8x slow, frames never looked at, deg/s across real gaps'. A frame no run
+        accounts for (a track older than `runs`) takes `step`."""
+        st = np.full(self.n_frames, np.iinfo(np.int32).max, np.int64)
+        for a, b, c in self.runs:
+            a, b, c = max(0, int(a)), min(self.n_frames - 1, int(b)), max(1, int(c))
+            if b >= a:
+                st[a:b + 1:c] = np.minimum(st[a:b + 1:c], c)
+        return np.where(st == np.iinfo(np.int32).max, max(1, int(self.step or 1)), st)
 
     def people_at(self, frame: int) -> list[int]:
         if not (0 <= frame < self.n_frames):
@@ -934,6 +1013,7 @@ class BodyTrack:
             f"{prefix}conf": self.conf,
             f"{prefix}score": self.score,
             f"{prefix}bbox": self.bbox,
+            f"{prefix}box_src": self.box_src,
             f"{prefix}focal": self.focal,
             f"{prefix}meta": json.dumps({
                 "rig": self.rig.name, "names": self.names, "backend": self.backend,
@@ -970,6 +1050,10 @@ class BodyTrack:
             ct = np.asarray(arrays[f"{prefix}cam_t"], np.float32)
             if ct.shape == bt.cam_t.shape:
                 bt.cam_t = ct
+        if f"{prefix}box_src" in have:                # older files: source unknown (G136)
+            bs = np.asarray(arrays[f"{prefix}box_src"], np.int8)
+            if bs.shape == bt.box_src.shape:
+                bt.box_src = bs
         if f"{prefix}mesh_faces" in have:
             faces = np.asarray(arrays[f"{prefix}mesh_faces"], np.int32)
             bt.faces = faces.reshape(-1, 3) if len(faces) else None
@@ -993,44 +1077,83 @@ def _runs_mask(runs, n_frames: int) -> np.ndarray:
     return m
 
 
+def _frames_text(frames, limit: int = 6) -> str:
+    f = [int(x) for x in frames]
+    return (", ".join(str(x) for x in f) if len(f) <= limit
+            else ", ".join(str(x) for x in f[:limit]) + f" and {len(f) - limit} more")
+
+
 def merge_run(old: BodyTrack | None, new: BodyTrack) -> tuple[BodyTrack, str]:
     """Fold a finished (or stopped) pose run into the track the view already
     has. Returns (the track to store, one plain sentence for the user, or ""
     when there was nothing to merge with).
 
-    A run replaces exactly the frames it put through the model
+    A run replaces what it found on the frames it put through the model
     (`new.examined`) and leaves every other frame as it was. (I82) Swapping
     the new track in whole threw away every pose outside a re-run's range,
     and a stopped run kept only what it had reached -- hours of SAM 3D Body
     work gone to fix 100 frames. When the two cannot be merged (another joint
     set, number of people or video length) the new run replaces the old one
-    and the sentence says so; the caller's undo snapshot can take it back."""
+    and the sentence says so; the caller's undo snapshot can take it back.
+
+    (I183) On a frame the run examined but found nobody on, the EARLIER pose is
+    kept -- a miss of the detector or of the silhouette is not evidence the
+    person left, and blanking it destroyed a good pose while the message said
+    nothing was lost. Per person: a column the run did not find on a frame
+    keeps its earlier cell there. The sentence counts and names those frames.
+    (I232) A video that would not decode at frame k says so, on a first run too."""
     ex = new.examined
     if ex is None:
         ex = new.frames()
     ex = np.unique(np.asarray(ex, np.int64).reshape(-1))
     ex = ex[(ex >= 0) & (ex < new.n_frames)]
     new.examined, new.stopped_early, stopped = None, False, bool(new.stopped_early)
+    failed = new.decode_failed
+    new.__dict__.pop("decode_failed", None)               # the stored track never carries it
+    cut = ("" if failed is None else
+           f"Frame {int(failed)} could not be decoded (the file is damaged there, or the video "
+           f"ends before it), so the run stopped there.")
     if old is None or old.n_posed() == 0:
-        return new, ""
+        return new, cut
     if (old.n_frames != new.n_frames or old.rig.name != new.rig.name
             or old.n_people != new.n_people):
         why = ("a different joint set" if old.rig.name != new.rig.name else
                "a different number of people" if old.n_people != new.n_people else
                "a different video length")
-        return new, (f"This run used {why} from the earlier one, so it REPLACED the earlier "
-                     f"poses ({old.n_posed()} frames). Ctrl+Z brings them back.")
+        lost = ""
+        if old.n_frames == new.n_frames:
+            n_lost = int((np.isfinite(old.score).any(axis=1) & ~np.isfinite(new.score).any(axis=1)).sum())
+            if n_lost:
+                lost = f" {n_lost} of those frames have no pose now."
+        return new, ((cut + " " if cut else "") +
+                     f"This run used {why} from the earlier one, so it REPLACED the earlier "
+                     f"poses ({old.n_posed()} frames).{lost} Ctrl+Z brings them back.")
     out = old.copy()
-    out.clear_frames(ex)
-    for name in ("joints3d", "joints2d", "conf", "score", "bbox", "cam_t"):
-        getattr(out, name)[ex] = getattr(new, name)[ex]
-    got = np.isfinite(new.focal[ex])
-    out.focal[ex[got]] = new.focal[ex[got]]
-    ex_set = set(int(f) for f in ex)
-    for key, v in new.mesh.items():
-        if key[0] in ex_set:
-            out.mesh[key] = v
+    got = np.isfinite(new.score[ex])                      # (n_examined, P): found this time
+    had = np.isfinite(old.score[ex])
+    miss = had & ~got                                     # earlier pose, nobody found: kept
+    for p in range(out.n_people):
+        fr = ex[got[:, p]]
+        if not len(fr):
+            continue
+        for name in ("joints3d", "joints2d", "conf", "score", "bbox", "cam_t", "box_src"):
+            getattr(out, name)[fr, p] = getattr(new, name)[fr, p]
+        fr_set = set(int(f) for f in fr)
+        gone = [k for k in out.mesh if k[1] == p and k[0] in fr_set]
+        for key in gone:
+            del out.mesh[key]
+        added = [k for k in new.mesh if k[1] == p and k[0] in fr_set]
+        for key in added:
+            out.mesh[key] = new.mesh[key]
+        if gone or added:
             out.mesh_version += 1
+    row = got.any(axis=1)
+    redone = ex[row]
+    fin = np.isfinite(new.focal[redone])
+    out.focal[redone[fin]] = new.focal[redone[fin]]
+    # a replaced frame whose focal is not known now, and that keeps no earlier
+    # cell, must not keep the old focal
+    out.focal[redone[~fin & ~miss[row].any(axis=1)]] = np.nan
     if out.faces is None and new.faces is not None:
         out.faces = new.faces
     out.has_3d = bool(out.has_3d or new.has_3d)
@@ -1043,19 +1166,44 @@ def merge_run(old: BodyTrack | None, new: BodyTrack) -> tuple[BodyTrack, str]:
                             [(int(old.frames()[0]), int(old.frames()[-1]), old.step)])
     out.runs = old_runs + (new.runs or [])
     out.n_requested = int(_runs_mask(out.runs, out.n_frames).sum())
-    kept = int(np.isfinite(out.score).any(axis=1).sum()) - int(
-        np.isfinite(out.score[ex]).any(axis=1).sum())
-    out.step = max(out.step, new.step) if kept else new.step
+    # (I231) `step` stays the densest run's, for readers of the old scalar;
+    # everything that needs the sampling of a frame asks `frame_steps()`
+    out.step = min((int(c) for _, _, c in out.runs), default=out.step) or 1
     out.touch()
+    posed = np.isfinite(out.score).any(axis=1)
+    kept = int(posed.sum()) - int(posed[ex].sum())
+    kept_frames = ex[miss.any(axis=1)]
+    sent = []
+    if cut:
+        sent.append(cut)
     if not len(ex):
-        return out, "The run stopped before it finished a frame; the poses are unchanged."
-    span = (f"frame {int(ex[0])} was" if len(ex) == 1 else
-            f"frames {int(ex[0])}-{int(ex[-1])} were")
-    if stopped:
-        return out, (f"Stopped early: {span} posed again; every other frame keeps its "
-                     f"earlier pose ({kept} frames).")
-    return out, (f"{span[0].upper()}{span[1:]} posed again; the earlier poses on the other "
-                 f"{kept} frames were kept.")
+        sent.append("The poses are unchanged." if cut else
+                    "The run stopped before it finished a frame; the poses are unchanged.")
+        return out, " ".join(sent)
+    if len(redone):
+        span = (f"frame {int(redone[0])} was" if len(redone) == 1 else
+                f"frames {int(redone[0])}-{int(redone[-1])} were")
+        if stopped:
+            sent.append(f"Stopped early: {span} posed again; every other frame keeps its "
+                        f"earlier pose ({kept} frames).")
+        else:
+            sent.append(f"{span[0].upper()}{span[1:]} posed again; the earlier poses on the other "
+                        f"{kept} frames were kept.")
+    elif stopped:
+        sent.append("Stopped early.")
+    if len(kept_frames):
+        m = len(kept_frames)
+        names = _frames_text(kept_frames)
+        if out.n_people == 1:
+            sent.append(f"No person was found on {m} frame{'s' if m != 1 else ''} it examined "
+                        f"({names}); {'they keep' if m != 1 else 'it keeps'} the earlier pose.")
+        else:
+            sent.append(f"On {m} frame{'s' if m != 1 else ''} it examined ({names}) someone the "
+                        f"earlier run had found was not found again; that person keeps the "
+                        f"earlier pose.")
+        if not len(redone):
+            sent.append(f"The other {kept} frames keep their earlier poses too.")
+    return out, " ".join(sent)
 
 
 # ------------------------------------------------------------------ exports
@@ -1152,9 +1300,14 @@ def export_angles_csv(track: BodyTrack, path: str | Path, fps: float = 0.0) -> N
         if has_joint_scores(track):
             _comment(f, f"a joint the model scored under {MIN_JOINT_CONF:g} is treated as "
                         f"unseen: any angle that needs it is blank on that frame")
-        if fps > 0 and track.step > 1:
-            _comment(f, f"deg/s: differences between the sampled frames ({track.step} "
-                        f"frames apart), not between neighbouring video frames")
+        steps = track.frame_steps()                       # (I231) per frame, from the runs
+        posed_steps = steps[np.isfinite(track.score).any(axis=1)]
+        if fps > 0 and len(posed_steps) and int(posed_steps.max()) > 1:
+            _comment(f, (f"deg/s: differences between the sampled frames ({int(posed_steps.max())} "
+                         f"frames apart" if int(posed_steps.min()) == int(posed_steps.max()) else
+                         f"deg/s: where a stretch was sampled (up to {int(posed_steps.max())} "
+                         f"frames apart")
+                     + "), not between neighbouring video frames")
         if track.notes:
             _comment(f, track.notes)
         w = csv.writer(f)
@@ -1165,7 +1318,7 @@ def export_angles_csv(track: BodyTrack, path: str | Path, fps: float = 0.0) -> N
         per_person = {}
         for p in range(track.n_people):
             _, a = track.angles(p)
-            per_person[p] = (a, angular_velocity(a, fps, track.step) if fps > 0 else None)
+            per_person[p] = (a, angular_velocity(a, fps, steps) if fps > 0 else None)
         for t in range(track.n_frames):
             for p in track.people_at(t):
                 a, v = per_person[p]
@@ -1179,7 +1332,8 @@ def export_angles_csv(track: BodyTrack, path: str | Path, fps: float = 0.0) -> N
 
 def angle_report(track: BodyTrack, fps: float = 0.0) -> str:
     """Plain-language verdict + range of motion, for the dialog and a sidecar
-    .txt. Written for a reader who has never done motion capture."""
+    .txt. Written for a reader who has never done motion capture. (`fps` is
+    not used by the report; the app passes it, so the parameter stays.)"""
     lines = []
     n = track.n_posed()
     total = track.n_requested or track.n_frames
@@ -1190,9 +1344,14 @@ def angle_report(track: BodyTrack, fps: float = 0.0) -> str:
     lines.append(f"Joint set        : {track.rig.label}")
     asked = ("frames asked for" if track.n_requested else "frames in the video")
     lines.append(f"Frames with a person: {n} of {total} {asked}")
-    if track.step > 1:
-        lines.append(f"Sampled           : every {track.step} frames"
-                     f" (the frames in between were never looked at)")
+    steps = track.frame_steps()[np.isfinite(track.score).any(axis=1)]    # (I231) per frame
+    if len(steps) and int(steps.max()) > 1:
+        if int(steps.min()) > 1:
+            lines.append(f"Sampled           : every {int(steps.max())} frames"
+                         f" (the frames in between were never looked at)")
+        else:
+            lines.append(f"Sampled           : part of the range every {int(steps.max())} frames"
+                         f" (the frames in between were never looked at there)")
     lines.append(f"People           : {track.n_people}")
     lines.append(f"Angles measured in  : {track.angle_source()}")
     lines.append("")
@@ -1201,6 +1360,9 @@ def angle_report(track: BodyTrack, fps: float = 0.0) -> str:
         lines.append("points towards or away from the camera looks shorter than it is, so")
         lines.append("its angle reads smaller than the real one. Treat them as a guide and")
         lines.append("compare like with like (the same camera, the same direction of travel).")
+        lines.append("A signed angle needs to know which way the person faces, which comes from")
+        lines.append("the nose: a frame where it is hidden uses the way they faced for most of")
+        lines.append("the clip, and is left blank when they turned round about as often as not.")
         lines.append("")
     if has_joint_scores(track):
         lines.append(f"A joint the model scored under {MIN_JOINT_CONF:.0%} (a foot cut off by the")
@@ -1227,9 +1389,15 @@ def angle_report(track: BodyTrack, fps: float = 0.0) -> str:
         sc = track.person_score(p)
         lines.append(f"{nm} - range of motion (degrees)")
         if np.isfinite(sc):
+            nd = len(track.detected_frames(p))
             lines.append(f"  found on {len(track.frames(p))} frames, "
-                         f"mean detector confidence {sc:.0%}"
+                         + (f"mean detector confidence {sc:.0%}" if nd == len(track.frames(p))
+                            else f"mean detector confidence {sc:.0%} over the {nd} the detector found")
                          + ("  <-- LOW: check this is really a person" if sc < 0.6 else ""))
+        elif len(track.frames(p)):
+            # (G136) no detector ran: the box came from the segment silhouette
+            lines.append(f"  found on {len(track.frames(p))} frames, aimed with the segment "
+                         f"silhouette (no detector confidence to report)")
         lines.append(f"  {'angle':<34}{'min':>9}{'max':>9}{'range':>9}{'median':>9}")
         for k, d in enumerate(defs):
             if not np.isfinite(rom['range'][k]):

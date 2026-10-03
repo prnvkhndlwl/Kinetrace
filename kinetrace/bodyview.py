@@ -23,11 +23,12 @@ import numpy as np
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-                               QRadioButton, QSizePolicy, QSpinBox, QVBoxLayout, QWidget)
+                               QGroupBox, QHBoxLayout, QLabel, QMenu, QMessageBox,
+                               QPushButton, QRadioButton, QSizePolicy, QSpinBox, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from kinetrace import theme
-from kinetrace.body import MIN_JOINT_CONF, BodyTrack, canon, is_finger
+from kinetrace.body import MIN_JOINT_CONF, BodyTrack, canon, is_finger, median_axis
 from kinetrace.hull import _view_rotation
 
 # Left / right / centre, BGR. Colour-coding the sides is the single most
@@ -60,25 +61,6 @@ def _up_basis(up) -> np.ndarray:
     return np.eye(3) + vx + vx @ vx * ((1.0 - c) / (s * s))
 
 
-def _median_dir(stack: np.ndarray, rig, a: str, b: str) -> np.ndarray | None:
-    """Median unit vector from joint `a` to joint `b` over every frame that
-    has both. Median, not mean, so one frame with a swapped limb cannot tip
-    the whole clip over."""
-    from kinetrace.body import _resolve
-    pa, pb = _resolve(a, stack, rig), _resolve(b, stack, rig)
-    if pa is None or pb is None:
-        return None
-    v = pb - pa
-    n = np.linalg.norm(v, axis=-1, keepdims=True)
-    ok = (n[..., 0] > 1e-9) & np.isfinite(v).all(axis=-1)
-    if not ok.any():
-        return None
-    u = v[ok] / n[ok]
-    m = np.median(u, axis=0)
-    nm = np.linalg.norm(m)
-    return m / nm if nm > 1e-9 else None
-
-
 def body_basis(stack: np.ndarray, rig) -> np.ndarray | None:
     """Rotation taking the SUBJECT's own axes onto the view's: their long axis
     (pelvis to shoulders) to +y, their left-right axis to +x.
@@ -95,15 +77,15 @@ def body_basis(stack: np.ndarray, rig) -> np.ndarray | None:
     would rock the view with every stride. Returns None when the joints
     needed are missing, and the caller falls back to the rig's declared up.
     """
-    up = _median_dir(stack, rig, "mid(left_hip,right_hip)",
+    up = median_axis(stack, rig, "mid(left_hip,right_hip)",
                      "mid(left_shoulder,right_shoulder)")
     if up is None:
-        up = _median_dir(stack, rig, "mid(left_hip,right_hip)", "neck")
+        up = median_axis(stack, rig, "mid(left_hip,right_hip)", "neck")
     if up is None:
         return None
-    lat = _median_dir(stack, rig, "right_hip", "left_hip")
+    lat = median_axis(stack, rig, "right_hip", "left_hip")
     if lat is None:
-        lat = _median_dir(stack, rig, "right_shoulder", "left_shoulder")
+        lat = median_axis(stack, rig, "right_shoulder", "left_shoulder")
     y = up
     if lat is None:
         # no left-right axis: any vector square to the body will do for the
@@ -125,10 +107,10 @@ def body_basis_2d(stack: np.ndarray, rig) -> np.ndarray | None:
     """The same idea for image-plane joints: a 2x2 rotation putting the
     subject's long axis up the panel. Image rows grow downwards, so "up the
     body" has to land on -y."""
-    up = _median_dir(stack, rig, "mid(left_hip,right_hip)",
+    up = median_axis(stack, rig, "mid(left_hip,right_hip)",
                      "mid(left_shoulder,right_shoulder)")
     if up is None:
-        up = _median_dir(stack, rig, "mid(left_hip,right_hip)", "nose")
+        up = median_axis(stack, rig, "mid(left_hip,right_hip)", "nose")
     if up is None:
         return None
     phi = -np.pi / 2 - np.arctan2(float(up[1]), float(up[0]))
@@ -161,7 +143,12 @@ class PoseDrawOptions:
     min_conf: float = MIN_JOINT_CONF
     thickness: float = 1.0
     person: int | None = None    # None = every person
-    angles_shown: tuple[str, ...] = ()
+    angles_shown: tuple[str, ...] = ()    # the numbers written on the picture
+    # the traces of the plot under it (G79); None = the same as angles_shown
+    # (what a caller that never heard of this gets), or every angle when that
+    # is empty too; () = none. The window always sets it, so the plot does
+    # not depend on the "Angle numbers" tick.
+    plot_angles: tuple[str, ...] | None = None
 
 
 def _pt(p) -> tuple[int, int]:
@@ -227,13 +214,39 @@ _ANGLE_AT = {
 }
 
 
-def _angle_anchor(track: BodyTrack, name: str) -> int | None:
+# The angles with no side (R17): where each is written and how far it is nudged
+# (dx, dy), so two of them at one joint do not print on top of each other.
+_SIDELESS_AT = {
+    "neck": (("nose", "neck"), 8, -9),
+    "trunk": (("neck", "left_shoulder"), 8, 11),
+    "stride": (("left_hip", "right_hip"), 8, 24),
+    "twist": (("neck", "left_shoulder"), 8, 24),
+}
+
+
+def _first_joint(track: BodyTrack, names) -> int | None:
+    for nm in names:
+        i = track.rig.index(nm)
+        if i is not None:                 # index 0 is a joint like any other
+            return i
+    return None
+
+
+def _angle_anchor(track: BodyTrack, name: str) -> tuple[int | None, int, int]:
+    """(joint index, dx, dy) where an angle's number is written: the joint it
+    is measured at. The two sides of a pair land on one pixel when filmed side
+    on, so the left one is nudged up and the right one down."""
     low = name.lower()
     side = "left" if low.startswith("left") else "right" if low.startswith("right") else None
-    for key, pat in _ANGLE_AT.items():
-        if key in low and side:
-            return track.rig.index(pat.format(side=side))
-    return track.rig.index("neck") or track.rig.index("left_shoulder")
+    if side:
+        for key, pat in _ANGLE_AT.items():
+            if key in low:
+                return track.rig.index(pat.format(side=side)), 8, -9 if side == "left" else 11
+        return None, 0, 0
+    for key, (joints, dx, dy) in _SIDELESS_AT.items():
+        if key in low:
+            return _first_joint(track, joints), dx, dy
+    return _first_joint(track, ("neck", "left_shoulder")), 8, 11
 
 
 def _label_angles(img, track, frame, person, opts, scale) -> None:
@@ -242,14 +255,11 @@ def _label_angles(img, track, frame, person, opts, scale) -> None:
     for k, d in enumerate(defs):
         if d.name not in opts.angles_shown or not np.isfinite(vals[frame, k]):
             continue
-        a = _angle_anchor(track, d.name)
+        a, dx, dy = _angle_anchor(track, d.name)
         if a is None or not np.isfinite(uv[a]).all():
             continue
         txt = f"{vals[frame, k]:+.0f}"
-        # Filmed side on, a left joint and its right twin land on the same
-        # pixel; nudge the two apart so both numbers stay readable.
-        dy = -9 if d.name.lower().startswith("left") else 11
-        org = (_pt(uv[a])[0] + 8, _pt(uv[a])[1] + dy)
+        org = (_pt(uv[a])[0] + dx, _pt(uv[a])[1] + dy)
         cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 0.44 * max(1.0, scale),
                     (20, 20, 24), 3, cv2.LINE_AA)
         cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 0.44 * max(1.0, scale),
@@ -325,9 +335,15 @@ def _draw_mesh(img, verts, faces, R, c_view, sc, size, pan, flip_y) -> bool:
     ln = np.linalg.norm(nrm, axis=1, keepdims=True)
     nrm = nrm / np.maximum(ln, 1e-12)
 
-    # the viewer looks along -z in view space when flip_y is -1 (3D), +z else
-    towards = -1.0 if flip_y < 0 else 1.0
-    depth = tv[:, :, 2].mean(axis=1) * -towards          # far first after argsort
+    # (G77) In the 3D view space (`hull._view_rotation`: x right, y up, z TOWARD
+    # the viewer; flip_y is -1) the viewer sits at +z, so a face points at them
+    # when its outward normal has z > 0 -- the mesh winds counter-clockwise seen
+    # from outside (positive signed volume, on SAM 3D Body's own mesh too). The
+    # test was the other way round and drew the BACK of every body under a
+    # front-facing skeleton. In the image-plane view (flip_y +1, no mesh is
+    # drawn there today) z points away.
+    towards = 1.0 if flip_y < 0 else -1.0
+    depth = tv[:, :, 2].mean(axis=1) * towards           # far first after argsort
     keep = (nrm[:, 2] * towards) > 0                     # backface cull
     if not keep.any():
         keep = np.ones(len(faces), bool)                 # open mesh: draw it all
@@ -341,9 +357,13 @@ def _draw_mesh(img, verts, faces, R, c_view, sc, size, pan, flip_y) -> bool:
     if not len(idx):
         return False
 
-    light = np.array([0.35, 0.55, -0.75])
+    # the direction TOWARD the light: above, to the right and in front of the
+    # figure (+z is toward the viewer). Only the faces that point at the
+    # viewer are drawn, so a Lambert term needs no abs() -- with the culling
+    # inverted, the old light (z < 0) lit the back faces it was drawing (G77).
+    light = np.array([0.35, 0.55, 0.75])
     light = light / np.linalg.norm(light)
-    shade = np.clip(0.30 + 0.70 * np.abs(nrm[idx] @ light), 0.0, 1.0)
+    shade = np.clip(0.30 + 0.70 * np.maximum(nrm[idx] @ light, 0.0), 0.0, 1.0)
     level = np.clip((shade * (_SHADE_LEVELS - 1)).astype(int), 0, _SHADE_LEVELS - 1)
 
     order = np.argsort(depth[idx], kind="stable")
@@ -362,7 +382,7 @@ def _draw_mesh(img, verts, faces, R, c_view, sc, size, pan, flip_y) -> bool:
 def render_pose_panel(track: BodyTrack, frame: int, person: int, size: tuple[int, int],
                       azimuth: float = 25.0, elevation: float = 12.0, zoom: float = 1.0,
                       names: bool = False, pan: tuple[float, float] = (0.0, 0.0),
-                      trail: int = 0, upright: bool = True, mesh: bool = True) -> np.ndarray:
+                      upright: bool = True, mesh: bool = True) -> np.ndarray:
     """The pose on its own, away from the picture.
 
     With 3D it is an orbitable skeleton in the model's own camera frame; with
@@ -544,9 +564,10 @@ def _plot_layer(track: BodyTrack, person: int, W: int, Hh: int, shown):
 
     # Break the line across gaps so missing frames never look measured -- but
     # a run that sampled every Nth frame has a gap of N between every pair of
-    # real samples, and those SHOULD be joined. `track.step` is what the run
-    # asked for, so anything wider than it is a real gap.
-    gap = max(1, int(getattr(track, "step", 1) or 1))
+    # real samples, and those SHOULD be joined. The step each frame was sampled
+    # at comes from the runs (`frame_steps`, I231), so anything wider than the
+    # larger of its two ends' steps is a real gap.
+    steps = track.frame_steps()
     for n, k in enumerate(pick):
         col = TRACE_COLS[n % len(TRACE_COLS)]
         v = vals[:, k]
@@ -555,7 +576,7 @@ def _plot_layer(track: BodyTrack, person: int, W: int, Hh: int, shown):
             # int() truncation, as the per-frame loop this replaces did
             xs = (left + pw * idx / T).astype(np.int32)
             ys = (top + ph * (1.0 - (v[idx] - lo) / (hi - lo))).astype(np.int32)
-            cuts = np.nonzero(np.diff(idx) > gap)[0] + 1
+            cuts = np.nonzero(np.diff(idx) > np.maximum(steps[idx[:-1]], steps[idx[1:]]))[0] + 1
             for a, b in zip(np.r_[0, cuts], np.r_[cuts, len(idx)]):
                 if b - a > 1:
                     cv2.polylines(img, [np.column_stack([xs[a:b], ys[a:b]])], False, col, 1,
@@ -614,12 +635,16 @@ def compose_side_by_side(bgr: np.ndarray, track: BodyTrack, frame: int, person: 
     left = draw_pose(bgr, track, frame, opts, scale=s)
     h, w = left.shape[:2]
     right = render_pose_panel(track, frame, person, (w, h), azimuth, elevation,
+                              names=bool(opts.names) if opts else False,    # the window's tick (R17)
                               upright=upright, mesh=mesh)
     top = np.hstack([left, right])
     cv2.line(top, (w, 0), (w, h), (70, 74, 82), 2)
     out = top
     if plot and track is not None:
-        shown = list(opts.angles_shown) if opts and opts.angles_shown else None
+        shown = None
+        if opts is not None:                      # the plot's own choice first (G79)
+            shown = (list(opts.plot_angles) if opts.plot_angles is not None
+                     else (list(opts.angles_shown) or None))
         out = np.vstack([top, angle_plot(track, person, frame, (top.shape[1], _plot_height(h)),
                                          shown, fps)])
     d = int(width) - out.shape[1] if width else 0
@@ -658,17 +683,99 @@ class BodyRunOptions:
     store_mesh: bool = True       # keep the body shape, not only the joints
 
 
+class BodyRunProblem(RuntimeError):
+    """A failure of the run that is already a sentence for the user."""
+
+
+class _Stopped(Exception):
+    """The user pressed Stop before the run had anything to keep (G78)."""
+
+
+class _FrameReader:
+    """One decoder for frames wanted in increasing order (I232, R17): it seeks
+    to the first, skips cheaply between sampled frames, and remembers the FIRST
+    frame it could not read (`failed`). The pose run and the video export each
+    carried a copy of this loop that told a damaged file from a user's Stop by
+    nothing -- the run said 'stopped early', the export said 'written'."""
+
+    def __init__(self, path: str, first: int):
+        from kinetrace.video_source import open_capture
+        self.cap = open_capture(path)
+        if not self.cap.isOpened():
+            self.cap.release()
+            raise BodyRunProblem("could not open " + str(path))
+        self.reset(first)
+
+    def reset(self, first: int) -> None:
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(first))
+        self.nxt = int(first)
+        self.failed: int | None = None
+
+    def read(self, f: int):
+        """Frame `f` (BGR), or None -- then `failed` is the first frame that
+        did not decode. `f` must not be lower than the one before."""
+        if self.failed is not None:
+            return None
+        while self.nxt < f:                              # sampled run: skip cheaply
+            if not self.cap.grab():
+                self.failed = self.nxt
+                return None
+            self.nxt += 1
+        ok, bgr = self.cap.read()
+        if not ok:
+            self.failed = int(f)
+            return None
+        self.nxt = int(f) + 1
+        return bgr
+
+    def release(self) -> None:
+        self.cap.release()
+
+
+def _prior_boxes(existing: BodyTrack | None, opts: "BodyRunOptions"):
+    """Where each person of the poses already in the view was last seen before
+    the run's first frame, so the run can give them their own columns back
+    (I180): (rig name, n_people, [box per column or None], [frame per column]).
+    None when the run cannot be merged into the track (other number of people)
+    or there is nothing to go on. A column with nothing before the first frame
+    takes its first box after it."""
+    if existing is None or existing.n_people != int(opts.max_people) or not existing.n_posed():
+        return None
+    f0 = int(opts.start)
+    boxes, frames = [], []
+    for p in range(existing.n_people):
+        ok = np.isfinite(existing.score[:, p]) & (existing.bbox[:, p, 0] >= 0)
+        fr = np.nonzero(ok)[0]
+        pick = fr[fr < f0]
+        pick = pick[-1:] if len(pick) else fr[fr >= f0][:1]
+        if len(pick):
+            boxes.append(np.array(existing.bbox[int(pick[0]), p], np.float32))
+            frames.append(int(pick[0]))
+        else:
+            boxes.append(None)
+            frames.append(None)
+    return existing.rig.name, existing.n_people, boxes, frames
+
+
 class BodyPoseWorker(QThread):
     """Runs a pose backend over a frame range on its own thread, with its own
     VideoCapture (one capture per thread is a hard rule in this app) and its
-    own torch import. Emits progress, then finished_ok or error."""
+    own torch import. Emits progress, then finished_ok, error or stopped.
+
+    `stopped(sentence)` (G78): the user pressed Stop before there was anything
+    to keep -- during a first-use download, while the model loaded, or before
+    the first frame was done. It is not an error and not 'no person was found';
+    the earlier poses are untouched. A Stop after at least one frame still
+    ends in `finished_ok` with the frames reached (`track.stopped_early`)."""
 
     progress = Signal(int, int, str)     # done, total, note
     finished_ok = Signal(object)         # BodyTrack
     error = Signal(str)
+    stopped = Signal(str)
 
     def __init__(self, video_path: str, n_frames: int, opts: BodyRunOptions,
                  masks=None, fps: float = 0.0, target=None):
+        # `fps` is not used (the app passes it positionally, so it stays)
         super().__init__()
         self.video_path = str(video_path)
         self.n_frames = int(n_frames)
@@ -680,6 +787,9 @@ class BodyPoseWorker(QThread):
         # the result into this, not into whatever view is active when the run
         # ends (the progress dialog is non-modal, so the user can switch).
         self.target = target
+        # (I180) where the people already in that view were last seen: a run
+        # over part of the video starts its identity matcher from them
+        self._prior = _prior_boxes(getattr(target, "body", None), opts)
         self._cancel = False
         self.track: BodyTrack | None = None
 
@@ -706,8 +816,9 @@ class BodyPoseWorker(QThread):
 
     def run(self) -> None:
         from kinetrace import bodypose
-        from kinetrace.video_source import open_capture
-        cap = None
+        from kinetrace.downloads import DownloadCancelled, DownloadError
+        from kinetrace.errors import plain_error
+        reader = est = None
         try:
             self.progress.emit(0, 0, "Loading the pose model…")
             est = bodypose.make_estimator(
@@ -720,6 +831,8 @@ class BodyPoseWorker(QThread):
                     f"{label}: {done / 1e6:.0f} of {total / 1e6:.0f} MB (first use only)" if total
                     else f"{label} (first use only)…"),
                 cancel=lambda: self._cancel)
+            if self._cancel:                         # Stop pressed while the model loaded (G78)
+                raise _Stopped()
             track = BodyTrack(self.n_frames, est.rig, self.opts.max_people)
             track.backend = bodypose.BACKENDS[self.opts.backend].label
             track.examined = np.zeros(0, np.int64)
@@ -735,20 +848,18 @@ class BodyPoseWorker(QThread):
                                "focal length, so absolute 3D distances may be off by the "
                                "ratio of that guess to the real lens (angles are not affected).")
             matcher = bodypose.PersonMatcher(self.opts.max_people)
-            cap = open_capture(self.video_path)
-            if not cap.isOpened():
-                raise RuntimeError("could not open " + self.video_path)
+            if self._prior is not None and self._prior[0] == est.rig.name:
+                matcher.seed(self._prior[2], self._prior[3])      # people keep their columns (I180)
             f0, f1 = int(self.opts.start), int(self.opts.end)
             step = max(1, int(self.opts.step))
             frames = list(range(f0, f1 + 1, step))
             total = len(frames)
+            reader = _FrameReader(self.video_path, f0)
             # what the run asked for, so the report judges it on that and the
             # angle plot knows which gaps are real
             track.n_requested = total
             track.step = step
             track.runs = [(f0, f1, step)]
-            cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
-            nxt = f0
             done = 0
             bad = 0                 # frames the model choked on
             first_error = ""
@@ -759,14 +870,10 @@ class BodyPoseWorker(QThread):
                 if self._cancel:
                     track.stopped_early = True
                     break
-                while nxt < f:                       # step > 1: skip cheaply
-                    if not cap.grab():
-                        break
-                    nxt += 1
-                ok, bgr = cap.read()
-                nxt = f + 1
-                if not ok:
-                    track.stopped_early = True
+                bgr = reader.read(f)
+                if bgr is None:
+                    # (I232) a frame that will not decode is not a user's Stop
+                    track.decode_failed = reader.failed
                     break
                 boxes = masks_in = None
                 if self.opts.use_masks:
@@ -786,11 +893,13 @@ class BodyPoseWorker(QThread):
                     # different -- nothing works from the very first frame --
                     # and is reported instead of grinding through the video.
                     bad += 1
-                    first_error = first_error or str(exc)
+                    if not first_error:
+                        # the first one goes to the error log with its traceback
+                        # (G78); the user reads its type and words, not a bare "'pred_cam_t'"
+                        first_error = plain_error(exc, f"The pose model on frame {f}", short=True)
                     if bad >= 5 and not track.n_posed():
-                        raise RuntimeError(
-                            f"the pose model failed on the first {bad} frames: "
-                            f"{first_error}") from exc
+                        raise BodyRunProblem(
+                            f"the pose model failed on the first {bad} frames. {first_error}") from exc
                     done += 1
                     continue
                 examined.append(f)
@@ -801,28 +910,49 @@ class BodyPoseWorker(QThread):
                     track.set_person(f, col, joints2d=p.joints2d, joints3d=p.joints3d,
                                      conf=p.conf, score=p.score, bbox=p.bbox, focal=p.focal,
                                      vertices=p.vertices if self.opts.store_mesh else None,
-                                     faces=getattr(est, "faces", None), cam_t=p.cam_t)
+                                     faces=getattr(est, "faces", None), cam_t=p.cam_t,
+                                     box_source=p.box_source)
                 done += 1
                 if done % 3 == 0 or done == total:
                     self.progress.emit(done, total, f"frame {f}")
-            est.close()
             if bad:
                 note = (f"{bad} frame{'s' if bad != 1 else ''} could not be processed; "
                         f"{'they keep' if bad != 1 else 'it keeps'} any earlier pose, "
                         f"else {'stay' if bad != 1 else 'stays'} blank ({first_error}).")
                 track.notes = (track.notes + "  " + note).strip()
             track.examined = np.asarray(examined, np.int64)
+            if not examined and track.decode_failed is not None:
+                raise BodyRunProblem(
+                    f"Frame {track.decode_failed} could not be decoded (the file is damaged "
+                    f"there, or the video ends before it), so nothing was posed.")
+            if not examined and track.stopped_early:
+                raise _Stopped()
             self.track = track
             self.finished_ok.emit(track)
-        except Exception as exc:                     # noqa: BLE001 - reported to the user
+        except _Stopped:
+            self.stopped.emit("Stopped before the first frame was done: nothing was posed and "
+                              "the earlier poses are unchanged.")
+        except DownloadCancelled as exc:
+            self.stopped.emit(f"{exc} Nothing was posed and the earlier poses are unchanged.")
+        except (DownloadError, bodypose.BodyBackendError, BodyRunProblem) as exc:
             self.error.emit(str(exc))
+        except Exception as exc:                     # noqa: BLE001 - reported to the user
+            self.error.emit(plain_error(exc, "The body pose run"))     # also logged with its traceback
         finally:
-            if cap is not None:
-                cap.release()
+            if reader is not None:
+                reader.release()
+            if est is not None:
+                try:
+                    est.close()
+                except Exception:                    # noqa: BLE001
+                    pass
 
 
 class SideBySideRenderer(QThread):
-    """Write the side-by-side view to an mp4."""
+    """Write the side-by-side view to an mp4. After `finished_ok`,
+    `frames_written` is how many frames are really in the file and `note` says
+    why it is short of what was asked ("" when it is not) -- a video can end
+    before the range the session believed it had (I232, like I41)."""
     progress = Signal(int, int)
     finished_ok = Signal(str, str)
     error = Signal(str)
@@ -841,14 +971,19 @@ class SideBySideRenderer(QThread):
         self.azimuth, self.elevation, self.plot = azimuth, elevation, plot
         self.upright, self.mesh = bool(upright), bool(mesh)
         self._cancel = False
+        self.frames_written = 0
         # (I90) A run that sampled every Nth frame has a pose on one frame in
         # N; writing every frame strobed the skeleton on and "no pose" off.
         # Such a run writes only its posed frames, at fps / N, so the video
         # still plays in real time. `note` says so, for the caller's message.
-        step = max(1, int(getattr(track, "step", 1) or 1))
+        # (I231) N is the DENSEST step among the posed frames in range: a dense
+        # run plus a sparse re-check of it used to read as 'every 8th' and play
+        # the whole video 8x slow.
+        in_range = [int(f) for f in track.frames() if self.f0 <= f <= self.f1]
+        step = int(track.frame_steps()[in_range].min()) if in_range else \
+            max(1, int(getattr(track, "step", 1) or 1))
         if step > 1:
-            fr = track.frames()
-            self.frames = [int(f) for f in fr if self.f0 <= f <= self.f1]
+            self.frames = in_range
             self.out_fps = max(1.0, self.fps / step)
             self.note = (f"only the {len(self.frames)} posed frames (the run sampled every "
                          f"{step}th frame), played at {self.out_fps:g} fps so it keeps "
@@ -861,40 +996,40 @@ class SideBySideRenderer(QThread):
     def request_cancel(self) -> None:
         self._cancel = True
 
-    def run(self) -> None:
-        from kinetrace.render import open_writer
-        from kinetrace.video_source import open_capture
-        cap = vw = None
+    def _discard(self) -> None:
         try:
-            cap = open_capture(self.video_path)
-            if not cap.isOpened():
-                raise RuntimeError("could not open " + self.video_path)
+            Path(self.out_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def run(self) -> None:
+        from kinetrace.errors import plain_error
+        from kinetrace.render import open_writer
+        reader = vw = None
+        created = False               # the writer made / truncated out_path: ours to delete
+        try:
             if not self.frames:
-                raise RuntimeError("no posed frames in %d-%d" % (self.f0, self.f1))
+                raise BodyRunProblem("no posed frames in %d-%d" % (self.f0, self.f1))
             first = self.frames[0]
-            cap.set(cv2.CAP_PROP_POS_FRAMES, first)
-            ok, bgr = cap.read()
-            if not ok:
-                raise RuntimeError("could not read frame %d" % first)
+            reader = _FrameReader(self.video_path, first)
+            bgr = reader.read(first)
+            if bgr is None:
+                raise BodyRunProblem(f"frame {first} could not be decoded (the video ends before "
+                                     f"it, or the file is damaged there), so nothing was written.")
             probe = compose_side_by_side(bgr, self.track, first, self.person, self.opts,
                                          self.plot, self.azimuth, self.elevation, self.fps,
                                          self.width, self.upright, self.mesh)
             size = (probe.shape[1], probe.shape[0])
             vw, codec = open_writer(self.out_path, self.out_fps, size)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, first)
-            nxt = first
+            created = True
+            reader.reset(first)
             total = max(1, len(self.frames))
             done = 0
             for f in self.frames:
                 if self._cancel:
                     break
-                while nxt < f:                       # sampled run: skip cheaply
-                    if not cap.grab():
-                        break
-                    nxt += 1
-                ok, bgr = cap.read()
-                nxt = f + 1
-                if not ok:
+                bgr = reader.read(f)
+                if bgr is None:
                     break
                 img = compose_side_by_side(bgr, self.track, f, self.person, self.opts,
                                            self.plot, self.azimuth, self.elevation, self.fps,
@@ -907,18 +1042,36 @@ class SideBySideRenderer(QThread):
                     self.progress.emit(done, total)
             vw.release()
             vw = None
+            self.frames_written = done
             if self._cancel:
-                Path(self.out_path).unlink(missing_ok=True)
+                self._discard()
                 self.error.emit("cancelled")
                 return
+            if done == 0:
+                self._discard()
+                raise BodyRunProblem(f"frame {first} could not be decoded (the video ends before "
+                                     f"it, or the file is damaged there), so nothing was written.")
+            if done < len(self.frames):
+                k = reader.failed if reader.failed is not None else self.frames[done]
+                sentence = (f"Frame {k} could not be decoded (the video ends there, or the file is "
+                            f"damaged), so this video stops after frame {self.frames[done - 1]}: "
+                            f"{done} of {len(self.frames)} frames were written.")
+                self.note = (self.note + "; " if self.note else "") + sentence
+                self.progress.emit(done, total)
             self.finished_ok.emit(self.out_path, codec)
         except Exception as exc:                     # noqa: BLE001
-            self.error.emit(str(exc))
+            if vw is not None:
+                vw.release()
+                vw = None
+            if created:
+                self._discard()       # a truncated file is not a result (I232)
+            self.error.emit(str(exc) if isinstance(exc, BodyRunProblem)
+                            else plain_error(exc, "The side-by-side video"))
         finally:
             if vw is not None:
                 vw.release()
-            if cap is not None:
-                cap.release()
+            if reader is not None:
+                reader.release()
 
 
 # ------------------------------------------------------------------ dialogs
@@ -1098,11 +1251,10 @@ class BodyRunDialog(QDialog):
 
 
 class BodySideBySide(QWidget):
-    """The side-by-side window. Follows the app's current frame; asks the app
-    to seek when the user drags the plot."""
+    """The side-by-side window. Follows the app's current frame (the app calls
+    `set_frame`); it never seeks by itself, and the plot is not draggable."""
 
     closed = Signal()
-    seek_requested = Signal(int)
     export_requested = Signal()
 
     def __init__(self, parent=None):
@@ -1145,6 +1297,20 @@ class BodySideBySide(QWidget):
                   self.chk_shape):
             c.toggled.connect(lambda _=False: self.request_render())
             top.addWidget(c)
+        # (G79) which angles the plot draws, whatever the "Angle numbers" tick says
+        self._plot_pick: list[str] | None = None     # None = the limb flexions (the default)
+        self.btn_plot = QToolButton()
+        self.btn_plot.setText("Plot angles")
+        self.btn_plot.setPopupMode(QToolButton.InstantPopup)
+        self.btn_plot.setToolTip("Choose which joint angles the plot draws: a whole group "
+                                 "(arms, legs, trunk) or single angles. At most "
+                                 f"{len(TRACE_COLS)} are drawn at once; ticking more drops "
+                                 f"the oldest choice.")
+        self._plot_menu = QMenu(self.btn_plot)
+        self._plot_acts: dict[str, object] = {}
+        self._group_acts: list = []
+        self.btn_plot.setMenu(self._plot_menu)
+        top.addWidget(self.btn_plot)
         self.btn_export = QPushButton("Save video…")
         self.btn_export.setToolTip("Write exactly this view to an mp4")
         self.btn_export.clicked.connect(lambda: self.export_requested.emit())
@@ -1187,6 +1353,7 @@ class BodySideBySide(QWidget):
         self.cmb_person.blockSignals(False)
         self.info.setText(track.summary() if track is not None else "no body pose yet")
         self.chk_shape.setEnabled(track is not None and track.has_mesh())
+        self._rebuild_plot_menu()
         self.request_render()
 
     def set_frame(self, frame: int, bgr: np.ndarray | None) -> None:
@@ -1198,6 +1365,73 @@ class BodySideBySide(QWidget):
     def person(self) -> int:
         return max(0, self.cmb_person.currentIndex())
 
+    # ---- the plot's angles (G79)
+    def _angle_defs(self):
+        return self.track.angles(self.person())[0] if self.track is not None else []
+
+    def _plot_order(self) -> list[str]:
+        """The angles chosen for the plot, oldest choice first. Unchosen = the
+        limb flexions the plot always drew (the first TRACE_COLS of them)."""
+        defs = self._angle_defs()
+        if self._plot_pick is None:
+            return [d.name for d in defs
+                    if d.group in ("arm", "leg") and "flexion" in d.name][:len(TRACE_COLS)]
+        have = {d.name for d in defs}
+        return [n for n in self._plot_pick if n in have]
+
+    def plot_angles(self) -> tuple[str, ...]:
+        """The angles the plot draws, in the track's own order."""
+        pick = set(self._plot_order())
+        return tuple(d.name for d in self._angle_defs() if d.name in pick)
+
+    def _toggle_plot(self, names, on: bool) -> None:
+        cur = self._plot_order()
+        if on:
+            cur += [n for n in names if n not in cur]
+            cur = cur[-len(TRACE_COLS):]        # the plot has that many traces: the newest choices stay
+        else:
+            cur = [n for n in cur if n not in names]
+        self._plot_pick = cur
+        self._sync_plot_checks()
+        self.request_render()
+
+    def _sync_plot_checks(self) -> None:
+        """Tick what is plotted (signals blocked: this runs inside a toggle)."""
+        pick = set(self.plot_angles())
+        for name, act in self._plot_acts.items():
+            act.blockSignals(True)
+            act.setChecked(name in pick)
+            act.blockSignals(False)
+        for members, act in self._group_acts:
+            act.blockSignals(True)
+            act.setChecked(all(n in pick for n in members))
+            act.blockSignals(False)
+
+    def _rebuild_plot_menu(self) -> None:
+        """One tick per group (all of its angles) and one per angle -- every
+        angle the rig can measure is reachable, not only the limb flexions."""
+        m = self._plot_menu
+        m.clear()
+        self._plot_acts, self._group_acts = {}, []
+        defs = self._angle_defs()
+        self.btn_plot.setEnabled(bool(defs))
+        titles = {"arm": "Arms", "leg": "Legs", "trunk": "Trunk"}
+        for grp, title in titles.items():
+            members = [d.name for d in defs if d.group == grp]
+            if not members:
+                continue
+            act = m.addAction(title + " (all)")
+            act.setCheckable(True)
+            act.toggled.connect(lambda on, ms=members: self._toggle_plot(ms, on))
+            self._group_acts.append((members, act))
+        m.addSeparator()
+        for d in defs:
+            act = m.addAction(d.name)
+            act.setCheckable(True)
+            act.toggled.connect(lambda on, n=d.name: self._toggle_plot([n], on))
+            self._plot_acts[d.name] = act
+        self._sync_plot_checks()
+
     def draw_options(self) -> PoseDrawOptions:
         shown = ()
         if self.track is not None and self.chk_angles.isChecked():
@@ -1206,7 +1440,8 @@ class BodySideBySide(QWidget):
                           if d.group in ("arm", "leg") and "flexion" in d.name)
         return PoseDrawOptions(names=self.chk_names.isChecked(),
                                angle_labels=self.chk_angles.isChecked(),
-                               person=self.person(), angles_shown=shown)
+                               person=self.person(), angles_shown=shown,
+                               plot_angles=self.plot_angles())
 
     def request_render(self) -> None:
         if not self._timer.isActive():
