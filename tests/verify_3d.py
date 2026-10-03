@@ -18,7 +18,7 @@ import numpy as np
 
 from kinetrace.calib import (Calibration, CameraCalibration, LWMUndistort, NoUndistort,
                                  OpenCVUndistort, dlt_camera_center, dlt_from_camera, dlt_project,
-                                 dlt_ray, estimate_offsets, front_sign, reconstruct, sample_track, triangulate,
+                                 dlt_ray, estimate_offsets, front_sign, reconstruct, sample_tracks_at, triangulate,
                                  triangulate_batch)
 from kinetrace.hull import (bounds_from_points, carve, hull_mesh, mesh_volume,
                                 save_obj, save_ply, signed_distance, surface)
@@ -239,11 +239,12 @@ estimate_offsets(sessions, cal_set, proj.rates, list(est), (10, 180), report=_re
 assert all(v == "sharp" for v in _rep["per_view"].values()), _rep["per_view"]
 assert _rep["verdict"] == "reliable" and "shallow" not in _rep["why"] and "already" in _rep["why"], _rep
 print("re-checked offsets are RELIABLE, not weak OK (I100)")
-# sample_track: never bridges a gap
+# sample_tracks_at: never bridges a gap (R14: the old single-instant sample_track was only used here)
 s0 = sessions[0]
 s0.tracked[50, 0] = False
-assert np.isnan(sample_track(s0.tracks, s0.tracked, 49.5)[0]).all()
-assert np.isfinite(sample_track(s0.tracks, s0.tracked, 48.5)[0]).all()
+_ct0 = np.where(s0.tracked[..., None], s0.tracks, np.nan)
+assert np.isnan(sample_tracks_at(_ct0, np.array([49.5]))[0, 0]).all()
+assert np.isfinite(sample_tracks_at(_ct0, np.array([48.5]))[0, 0]).all()
 s0.tracked[50, 0] = True
 
 # ---- project round trip with calibration + reconstruction -------------------

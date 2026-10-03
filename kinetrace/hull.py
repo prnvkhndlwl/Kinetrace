@@ -31,15 +31,17 @@ mesh volume within 1% of the voxel volume.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
 from scipy import ndimage
 
-from kinetrace.calib import CameraCalibration, dlt_project, front_sign
+from kinetrace.calib import CameraCalibration, _picture_in_calib_frame, dlt_project, front_sign, in_front
 
 MAP_STEP = 8          # px between LWM evaluations when building undistortion maps
+THIN_MIN_VIEWS = 3    # a hull is only trustworthy where this many cameras checked it
+THIN_WARN_FRAC = 0.10  # ... and the app warns when more of its voxels than this were checked by fewer
 
 # ------------------------------------------------------------- silhouettes
 
@@ -66,10 +68,7 @@ def undistort_maps(cal: CameraCalibration, width: int, height: int) -> tuple[np.
     xs, ys = np.meshgrid(gx, gy)
     canvas = np.column_stack([xs.ravel(), ys.ravel()])
     # canvas (0-based undistorted) -> calibration frame -> raw canvas
-    p = canvas + cal.pixel_origin
-    if cal.y_flip:
-        p[:, 1] = cal.height - p[:, 1] + 2 * cal.pixel_origin - 1
-    raw = cal.from_calib_frame(p)
+    raw = cal.from_calib_frame(cal.to_dlt_pixels(canvas))
     from scipy.interpolate import RegularGridInterpolator
     full_y, full_x = np.mgrid[0:height, 0:width]
     q = np.column_stack([full_y.ravel().astype(np.float64), full_x.ravel().astype(np.float64)])
@@ -106,7 +105,10 @@ def undistorted_mask(cal: CameraCalibration, mask: np.ndarray, dilate_px: int = 
         m = cv2.dilate(m, np.ones((k, k), np.uint8))
     h, w = m.shape
     map_x, map_y = undistort_maps(cal, w, h)
-    if cal.undistort.kind == "none" and not cal.y_flip and cal.pixel_origin == 0.0:
+    # (R14) with no lens model and no flip the map is the identity WHATEVER the
+    # pixel origin is (it is added and taken off again): the old test also
+    # asked for origin 0 and so remapped every 1-based calibration for nothing
+    if cal.undistort.kind == "none" and not cal.y_flip:
         return m
     return cv2.remap(m, map_x, map_y, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
@@ -114,13 +116,27 @@ def undistorted_mask(cal: CameraCalibration, mask: np.ndarray, dilate_px: int = 
 def calib_canvas_xy(cal: CameraCalibration, uv: np.ndarray) -> np.ndarray:
     """Calibration-frame (undistorted) coordinates -> undistorted-canvas
     pixel coordinates (float), the frame `undistorted_mask` is in."""
-    p = np.array(uv, np.float64, copy=True)
-    if cal.y_flip:
-        p[:, 1] = cal.height - p[:, 1] + 2 * cal.pixel_origin - 1
-    return p - cal.pixel_origin
+    return cal.from_dlt_pixels(uv)
 
 
 # ------------------------------------------------------------------ carving
+
+
+def _picture_box(cal: CameraCalibration, w: int, h: int) -> tuple:
+    """(x0, y0, x1, y1): the box holding this camera's picture in the calibration
+    frame. A camera that records no picture size (0 x 0) takes the mask's."""
+    if int(cal.width) <= 0 or int(cal.height) <= 0:
+        cal = replace(cal, width=int(w), height=int(h))
+    return _picture_in_calib_frame(cal, 0.0)[1]
+
+
+def _frames_whole_animal(mask: np.ndarray) -> bool:
+    """True when a raw silhouette is non-empty and does not touch its picture's
+    border: the camera saw the whole animal (I172)."""
+    m = np.asarray(mask, bool)
+    if m.ndim != 2 or not m.any():
+        return False
+    return not (m[0].any() or m[-1].any() or m[:, 0].any() or m[:, -1].any())
 
 
 @dataclass
@@ -130,11 +146,25 @@ class Hull:
     origin: np.ndarray             # world position of voxel (0, 0, 0)'s centre
     voxel: float                   # edge length, world units
     n_views: int                   # cameras that took part
-    seen: np.ndarray               # (nx, ny, nz) int8: views whose image contained the voxel
+    seen: np.ndarray               # (nx, ny, nz) int8: cameras that VOTED on the voxel (I172: its image
+    #                                contained it, or it fell outside the picture of a camera that
+    #                                frames the whole animal)
 
     @property
     def n_voxels(self) -> int:
         return int(self.occupancy.sum())
+
+    def thin_fraction(self, min_views: int = THIN_MIN_VIEWS) -> float:
+        """Share (0-1) of the occupied voxels that fewer than `min_views` cameras
+        checked (I172): where a camera's picture ends INSIDE the animal's
+        outline (the animal is cut by the picture's edge) it cannot rule out
+        the volume beyond it, so the hull there rests on two cameras and keeps
+        the long two-camera sliver. The app warns when this is above
+        `THIN_WARN_FRAC`."""
+        n = self.n_voxels
+        if n == 0:
+            return 0.0
+        return float(np.count_nonzero(self.occupancy & (self.seen < int(min_views)))) / n
 
     def volume(self) -> float:
         return self.n_voxels * self.voxel ** 3
@@ -168,7 +198,10 @@ def carve(cams: list[CameraCalibration], masks: list[np.ndarray | None],
     """Carve the box [lo, hi] at resolution `voxel` with the given cameras and
     their raw silhouettes (None = this camera has no mask at this instant and
     does not vote). A voxel survives when at least `min_views` silhouettes
-    contain it and at most `tolerance` of the cameras that can see it do not."""
+    contain it and at most `tolerance` of the cameras that can see it do not.
+    A camera whose silhouette does not touch its picture's border counts a
+    voxel outside its picture as outside its silhouette (I172); `Hull.seen`
+    and `Hull.thin_fraction` say how many cameras checked each voxel."""
     lo = np.asarray(lo, np.float64)
     hi = np.asarray(hi, np.float64)
     n = np.maximum(np.ceil((hi - lo) / voxel).astype(int) + 1, 1)
@@ -176,6 +209,13 @@ def carve(cams: list[CameraCalibration], masks: list[np.ndarray | None],
         raise ValueError(f"grid of {n} voxels is too large; use a coarser voxel or tighter bounds")
     views = [(cal, undistorted_mask(cal, m, dilate_px)) for cal, m in zip(cams, masks) if m is not None]
     valids = [undistort_valid(cal, um.shape[1], um.shape[0]) for cal, um in views]
+    # (I172) a camera whose silhouette does not touch its picture border sees the
+    # WHOLE animal: a voxel in front of it that falls outside its picture is
+    # outside its silhouette, a vote against. A silhouette that reaches the border
+    # (the animal is cut by the picture's edge) says nothing about what is beyond
+    # it, so such a camera has no vote there, as does an empty mask.
+    framed = [_frames_whole_animal(m) for cal, m in zip(cams, masks) if m is not None]
+    boxes = [_picture_box(cal, um.shape[1], um.shape[0]) for cal, um in views]
     inside = np.zeros(n.prod(), np.int16)
     seen = np.zeros(n.prod(), np.int16)
     if views:
@@ -191,15 +231,22 @@ def carve(cams: list[CameraCalibration], masks: list[np.ndarray | None],
         fronts = [front_sign(cal.coefs, probe) for cal, _ in views]
         for s in range(0, len(centres), chunk):
             X = centres[s:s + chunk]
-            for (cal, um), sgn, valid in zip(views, fronts, valids):
+            for (cal, um), sgn, valid, whole, box in zip(views, fronts, valids, framed, boxes):
                 h, w = um.shape
-                uv = calib_canvas_xy(cal, dlt_project(cal.coefs, X))
-                den = cal.coefs[8] * X[:, 0] + cal.coefs[9] * X[:, 1] + cal.coefs[10] * X[:, 2] + 1.0
-                front = sgn * den > 0
+                calib_uv = dlt_project(cal.coefs, X)
+                uv = calib_canvas_xy(cal, calib_uv)
+                front = in_front(cal.coefs, X, sgn)
                 xi = np.round(uv[:, 0]).astype(np.int64)
                 yi = np.round(uv[:, 1]).astype(np.int64)
-                ok = front & (xi >= 0) & (xi < w) & (yi >= 0) & (yi < h)
+                inpic = (xi >= 0) & (xi < w) & (yi >= 0) & (yi < h)
+                ok = front & inpic
                 ok[ok] = valid[yi[ok], xi[ok]]          # an unmapped canvas pixel does not vote (I94)
+                if whole:
+                    # outside the PICTURE (not merely outside the undistorted canvas, which a
+                    # lens model can crop): beyond the box holding the picture's undistorted border
+                    gone = front & ~inpic & ((calib_uv[:, 0] < box[0]) | (calib_uv[:, 0] > box[2])
+                                             | (calib_uv[:, 1] < box[1]) | (calib_uv[:, 1] > box[3]))
+                    seen[s:s + chunk] += gone.astype(np.int16)
                 seen[s:s + chunk] += ok.astype(np.int16)
                 hit = np.zeros(len(X), bool)
                 hit[ok] = um[yi[ok], xi[ok]] > 0

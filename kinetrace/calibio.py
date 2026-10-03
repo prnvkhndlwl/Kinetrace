@@ -10,8 +10,13 @@ fisheye coefficients). A Kinetrace calibration becomes CamModels with
 
   * the DLT is decomposed (RQ) into K [R | t]. easyWand / DLTdv coefficients
     are LEFT-handed (det < 0 while the animal is in front), which no proper
-    rotation can express: the exported world is then mirrored in Z, said in
-    the report and applied to 3D points exported with it (`world_to_export`);
+    rotation can express: the exported world is then mirrored in Z and the
+    report says so. 3D points are in the SAME world only when they are
+    written with these models (`write_points3d(..., models=...)`, which
+    applies `Models.world_to_export`); the exports (Ctrl+E, exports/, the
+    converter) must pass them. A world chosen with 3D -> Set World Axes
+    (`calib.world_axes`) is right-handed by construction: nothing is mirrored
+    and the points need no change;
   * a lens model other than OpenCV's (DLTdv's LWM) is fitted with an OpenCV
     model over the whole picture and its worst error reported, never dropped
     silently;
@@ -37,7 +42,7 @@ from pathlib import Path
 import numpy as np
 
 from kinetrace.calib import (Calibration, CameraCalibration, NoUndistort, OpenCVUndistort, Reconstruction,
-                             front_sign, working_probe)
+                             dlt_matrix, front_sign, working_probe, world_is_left_handed)
 
 
 class CalibFormatError(Exception):
@@ -114,19 +119,6 @@ def _rq(M: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return K @ S, S @ R
 
 
-def _affine_file_to_ours(cam: CameraCalibration) -> np.ndarray:
-    """3x3 map from the calibration's pixel frame to Kinetrace's (0-based, top-left)."""
-    po, H = float(cam.pixel_origin), float(cam.height)
-    if cam.y_flip:
-        return np.array([[1.0, 0.0, -po], [0.0, -1.0, H + po - 1.0], [0.0, 0.0, 1.0]])
-    return np.array([[1.0, 0.0, -po], [0.0, 1.0, -po], [0.0, 0.0, 1.0]])
-
-
-def _dlt_matrix(coefs) -> np.ndarray:
-    L = np.asarray(coefs, np.float64).reshape(11)
-    return np.array([[L[0], L[1], L[2], L[3]], [L[4], L[5], L[6], L[7]], [L[8], L[9], L[10], 1.0]])
-
-
 def _volume_points(cam: CameraCalibration, probe: np.ndarray | None, n: int = 12):
     """World points spread over this camera's picture at the working distance."""
     c = cam.center()
@@ -154,13 +146,12 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
         raise CalibFormatError("the calibration does not record every camera's picture size; open it with "
                                "the project's videos so the sizes are known")
     probe = probe if probe is not None else working_probe(cal)
-    Ps, dets = [], []
+    Ps = []
     for cam in cal.cameras:
-        P = _affine_file_to_ours(cam) @ _dlt_matrix(cam.coefs)
+        P = cam.pixel_matrix() @ dlt_matrix(cam.coefs)
         P = P * front_sign(cam.coefs, probe)           # third row = depth, positive in front
         Ps.append(P)
-        dets.append(np.linalg.det(P[:, :3]))
-    mirrored = sum(d < 0 for d in dets) > len(dets) / 2
+    mirrored = world_is_left_handed(cal, probe)        # the one handedness test (calib)
     F = np.diag([1.0, 1.0, -1.0]) if mirrored else np.eye(3)
     shift = (np.asarray(cal.origin_shift, np.float64).reshape(3) if cal.origin_shift is not None
              else np.zeros(3))
@@ -207,8 +198,10 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
                          f"by up to {fit:.2f} px")
     if mirrored:
         notes.append("These coefficients describe a mirrored (left-handed) world, as easyWand / DLTdv "
-                     "coefficients often do. The exported world is Kinetrace's mirrored in Z (Z -> -Z), and "
-                     "3D points exported with it are mirrored the same way.")
+                     "coefficients often do. The exported cameras' world is Kinetrace's mirrored in Z "
+                     "(Z -> -Z). 3D points are in that same world only when they are exported together "
+                     "with these cameras; to get a right-handed world in Kinetrace itself (nothing mirrored "
+                     "anywhere), choose the axes with 3D -> Set World Axes.")
     if np.any(shift):
         notes.append("The world origin is the calibration file's own again (Kinetrace had moved it to the "
                      "point the cameras look at).")
@@ -228,7 +221,7 @@ def _fit_lens(cam: CameraCalibration, K0: np.ndarray, fisheye: bool):
     gx, gy = np.meshgrid(np.linspace(0, W - 1, 41), np.linspace(0, H - 1, 31))
     raw = np.column_stack([gx.ravel(), gy.ravel()])
     und_file = cam.to_calib_frame(raw)                  # the calibration's own undistorted pixels
-    A = _affine_file_to_ours(cam)
+    A = cam.pixel_matrix()
     und = und_file @ A[:2, :2].T + A[:2, 2]
     ok = np.isfinite(und).all(axis=1)
     raw, und = raw[ok], und[ok]
@@ -327,9 +320,7 @@ def write_opencv(models: Models, path) -> None:
     (camera_matrix, distortion_coefficients, image_width, image_height) plus
     rvec, tvec and R (x_cam = R X + t)."""
     import cv2
-    fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_WRITE)
-    if not fs.isOpened():
-        raise CalibFormatError(f"{Path(path).name}: cannot be written")
+    fs = _fs_new(path)
     fs.write("format", "kinetrace-cameras")
     fs.write("convention", "x_cam = R X + t; pixel centres at whole numbers from 0 (OpenCV)")
     fs.write("unit", models.unit or "")
@@ -346,16 +337,59 @@ def write_opencv(models: Models, path) -> None:
         fs.write("tvec", np.asarray(m.t, np.float64).reshape(3, 1))
         fs.write("R", np.asarray(m.R, np.float64))
         fs.endWriteStruct()
-    fs.release()
+    _fs_save(fs, path)
+
+
+# (I222) cv2.FileStorage opens its file with the ANSI API: a path with a character outside the
+# system code page ("Jose" with an accent) cannot be opened, and the failure read as "no such file".
+# The files are read and written by Python and handed to OpenCV as text in memory.
+_FS_FORMATS = {".yml": ".yml", ".yaml": ".yml", ".json": ".json", ".xml": ".xml"}
+
+
+def _fs_new(path=None):
+    """A cv2.FileStorage that writes into memory (format from `path`'s extension; YAML by default)."""
+    import cv2
+    ext = _FS_FORMATS.get(Path(path).suffix.lower(), ".yml") if path is not None else ".yml"
+    fs = cv2.FileStorage(ext, cv2.FILE_STORAGE_WRITE | cv2.FILE_STORAGE_MEMORY)
+    if not fs.isOpened():
+        raise CalibFormatError("OpenCV cannot write this format here")
+    return fs
+
+
+def _fs_save(fs, path) -> None:
+    """Finish a `_fs_new` storage into `path` as UTF-8."""
+    p = Path(path)
+    text = fs.releaseAndGetString()
+    try:
+        p.write_bytes(text.encode("utf-8"))
+    except OSError as e:
+        raise CalibFormatError(f"{p.name}: cannot be written ({e.strerror or e})") from None
+
+
+def _fs_read(path):
+    """An opened cv2.FileStorage on the CONTENTS of `path` (any of YAML / JSON / XML), or a
+    CalibFormatError that says which: missing, unreadable, or not an OpenCV storage file."""
+    import cv2
+    p = Path(path)
+    try:
+        data = p.read_bytes()
+    except FileNotFoundError:
+        raise CalibFormatError(f"{p.name}: cannot be read (no such file)") from None
+    except OSError as e:
+        raise CalibFormatError(f"{p.name}: cannot be read ({e.strerror or e})") from None
+    try:
+        fs = cv2.FileStorage(data.decode("utf-8-sig", errors="replace"),
+                             cv2.FILE_STORAGE_READ | cv2.FILE_STORAGE_MEMORY)
+    except Exception as e:      # noqa: BLE001 - cv2.error / SystemError on text OpenCV cannot parse
+        raise CalibFormatError(f"{p.name}: not an OpenCV YAML / JSON file ({str(e).splitlines()[0][:120]})") from None
+    if not fs.isOpened():
+        raise CalibFormatError(f"{p.name}: not an OpenCV YAML / JSON file")
+    return fs
 
 
 def read_opencv(path) -> list[CamModel]:
     import cv2
-    if not Path(path).is_file():                     # (OpenCV would also print its own error line)
-        raise CalibFormatError(f"{Path(path).name}: cannot be read (no such file)")
-    fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
-    if not fs.isOpened():
-        raise CalibFormatError(f"{Path(path).name}: not an OpenCV YAML / JSON file")
+    fs = _fs_read(path)
     out = []
     try:
         root = fs.root()
@@ -529,11 +563,28 @@ def load_calibration(path, sizes: list[tuple[int, int]] | None = None) -> Calibr
     videos' sizes, because a size the file never recorded must not be shown
     or compared as if it were the file's (I99)."""
     p = Path(path)
+    if not p.is_file():
+        raise CalibFormatError(f"{p.name}: cannot be read (no such file)")
+    try:
+        return _load_calibration(p, sizes)
+    except CalibFormatError:
+        raise
+    except ValueError as e:                         # the importers' own sentences: make sure the FILE is named
+        raise CalibFormatError(str(e) if p.name in str(e) else f"{p.name}: {e}") from None
+    except OSError as e:
+        raise CalibFormatError(f"{p.name}: cannot be read ({e.strerror or e})") from None
+    except Exception as e:    # noqa: BLE001 - (I227) a KeyError / IndexError / cv2.error from the LAST loader
+        raise CalibFormatError(f"{p.name}: not a calibration file Kinetrace can read "
+                               f"({type(e).__name__}: {str(e).splitlines()[0][:120] if str(e) else 'no detail'})"
+                               ) from None
+
+
+def _load_calibration(p: Path, sizes) -> Calibration:
     low = p.name.lower()
 
     def cameras_file():
         return from_models(read_cameras(p), source=p.name)
-    if low.endswith((".toml", ".yml", ".yaml")):
+    if low.endswith((".toml", ".yml", ".yaml", ".xml")):          # (I255) .xml = OpenCV's cameras file
         return cameras_file()                       # Anipose / OpenCV FileStorage
     if low.endswith(".json"):
         try:
@@ -570,13 +621,16 @@ def calibration_to_kcal(cal, report: dict | None = None, grav: dict | None = Non
     """The Kinetrace calibration file: every camera's DLT coefficients WITH the
     pixel convention and undistortion they were fitted in, the unit, and the
     wand report when there is one. Self-describing, unlike a bare dltCoefs.csv."""
-    return {"kinetrace_calibration": KCAL_VERSION, "unit": cal.unit, "source": cal.source,
-            "cameras": [{"width": int(c.width), "height": int(c.height),
-                         "pixel_origin": float(c.pixel_origin), "y_flip": bool(c.y_flip),
-                         "rmse": (None if not np.isfinite(c.rmse) else float(c.rmse)),
-                         "coefs": [float(v) for v in c.coefs],
-                         "undistort": c.undistort.to_json()} for c in cal.cameras],
-            "report": report or {}, "gravity": grav or {}}
+    out = {"kinetrace_calibration": KCAL_VERSION, "unit": cal.unit, "source": cal.source,
+           "cameras": [{"width": int(c.width), "height": int(c.height),
+                        "pixel_origin": float(c.pixel_origin), "y_flip": bool(c.y_flip),
+                        "rmse": (None if not np.isfinite(c.rmse) else float(c.rmse)),
+                        "coefs": [float(v) for v in c.coefs],
+                        "undistort": c.undistort.to_json()} for c in cal.cameras],
+           "report": report or {}, "gravity": grav or {}}
+    if getattr(cal, "origin_shift", None) is not None:          # (I229) a K + R/t rig's moved origin
+        out["origin_shift"] = [float(v) for v in np.asarray(cal.origin_shift, np.float64).reshape(3)]
+    return out
 
 
 def load_kcal(path):
@@ -595,6 +649,8 @@ def load_kcal(path):
                                       float("nan") if rmse is None else float(rmse)))
     cal = Calibration(cams, str(d.get("unit", "")), str(d.get("source", "")) or Path(path).name)
     cal.report = d.get("report") or {}
+    if d.get("origin_shift") is not None:                       # (I229)
+        cal.origin_shift = np.asarray(d["origin_shift"], np.float64).reshape(3)
     return cal
 
 
@@ -602,16 +658,7 @@ def dlt_csv_matlab(cal, path) -> None:
     """dltCoefs.csv for DLTdv / easyWand users: 11 rows, one column per camera,
     converted to MATLAB's 1-based pixels when the calibration was fitted on
     0-based ones (u' = u + 1: L1..L3 += L9..L11, L4 += 1; same for v)."""
-    cols = []
-    for c in cal.cameras:
-        L = np.asarray(c.coefs, np.float64).copy()
-        shift = 1.0 - float(c.pixel_origin)
-        if abs(shift) > 1e-12:
-            L[0:3] += shift * L[8:11]
-            L[3] += shift
-            L[4:7] += shift * L[8:11]
-            L[7] += shift
-        cols.append(L)
+    cols = [c.coefs_for_origin(1.0) for c in cal.cameras]       # (R14) the one pixel-convention shift
     np.savetxt(str(path), np.stack(cols, axis=1), delimiter=",", fmt="%.12g")
 
 # ------------------------------------------------------------------ lens profiles
@@ -630,9 +677,7 @@ def write_lens(profile, path) -> None:
         Path(path).write_text(" ".join(_num(v) if isinstance(v, float) else str(v) for v in vals) + "\n",
                               encoding="utf-8", newline="\n")
         return
-    fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_WRITE)
-    if not fs.isOpened():
-        raise CalibFormatError(f"{Path(path).name}: cannot be written")
+    fs = _fs_new(path)
     fs.write("image_width", int(profile.width))
     fs.write("image_height", int(profile.height))
     fs.write("camera_matrix", np.asarray(profile.K, np.float64))
@@ -640,7 +685,7 @@ def write_lens(profile, path) -> None:
     fs.write("fisheye", int(profile.fisheye))
     if np.isfinite(profile.rms):
         fs.write("rms", float(profile.rms))
-    fs.release()
+    _fs_save(fs, path)
 
 
 def read_lens(path, view: int = 0):
@@ -649,6 +694,8 @@ def read_lens(path, view: int = 0):
     import cv2
     from kinetrace import lens
     name = Path(path).name
+    if not Path(path).is_file():
+        raise CalibFormatError(f"{name}: cannot be read (no such file)")
     if name.lower().endswith(".json"):
         try:
             return lens.LensProfile.load(path)          # Kinetrace's own (.klens.json)
@@ -659,12 +706,13 @@ def read_lens(path, view: int = 0):
         if prof is None:
             raise CalibFormatError(why)
         return prof
-    if not Path(path).is_file():                     # (OpenCV would also print its own error line)
-        raise CalibFormatError(f"{Path(path).name}: cannot be read (no such file)")
-    fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
-    if not fs.isOpened():
+    try:
+        fs = _fs_read(path)                          # (I222) by content: non-ASCII paths, a missing file said as missing
+    except CalibFormatError as e:
+        if "no such file" in str(e) or "cannot be read" in str(e):
+            raise
         raise CalibFormatError(f"{name}: not a lens file Kinetrace reads (.klens.json, OpenCV .yml / .json, "
-                               "Argus .txt)")
+                               "Argus .txt)") from None
     try:
         K = fs.getNode("camera_matrix").mat()
         if K is None:
@@ -696,16 +744,38 @@ def write_offsets(project, path) -> None:
     Path(path).write_text(buf.getvalue(), encoding="utf-8", newline="")
 
 
-def read_offsets(path, project) -> list[tuple[int, float, float]]:
+class OffsetRows(list):
+    """The rows `read_offsets` returns -- a plain list of (view, offset, rate) the
+    app can apply directly -- plus what it did: `rebased` (the file's row for
+    the project's first camera was used to re-base the others) and
+    `reference_missing` (the file has no row for the project's first camera, so
+    the offsets could not be re-based and are the file's own numbers: the app
+    asks before applying them)."""
+    rebased: bool = False
+    reference_missing: bool = False
+
+
+def read_offsets(path, project) -> OffsetRows:
     """-> [(view, offset, rate)] for the project's cameras, matched by name,
-    else by the camera number."""
+    else by the camera number.
+
+    (I169) The numbers in a file are measured against ITS reference camera, but
+    the project's reference is its first camera, whose offset is always 0 and
+    whose rate 1 (`Project._normalize`). So the file is re-based on the file's
+    row for the project's camera 0: rate_i' = rate_i / rate_0 and
+    offset_i' = offset_i - rate_i' * offset_0 -- a clap table 'camA 120, camB
+    97, camC 130' gives camB -23 and camC +10 frames against camA, and an offsets
+    file from a project with another reference camera lands where it belongs.
+    The first camera's own row comes back as (0, 0.0, 1.0). Without a row for
+    the first camera the file's numbers are returned unchanged and
+    `reference_missing` is set."""
     from kinetrace.projectfile import ProjectFileError, parse_table
     try:
         cols, n = parse_table(_read_text(path), Path(path).name, ("offset",),
                               ("camera", "name", "rate"))
     except ProjectFileError as e:
         raise CalibFormatError(str(e)) from None
-    out = []
+    out = OffsetRows()
     by_name = {project.name(i): i for i in range(project.n_views)}
     for k in range(n):
         v = None
@@ -720,25 +790,43 @@ def read_offsets(path, project) -> list[tuple[int, float, float]]:
             rate = float(cols["rate"][k]) if cols.get("rate") is not None and cols["rate"][k].strip() else None
         except ValueError:
             raise CalibFormatError(f"{Path(path).name}: row {k + 2}: offset / rate must be numbers") from None
-        out.append((v, off, project.rates[v] if rate is None else rate))
+        rate = project.rates[v] if rate is None else rate
+        if not (np.isfinite(off) and np.isfinite(rate) and rate > 0):
+            raise CalibFormatError(f"{Path(path).name}: row {k + 2}: the offset must be a number and the rate "
+                                   "a number above 0")
+        out.append((v, off, rate))
     if not out:
         raise CalibFormatError(f"{Path(path).name}: no row names a camera of this project")
+    ref = next(((o, r) for v, o, r in out if v == 0), None)
+    if ref is None:
+        out.reference_missing = True
+        return out
+    o0, r0 = ref
+    out[:] = [(0, 0.0, 1.0) if v == 0 else (v, o - (r / r0) * o0, r / r0) for v, o, r in out]
+    out.rebased = abs(o0) > 1e-12 or abs(r0 - 1.0) > 1e-12
     return out
 
 
 # ------------------------------------------------------------------ 3D points
-def write_points3d(rec: Reconstruction, path, kind: str = "kinetrace", models: Models | None = None) -> None:
+def write_points3d(rec: Reconstruction, path, kind: str = "kinetrace", models: Models | None = None) -> int:
     """kind: "kinetrace" (frame + name_X/_Y/_Z, the xyz export), "dltdv"
     (xyzpts: pt{i}_X/_Y/_Z, row k = reference frame k, NaN = none) or
     "anipose" (name_x/_y/_z/_error/_ncams/_score + fnum). With `models`, the
-    points are put in those exported cameras' world (mirror / origin)."""
+    points are put in those exported cameras' world (mirror / origin): ALWAYS
+    pass the models of the cameras exported with these points (I170), or the
+    points reproject 30-100 px off through them. A DLTdv xyzpts file starts at
+    reference frame 0, so a result that starts BEFORE 0 (other cameras running
+    before the reference started) is written from frame 0 and the instants
+    before it are left out; the return value is how many instants were (0
+    for every other case, I215)."""
+    left_out = 0
     xyz = rec.xyz.astype(np.float64)
     if models is not None:
         xyz = models.world_to_export(xyz.reshape(-1, 3)).reshape(xyz.shape)
     if kind == "kinetrace":
         r2 = Reconstruction(rec.t0, rec.names, xyz, rec.residual, rec.n_cams, rec.unit, rec.per_cam)
         r2.export_csv(path)
-        return
+        return 0
     from kinetrace.session import _sanitize
     names = [_sanitize(n) for n in rec.names]
     T, N = xyz.shape[:2]
@@ -746,8 +834,12 @@ def write_points3d(rec: Reconstruction, path, kind: str = "kinetrace", models: M
     w = csv.writer(buf, lineterminator="\n")
     if kind == "dltdv":
         w.writerow([f"pt{j + 1}_{a}" for j in range(N) for a in "XYZ"])
-        full = np.full((rec.t0 + T, N, 3), np.nan)
-        full[rec.t0:] = xyz
+        skip = max(0, -int(rec.t0))                       # (I215) instants before reference frame 0
+        left_out = min(skip, T)
+        xyz = xyz[skip:]
+        t0 = max(int(rec.t0), 0)
+        full = np.full((t0 + len(xyz), N, 3), np.nan)
+        full[t0:] = xyz
         for row in full:
             w.writerow(["NaN" if not np.isfinite(v) else f"{v:.6f}" for v in row.ravel()])
         side = Path(path).with_name(Path(path).stem + "_pointnames.csv")
@@ -769,18 +861,31 @@ def write_points3d(rec: Reconstruction, path, kind: str = "kinetrace", models: M
     else:
         raise CalibFormatError(f"unknown 3D points format {kind!r}")
     Path(path).write_text(buf.getvalue(), encoding="utf-8", newline="")
+    return left_out
 
 
 def read_points3d(path, unit: str = "") -> tuple[Reconstruction, list[str]]:
     """Kinetrace xyz CSV, DLTdv xyzpts or Anipose points_3d CSV (by header) ->
     (Reconstruction, notes). Frames are the file's (reference frames)."""
     text = _read_text(path)
-    rows = [r for r in csv.reader(io.StringIO(text)) if any(c.strip() for c in r)]
+    rows = list(csv.reader(io.StringIO(text)))
+    blank = lambda r: not any(c.strip() for c in r)  # noqa: E731
+    while rows and blank(rows[0]):                    # blank lines before the header
+        rows.pop(0)
+    while rows and blank(rows[-1]):                   # (I173) only TRAILING blank rows are dropped
+        rows.pop()
     if not rows:
         raise CalibFormatError(f"{Path(path).name}: empty")
     head = [h.strip() for h in rows[0]]
     data = rows[1:]
     notes: list[str] = []
+    positional = bool(head) and all(re.fullmatch(r"pt\d+_[XYZ]", h) for h in head)    # DLTdv xyzpts: row k = frame k
+    if positional:
+        # a frame the writer left as empty cells (pandas' NaN) is still a frame:
+        # keep it as a row of NaN so every later frame stays on its own row
+        data = [r if not blank(r) else [""] * len(head) for r in data]
+    else:
+        data = [r for r in data if not blank(r)]      # these formats name their frame in a column
 
     def col(k):
         try:
@@ -793,7 +898,7 @@ def read_points3d(path, unit: str = "") -> tuple[Reconstruction, list[str]]:
         idx = {h: k for k, h in enumerate(head)}
         get = lambda nm, a: col(idx[f"{nm}_{a}"])  # noqa: E731
         kind = "Kinetrace"
-    elif all(re.fullmatch(r"pt\d+_[XYZ]", h) for h in head):    # DLTdv xyzpts
+    elif positional:                                            # DLTdv xyzpts
         n = max(int(re.match(r"pt(\d+)", h).group(1)) for h in head)
         side = Path(path).with_name(Path(path).stem + "_pointnames.csv")
         names = [f"pt{j + 1}" for j in range(n)]

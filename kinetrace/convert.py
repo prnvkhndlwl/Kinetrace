@@ -6,7 +6,7 @@ no window, no Qt widgets.
     python -m kinetrace.convert check    FILE                  (exit 0 clean, 1 warnings, 2 errors)
     python -m kinetrace.convert calibration IN OUT [--to F] [--size WxH ...] [--pixels P] [--names a,b,c]
     python -m kinetrace.convert tracks   IN OUT (--video V | --size WxH --frames N) [--to F] [--camera K]
-    python -m kinetrace.convert points3d IN OUT [--to F]
+    python -m kinetrace.convert points3d IN OUT [--to F] [--calibration CAL [--size WxH ...]]
     python -m kinetrace.convert masks    PROJECT OUT [--camera NAME] [--to json|png]
     python -m kinetrace.convert offsets  PROJECT OUT
     python -m kinetrace.convert import   PROJECT --tracks FILE [--camera NAME] [--out NEW.kinetrace]
@@ -125,6 +125,15 @@ def cmd_tracks(a) -> int:
     imp = trackio.read(a.input)
     if not 1 <= a.camera <= imp.n_cameras:
         raise Failure(f"--camera {a.camera}: the file has {imp.n_cameras} camera(s)")
+    if imp.rows == "reference" and a.camera > 1:
+        # (I174) the rows of an all-cameras file are frames of the REFERENCE camera; this command has no
+        # camera offsets / rates to map them into another camera's own frames, so it would store them
+        # as that camera's frames, `offset` frames off
+        raise Failure(f"{Path(a.input).name} is an all-cameras file: its rows are frames of the reference "
+                      f"camera, and --camera {a.camera} would take them as that camera's own frames "
+                      "(wrong by the camera's offset). Use `convert import PROJECT --tracks FILE`, which maps "
+                      "every row through the project's offsets and rates, or --camera 1 for the reference "
+                      "camera itself")
     s = _session_for(a)
     summ = trackio.apply(s, imp, a.camera - 1)
     to = a.to or _guess(a.output, TRACK_FORMATS, {".kinetrace": "kinetrace", ".tsv": "sparse"})
@@ -148,9 +157,27 @@ def cmd_points3d(a) -> int:
     from kinetrace import calibio
     rec, notes = calibio.read_points3d(a.input)
     to = a.to or "kinetrace"
-    calibio.write_points3d(rec, a.output, to)
+    models = None
+    if a.calibration:
+        # (I170) cameras and points exported by one program must share ONE world: the points go
+        # through the same models `convert calibration` writes for this calibration (mirrored in Z
+        # for a left-handed easyWand / DLTdv world, the file's origin for a K + R/t rig)
+        cal = calibio.load_calibration(a.calibration)
+        sizes = _sizes(a.size, len(cal.cameras))
+        if sizes:
+            for c, (w, h) in zip(cal.cameras, sizes):
+                c.width, c.height = w, h
+        if any(c.width <= 0 or c.height <= 0 for c in cal.cameras):
+            raise Failure(f"{Path(a.calibration).name} does not record the cameras' picture sizes: give --size "
+                          "WIDTHxHEIGHT, once for all cameras or once per camera")
+        models = calibio.to_models(cal)
+        notes += [f"points written in the world of the cameras exported from {Path(a.calibration).name}"
+                  + (" (mirrored in Z, as those cameras are)" if models.mirrored else "")]
+    left = calibio.write_points3d(rec, a.output, to, models=models)
     for n in notes:
         _say("note:", n)
+    if left:
+        _say(f"note: {left} instant(s) before frame 0 were left out (a DLTdv xyzpts file starts at frame 0)")
     _say(f"wrote {a.output} ({P3_FORMATS[to]})")
     return 0
 
@@ -197,7 +224,8 @@ def cmd_import(a) -> int:
     summ = trackio.apply(proj.sessions[view], imp, col, f_of_row)
     proj.sync_landmarks()               # one landmark list for every camera (G19), as the app does
     out = str(projectfile.project_root(a.out or a.project))
-    pid = meta.get("project_id") or projectfile.new_id()
+    # (I230) a NEW project (--out) is a new identity: sharing the source's id shared its recovery slot
+    pid = projectfile.new_id() if a.out else (meta.get("project_id") or projectfile.new_id())
     if a.out is None and not projectfile.is_folder_project(out):
         # a single-file project stays one file (its previous version kept as .bak)
         projectfile.write(projectfile.freeze(proj, state, pid, target=out, layout="zip"), out)
@@ -367,6 +395,10 @@ def main(argv=None) -> int:
     s.add_argument("input")
     s.add_argument("output")
     s.add_argument("--to", choices=list(P3_FORMATS))
+    s.add_argument("--calibration", help="the calibration these points were made with: they are written in the "
+                                         "world of the cameras `convert calibration` exports from it")
+    s.add_argument("--size", action="append", help="WIDTHxHEIGHT, once for all cameras or once per camera "
+                                                   "(with --calibration, for a file that records no sizes)")
     s = sub.add_parser("masks", help="a project's silhouettes as polygons (JSON) or PNG masks")
     s.add_argument("project")
     s.add_argument("output", help="a .json file, or a folder for PNGs")
@@ -397,6 +429,11 @@ def main(argv=None) -> int:
     except (Failure, projectfile.ProjectFileError, trackio.TrackImportError, calibio.CalibFormatError,
             ValueError, OSError) as e:
         _say("error:", e)
+        return 2
+    except (KeyError, IndexError, TypeError, AttributeError) as e:
+        # (I227) a file whose content breaks an importer in a way it did not foresee: one sentence, exit 2
+        _say("error:", f"{type(e).__name__} while reading the input ({e}); the file does not look like the "
+                       "format its name says")
         return 2
 
 

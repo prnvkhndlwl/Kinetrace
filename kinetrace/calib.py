@@ -57,6 +57,7 @@ is exactly the quantity a sync error inflates.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,11 +66,31 @@ import numpy as np
 # ----------------------------------------------------------------- DLT maths
 
 
+def dlt_matrix(coefs: np.ndarray) -> np.ndarray:
+    """The 3 x 4 projection matrix P of 11 DLT coefficients (P[2, 3] = 1)."""
+    L = np.asarray(coefs, np.float64).reshape(11)
+    return np.array([[L[0], L[1], L[2], L[3]], [L[4], L[5], L[6], L[7]], [L[8], L[9], L[10], 1.0]])
+
+
+def dlt_denominator(coefs: np.ndarray, xyz: np.ndarray) -> np.ndarray:
+    """The DLT denominator ``L9 X + L10 Y + L11 Z + 1`` of world points (N, 3):
+    the depth up to a scale and a sign (see `front_sign`)."""
+    L = np.asarray(coefs, np.float64).reshape(11)
+    X = np.atleast_2d(np.asarray(xyz, np.float64))
+    return L[8] * X[:, 0] + L[9] * X[:, 1] + L[10] * X[:, 2] + 1.0
+
+
+def in_front(coefs: np.ndarray, xyz: np.ndarray, sign: float) -> np.ndarray:
+    """(N,) bool: the world points in front of the camera, given its
+    `front_sign` (the sign its denominator has for points in view)."""
+    return sign * dlt_denominator(coefs, xyz) > 0
+
+
 def dlt_project(coefs: np.ndarray, xyz: np.ndarray) -> np.ndarray:
     """Project world points (N, 3) through 11 DLT coefficients -> (N, 2)."""
     L = np.asarray(coefs, np.float64).reshape(11)
     X = np.atleast_2d(np.asarray(xyz, np.float64))
-    den = L[8] * X[:, 0] + L[9] * X[:, 1] + L[10] * X[:, 2] + 1.0
+    den = dlt_denominator(L, X)
     u = (L[0] * X[:, 0] + L[1] * X[:, 1] + L[2] * X[:, 2] + L[3]) / den
     v = (L[4] * X[:, 0] + L[5] * X[:, 1] + L[6] * X[:, 2] + L[7]) / den
     return np.column_stack([u, v])
@@ -138,20 +159,10 @@ def triangulate(coefs: np.ndarray, uv: np.ndarray) -> tuple[np.ndarray, float, n
     n = uv.shape[0]
     if n < 2 or Ls.shape[1] != n:
         raise ValueError("triangulate needs the same >= 2 cameras in coefs and uv")
-    A = np.empty((2 * n, 3))
-    b = np.empty(2 * n)
-    for k in range(n):
-        L = Ls[:, k]
-        u, v = uv[k]
-        A[2 * k] = (u * L[8] - L[0], u * L[9] - L[1], u * L[10] - L[2])
-        b[2 * k] = L[3] - u
-        A[2 * k + 1] = (v * L[8] - L[4], v * L[9] - L[5], v * L[10] - L[6])
-        b[2 * k + 1] = L[7] - v
-    xyz = np.linalg.lstsq(A, b, rcond=None)[0]
-    rep = np.vstack([dlt_project(Ls[:, k], xyz) for k in range(n)])
-    e = np.linalg.norm(rep - uv, axis=1)
-    dof = max(2 * n - 3, 1)
-    return xyz, float(np.sqrt(np.sum(e ** 2) / dof)), e
+    # (R14) one triangulator: the batch one, so the single point and the
+    # many-points paths cannot drift apart
+    xyz, res, _, err = triangulate_batch(Ls.T, uv[None])
+    return xyz[0], float(res[0]), err[0]
 
 
 def dlt_from_camera(K: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray:
@@ -396,22 +407,54 @@ class CameraCalibration:
     y_flip: bool = False                   # True: y measured from the bottom edge
     rmse: float = float("nan")             # calibration residual, if the file carried one
 
-    def to_calib_frame(self, pts_xy: np.ndarray) -> np.ndarray:
-        """Kinetrace pixels (0-based, top-left) -> undistorted coordinates in
-        the frame the DLT was fitted in."""
+    # (R14) THE pixel-convention transform: calib, hull and calibio all go
+    # through these three, so the convention is written down once.
+    def to_dlt_pixels(self, pts_xy: np.ndarray) -> np.ndarray:
+        """Kinetrace pixels (0-based, top-left) -> the DLT's pixel convention,
+        WITHOUT undistortion (`pixel_origin`, then `y_flip`)."""
         p = np.atleast_2d(np.asarray(pts_xy, np.float64)).copy()
         p += self.pixel_origin
         if self.y_flip:
             p[:, 1] = self.height - p[:, 1] + 2 * self.pixel_origin - 1
-        return self.undistort.undistort(p)
+        return p
+
+    def from_dlt_pixels(self, pts_uv: np.ndarray) -> np.ndarray:
+        """Inverse of `to_dlt_pixels` (the flip is its own inverse)."""
+        p = np.atleast_2d(np.asarray(pts_uv, np.float64)).copy()
+        if self.y_flip:
+            p[:, 1] = self.height - p[:, 1] + 2 * self.pixel_origin - 1
+        return p - self.pixel_origin
+
+    def pixel_matrix(self) -> np.ndarray:
+        """3 x 3 homogeneous map from the DLT's pixel convention to
+        Kinetrace's (0-based, top-left): the matrix form of `from_dlt_pixels`."""
+        po, H = float(self.pixel_origin), float(self.height)
+        if self.y_flip:
+            return np.array([[1.0, 0.0, -po], [0.0, -1.0, H + po - 1.0], [0.0, 0.0, 1.0]])
+        return np.array([[1.0, 0.0, -po], [0.0, 1.0, -po], [0.0, 0.0, 1.0]])
+
+    def coefs_for_origin(self, origin: float = 1.0) -> np.ndarray:
+        """The 11 coefficients re-expressed for pixels counted from `origin`
+        (u' = u + (origin - pixel_origin), the same for v: L1..L3 += shift *
+        L9..L11, L4 += shift) -- what a MATLAB-side dltCoefs.csv holds (1)."""
+        L = np.asarray(self.coefs, np.float64).copy()
+        shift = float(origin) - float(self.pixel_origin)
+        if abs(shift) > 1e-12:
+            L[0:3] += shift * L[8:11]
+            L[3] += shift
+            L[4:7] += shift * L[8:11]
+            L[7] += shift
+        return L
+
+    def to_calib_frame(self, pts_xy: np.ndarray) -> np.ndarray:
+        """Kinetrace pixels (0-based, top-left) -> undistorted coordinates in
+        the frame the DLT was fitted in."""
+        return self.undistort.undistort(self.to_dlt_pixels(pts_xy))
 
     def from_calib_frame(self, pts_uv: np.ndarray) -> np.ndarray:
         """Inverse of `to_calib_frame`: calibration-frame coordinates (e.g. a DLT
         projection) -> raw Kinetrace pixels."""
-        p = self.undistort.distort(np.atleast_2d(np.asarray(pts_uv, np.float64)))
-        if self.y_flip:
-            p[:, 1] = self.height - p[:, 1] + 2 * self.pixel_origin - 1
-        return p - self.pixel_origin
+        return self.from_dlt_pixels(self.undistort.distort(np.atleast_2d(np.asarray(pts_uv, np.float64))))
 
     def project(self, xyz: np.ndarray) -> np.ndarray:
         """World -> raw Kinetrace pixels (distortion re-applied)."""
@@ -561,10 +604,19 @@ class Calibration:
         if len(cams) < 2:
             raise ValueError("a K + R/t calibration needs at least two cameras")
         Ks, Rs, ts = [], [], []
-        for c in cams:
-            K = np.asarray(c["K"], np.float64).reshape(3, 3)
-            R = np.asarray(c.get("R", np.eye(3)), np.float64).reshape(3, 3)
-            t = np.asarray(c.get("t", np.zeros(3)), np.float64).reshape(3)
+        for i, c in enumerate(cams):
+            # (I227) a camera without a K / with a malformed one is a sentence naming it,
+            # not a KeyError that reaches the user as "'K'"
+            if not isinstance(c, dict) or "K" not in c:
+                raise ValueError(f"camera {i + 1} has no K (its 3x3 camera matrix)")
+            try:
+                K = np.asarray(c["K"], np.float64).reshape(3, 3)
+                R = np.asarray(c.get("R", np.eye(3)), np.float64).reshape(3, 3)
+                t = np.asarray(c.get("t", np.zeros(3)), np.float64).reshape(3)
+            except (TypeError, ValueError):
+                raise ValueError(f"camera {i + 1}: K and R must be 3x3 and t 3 numbers") from None
+            if not (np.isfinite(K).all() and np.isfinite(R).all() and np.isfinite(t).all()):
+                raise ValueError(f"camera {i + 1}: K, R and t must be finite numbers")
             Ks.append(K)
             Rs.append(R)
             ts.append(t)
@@ -616,10 +668,14 @@ class Calibration:
         notes: list[str] = []
         stripped = text.strip()
         if stripped.startswith("{"):
-            d = json.loads(stripped)
-            unit = str(d.get("unit", ""))
-            for c in d.get("cameras", []):
-                cams.append(dict(c))
+            try:
+                d = json.loads(stripped)
+                unit = str(d.get("unit", ""))
+                for c in d.get("cameras", []):
+                    cams.append(dict(c))
+            except (ValueError, AttributeError, TypeError) as e:        # (I227)
+                raise ValueError(f"{p.name}: not a K + R/t JSON file ({e}); expected "
+                                 '{"cameras": [{"K": [[..]], "R": [[..]], "t": [..]}, ...]}') from None
         else:
             import re
             norm = (text.replace("−", "-").replace("→", "->").replace("\t", " ")
@@ -661,9 +717,47 @@ class Calibration:
                                     else "expected one line per camera.")
                                  + " The tracks are used as filmed; give the cameras as JSON with 'dist' "
                                  "(and 'fisheye': true where it applies) to include them.")
-        cal = Calibration.from_krt(cams, unit=unit, source=p.name)
+        try:
+            cal = Calibration.from_krt(cams, unit=unit, source=p.name)
+        except ValueError as e:                                           # (I227) name the file
+            raise ValueError(f"{p.name}: {e}") from None
         cal.notes = notes
         return cal
+
+    # ---- a world the user chose (I170) -----------------------------------
+    def reframed(self, B: np.ndarray, o: np.ndarray, note: str = "") -> "Calibration":
+        """The same cameras in another world: X_old = B^T X_new + o, i.e.
+        X_new = B (X_old - o) -- B's rows are the new axes in the old
+        coordinates (`world_axes`), o the new origin in the old ones. Every
+        DLT becomes P_new = P_old [[B^T, o], [0 0 0 1]], normalised so
+        P[2, 3] = 1 again; the undistortion, the pixel convention, the picture
+        sizes and the RMSEs are untouched, so every camera projects every
+        point to the same pixel (to rounding) before and after. `origin_shift`
+        is dropped (the new origin is the user's, not the file's). `note` is
+        recorded in `source` (replacing an earlier world note), which the
+        project file already saves."""
+        B = np.asarray(B, np.float64).reshape(3, 3)
+        o = np.asarray(o, np.float64).reshape(3)
+        T = np.eye(4)
+        T[:3, :3] = B.T
+        T[:3, 3] = o
+        cams = []
+        for k, cam in enumerate(self.cameras):
+            P = dlt_matrix(cam.coefs) @ T
+            den = float(P[2, 3])
+            if abs(den) <= 1e-9 * float(np.linalg.norm(P[2, :3])) * max(1.0, float(np.linalg.norm(o))):
+                raise ValueError(f"camera {k + 1}'s image plane passes through the chosen origin: choose an "
+                                 "origin that is in front of every camera (on the floor of the working volume)")
+            P = P / den
+            cams.append(CameraCalibration(np.concatenate([P[0], P[1], P[2, :3]]), cam.width, cam.height,
+                                          cam.undistort, cam.pixel_origin, cam.y_flip, cam.rmse))
+        src = re.sub(r"\s*\(world: .*\)\s*$", "", self.source or "")
+        out = Calibration(cams, self.unit, f"{src} ({note})".strip() if note else src)
+        out.notes = list(self.notes)
+        if hasattr(self, "report"):
+            out.report = self.report
+        out.origin_shift = None
+        return out
 
     # ---- arrays form (the project file stores it as calibration.json) -----
     def to_arrays(self, prefix: str = "calib_") -> dict:
@@ -707,33 +801,6 @@ def local_frame(t: float | np.ndarray, rate: float, offset: float):
     return rate * np.asarray(t, np.float64) + offset
 
 
-def reference_time(local: float | np.ndarray, rate: float, offset: float):
-    return (np.asarray(local, np.float64) - offset) / rate
-
-
-def sample_track(tracks: np.ndarray, tracked: np.ndarray, local_t: float) -> np.ndarray:
-    """2D position(s) of every point of one view at a fractional local frame:
-    linear interpolation between the two neighbouring frames, NaN unless BOTH
-    are tracked (a gap is never bridged). tracks (T, N, 2), tracked (T, N)."""
-    T = tracks.shape[0]
-    n = tracks.shape[1]
-    out = np.full((n, 2), np.nan)
-    if not np.isfinite(local_t):
-        return out
-    f0 = int(np.floor(local_t))
-    a = float(local_t - f0)
-    if a < 1e-9:
-        if 0 <= f0 < T:
-            ok = tracked[f0]
-            out[ok] = tracks[f0, ok]
-        return out
-    if f0 < 0 or f0 + 1 >= T:
-        return out
-    ok = tracked[f0] & tracked[f0 + 1]
-    out[ok] = (1.0 - a) * tracks[f0, ok] + a * tracks[f0 + 1, ok]
-    return out
-
-
 # ------------------------------------------------------------ project-level
 
 
@@ -755,8 +822,15 @@ class Reconstruction:
     def n_frames(self) -> int:
         return self.xyz.shape[0]
 
-    def valid(self) -> np.ndarray:
-        return np.isfinite(self.xyz).all(axis=2)
+    def reframed(self, B: np.ndarray, o: np.ndarray) -> "Reconstruction":
+        """The same 3D result in the world `Calibration.reframed(B, o)` makes:
+        X_new = B (X_old - o). Residuals, camera counts and the per-camera
+        errors are pixel quantities and do not change."""
+        B = np.asarray(B, np.float64).reshape(3, 3)
+        o = np.asarray(o, np.float64).reshape(3)
+        xyz = (np.asarray(self.xyz, np.float64) - o) @ B.T          # NaN stays NaN
+        return Reconstruction(self.t0, list(self.names), xyz, self.residual.copy(), self.n_cams.copy(),
+                              self.unit, None if self.per_cam is None else self.per_cam.copy())
 
     def export_csv(self, path: str | Path) -> None:
         """DLTdv-style `xyzpts` CSV (`pt1_X,pt1_Y,pt1_Z,...`) with a leading
@@ -795,10 +869,60 @@ class Reconstruction:
             lines.append(",".join(cells))
         side.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
 
-    def to_mat_dict(self) -> dict:
-        return {"xyz": self.xyz.astype(np.float64), "xyz_residual": self.residual.astype(np.float64),
-                "xyz_ncams": self.n_cams.astype(np.float64), "xyz_first_frame": float(self.t0),
-                "xyz_names": np.array(self.names, dtype=object), "xyz_unit": self.unit}
+
+# ------------------------------------------------- the world the user chooses (I170)
+
+WORLD_AXES_MIN_DEG = 5.0     # the +Y point must leave the X axis by at least this angle
+
+
+def world_is_left_handed(cal: "Calibration", probe: np.ndarray | None = None) -> bool:
+    """True when the calibration's world is LEFT-handed (easyWand / DLTdv
+    coefficients usually are): the majority of its cameras, in OpenCV's pixel
+    convention with depth positive in front, have det(P[:, :3]) < 0. The one
+    test `calibio.to_models` uses to export such a world mirrored in Z."""
+    if not cal.cameras:
+        return False
+    probe = probe if probe is not None else working_probe(cal)
+    dets = []
+    for cam in cal.cameras:
+        P = cam.pixel_matrix() @ dlt_matrix(cam.coefs) * front_sign(cam.coefs, probe)
+        dets.append(np.linalg.det(P[:, :3]))
+    return sum(d < 0 for d in dets) > len(dets) / 2
+
+
+def world_axes(origin, px, py, left_handed: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """The user's world from three points of the CURRENT world: `origin`, a
+    point on the +X axis and a point in the direction of +Y. Returns (B, o)
+    for `Calibration.reframed` / `Reconstruction.reframed` -- B's rows are
+    the new X, Y and Z axes in the old coordinates, o the origin. +X points
+    from the origin to `px`, +Y is `py` made perpendicular to it, and +Z
+    follows the RIGHT-HAND rule of the PHYSICAL world: ex x ey, negated when
+    the calibration's world is left-handed (`world_is_left_handed`), because
+    a mirrored world's cross product points the wrong way round. ValueError
+    in a plain sentence when the points coincide or lie (nearly) on one
+    line."""
+    o = np.asarray(origin, np.float64).reshape(3)
+    a = np.asarray(px, np.float64).reshape(3) - o
+    b = np.asarray(py, np.float64).reshape(3) - o
+    if not (np.isfinite(o).all() and np.isfinite(a).all() and np.isfinite(b).all()):
+        raise ValueError("every one of the three points needs a position in 3D")
+    na, nb = float(np.linalg.norm(a)), float(np.linalg.norm(b))
+    if na < 1e-12:
+        raise ValueError("the origin and the point on the +X axis are the same place: choose two different points")
+    if nb < 1e-12:
+        raise ValueError("the origin and the point in the +Y direction are the same place: choose two different points")
+    ex = a / na
+    rest = b - (b @ ex) * ex
+    nr = float(np.linalg.norm(rest))
+    if nr / nb < np.sin(np.radians(WORLD_AXES_MIN_DEG)):
+        raise ValueError("the origin, the +X point and the +Y point lie on (nearly) one line, so they do not "
+                         "say which way +Y is: choose a +Y point clearly off the X axis (more than "
+                         f"{WORLD_AXES_MIN_DEG:g} degrees)")
+    ey = rest / nr
+    ez = np.cross(ex, ey)
+    if left_handed:
+        ez = -ez
+    return np.stack([ex, ey, ez]), o
 
 
 def _closest_approach(c1, d1, c2, d2):
@@ -878,14 +1002,6 @@ def working_probe(cal: "Calibration") -> np.ndarray | None:
     return probe
 
 
-def _calib_affine(cam: CameraCalibration, pts_xy: np.ndarray) -> np.ndarray:
-    """Kinetrace pixels -> the DLT's pixel convention WITHOUT undistortion."""
-    p = np.atleast_2d(np.asarray(pts_xy, np.float64)).copy() + cam.pixel_origin
-    if cam.y_flip:
-        p[:, 1] = cam.height - p[:, 1] + 2 * cam.pixel_origin - 1
-    return p
-
-
 def _picture_in_calib_frame(cam: CameraCalibration, margin: float) -> tuple:
     """((x0, y0, x1, y1) of the picture plus `margin` in raw Kinetrace pixels,
     (x0, y0, x1, y1) of a box holding it in the undistorted calibration frame).
@@ -901,7 +1017,7 @@ def _picture_in_calib_frame(cam: CameraCalibration, margin: float) -> tuple:
     raw = (-0.5 - mx, -0.5 - my, cam.width - 0.5 + mx, cam.height - 0.5 + my)
     x0, y0, x1, y1 = raw
     if getattr(cam.undistort, "kind", "none") == "none":
-        q = _calib_affine(cam, np.array([[x0, y0], [x1, y0], [x0, y1], [x1, y1]]))
+        q = cam.to_dlt_pixels(np.array([[x0, y0], [x1, y0], [x0, y1], [x1, y1]]))
     else:
         t = np.linspace(0.0, 1.0, 64)
         border = np.vstack([np.column_stack([x0 + t * (x1 - x0), np.full_like(t, y0)]),
@@ -913,7 +1029,7 @@ def _picture_in_calib_frame(cam: CameraCalibration, margin: float) -> tuple:
         tol = max(1.0, 1e-3 * cam.width)
         ok = np.isfinite(q).all(axis=1) & np.isfinite(back).all(axis=1)
         ok[ok] &= np.linalg.norm(back[ok] - border[ok], axis=1) < tol
-        q = q[ok] if ok.sum() >= 8 else _calib_affine(cam, border)
+        q = q[ok] if ok.sum() >= 8 else cam.to_dlt_pixels(border)
     box = (float(q[:, 0].min()), float(q[:, 1].min()), float(q[:, 0].max()), float(q[:, 1].max()))
     out = (raw, box)
     try:
@@ -1004,7 +1120,7 @@ def epipolar_polyline(src: CameraCalibration, dst: CameraCalibration, uv_raw_src
     d = d[0]
     if dst.width and dst.height:
         L = np.asarray(dst.coefs, np.float64).reshape(11)
-        P = np.array([[L[0], L[1], L[2], L[3]], [L[4], L[5], L[6], L[7]], [L[8], L[9], L[10], 1.0]])
+        P = dlt_matrix(L)
         xc, xd = P @ np.append(c, 1.0), P @ np.append(d, 0.0)       # x(s) = xc + s xd, s >= 0
         sgn = front_sign(L, probe)
         lo, hi = _clip_s(0.0, np.inf, sgn * xc[2], sgn * xd[2])      # in front of dst
@@ -1072,7 +1188,8 @@ def closest_on_polyline(pts: np.ndarray, p) -> np.ndarray | None:
     return q[np.argmin(np.linalg.norm(q - p, axis=1))]
 
 
-PARALLEL_LINES_DEG = 5.0    # epipolar lines closer than this in angle do not "cross"
+PARALLEL_LINES_DEG = 5.0    # epipolar lines closer than this in angle do not "cross" (THE 5-degree rule:
+                            # intersect_polylines, the app's prediction diamond and the guides' "parallel" wording)
 
 
 def intersect_polylines(lines: list[np.ndarray], near, info: dict | None = None) -> np.ndarray | None:
@@ -1133,14 +1250,30 @@ def intersect_polylines(lines: list[np.ndarray], near, info: dict | None = None)
 TWO_CAMERA_CAP_FRAC = 0.9   # share of two-camera 3D points above which "good" is capped at "ok"
 
 
-def reconstruction_report(rec: Reconstruction, n_views: int, width_px: float = 1920.0) -> dict:
+def residual_scale(width_px: float, height_px: float = 0.0) -> float:
+    """How many 1080p pixels one pixel of this picture is worth for the
+    verdict bands: max(w, h) / 1920, never below 1 (I250: the LONG side, so a
+    portrait 4K clip is judged like a landscape one)."""
+    return max(1.0, max(float(width_px), float(height_px or 0.0)) / 1920.0)
+
+
+def residual_bands(width_px: float, height_px: float = 0.0) -> tuple[float, float]:
+    """(good, ok) limits in pixels of a triangulation residual for a picture
+    of this size: good <= 1.5 px, usable <= 5 px, poor above, at 1920 on the
+    long side (R14: the one place those numbers live)."""
+    s = residual_scale(width_px, height_px)
+    return 1.5 * s, 5.0 * s
+
+
+def reconstruction_report(rec: Reconstruction, n_views: int, width_px: float = 1920.0,
+                          height_px: float = 0.0) -> dict:
     """A verdict a first-time user can act on, from the residuals alone.
 
     The residual is DLTdv's: the RMS distance, in pixels, between where each
     camera saw the landmark and where the 3D point projects back -- how much
-    the cameras DISAGREE. Thresholds scale with the picture width (a pixel of
-    4K is half a pixel of 1080p): good <= 1.5 px, usable <= 5 px, poor above,
-    at 1920 wide. A point made from only two rays is blind to one whole
+    the cameras DISAGREE. Thresholds scale with the picture's long side (a
+    pixel of 4K is half a pixel of 1080p; `residual_bands`): good <= 1.5 px,
+    usable <= 5 px, poor above, at 1920 wide. A point made from only two rays is blind to one whole
     direction (a mistake along the epipolar line triangulates perfectly): with
     two cameras, or when at least `TWO_CAMERA_CAP_FRAC` of the points were
     seen by only two, the report says so and "good" becomes "ok". Returns
@@ -1151,7 +1284,6 @@ def reconstruction_report(rec: Reconstruction, n_views: int, width_px: float = 1
     ok = np.isfinite(res)
     n_cells = int(res.size)
     solved = int(ok.sum())
-    scale = max(1.0, float(width_px) / 1920.0)
     out = {"verdict": "empty", "reasons": [], "median_px": float("nan"),
            "solved_frac": (solved / n_cells) if n_cells else 0.0, "worst": None, "per_landmark": {}}
     if solved == 0:
@@ -1169,7 +1301,7 @@ def reconstruction_report(rec: Reconstruction, n_views: int, width_px: float = 1
     out["per_landmark"] = per
     worst = max(per.items(), key=lambda kv: kv[1]) if per else None
     out["worst"] = worst
-    good_lim, ok_lim = 1.5 * scale, 5.0 * scale
+    good_lim, ok_lim = residual_bands(width_px, height_px)
     if med <= good_lim:
         verdict = "good"
         out["reasons"].append(f"The cameras agree to {med:.2f} px (median): the 3D positions are "
@@ -1387,16 +1519,65 @@ def reconstruct(sessions: list, calib: Calibration, rates: list[float], offsets:
                           err.astype(np.float32))
 
 
+MAX_SCAN_INSTANTS = 6000     # estimate_offsets looks at no more than this many instants at all ...
+MAX_SCORE_INSTANTS = 500     # ... and scores the search on at most this many MOVING ones (G76)
+
+
+class _SearchCancelled(Exception):
+    pass
+
+
+def _scoring_instants(prep: "_Prepared", rates, offs, t_all: np.ndarray, search: float):
+    """(t, keep, n_cells): the reference instants the offset search is scored
+    on and their stable view / cell sets (G76). A long project has tens of
+    thousands of instants and ~650 cost evaluations are made: scoring each
+    on every instant is minutes. Only instants with data in >= 2 views count,
+    only those where the landmarks MOVE carry timing information (a landmark
+    at rest scores the same at every offset), and a few hundred of them,
+    spread evenly over the window, give the same minimum. A short window
+    (<= MAX_SCORE_INSTANTS usable instants) is used whole, exactly as before.
+    `n_cells` = landmark-frames seen by two views over the whole window."""
+    stride = max(1, int(np.ceil(len(t_all) / MAX_SCAN_INSTANTS)))
+    t_scan = t_all[::stride]
+    keep = prep.stable_cells(rates, offs, t_scan, search)
+    shared = keep.sum(axis=2) >= 2                                   # (T, N)
+    n_cells = int(np.count_nonzero(shared)) * stride
+    usable = np.nonzero(shared.any(axis=1))[0]
+    if len(usable) > MAX_SCORE_INSTANTS:
+        a = prep.samples(rates, offs, t_scan, keep)
+        b = prep.samples(rates, offs, t_scan + 1, keep)
+        with np.errstate(all="ignore"):
+            move = np.nanmax(np.nan_to_num(np.linalg.norm(b - a, axis=3), nan=-1.0).reshape(len(t_scan), -1), axis=1)
+        mv = move[usable]
+        pos = mv[mv > 0]
+        if len(pos) >= 10:
+            moving = usable[mv >= 0.25 * float(np.median(pos))]
+            if len(moving) >= 10:
+                usable = moving
+        if len(usable) > MAX_SCORE_INSTANTS:
+            usable = usable[np.round(np.linspace(0, len(usable) - 1, MAX_SCORE_INSTANTS)).astype(int)]
+    if len(usable) == 0:
+        usable = np.arange(len(t_scan))
+    return t_scan[usable], keep[usable], n_cells
+
+
 def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], offsets: list[float],
                      t_range: tuple[int, int], names: list[str] | None = None,
                      search: float = 1.0, step: float = 0.05, refine: float = 0.005,
-                     reference: int = 0, passes: int = 2,
-                     report: dict | None = None) -> tuple[list[float], float, float]:
+                     passes: int = 2, report: dict | None = None,
+                     progress=None, cancelled=None) -> tuple[list[float], float, float]:
     """Sub-frame sync from the tracks themselves: for each non-reference view,
     the fractional offset that minimises the mean triangulation residual, by
     coordinate descent (coarse grid of `step` over ±`search` local frames,
     then a fine grid of `refine` around the best). Returns (offsets, residual
-    before, residual after). The reference view keeps its offset.
+    before, residual after). The reference view (view 0) keeps its offset.
+
+    (G76) The search is scored on a subsample of the MOVING instants of a long
+    window (`_scoring_instants`), and `progress(done, total)` is called after
+    every cost evaluation (total is an estimate that includes the final joint
+    refinement's budget: it can finish early) and `cancelled()` asked before
+    each one: when it returns True the search stops, the offsets come back
+    UNCHANGED and `report["verdict"]` is "cancelled".
 
     `report` (a dict, filled in place) says how much to trust the result:
     the minimum's SHARPNESS per view (how much the residual rises half a
@@ -1406,18 +1587,46 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
     surface), the number of cells scored, the improvement, and a verdict
     "reliable" / "weak" / "flat" with a sentence."""
     offs = [float(o) for o in offsets]
+    reference = 0                       # stable_cells holds view 0 still, as does the project (REFERENCE_VIEW)
     prep = _Prepared(sessions, calib, names)
-    t = np.arange(int(t_range[0]), int(t_range[1]) + 1)
-    keep = prep.stable_cells(rates, offs, t, search)
+    t_all = np.arange(int(t_range[0]), int(t_range[1]) + 1)
+    t, keep, n_cells = _scoring_instants(prep, rates, offs, t_all, search)
+    n_free = max(len(sessions) - 1, 0)
+    n_grid = int(np.floor(2 * search / step + 1e-9)) + 1
+    n_fine = int(np.floor(2 * step / refine + 1e-9)) + 1
+    total = 1 + passes * n_free * (n_grid + n_fine) + 400 + 2 * n_free + 1
+    done = [0]
 
     def cost(o):
+        if cancelled is not None and cancelled():
+            raise _SearchCancelled()
         uv = prep.samples(rates, o, t, keep)
         _, r, _, _ = triangulate_batch(prep.coefs, uv, 2)
         r = r[np.isfinite(r)]
+        done[0] += 1
+        if progress is not None:
+            progress(min(done[0], total - 1), total)
         return float(r.mean()) if len(r) else float("inf")
 
+    try:
+        return _search_offsets(sessions, offsets, offs, cost, prep, rates, t, keep, n_cells, search, step,
+                               refine, passes, reference, report)
+    except _SearchCancelled:
+        if report is not None:
+            report.update({"verdict": "cancelled", "why": "Cancelled: the offsets were not changed.",
+                           "sharpness": {}, "per_view": {}, "min_sharpness": float("nan"),
+                           "improvement": float("nan"), "n_cells": n_cells,
+                           "before_px": float("nan"), "after_px": float("nan")})
+        return [float(o) for o in offsets], float("nan"), float("nan")
+    finally:
+        if progress is not None:
+            progress(total, total)
+
+
+def _search_offsets(sessions, offsets, offs, cost, prep, rates, t, keep, n_cells, search, step, refine,
+                    passes, reference, report):
+    """The body of `estimate_offsets` (split off so a cancel can unwind it)."""
     before = cost(offs)
-    n_cells = int(np.count_nonzero(keep.sum(axis=2) >= 2)) if keep.ndim == 3 else 0
     for _ in range(passes):
         for c in range(len(sessions)):
             if c == reference:
@@ -1487,27 +1696,36 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
         # -- the grid leaves such an offset where it was, and the verdict must
         # judge only the cameras that were actually determined, not call the
         # whole result flat because one camera had nothing to say.
+        # (G75) "none" is a camera with NO cell shared with another one; a camera
+        # that shares cells but whose landmarks hardly move reads "flat" (the
+        # surface is flat because there is nothing to time, which is not the
+        # same as having no shared tracks)
+        shared = keep.sum(axis=2) >= 2
         per_view = {}
         for c, v in sharp.items():
-            moved = abs(offs[c] - float(offsets[c])) > 1e-9
-            if not np.isfinite(v) or v < 0.005:
+            if not (shared & keep[:, :, c]).any():
                 per_view[c] = "none"          # unconstrained: offset kept
+            elif not np.isfinite(v) or v < 0.03:
+                per_view[c] = "flat"
             elif v >= 0.10:
                 per_view[c] = "sharp"
-            elif v >= 0.03:
-                per_view[c] = "weak"
             else:
-                per_view[c] = "flat"
-            if per_view[c] == "none" and moved:
-                per_view[c] = "flat"          # moved on a flat surface: suspect
+                per_view[c] = "weak"
         determined = [c for c, w in per_view.items() if w != "none"]
         sharps = [sharp[c] for c in determined]
         min_sharp = min(sharps) if sharps else float("nan")
         n_none = sum(1 for w in per_view.values() if w == "none")
+        static = bool(sharps) and all((not np.isfinite(s)) or s < 0.005 for s in sharps)
         if not determined or n_cells < 10:
             verdict = "flat"
             why = (f"Only {n_cells} landmark-frames are seen by two cameras across the whole search "
                    "window: too few to time the cameras from. Keep the current offsets.")
+        elif static:
+            verdict = "flat"
+            why = ("flat: the landmarks do not move enough to time it. The disagreement does not change with "
+                   "the offsets because nothing in this window moves (a landmark at rest looks the same at "
+                   "every offset). Do NOT apply these offsets; pick a stretch where the animal moves, or sync "
+                   "the cameras from a flash or clap.")
         elif all(per_view[c] == "sharp" for c in determined):
             # (I100) reliability is the SHARPNESS of the minimum. Requiring an
             # improvement as well called offsets that were already right (a
@@ -1530,7 +1748,7 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
         else:
             verdict = "flat"
             why = (f"The disagreement hardly changes with the offsets ({100 * max(min_sharp, 0):.0f}% over "
-                   "half a frame) for at least one camera that moved: the tracks carry no timing "
+                   "half a frame) for at least one camera: the tracks carry no timing "
                    "information for it. Do NOT apply these offsets; sync the cameras from a flash or "
                    "clap instead.")
         if n_none:
