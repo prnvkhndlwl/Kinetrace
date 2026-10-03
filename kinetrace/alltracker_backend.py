@@ -18,6 +18,14 @@ Windowing contract (verified against nets/alltracker.py):
     (the overlapping first half is refined), exactly like CoTracker3;
   * tails shorter than 8 frames are padded by repeating the last frame, as in
     the reference implementation.
+
+Our own choice for the overlapping frames: every window rewrites its first
+half (the 8 rows the previous window already produced), and the app keeps the
+LATEST estimate of such a frame (`write_segment` overwrites). The reference
+`forward_sliding` keeps the FIRST estimate of an overlap frame (its output
+buffer is written once per frame). The later estimate has seen eight more
+frames of context; the numbers measured for this app (AUDIT, verify_alltracker)
+are for that choice.
 """
 from __future__ import annotations
 
