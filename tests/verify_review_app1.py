@@ -450,17 +450,19 @@ def g70_undo_points():
     w._undo_run()
     check("G70 Ctrl+Z takes the template back in EVERY camera", [x.n_points for x in w.project.sessions] == n0,
           [x.n_points for x in w.project.sessions])
-    check("G70 and its skeleton", w.session.skeleton is None, w.session.skeleton)
+    # (G153) the skeleton is the animal's
+    check("G70 and its skeleton", all(a.skeleton is None for a in w.session.segments),
+          [a.skeleton for a in w.session.segments])
     # forgetting the skeleton
     w._apply_skeleton_template(t)
     w._undo_snap = None
     w._clear_skeleton()
     check("G70 forgetting the skeleton takes an undo point", w._undo_snap is not None)
     w._undo_run()
-    check("G70 Ctrl+Z brings the skeleton back", w.session.skeleton is not None and
-          w.session.skeleton.get("name") == "tiny")
-    # a data-source change on a point with NO data
-    pid = w.session.pid_by_name("paw")
+    check("G70 Ctrl+Z brings the skeleton back", w.session.segments[0].skeleton is not None and
+          w.session.segments[0].skeleton.get("name") == "tiny")
+    # a data-source change on a point with NO data ("<animal> paw", G153)
+    pid = next(q for q in range(w.session.n_points) if w.session.part_name(q) == "paw")
     w._undo_snap = None
     w._on_source_change(pid, "tip")
     check("G70 a data-source change without data takes an undo point", w._undo_snap is not None)
@@ -488,9 +490,9 @@ def g71_loading_input():
     w.dock.setFloating(True)
     pump(0.3)
     app.setActiveWindow(w.dock)
-    w.point_list.setFocus()
+    w.layers.setFocus()
     pump(0.1)
-    QTest.keyClick(w.point_list, Qt.Key_T)
+    QTest.keyClick(w.layers, Qt.Key_T)
     pump(0.1)
     check("G71 T in the floated panel starts nothing while the card is up", calls == [], calls)
     w.dock.setFloating(False)
@@ -608,21 +610,21 @@ def g120_segment_row_and_derived_text():
     s = w.session
     s.add_landmark("tail_tip", "silhouette", "tip")
     w._refresh_point_list()
-    w.point_list.setCurrentRow(0)
-    w.point_list.item(0).setSelected(True)
+    w.layers.setCurrentItem(w.layers.point_item(0))
+    w.layers.point_item(0).setSelected(True)
     w._update_track_button()
     msg = w._track_blocked or ""
     check("G120 a derived landmark alone is not told to be placed by hand", "place it here" not in msg and msg,
           msg[:100])
     # S + a real click: the segment's row is selected, so Track runs it
-    w.point_list.clearSelection()
+    w.layers.clearSelection()
     w.btn_animal.setChecked(True)
     pump(0.1)
     click(w, 160, 120)
     pump(0.2)
-    check("G120 the new segment's row is selected", w.animal_list.count() == 1 and
-          w.animal_list.item(0).isSelected(), w.animal_list.count())
-    check("G120 so Track says it covers the segment", "segment" in w.btn_track.text(), w.btn_track.text())
+    check("G120 the new animal's row is selected", w.session.n_segments == 1 and
+          w._animal_item(0).isSelected(), w.session.n_segments)
+    check("G120 so Track says it covers the silhouette", "silhouette" in w.btn_track.text(), w.btn_track.text())
     check("G120 and is not blocked", w._track_blocked is None, w._track_blocked)
     close(w)
 
@@ -648,18 +650,20 @@ def i234_deleted_landmark_stays_deleted():
     t = {"name": "tri", "head": "nose", "landmarks": ["nose", "belly", "tail"],
          "bones": [["nose", "belly"], ["belly", "tail"]], "derived": {}, "note": ""}
     w._apply_skeleton_template(t)
-    pid = w.session.pid_by_name("belly")
+    pid = w.session.pid_by_name("animal belly")          # (G153) the template went on a new animal
     w._on_delete(pid)
-    check("I234 the landmark left every camera", all(x.pid_by_name("belly") is None for x in w.project.sessions))
+    check("I234 the landmark left every camera",
+          all(x.pid_by_name("animal belly") is None for x in w.project.sessions))
     assert w._add_view(C)
     new = w.project.sessions[-1]
     names = [[m.name for m in x.points] for x in w.project.sessions]
     check("I234 a camera added afterwards does not bring it back",
-          all("belly" not in n for n in names), names)
+          all(not any("belly" in m for m in n) for n in names), names)
     check("I234 the others have the same list", len({tuple(n) for n in names}) == 1, names)
     check("I234 the new camera's skeleton has no bone to it",
-          new.skeleton is None or all("belly" not in b for b in new.skeleton.get("bones", [])), new.skeleton)
-    check("I234 the point list shows the working camera's points", w.point_list.count() == w.session.n_points)
+          all("belly" not in b for a in new.segments for b in (a.skeleton or {}).get("bones", [])),
+          [a.skeleton for a in new.segments])
+    check("I234 the point list shows the working camera's points", w.layers.n_point_rows() == w.session.n_points)
     close(w)
 
 
@@ -706,7 +710,7 @@ def g132_custom_skeleton():
         fill["bones"] = "left-hip - left-knee\nleft-knee-left-ankle\nghost - left-hip"
         ASK["warned"].clear()
         w._custom_skeleton_dialog()
-        bones = (w.session.skeleton or {}).get("bones", [])
+        bones = [b for a in w.session.segments for b in (a.skeleton or {}).get("bones", [])]   # (G153)
         check("G132 'left-hip - left-knee' keeps both hyphenated names", ["left-hip", "left-knee"] in bones, bones)
         check("G132 a line with no spaced dash is split where both halves are landmarks",
               ["left-knee", "left-ankle"] in bones, bones)
@@ -769,6 +773,7 @@ def g139_track_label_width():
     s = w.session
     place_points(s, ["alpha", "beta", "gamma"], range(4))
     s.ensure_animal()
+    s.animal.add_click(0, 50.0, 50.0)     # (G153) an animal with a silhouette to run
     w._refresh_point_list()
     w._refresh_animal_panel()
     w._select_all_tracked()
@@ -778,7 +783,7 @@ def g139_track_label_width():
     w.resize(600, 700)                    # as narrow as the layout allows
     pump(0.5)
     label = w.btn_track.text()
-    check("G139 the Track label is a long one", "segment" in label and "points" in label, label)
+    check("G139 the Track label is a long one", "silhouette" in label and "points" in label, label)
     check("G139 the Track button is as wide as its label", w.btn_track.width() >= w.btn_track.sizeHint().width(),
           (w.btn_track.width(), w.btn_track.sizeHint().width()))
     check("G139 the bar's labels folded against the live width",

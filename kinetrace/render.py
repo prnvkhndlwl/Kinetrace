@@ -78,17 +78,28 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
         return out
     r = max(2, int(round(opts.marker_px)))
 
-    # silhouette (under everything else)
-    if opts.mask and s.masks is not None and s.animal is not None:
-        polys = s.masks.contours.get(frame)
+    # silhouettes (under everything else): every animal in its colour (G149); a frozen copy carries
+    # `segs`, a live session gives its animals and their masks, so both draw every animal alike
+    segs = getattr(s, "segs", None)
+    if segs is None:
+        segs = list(zip(getattr(s, "segments", []), getattr(s, "seg_masks", [])))
+    for animal, masks in (segs if opts.mask else []):
+        polys = masks.contours.get(frame) if masks is not None else None
         if polys:
-            layer = out.copy()
-            col = _bgr(getattr(s.animal, "color", mask_color))
+            col = _bgr(getattr(animal, "color", mask_color))
             pts = [np.round(np.asarray(p, np.float64) * sc).astype(np.int32).reshape(-1, 1, 2)
                    for p in polys if len(p) >= 3]
             if pts:
-                cv2.fillPoly(layer, pts, col)
-                cv2.addWeighted(layer, float(mask_opacity), out, 1.0 - float(mask_opacity), 0, out)
+                # blend only the polygons' bounding box (clipped to the picture): outside it the
+                # filled layer equals the frame, so a whole-frame blend changed nothing there
+                bx, by, bw, bh = cv2.boundingRect(np.concatenate(pts))
+                x0, y0, x1, y1 = max(bx, 0), max(by, 0), min(bx + bw, w), min(by + bh, h)
+                if x0 < x1 and y0 < y1:
+                    roi = out[y0:y1, x0:x1]
+                    layer = roi.copy()
+                    cv2.fillPoly(layer, pts, col, offset=(-x0, -y0))
+                    out[y0:y1, x0:x1] = cv2.addWeighted(layer, float(mask_opacity), roi,
+                                                        1.0 - float(mask_opacity), 0)
                 cv2.polylines(out, pts, True, col, 1, cv2.LINE_AA)
 
     occ = s.occluded[frame] if getattr(s, "occluded", None) is not None else np.zeros(s.n_points, bool)
@@ -183,13 +194,14 @@ def freeze_session(s, start: int = 0, end: int | None = None) -> SimpleNamespace
     post-edit data. Silhouettes are copied only for `start..end`, the frames
     the render draws; the arrays whole (trails look back before `start`)."""
     end = s.n_frames - 1 if end is None else int(end)
-    masks = None
-    if s.masks is not None:
-        masks = SimpleNamespace(
+
+    def frozen(m):
+        return SimpleNamespace(
             contours={f: [np.array(p, copy=True) for p in ps]
-                      for f, ps in s.masks.contours.items() if start <= f <= end},
-            midline={f: np.array(m, copy=True)
-                     for f, m in s.masks.midline.items() if start <= f <= end})
+                      for f, ps in m.contours.items() if start <= f <= end},
+            midline={f: np.array(mm, copy=True)
+                     for f, mm in m.midline.items() if start <= f <= end})
+    segs = [(a.copy(), frozen(m)) for a, m in zip(getattr(s, "segments", []), getattr(s, "seg_masks", []))]
     occ = getattr(s, "occluded", None)
     return SimpleNamespace(
         n_frames=s.n_frames, n_points=s.n_points, fps=s.fps, width=s.width, height=s.height,
@@ -199,7 +211,7 @@ def freeze_session(s, start: int = 0, end: int | None = None) -> SimpleNamespace
         points=[p.copy() for p in s.points],
         events=[copy.copy(e) for e in s.events],
         notes=copy.deepcopy(getattr(s, "notes", None) or {}),
-        masks=masks, animal=None if s.animal is None else s.animal.copy())
+        segs=segs)
 
 
 def open_writer(path: str | Path, fps: float, size: tuple[int, int]) -> tuple[cv2.VideoWriter, str]:

@@ -226,7 +226,7 @@ assert win.timeline.session is p.sessions[1] and win.timeline.session is not tl_
 assert win.canvas is win.grid.canvas(1), "win.canvas must follow the active view"
 assert win.current == 40 - SHIFT, \
     f"the playhead must land on the same instant, got frame {win.current}"
-assert win.point_list.count() == 2, "the panel shows the shared list in the new camera"
+assert win.layers.n_point_rows() == 2, "the panel shows the shared list in the new camera"
 assert win.selected == p.sessions[1].pid_by_name(p.sessions[0].points[1].name), \
     "the selected landmark follows the switch"
 win._deselect()                     # nothing selected: N + click makes a NEW point

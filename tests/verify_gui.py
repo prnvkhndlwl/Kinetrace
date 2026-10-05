@@ -51,7 +51,7 @@ assert win.btn_track.isEnabled(), "Track ▾ stays reachable with no points (G34
 # ---- add 4 points at GT frame 0 ----
 for d in range(4):
     win._on_add(float(GT[0, d, 0]), float(GT[0, d, 1]))
-assert win.session.n_points == 4 and win.point_list.count() == 4
+assert win.session.n_points == 4 and win.layers.n_point_rows() == 4
 assert win._track_blocked is None, "Track can start once points exist"
 
 # ---- full tracking run ----
@@ -133,8 +133,8 @@ s = win.session
 win._goto(300)
 s.clear_window(list(range(4)), 301, 599)          # everything after 300 is blank now
 assert not s.tracked[301:].any()
-win.point_list.clearSelection()
-win.point_list.setCurrentRow(2)                    # a single selected point
+win.layers.clearSelection()
+win.layers.setCurrentItem(win.layers.point_item(2))                    # a single selected point
 assert win._selected_pids() == [2] and win._run_scope()[0] == {2}
 assert "selected point" in win.btn_track.toolTip()
 win._start_tracking(stop_after=340)
@@ -145,7 +145,7 @@ assert not s.tracked[301:, [0, 1, 3]].any(), "unselected points must be left alo
 # select everything -> all points track
 win._goto(300)                                     # all four have data here
 for r in range(4):
-    win.point_list.item(r).setSelected(True)
+    win.layers.point_item(r).setSelected(True)
 assert win._run_scope()[0] == {0, 1, 2, 3} and "4 selected point" in win.btn_track.toolTip(), win.btn_track.toolTip()
 win._start_tracking(stop_after=330)
 pump(lambda: win.state == TRACKING, 10, "full run start")

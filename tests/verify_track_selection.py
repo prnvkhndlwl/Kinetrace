@@ -65,9 +65,9 @@ def run_to_end(timeout=300):
 
 
 def select(*pids):
-    win.point_list.clearSelection()
+    win.layers.clearSelection()
     for q in pids:
-        win.point_list.item(q).setSelected(True)
+        win.layers.point_item(q).setSelected(True)
     pump()
 
 
@@ -120,14 +120,14 @@ win.act_pm_cotracker.trigger()
 pump()
 at = "alltracker" if win.act_pm_alltracker.isEnabled() else "cotracker3"
 assert s.points[0].tracker == at and s.points[2].tracker == "cotracker3", (s.points[0].tracker, s.points[2].tracker)
-assert win.point_list.iconSize().width() >= 30 and "CoTracker3" in win.point_list.item(2).toolTip()
+assert win.layers.iconSize().width() >= 30 and "CoTracker3" in win.layers.point_item(2).toolTip(0)
 proj = os.path.join(OUT, "track_selection.kinetrace")
 win.project.save(proj)
 from kinetrace.project import Project  # noqa: E402
 
 back = Project.load(proj).sessions[0]
 assert [p.tracker for p in back.points[:3]] == [at, s.points[1].tracker, "cotracker3"]
-print("  tags on the rows, Track ▾ sets the selected points' tracker, saved and read back OK")
+print("  tags on the rows, Track menu sets the selected points' tracker, saved and read back OK")
 
 # ---- [3] two passes
 if at == "alltracker":

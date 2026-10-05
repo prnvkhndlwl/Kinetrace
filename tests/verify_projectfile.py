@@ -88,8 +88,11 @@ def camera(name, T, fps, w, h, seed):
                                 "centroid": np.array([150.5, 200.25], np.float32),
                                 "polys": [poly, poly[:10]], "midline": r.uniform(0, w, (32, 2))})
     s.masks.set_summary(1, {"area": 0, "score": -1.5})               # blank frame with a score
-    s.skeleton = {"name": "t", "landmarks": ["snout", "tail_tip"], "bones": [["snout", "tail_tip"]],
-                  "head": "snout", "derived": {"tail_tip": "tip"}}
+    # (G153) the animal's own skeleton (part names), whether it holds its points, its checkbox; a point of it
+    s.animal.skeleton = {"name": "t", "landmarks": ["snout", "tail_tip"], "bones": [["snout", "tail_tip"]],
+                         "head": "snout", "derived": {"tail_tip": "tip"}}
+    s.animal.hold, s.animal.shown = False, False
+    s.points[tip].segment = "lizard"                  # the derived landmark belongs to the animal
     bt = BodyTrack(T, rig_of("coco17"), 2)
     for f in range(0, T, 3):
         bt.set_person(f, 1, joints2d=r.uniform(0, w, (17, 2)), conf=r.random(17), score=0.9)
@@ -175,8 +178,6 @@ def compare(p, q):
             check(False, f"{n}: point metadata differs")
         if [vars(x) for x in a.events] != [vars(x) for x in b.events] or a.notes != b.notes:
             check(False, f"{n}: events / notes differ")
-        if a.skeleton != b.skeleton:
-            check(False, f"{n}: skeleton differs")
         if (a.animal is None) != (b.animal is None) or (a.animal and vars(a.animal) != vars(b.animal)):
             check(False, f"{n}: segment differs")
         if a.masks is not None:
@@ -257,7 +258,8 @@ check(compare(p, q2), "the binary encoding (recovery) round-trips too")
 # ----------------------------------------------------------------- 2. nothing silently left out
 print("\n[2] field coverage")
 TRANSIENT = {
-    "TrackingSession": {"_dirty", "data_version", "last_interp_hidden_skipped", "video_path"},
+    # active_seg: which segment the S tool acts on (reset to the first on open, G149)
+    "TrackingSession": {"_dirty", "data_version", "last_interp_hidden_skipped", "video_path", "active_seg"},
     "Project": {"path", "dirty", "edits"},
     "MaskTrack": {"native_w", "native_h"},
     "BodyTrack": {"mesh_version", "_version", "_cache", "examined", "stopped_early"},
@@ -265,7 +267,8 @@ TRANSIENT = {
 PERSISTED = {
     "TrackingSession": {"n_frames", "fps", "file_fps", "width", "height", "tracks", "visibility", "manual", "tracked",
                         "confidence", "occluded", "radius", "points", "events", "notes", "annotator", "animal",
-                        "masks", "body", "skeleton", "current_frame", "ui_state", "_name_counter", "_event_counter"},
+                        "masks", "body", "current_frame", "ui_state", "_name_counter", "_event_counter",
+                        "segments", "seg_masks"},      # (G149) every segment and its silhouettes
     "Project": {"sessions", "names", "offsets", "rates", "active", "calibration", "reconstruction", "lenses",
                 "exports"},
     "MaskTrack": {"n_frames", "bbox", "area", "centroid", "score", "contours", "midline"},

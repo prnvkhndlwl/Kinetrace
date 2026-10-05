@@ -121,15 +121,16 @@ tpl = next(t for t in __import__("kinetrace.skeletons", fromlist=["all_templates
            if t["name"].startswith("Undulating"))
 win._apply_skeleton_template(tpl)
 pump(0.1)
-assert s.skeleton and s.n_points == len(tpl["landmarks"]) and len(s.derived_pids()) == 4
-snout = s.pid_by_name("snout")
+# (G153) the template goes on the animal the S click made: its points are "animal <part>"
+assert s.segments[0].skeleton and s.n_points == len(tpl["landmarks"]) and len(s.derived_pids()) == 4
+snout = s.pid_by_name("animal snout")
 win._on_select(snout)
 QTest.keyClick(win, Qt.Key_N)
 assert win.btn_add.isChecked()
 win._on_add(float(GT[0]["eye"][0]), float(GT[0]["eye"][1]))   # continues the selected unplaced landmark
 assert s.tracked[0, snout] and s.n_points == len(tpl["landmarks"]), "click-continue must place the landmark"
 assert win.btn_track.isEnabled()
-assert win.btn_onbody.isChecked(), "Body constraint must default to on"
+assert not s.segments[0].hold, "holding an animal's points on its silhouette is opt-in (G160, owner)"
 print("skeleton OK")
 
 # ---- fused tracking run --------------------------------------------------------
@@ -140,7 +141,7 @@ wait_until(lambda: win.state == TRACKING, 10, "tracking start")
 wait_until(lambda: win.state == READY, 400, "tracking end")
 pump(0.3)
 assert s.masks.n_masked() >= 0.95 * T, s.masks.n_masked()
-tip = s.pid_by_name("tail_tip")
+tip = s.pid_by_name("animal tail_tip")
 errs = [np.linalg.norm(s.tracks[t, tip] - GT[t]["tip"]) for t in range(T) if s.tracked[t, tip]]
 print(f"tracked: masks {s.masks.n_masked()}/{T}, tail tip err mean {np.mean(errs):.2f} px on {len(errs)} frames, "
       f"snout tracked {int(s.tracked[:, snout].sum())} frames")
@@ -188,10 +189,10 @@ win._open_project_from_path(proj)
 wait_until(lambda: win.state == READY and win.session is not s, 30, "project reopen")
 pump(0.3)
 r = win.session
-assert r.animal is not None and r.masks.n_masked() == n_masked and r.skeleton["name"] == tpl["name"]
-# the segment's own panel row survives the round trip; the status line carries the counts
-assert win.animal_list.isVisible() and win.animal_list.count() == 1
-assert win.animal_list.item(0).text() == "segment", win.animal_list.item(0).text()
+assert r.animal is not None and r.masks.n_masked() == n_masked and r.segments[0].skeleton["name"] == tpl["name"]
+# the animal's own LAYERS row survives the round trip; the status line carries the counts
+assert r.n_segments == 1 and win._animal_item(0) is not None
+assert win._animal_item(0).text(0) == "animal", win._animal_item(0).text(0)
 assert f"silhouette on {n_masked:,} of" in win.animal_label.text(), win.animal_label.text()
 print("project round-trip OK")
 
@@ -202,7 +203,7 @@ assert r.masks.n_masked() < n_masked and win.act_undo.isEnabled()
 win._undo_run()
 assert r.masks.n_masked() == n_masked
 win._clear_animal()
-assert r.animal is None and r.masks is None and not win.btn_clear_animal.isEnabled()
+assert r.animal is None and r.masks is None and r.n_points > 0      # its points went to Scene (G154)
 assert win.timeline._animal_h() == 0
 print("undo + clear OK")
 

@@ -448,7 +448,7 @@ win.canvas.add_requested.emit(200.0, 150.0)
 pump(0.1)
 assert s.n_points == 3 and not s.points[2].is_ball
 print("Add > Ball marker places balls, N still places points OK")
-icon_ok = win.point_list.item(0).icon() is not None
+icon_ok = win.layers.point_item(0).icon(0) is not None
 assert icon_ok
 win.act_select_all.trigger()   # Track tracks only what is selected (G61): all of it
 win._start_tracking(stop_after=50)

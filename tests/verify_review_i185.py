@@ -350,9 +350,9 @@ def section2():
 
 # ================================================================= [3] the app: a real two-pass run
 def select_rows(win, *rows):
-    win.point_list.clearSelection()
+    win.layers.clearSelection()
     for r in rows:
-        win.point_list.item(r).setSelected(True)
+        win.layers.point_item(r).setSelected(True)
     pump(0.05)
 
 
@@ -399,10 +399,12 @@ def section3():
     win._on_add(*[float(v) for v in GT[0, 1]])
     s.points[0].tracker = "alltracker"
     s.points[1].tracker = "cotracker3"
-    s.skeleton = {"name": "t", "head": s.points[0].name, "landmarks": [s.points[0].name, s.points[1].name],
-                  "bones": [], "derived": {}}
     s.ensure_animal()
     s.animal.add_click(0, float(GT[0, 0, 0]), float(GT[0, 0, 1]), True)
+    # (G153, G156, G160) both points are the animal's, it holds them, point 0 is its head
+    s.move_points([0, 1], 0)
+    s.animal.hold = True
+    s.set_head(0)
     win._refresh_point_list()
     win._goto(0, force=True)
     select_rows(win, 0, 1)

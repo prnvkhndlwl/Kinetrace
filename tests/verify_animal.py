@@ -90,18 +90,19 @@ s.ensure_animal()
 s.animal.add_click(0, float(g0["centre"][0]), float(g0["centre"][1]), True)
 mid_tail = (np.asarray(g0["tip"]) + np.asarray(g0["centre"])) / 2
 s.animal.add_click(0, float(mid_tail[0]), float(mid_tail[1]), True)
+s.move_points([pid_head, pid_body, pid_rock], 0)        # (G153) the animal's points: "animal snout", ...
 tpl = {"name": "test lizard", "head": "snout",
        "landmarks": ["snout", "body", "tail_tip", "mid50", "centre", "foot_FL", "foot_FR", "foot_HL", "foot_HR"],
        "bones": [["snout", "body"], ["body", "tail_tip"]],
        "derived": {"tail_tip": "tip", "mid50": "midline:0.5", "centre": "centroid",
                    "foot_FR": "ext:FR", "foot_HL": "ext:HL", "foot_HR": "ext:HR"}}
-new = s.apply_skeleton(tpl)
-assert s.head_pid() == pid_head and len(new) == 6, (s.head_pid(), new)
+new = s.apply_skeleton(tpl, 0)
+assert s.head_pid(0) == pid_head and len(new) == 6, (s.head_pid(0), new)
 assert not s.points[pid_rock].derived  # existing tracked point keeps its source
 derived = [DerivedSpec(p, s.points[p].spec) for p in s.derived_pids()]
 specs = [PointSpec(p, s.tracks[0, p].astype(np.float32).copy()) for p in s.seedable_at(0)]
 animal = AnimalSpec({0: list(s.animal.prompts[0])}, {}, None)
-on_body = [p for p in s.seedable_at(0) if s.points[p].name in tpl["landmarks"]]
+on_body = [p for p in s.seedable_at(0) if s.part_name(p) in tpl["landmarks"]]
 w, ev = run_worker(s, 0, T, specs, animal, derived, head_pid=pid_head, on_body=on_body)
 assert ev["finished"] == (T - 1, False), ev["finished"]
 frames = range(T)
@@ -109,7 +110,7 @@ n_masked = s.masks.n_masked()
 print(f"fused run: {T} frames in {ev['dt']:.1f}s (includes the cold model loads), masks on "
       f"{n_masked}/{T} frames, {ev['chunks']} chunks, {ev['n_masks']} mask summaries")
 assert n_masked >= 0.97 * T
-pid = {s.points[i].name: i for i in range(s.n_points)}
+pid = {s.part_name(i): i for i in range(s.n_points)}
 head_e = err_stats(s, pid_head, "eye", frames)
 body_e = err_stats(s, pid_body, "centre", frames)
 tip_e = err_stats(s, pid["tail_tip"], "tip", frames)
@@ -295,7 +296,7 @@ p = os.path.join(OUT, "animal_session.kinetrace")
 s.save(p)
 r = TrackingSession.load(p)
 assert r.animal is not None and r.animal.prompts == s.animal.prompts
-assert r.masks.n_masked() == s.masks.n_masked() and r.skeleton["name"] == "Lizard / iguana"
+assert r.masks.n_masked() == s.masks.n_masked() and r.segments[0].skeleton["name"] == "Lizard / iguana"   # (G153)
 assert [pt.source for pt in r.points] == [pt.source for pt in s.points]
 assert np.array_equal(r.masks.bbox, s.masks.bbox) and len(r.masks.midline) == len(s.masks.midline)
 assert np.allclose(r.masks.midline[10], s.masks.midline[10])
@@ -304,9 +305,10 @@ print("session v3 round-trip OK")
 # undo snapshot restores masks too
 snap = s.snapshot()
 s.clear_masks(0, 50)
-assert s.masks.n_masked() < snap.masks.n_masked()
+snap_masks = snap.seg_masks[s.animal.name]      # the active animal's copy (simplify 2026-10-04)
+assert s.masks.n_masked() < snap_masks.n_masked()
 s.restore(snap)
-assert s.masks.n_masked() == snap.masks.n_masked()
+assert s.masks.n_masked() == snap_masks.n_masked()
 
 base = os.path.join(OUT, "animal_export")
 s.export_csv(base + ".csv")

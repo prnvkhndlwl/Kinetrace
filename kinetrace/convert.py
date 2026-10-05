@@ -7,7 +7,7 @@ no window, no Qt widgets.
     python -m kinetrace.convert calibration IN OUT [--to F] [--size WxH ...] [--pixels P] [--names a,b,c]
     python -m kinetrace.convert tracks   IN OUT (--video V | --size WxH --frames N) [--to F] [--camera K]
     python -m kinetrace.convert points3d IN OUT [--to F] [--calibration CAL [--size WxH ...]]
-    python -m kinetrace.convert masks    PROJECT OUT [--camera NAME] [--to json|png]
+    python -m kinetrace.convert masks    PROJECT OUT [--camera NAME] [--animal NAME] [--to json|png]
     python -m kinetrace.convert offsets  PROJECT OUT
     python -m kinetrace.convert import   PROJECT --tracks FILE [--camera NAME] [--out NEW.kinetrace]
     python -m kinetrace.convert pack     PROJECT OUT.kinetrace       (a project folder -> one file)
@@ -197,8 +197,19 @@ def cmd_masks(a) -> int:
     from kinetrace import projectfile, trackio
     p = projectfile.load(a.project)
     s = p.sessions[_camera(p, a.camera)]
+    # (G165, G151) the animal is named, never a hidden first one: with several, --animal is required
+    if a.animal is not None:
+        k = s.segment_index(a.animal)
+        if k is None:
+            raise Failure(f"no animal {a.animal!r} in this camera: it has {', '.join(s.segment_names()) or 'none'}")
+    elif s.n_segments > 1:
+        raise Failure(f"this camera has {s.n_segments} animals ({', '.join(s.segment_names())}): "
+                      "say which with --animal NAME")
+    else:
+        k = 0 if s.n_segments else None
     to = a.to or ("json" if a.output.lower().endswith(".json") else "png")
-    n = trackio.export_masks_json(s, a.output) if to == "json" else trackio.export_masks_png(s, a.output)
+    n = (trackio.export_masks_json(s, a.output, k) if to == "json"
+         else trackio.export_masks_png(s, a.output, i=k))
     _say(f"wrote {n} silhouette frame(s) to {a.output}")
     return 0
 
@@ -289,7 +300,11 @@ def _project_lines(path) -> tuple[list[str], list[str]]:
         lines.append(f"  camera {i + 1} {proj.name(i)!r}: {s.n_frames} frames, {s.fps:g} fps, {s.width}x{s.height}, "
                      f"offset {proj.offsets[i]:g}, rate {proj.rates[i]:g}; {s.n_points} point(s), {cells} "
                      f"position(s), {len(s.events)} event(s)"
-                     + (f", silhouette on {s.masks.n_masked()} frame(s)" if s.masks is not None else "")
+                     + (f", silhouette on {s.masks.n_masked()} frame(s)" if s.n_segments == 1 else "")
+                     # (G151o) every segment by name
+                     + (", segments: " + ", ".join(f"{a.name} (silhouette on {m.n_masked()} frame(s))"
+                                                   for a, m in zip(s.segments, s.seg_masks))
+                        if s.n_segments > 1 else "")
                      + (" [active]" if i == proj.active else ""))
         entry = entries[i] if i < len(entries) else {"video": {"path": s.video_path}}
         if projectfile.locate_video(entry, pdir, extra) is None:
@@ -403,6 +418,7 @@ def main(argv=None) -> int:
     s.add_argument("project")
     s.add_argument("output", help="a .json file, or a folder for PNGs")
     s.add_argument("--camera", help="camera name or number (default: the active one)")
+    s.add_argument("--animal", help="which animal's silhouettes (needed when the camera has several)")
     s.add_argument("--to", choices=["json", "png"])
     s = sub.add_parser("offsets", help="a project's camera offsets and rates as CSV")
     s.add_argument("project")

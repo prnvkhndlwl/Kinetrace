@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QSizePolicy, QSpinBox, QTextBrowser, QVBoxLayout, QWidget, QWizard,
                                QWizardPage)
 
-from kinetrace import lens, theme
+from kinetrace import gpmf, lens, theme
 from kinetrace.errors import plain_error
 from kinetrace.boardreview import BoardReview, pixmap
 
@@ -273,9 +273,19 @@ class VideoPage(QWizardPage):
         self.r_auto = QRadioButton("Not sure — try both models and keep the better (recommended)")
         self.r_std = QRadioButton("Ordinary lens")
         self.r_fish = QRadioButton("Wide-angle / action camera / fisheye")
+        # (G146) shown only for GoPro footage that carries GoPro's lens model
+        self.r_gopro = QRadioButton("GoPro lens from the video + your boards (recommended for this GoPro video)")
+        self.r_gopro.setToolTip("The lens curve is GoPro's own model, read from the video, and holds over the whole "
+                                "picture; the boards only measure this camera's focal length and centre, so they do "
+                                "not need to reach the corners.")
+        self.r_gopro.setVisible(False)
         self.r_auto.setChecked(True)
-        for r in (self.r_auto, self.r_std, self.r_fish):
+        for r in (self.r_gopro, self.r_auto, self.r_std, self.r_fish):
             ml.addWidget(r)
+        self.gopro_note = _dim(QLabel(""))
+        self.gopro_note.setWordWrap(True)
+        self.gopro_note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        ml.addWidget(self.gopro_note)
         form.addRow("Lens type", mrow)
         lay.addLayout(form)
         row = QHBoxLayout()
@@ -287,6 +297,13 @@ class VideoPage(QWizardPage):
         self.btn_load.clicked.connect(self._load)
         row.addWidget(self.btn_run)
         row.addWidget(self.btn_load)
+        self.btn_gopro = QPushButton("Use GoPro's lens without boards")
+        self.btn_gopro.setToolTip("GoPro's own lens model from the video, as it is: no checkerboard needed. It is "
+                                  "the lens design, not this camera (about 1 % in focal length and ~10 px in centre "
+                                  "between units); the wand calibration refines the focal length.")
+        self.btn_gopro.clicked.connect(self._use_gopro_nominal)
+        self.btn_gopro.setVisible(False)
+        row.addWidget(self.btn_gopro)
         row.addStretch(1)
         lay.addLayout(row)
         self.bar = QProgressBar()
@@ -300,11 +317,56 @@ class VideoPage(QWizardPage):
         # the lens file chosen with "I already have a lens file", kept so an
         # Argus file's line can follow the camera combo (I79 / I80)
         self._loaded_path: str | None = None
+        # the GoPro header read per (video, size, mtime): Back / Next does not read the file again
+        self._gopro_read: dict = {}
         self.cam.currentIndexChanged.connect(self._camera_changed)
 
     def initializePage(self):
         if self.wiz.default_view is not None and 0 <= self.wiz.default_view < self.cam.count():
             self.cam.setCurrentIndex(self.wiz.default_view)
+        self._detect_gopro(self.path.text().strip())
+
+    def _detect_gopro(self, video: str) -> None:
+        """(G145, G146) Is the board video GoPro footage carrying GoPro's lens model? Only then are the
+        GoPro choices shown (other cameras' metadata is not known). Reads the file's header only."""
+        info = None
+        if video and Path(video).is_file():
+            st = Path(video).stat()
+            key = (video, st.st_size, st.st_mtime_ns)
+            if key not in self._gopro_read:
+                self._gopro_read[key] = gpmf.read_safe(video, sensors=False)
+            info = self._gopro_read[key]
+        self.wiz.gopro = info if (info is not None and info.has_lens) else None
+        on = self.wiz.gopro is not None
+        self.r_gopro.setVisible(on)
+        self.btn_gopro.setVisible(on)
+        if on:
+            self.r_gopro.setChecked(True)
+            self.gopro_note.setText(f"GoPro footage: {info.label}, stabilisation {info.stabilisation}. Its lens model "
+                                    "is in the file." + (" Stabilisation was ON in this video: re-film the board with "
+                                                         "HyperSmooth / EIS off, or no lens calibration will hold."
+                                                         if info.stabilised else ""))
+        else:
+            if self.r_gopro.isChecked():
+                self.r_auto.setChecked(True)
+            self.gopro_note.setText("")
+        self.gopro_note.setVisible(bool(self.gopro_note.text()))
+
+    def _use_gopro_nominal(self) -> None:
+        """GoPro's lens model as it is (no boards): straight to the result page, like a lens file."""
+        info = self.wiz.gopro
+        prof = gpmf.lens_profile(info) if info is not None else None
+        if prof is None:
+            self.status.setText("This video carries no GoPro lens model.")
+            return
+        self.wiz.scan = None
+        self.wiz.used_boards = None
+        self._loaded_path = None
+        self.wiz.result_profile = prof
+        self.wiz.result_view = self._view()
+        problem = self._size_problem()
+        self.status.setText(f"GoPro's lens model: {prof.summary()}. " + (problem if problem else "Press Next."))
+        self.completeChanged.emit()
 
     def _pick(self):
         start = self.wiz.default_video or self.wiz.start_dir
@@ -313,6 +375,7 @@ class VideoPage(QWizardPage):
         if path:
             self.path.setText(path)
             self.prefill_note.setText("")      # chosen on purpose now (G9)
+            self._detect_gopro(path)
             self.completeChanged.emit()
 
     def pattern(self) -> tuple[int, int]:
@@ -333,6 +396,8 @@ class VideoPage(QWizardPage):
         return float(self.square.value()) * UNITS[self.unit.currentIndex()][1]
 
     def model(self) -> str:
+        if self.wiz.gopro is not None and self.r_gopro.isChecked():
+            return "gopro"
         return "auto" if self.r_auto.isChecked() else ("fisheye" if self.r_fish.isChecked() else "standard")
 
     def _run(self):
@@ -389,6 +454,7 @@ class VideoPage(QWizardPage):
         was ignored)."""
         self.wiz.square = self.square_m()
         self.wiz.model = self.model()
+        self.wiz.base_lens = gpmf.lens_profile(self.wiz.gopro) if self.wiz.model == "gopro" else None
 
     def _view(self) -> int | None:
         return int(self.cam.currentData()) if self.cam.count() else None
@@ -555,16 +621,18 @@ class ReviewPage(QWizardPage):
         self.status.setText(f"Choosing a good spread of the {len(scan.corners)} boards and fitting the lens "
                             "(a few seconds)…")
         pattern, square, model = self.wiz.pattern, self.wiz.square, self.wiz.model
+        base = self.wiz.base_lens                         # (G146) GoPro's curve for model "gopro"
         corners = list(scan.corners)
         rev = self.review.corner_rev
+        self.review.base = base
 
         def work():
-            idx, err, why = lens.auto_select(corners, pattern, square, scan.size, model)
+            idx, err, why = lens.auto_select(corners, pattern, square, scan.size, model, base=base)
             prof = None
             if idx:
                 try:
                     prof = lens.calibrate_lens([corners[i] for i in idx], pattern, square, scan.size, model,
-                                               max_views=max(len(idx), lens.MAX_VIEWS))
+                                               max_views=max(len(idx), lens.MAX_VIEWS), base=base)
                     # the errors of the profile that is SHOWN, not of the provisional fit auto_select made
                     err = lens.per_view_errors(corners, pattern, square, prof)
                 except Exception:                               # noqa: BLE001
@@ -599,7 +667,8 @@ class ReviewPage(QWizardPage):
         def work():
             # (G116) every ticked board is fitted: the boards were CHOSEN, so calibrate_lens must not
             # thin them to a 40-view spread behind a "Fitted from 120 boards"
-            prof = lens.calibrate_lens(chosen, pattern, square, scan.size, model, max_views=len(chosen))
+            prof = lens.calibrate_lens(chosen, pattern, square, scan.size, model, max_views=len(chosen),
+                                       base=self.wiz.base_lens)
             return prof, lens.per_view_errors(everything, pattern, square, prof)
         try:
             prof, err = _off_thread(self.wiz, work)
@@ -678,13 +747,16 @@ class ResultPage(QWizardPage):
             parts.append(f"<h2 style='color:{theme.TEXT_DIM}'>Loaded from a file</h2><p>{prof.source}</p>")
         chk = prof.border_check()
         bend = chk["bend_px"]
+        # (G144) the curvature is the lens's own (an edge pixel's distance from where a straight-line lens
+        # would put it): said so, or "1076 px" beside "fit error 0.90 px" reads as a 1000-px error
+        curv = "the lens's own curvature, not an error"
         if chk["runaway"]:
-            bent = (f"the edges of the picture are bent by at least <b>{bend:.0f} px</b> and the model "
+            bent = (f"the lens curves the picture edges by at least <b>{bend:.0f} px</b> ({curv}) and the model "
                     f"<b style='color:{VERDICT_COLORS['poor']}'>runs away in the corners</b> (see above)"
                     if np.isfinite(bend) else
                     f"<b style='color:{VERDICT_COLORS['poor']}'>the model runs away along the whole border</b>")
         else:
-            bent = f"the edges of the picture are bent by up to <b>{bend:.0f} px</b>"
+            bent = f"the lens curves the picture edges by up to <b>{bend:.0f} px</b> ({curv})"
         parts.append(f"<p><b>{cam}</b>: focal length {prof.f_square:.0f} px "
                      f"({'fisheye' if prof.fisheye else 'standard'} model), {bent}"
                      + (f", fit error {prof.rms:.2f} px over {prof.n_views} views" if np.isfinite(prof.rms) else "")
@@ -786,6 +858,10 @@ class LensWizard(QWizard):
         self.pattern = lens.DEFAULT_PATTERN
         self.square = lens.DEFAULT_SQUARE_MM / 1000.0
         self.model = "auto"
+        # (G146) the board video is GoPro footage with GoPro's lens model in it: `gopro` (gpmf.GoProInfo)
+        # and its lens as Kinetrace's fisheye profile (`base_lens`) for "GoPro lens + your boards"
+        self.gopro = None
+        self.base_lens = None
         self.page_intro = IntroPage(self)
         self.page_video = VideoPage(self)
         self.page_review = ReviewPage(self)

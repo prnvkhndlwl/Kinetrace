@@ -240,8 +240,11 @@ That limitation is why the next idea exists.
 
 Instead of following a small patch, the program can outline the **whole animal**
 — its complete shape against the background, in every frame. That outline is
-called the **silhouette** (in the program's buttons and menus it is called the
-**segment**).
+called the **silhouette**. The tool that draws it is called **Segment** (key
+**S**), and what it outlines is an **animal**: a row in the LAYERS panel that
+holds the animal's points. An animal does not need a silhouette — it can be
+just a group of points — but once it has one, its body parts can be found from
+it.
 
 The silhouette is powerful because some body parts are *defined by shape* rather
 than by appearance:
@@ -308,6 +311,12 @@ side). A rule the program cannot use is reported when you press OK, and that
 landmark is tracked by appearance instead. Your skeleton is saved in the
 program's `skeletons` folder and stays in the menu from then on.
 
+A skeleton always belongs to one **animal**: its landmarks are named after it
+("squirrel snout", shown as just "snout" under the squirrel in LAYERS), so two
+animals in one video can use the same skeleton. Once an animal's points and
+bones are as you want them, right-click the animal → **Save its points and
+bones as a skeleton template…** to reuse them on another animal.
+
 ### 4.5 Confidence
 
 For every body part in every frame, the program records how sure it is — a
@@ -330,19 +339,19 @@ look, and it can stop automatically when it loses something.
 ```
  File  Edit  View  Skeleton  Events  3D  Body  Help      ← the menus
 ┌────────────────────────────────────────────────────┬──────────────────────┐
-│ 1 Open video ✓ › 2 Segment › 3 Skeleton › 4 Track  │ Segment & Points     │
+│ 1 Open video ✓ › 2 Segment › 3 Skeleton › 4 Track  │ Layers               │
 ├────────────────────────────────────────────────────┤ CAMERAS  + Add video │
 │                                                    │ cam1 (reference)     │
 │                                                    │ offset 0.000  ◂ ▸    │
 │                    the video                       │                      │
-│                (click things here)                 │ SEGMENT              │
-│                                                    │ Skeleton ▾           │
-│                                                    │                      │
-├────────────────────────────────────────────────────┤ POINTS               │
-│                   the timeline                     │ ■ snout              │
-│        one horizontal bar per body part            │ ■ eye                │
-├────────────────────────────────────────────────────┤ □ tail_tip           │
-│ 120 / 599  ⏴ ▶ ⏵   tools and toggles…   Track ▶    │                      │
+│                (click things here)                 │ LAYERS               │
+│                                                    │ + Animal  + Point    │
+│                                          ⊖ ⊕ ⤢     │ Skeleton ▾  Delete   │
+├────────────────────────────────────────────────────┤ ● iguana             │
+│ ⊖⊕⤢           the timeline                         │    ■ snout           │
+│        one horizontal bar per body part            │    ■ eye             │
+├────────────────────────────────────────────────────┤ Scene                │
+│ 120 / 599  ⏴ ▶ ⏵   tools and toggles…   Track ▶    │    ■ rock mark       │
 └────────────────────────────────────────────────────┴──────────────────────┘
  frame 120 / 599   last tracked: 450   cuda: …      ← the status bar
 ```
@@ -350,7 +359,7 @@ look, and it can stop automatically when it loses something.
 **The menus along the top:** **File** (open a video or a project, save,
 export), **Edit** (undo, notes, the hidden mark, the name recorded on your
 notes), **View** (the panel, this strip, trails, the loupe, display filters),
-**Skeleton** (ready-made landmark lists), **Events**, **3D** (several cameras:
+**Skeleton** (ready-made landmark lists for an animal), **Events**, **3D** (several cameras:
 sync, calibration, 3D positions), **Body** (people's joints and joint angles)
 and **Help** (this manual, **F1**, and the keyboard reference). **Hover the
 mouse over any menu entry** and a line appears saying what it does. In the 3D
@@ -370,12 +379,14 @@ tracked; you can also close it with **×**, and **View → Getting started
 strip** brings it back.
 
 **The middle** is your video. This is where you click on things. You can zoom
-with the mouse wheel (or **+** and **−**) and pan by holding the left button and
+with the mouse wheel (or **+** and **−**, or the zoom-out / zoom-in buttons in
+the picture's lower-right corner) and pan by holding the left button and
 moving the mouse (the middle button works too, and so does the **Pan** tool,
-key **H**). A plain left **click** on the video places the point selected in the
-POINTS list; a short right click on a marker clears that point on that frame.
+key **H**). A plain left **click** on the video places the point selected in
+LAYERS; a short right click on a marker clears that point on that frame.
 Markers are never dragged, and a sideways swipe on a touchpad does not zoom.
-Press **R** at any time to fit the whole picture back in the window. With
+Press **R** (or the fit button in that corner) at any time to fit the whole
+picture back in the window. With
 several cameras the videos share this space as a grid; the one you are working
 in is outlined, and clicking another switches to it (section 10). Short notices
 appear over the video for a few seconds when something needs saying.
@@ -384,36 +395,36 @@ appear over the video for a few seconds when something needs saying.
 It is also your scrubber: **click or drag anywhere along it to move through the
 video.** There is no separate slider. Drag the boundary between the video and
 the timeline to give the timeline more rows, and hover over it to see the frame
-number and the time in seconds.
+number and the time in seconds. The three magnifier buttons in the timeline's
+top-left corner, left of the frame numbers, zoom the timeline out, in, and back
+to the whole video.
 
 **The control bar at the bottom**, from left to right:
 
 - the **frame box** (type a frame number and press Enter), then **⏴ ▶ ⏵** —
   back one frame, play / pause a preview (display only: nothing is tracked),
   forward one frame;
-- three magnifier buttons that zoom the timeline out, in, and back to the whole
-  video;
 - **±10**, the jump size for **Shift+F** / **Shift+B**, and **● 3px**, the size
   the markers are drawn at;
-- the tools: **Add** (**N**; its **▾** picks the region shape or a ball
+- the tools: **Point** (**N**; its **▾** picks the region shape or a ball
   marker), **Segment** (**S**; its **▾** picks the outlining model and ends with
   *Settings…*) and **Pan** (**H**). Only one of these three is on at a time:
   picking one switches the other two off;
-- five switches, explained in [section 14](#14-choosing-the-settings-that-matter):
+- four switches, explained in [section 14](#14-choosing-the-settings-that-matter):
   **Follow** (keeps your points in view while zoomed in; off until you switch
-  it on), **Mask** (shows the silhouette), **Body** (keeps body parts on the
-  silhouette), **Auto-pause** and **ROI**;
+  it on), **Mask** (shows the silhouettes; off hides every one),
+  **Auto-pause** and **ROI**;
 - the blue **Track ▶** button that starts the work. Its **▾** arrow chooses
   automatic or semi-automatic tracking and the point model.
 
 Until a video is open most of the bar is greyed out. The window opens as large
 as your screen allows. On a narrower window the tools and switches give up
 their names **one at a time**, the least-used first (Pan, then ROI, Mask,
-Follow, Body, Auto-pause, Segment, and Add last), and show **only their
+Follow, Auto-pause, Segment, and Point last), and show **only their
 icons** — hover over one to see its name and what it does, and widen the window
 to bring the names back. The Track button always keeps its words.
 
-**The right panel** (titled *Segment & Points*) has three sections:
+**The right panel** (titled *Layers*) has two sections:
 
 - **CAMERAS** — one row per video. The top line of a row is the camera's name
   (the first video is `cam1`, marked **(reference)**) with **Align here** and
@@ -423,26 +434,45 @@ to bring the names back. The Track button always keeps its words.
   it for a camera filming at twice the reference rate. A last line counts its
   points and tracked frames. With one video there is a single row and nothing
   to set; **＋ Add video** adds another camera of the same event (section 10).
-- **SEGMENT** — once you have outlined the animal, a row with its name and a
-  checkbox, a line counting its clicks and silhouettes, and the **Skeleton ▾**
-  and **Clear segment** buttons. Click the name to **select** the segment: Track
-  tracks it only while it is selected (click again to unselect). A segment you
-  have just made with **S** and a click already has its row selected, so Track
-  runs it without another click.
-- **POINTS** — every body part, each with a checkbox (show / hide), a small
-  symbol saying how it is found (Step 4 below), and **AT**, **CT** or **MS**:
-  the tracker that follows it — AllTracker, CoTracker3 or Moving spot
-  (right-click → *Tracker* changes it). **Track tracks only the points selected
-  here** (Ctrl+click for several, **Ctrl+A** for everything). Double-click a name to rename
-  it; right-click it for everything else (on the video, hold the right button
-  on its marker instead: a short right click there clears it on that frame).
-  A name may not start with **= + -**
+- **LAYERS** — everything you track, as a tree. Each **animal** (one
+  individual animal, or any object you follow) is a row with its points
+  underneath; then a **Scene** row holds the points that belong to no animal —
+  wand ends, a reference mark on a rock, calibration points. (With no animal
+  at all, the points are simply a list, with no Scene row.) An animal's swatch
+  is filled when it has a silhouette and an outline when it has none yet; a
+  small dot inside means its points are kept on its silhouette (section 14).
+  Each point shows a small symbol saying how it is found (Step 4 below) and
+  **AT**, **CT** or **MS**: the tracker that follows it — AllTracker,
+  CoTracker3 or Moving spot (right-click → *Tracker* changes it).
+
+  Above the tree: **＋ Animal** (a new animal, with no silhouette yet),
+  **＋ Point** (a new point with no position yet, in the selected animal, else in
+  Scene), **Skeleton ▾** (a ready-made list of points for the selected animal)
+  and **Delete** (deletes what is selected). Under the tree, a line gives the
+  selected animal's numbers: its points, clicks and silhouette frames.
+
+  **Checkboxes:** a point's checkbox shows / hides that point; an animal's
+  checkbox shows / hides *its* silhouette; Scene's checkbox shows / hides the
+  Scene points. **Selecting** works like a list of files: a plain click selects
+  only that row; **Ctrl+click** or **Shift+click** adds rows; **Ctrl+A**
+  selects every animal and every point. **Track tracks exactly what is
+  selected here**: a point row is that point, an animal row is its silhouette
+  and all its points. **Drag** points onto another animal (or onto Scene) to
+  move them there.
+
+  **Names:** double-click a row to rename it; right-click it for everything
+  else (on the video, hold the right button on a marker instead: a short right
+  click there clears it on that frame). A point of an animal is called
+  "*animal part*" everywhere — in exports, in 3D and in the other cameras — for
+  example *squirrel snout*; the tree shows only the part (*snout*), and
+  renaming it in the tree changes the part. Renaming an animal renames its
+  points in every camera. A name may not start with **= + -**
   or **@**: a spreadsheet opening an export would run it as a formula, so such
   a name is refused (and taken off a name that arrives in a file). Renaming a point
   in capital letters only (`snout` → `Snout`) works, and the next save keeps its
   data.
 
-Hide the panel with **Ctrl+1** (**View → Segment & Points panel**) if you want
+Hide the panel with **Ctrl+1** (**View → Layers panel**) if you want
 more room.
 
 **The status bar along the very bottom** of the window reports what just
@@ -465,7 +495,11 @@ Work through this once with a short, easy clip before using a clip that matters.
 
 ### Step 1 — Open the video
 
-**File → Open Video…** (or **Ctrl+O**). Pick your file.
+**File → Open Video…** (or **Ctrl+O**). Pick your file. If the video or
+project already open has unsaved changes, you are asked first, as when you
+close the program: **Save**, **Discard** (drop them) or **Cancel** (open
+nothing). Open Project, Open Folder of Videos and Recover Unsaved Work ask the
+same.
 
 While it opens, a card in the middle of the window says what is happening —
 reading the file, checking its frame rate, checking that every frame can be read
@@ -503,7 +537,14 @@ Press **S** (or click the **Segment** button). The cursor changes.
 
 **Click once on the animal.** Within a second or so its outline appears, filled
 with a translucent colour. The very first time you do this the program loads
-its outlining software, which takes a little longer.
+its outlining software, which takes a little longer. Your first click also
+makes the animal's row in LAYERS (named *animal*; double-click it to give it a
+better name, such as *iguana*).
+
+**S** always outlines the animal selected in LAYERS. With only one animal and
+nothing selected, it outlines that one. With several animals, select the one
+you want first (or press **＋ Animal** for a new one); otherwise the click does
+nothing and a notice says so.
 
 Check the outline actually follows the animal:
 
@@ -519,8 +560,8 @@ Repeat until the outline matches the animal. It is worth getting this right —
 several landmarks are computed from this shape. For now only the frame you are
 on is outlined; the rest of the video follows when you press **Track**.
 
-Press **S** or **Esc** when you are done. (The new segment's row in the
-SEGMENT panel is selected for you, so Track will run it. Your clicks on the
+Press **S** or **Esc** when you are done. (The animal's row in LAYERS is
+selected for you, so Track will run it. Your clicks on the
 animal are not part of **Ctrl+Z**: take one back with *Remove this click* as
 above. If an earlier Ctrl+Z step was waiting, the status line tells you that a
 segment click has just replaced it.)
@@ -535,13 +576,19 @@ segment click has just replaced it.)
 > its own close-up around your points, so a few-pixel target still works. What
 > you lose by skipping is only the silhouette landmarks (tail tip, midline,
 > volume), which on smooth-bodied, well-resolved animals are most of the value.
+> You can still group the points as an animal without a silhouette: press
+> **＋ Animal** in LAYERS and give it points.
 
 ### Step 4 — Choose your landmarks
 
 In the right panel, click **Skeleton ▾** (or open the **Skeleton** menu) and
 pick the animal type closest to yours — the entries read *Use template: Lizard /
-iguana (14 landmarks)* and so on. The landmark names appear in the POINTS list,
-and a notice over the video says which one to place first.
+iguana (14 landmarks)* and so on. The landmark names appear in LAYERS under
+the animal, and a notice over the video says which one to place first. The
+skeleton goes on the animal selected in LAYERS (it asks when several or none
+are selected; with no animal yet, one is made for it). Each landmark is named
+after its animal ("iguana snout"; the tree shows just "snout"), so two animals
+can share a template ("squirrel snout", "chipmunk snout").
 
 Look at the small icons beside them:
 
@@ -568,13 +615,22 @@ has to guess, and on a legged animal it can guess wrong and swap head for tail.
 
 To place a landmark:
 
-1. **Click its name** in the POINTS list to select it.
+1. **Click its name** in LAYERS to select it.
 2. **Press N.** The cursor becomes a crosshair — the program is now armed for
    exactly one placement.
 3. **Click the spot on the video.**
 
 Repeat for each solid-square landmark you want. You do not have to place them
 all — place the ones you need.
+
+**Where does a new point go?** A point you add with **N** and a click (or with
+**＋ Point**) joins an animal by itself: the animal selected in LAYERS; else
+the animal whose silhouette is under your click on this frame; else the animal
+of the point that is selected (so clicking point after point builds up one
+animal); else **Scene**. When a silhouette decided it, or you clicked on
+another animal's silhouette, a notice says where the point went — click the
+notice to move it. You can always move points later by dragging them in LAYERS
+(*Several animals* in section 7).
 
 > **Why press N?** **N** is the way to *add* a point, and one press allows
 > exactly one placement, so a stray click never creates one. For a landmark
@@ -589,22 +645,25 @@ all — place the ones you need.
 
 ### Step 5 — Track
 
-**Select what you want tracked** — only that is tracked. Press **Ctrl+A** to
-select everything (every point and the segment), or click points in the POINTS
-list (Ctrl+click adds one, Shift+click a range) and the segment's name in
-SEGMENT. The Track button says what it will track: **Track · 3 points + segment ▶**.
-With nothing selected it tracks nothing and says so. What is selected is part
-of your project: save, close and reopen it, and the same points (and the
-segment's row) are selected again.
+**Select what you want tracked** in LAYERS — only that is tracked. Press
+**Ctrl+A** to select everything (every animal and every point), or click rows
+(Ctrl+click adds one, Shift+click a range). A point row is that point; an
+**animal row is its silhouette and all its points**. The Track button says what
+it will track, for example **Track · 3 points + silhouette ▶** or
+**Track · 2 silhouettes ▶**. With nothing selected it tracks nothing and says
+so. What is selected is part of your project: save, close and reopen it, and
+the same rows are selected again.
 
-The segment may also come along without its row being selected: with the
-**Body** switch on (section 14), selecting a landmark that is kept on the
-silhouette brings the segment into the run, because that landmark cannot be
-followed without it.
+A point selected on its own is tracked on its own: its animal's silhouette is
+**not** tracked along with it. There are two exceptions, where the silhouette
+comes along because the point cannot be followed without it: the animal has
+**Keep its points on its silhouette** ticked (right-click the animal; off
+unless you turn it on — section 14), or the point is a landmark that comes from
+the silhouette (tail tip, midline …).
 
 Each point is followed by **its own tracker**, shown beside its name (**AT**
 AllTracker, **CT** CoTracker3, **MS** Moving spot). One Track press handles a
-mix: Moving spot points, ball markers and the segment run together with the
+mix: Moving spot points, ball markers and silhouettes run together with the
 AllTracker *or* CoTracker3 points; if both AllTracker and CoTracker3 points are
 selected, they run **one after the other** over the same frames (the button
 says *2 passes*), and a point that stops ends the run for all of them, so every
@@ -687,12 +746,23 @@ the body part red rather than quietly exporting a wrong position:
   for 16 frames in a row, the run stops and takes you to the first of them. If
   the animal is visible there, press **S**, click it, and press **Track ▶**
   again.
-- **A body part left the animal.** With *Body* on, a part that leaves the
-  silhouette stops the run at that very frame (see *Body* in section 14): the
+- **The outline jumped to another animal.** The outlining model, having lost
+  your animal (it left the picture, or went behind something), sometimes picks
+  up the next thing that looks like it — another bat of the same colony, say.
+  When the outline comes back far from where your animal was heading, or jumps
+  several body lengths in one frame, the run stops at the first frame your
+  animal was missing, whether Auto-pause is on or off, and nothing of the other
+  animal is kept. If your animal is visible on a later frame, go there, press
+  **S**, click it, and press **Track ▶**. (A frame you clicked is always taken
+  as your animal.)
+- **A body part left the animal.** When the animal has *Keep its points on
+  its silhouette* ticked (right-click the animal in LAYERS; see section 14), a
+  part that leaves the silhouette stops the run at that very frame: the
   program will not pull it back onto some other part of the animal and carry
   on. Its track ends on the last frame it was on the body. A part you marked
-  *May leave the segment (free point)* in its right-click menu is exempt.
-- **Two body parts have merged.** With *Body* on, two parts kept on the animal
+  *May leave its silhouette (free point)* in its right-click menu is exempt.
+- **Two body parts have merged.** With *Keep its points on its silhouette*
+  ticked, two parts kept on the animal
   that were clearly apart when you clicked them and now sit on top of each
   other (say, eye and neck) both go red — skeleton landmarks and points you
   placed yourself with **N** alike. The program does not move them for you; a
@@ -714,7 +784,7 @@ the body part red rather than quietly exporting a wrong position:
 
 ### What right-clicking a body part offers
 
-Right-click its name in the POINTS list, or **hold the right mouse button** on
+Right-click its name in LAYERS, or **hold the right mouse button** on
 its marker on the video for half a second (a short right click on the marker
 clears it on that frame only — see below), and besides **Rename point** and
 **Delete point** you get (hover an entry to see what it does). Wherever this
@@ -722,16 +792,18 @@ manual says *right-click a point*, either way works. (While the **Pan** tool,
 **H**, is on, a right click on a marker does nothing at all: the tool is for
 looking, never for editing.)
 
-**Several points at once:** select them (Ctrl+click in POINTS, **Ctrl+A** for
+**Several points at once:** select them (Ctrl+click in LAYERS, **Ctrl+A** for
 all) and right-click one of them in the list, or hold the right button on one of
 their markers. The menu then acts on **all of them** — track only these; clear
 them on this frame, in the selected frame window, or their whole tracks; delete
 them; mark them hidden here; hide or show them; give them a tracker; fill their
-gaps — and when the segment's row is selected too, its silhouette is cleared
-with them. Each is one Ctrl+Z step. A *short* right click on one of their
-markers clears all the selected **points** on this frame and keeps them
-selected; it never touches the silhouette, even when the segment's row is
-selected (use the menu for that).
+gaps; **Move to** another animal — and when an animal's row is selected too,
+its silhouette is cleared with them. With exactly two points of one animal
+selected, **Connect them with a bone** draws a bone between them (again:
+**Remove the bone between them**). Each is one Ctrl+Z step. A *short* right
+click on one of their markers clears all the selected **points** on this frame
+and keeps them selected; it never touches a silhouette, even when an animal's
+row is selected (use the menu for that).
 
 For one point:
 
@@ -756,9 +828,17 @@ For one point:
   track the part has now, so if it has one the program first tells you how
   many frames that is (and how many of them you placed by hand) and asks;
   **Ctrl+Z** brings it back;
-- **May leave the segment (free point)** — for a mark that belongs off the
-  animal, such as a reference on a rock: *Body* (section 14) then leaves it
-  alone;
+- **May leave its silhouette (free point)** — for a point of an animal that
+  is allowed off its outline: *Keep its points on its silhouette* (section 14)
+  then leaves it alone. (A mark that belongs to no animal at all, such as a
+  reference on a rock, is better moved to **Scene**: Scene points are never
+  held on a silhouette);
+- **Move to ▸** — give the point to another animal, or to **Scene**. It is
+  renamed "*animal part*" in every camera, as one Ctrl+Z step. A landmark that
+  comes from the silhouette needs its animal, so it is not moved to Scene (a
+  notice says why);
+- **Use it as *animal*'s head** — the silhouette's midline is measured from
+  the head, so this tells the program which end is the front;
 - **Lock to seed appearance (re-anchor)** — off by default. The tracker keeps
   looking for the patch exactly as it looked where you placed it and snaps
   back to it when it finds it nearby: a cure for slow drift on a sharp, rigid
@@ -766,37 +846,108 @@ For one point:
 - with a 3D calibration, **Snap to the other cameras' rays here** (section 10).
 
 Each clearing entry, the curve fill, a change of data source, the snap and
-**Delete point** is one **Ctrl+Z** step (renaming, *May leave the segment* and
+**Delete point** is one **Ctrl+Z** step (renaming, *May leave its silhouette* and
 the appearance lock are not undo steps: just switch them back). If the position is
 right but the part was not really visible, use *Hidden on this frame*
 (**Shift+X**) instead of clearing: that keeps the number but leaves it out of
 your exported table.
 
-### The segment in the panel
+### Several animals
 
-As soon as you outline the animal, it gets its own row in the **SEGMENT**
-section of the right panel, above your list of body parts — a coloured blob, its
-name, and a checkbox. It is the handle for everything about the silhouette:
+You can track as many animals or objects as you like, each as its own
+**animal** in LAYERS — two lizards on a rock, a bat and its prey, an animal and
+the branch it lands on:
 
-- **the checkbox** shows or hides the silhouette on the video;
-- **double-click the name** to rename it (the timeline row follows);
-- **right-click it** for the rest: jump to its first or last silhouette, clear
-  the silhouette on this frame only, clear the silhouettes in the frame window
-  you selected on the timeline, clear them all while keeping your clicks (so
-  pressing Track outlines the video again), show or hide the midline, or remove
-  the segment altogether.
+1. press **＋ Animal** in LAYERS: a new animal row appears, selected, with no
+   silhouette yet (double-click it to name it);
+2. to outline it, press **S** and click it on the video (outlining is optional:
+   an animal can be just a group of points);
+3. give it points: with its row selected, press **N** and click them on the
+   video, or pick a skeleton with **Skeleton ▾**;
+4. repeat for as many as you need.
 
-The line underneath counts your clicks and the frames that have a silhouette, so
-you can see at a glance how far the outlining got. **Ctrl+Z** undoes any of the
-clearing steps. *Remove the segment* asks first and cannot be undone: its clicks
-and silhouettes go, while your body parts and their tracks stay.
+Each animal has its own row, its own colour on the video, and its own lanes on
+the timeline. **S** outlines the animal selected in LAYERS; with several
+animals and none (or several) selected, the click does nothing and a notice
+says to select one. A row's right-click menu works on that row. Select every
+animal you want tracked (Ctrl+A selects all of them and every point) and press
+**Track ▶**: all of them are tracked **in one pass**, each with its own
+silhouette.
+
+**Moving points between animals:** drag them in LAYERS onto another animal (or
+onto one of its points), or onto **Scene**. They are renamed "*animal part*" in
+every camera, as one Ctrl+Z step. The point's right-click menu → **Move to ▸**
+does the same. A landmark that comes from the silhouette needs its animal: it
+is not moved to Scene, and a notice says why.
+
+Anything else that works on **one** animal — a skeleton template, a landmark
+taken from the silhouette (*Data source*), *Import → Silhouettes*, *Carve
+Volume*, the Body run's silhouette — uses the one selected animal; with several
+selected (or none) it asks which. Exports of silhouettes write one file (or
+folder of masks) per animal. A timeline clear of silhouettes that covered no
+silhouette lane takes the selected animals, and asks before clearing every
+animal's.
+
+When one animal is lost, or the outlining model picks up something else in its
+place, **that animal ends there and the others go on**; at the end of the run a
+notice names it and the frame. Where it is visible again, select its row, press
+**S**, click it, and Track.
+
+Body parts belong to an animal, and each is named after it ("lizard snout",
+"lizard 2 snout"), so two animals can have the same skeleton; its tail tip,
+midline and feet are computed from that animal's silhouette, and with *Keep its
+points on its silhouette* ticked its body parts are held on that silhouette. A
+Shift+drag along one animal's silhouette lane on the timeline and **Delete**
+clears that animal's silhouettes only. With several cameras, an animal made in
+one camera appears (empty) in the others, to be clicked there; renaming or
+removing it acts in every camera.
+
+**Skeletons and bones belong to an animal too.** **Skeleton ▾** puts a template
+on the selected animal. To draw a bone yourself, select two points of one
+animal, right-click → **Connect them with a bone**; bones are drawn on the
+video and in the 3D view. A point's menu → **Use it as *animal*'s head** sets
+the head the silhouette's midline is measured from. When an animal's points and
+bones are as you want them, right-click the animal → **Save its points and
+bones as a skeleton template…**: another animal, in this video or a later one,
+then gets the same points from **Skeleton ▾**. Deleting a point also removes
+its bones.
+
+### An animal in LAYERS
+
+Each animal's row in **LAYERS** is the handle for everything about it — a
+coloured swatch (filled once it has a silhouette, an outline until then; a dot
+inside when its points are kept on its silhouette), its name, a checkbox, and
+its points underneath:
+
+- **the checkbox** shows or hides its silhouette on the video (the **Mask**
+  button in the bottom bar hides every silhouette at once);
+- **double-click the name** to rename it — its points are renamed with it, in
+  every camera (the timeline rows follow);
+- **right-click it** for the rest: *Rename the animal…*; *Outline it on the
+  video (S)*; *Show its silhouette*; *Keep its points on its silhouette*;
+  *Show the midlines*; *Jump to its first / last silhouette*; *Clear its
+  silhouette on frame N*, *in the selected frame window*, or *Clear ALL of its
+  silhouettes (keep the clicks)* (so pressing Track outlines the video again);
+  *Save its points and bones as a skeleton template…*; *Forget its bones and
+  head (keep the points)*; *Remove the animal (its points go to Scene)*; and
+  *Remove the animal and its points*.
+
+The line under the tree counts the selected animal's points, clicks and the
+frames that have a silhouette, so you can see at a glance how far the
+outlining got. **Ctrl+Z** undoes any of the clearing steps.
+
+**Delete** (the button above the tree, or the **Delete** key when no frame
+window is selected on the timeline) deletes what is selected. For an animal it
+asks: *Keep its N point(s)?* — **Yes** moves them to Scene with their tracks,
+**No** deletes them too. Removing an animal cannot be undone with Ctrl+Z (its
+clicks and silhouettes go); deleting points can.
 
 ### Fixing a body part that has gone wrong
 
 Go to the first frame where it looks wrong (the red stretch shows you where), and
 then either:
 
-- **select the point in the POINTS list, then click** where it should be
+- **select the point in LAYERS, then click** where it should be
   (Ctrl+click does the same), or
 - **right-click its marker** to clear it on this frame only, when it is not
   really there (the right click also selects it).
@@ -821,6 +972,40 @@ re-tracks only that part. Press **Ctrl+A** first to re-track everything.
 > **Only fix the *first* wrong frame.** Everything after it is being re-done
 > anyway. Correcting frame after frame by hand is wasted effort.
 
+### Swapping, moving, filling and splitting points
+
+Sometimes the tracker follows the right body parts but under the wrong names:
+the left and right feet swap where they cross, two balls on a wand trade
+places, or a stretch of one landmark was tracked as another. **Edit → Point
+Tools…** fixes which point is which, in the camera you are working in:
+
+- **Swap two points.** A and B exchange their data over the frames you
+  choose. Quickest way: select both in LAYERS (Ctrl+click), then
+  right-click → *Swap these two points…*.
+- **Move A's data to B.** On every frame of the range where A has data, B
+  takes it (B's own data there is replaced) and A is cleared there: for a
+  stretch that was tracked under the wrong name.
+- **Fill B's empty frames from A.** Where B has no data and A has, B takes
+  A's; A stays as it is. For one landmark tracked in two pieces: fill, then
+  delete the spare point.
+- **Split A into a new point.** From a chosen frame on, A's data becomes a new
+  point named *A (2)* (double-click the name to rename it), and A ends on the
+  frame before. Also on the point's right-click menu: *Split it into a new
+  point from frame N*.
+
+Choose the frames: the whole video, from the current frame to the end, the
+window selected on the timeline (Shift+drag), or two frame numbers. Before you
+press the button, the dialog says how many frames each point has data on in
+that range. Each tool is one **Ctrl+Z** step.
+
+Everything about a frame moves with it: the position, the hand-placed and
+hidden marks, the confidence, and a ball's circle and clicks. Body parts that
+come from the silhouette (dotted markers) are recomputed by every run, so they
+cannot be swapped or moved: switch them to *Track by appearance* first. A ball
+marker exchanges data only with another ball marker. Only this camera changes:
+the same names in the other cameras keep their own data, so fix each camera
+where its tracker swapped.
+
 ### Digitizing frames by hand
 
 Sometimes the tracker simply cannot follow a body part through a stretch of
@@ -828,7 +1013,7 @@ footage (a fast strike, a blur, a body part hidden behind a branch). For those
 frames you can do what you would have done in a classic digitizing tool: place
 the point by hand, frame by frame.
 
-1. click the point's name in the POINTS list,
+1. click the point's name in LAYERS,
 2. go to the frame,
 3. click where the body part is — the point moves there and the frame is
    recorded as **placed by hand** (a small white diamond appears on its timeline
@@ -884,7 +1069,7 @@ as missing data.
 When it comes back:
 
 1. go to the frame where it reappears,
-2. click its name in the POINTS list,
+2. click its name in LAYERS,
 3. press **N** and click where it now is,
 4. press **Track ▶**.
 
@@ -916,7 +1101,7 @@ All of them are under the **View** menu and none of them changes any data.
   can hit the right pixel without zooming the whole picture in. It follows the
   frame and the zoom you are on.
 - **Show segment midline** and **Show skeleton bones** switch the line down
-  the centre of the outline, and the lines joining a skeleton's landmarks, on
+  the centre of the outline, and the bones joining an animal's landmarks, on
   or off. A bone is not drawn to a landmark that is hidden on that frame
   (Shift+X), so no line points at a place you said is not really visible.
 
@@ -947,14 +1132,14 @@ its name reads *(hidden)*. Each mark is one **Ctrl+Z** step.
 For a whole stretch: **Shift+drag** across the timeline (frames and rows, as for
 clearing), then right-click the band → *Mark HIDDEN in frames …*. *Unmark hidden
 in frames …* reverses it, and **Ctrl+Z** undoes either. If your drag touched no
-body-part row, it applies to the parts selected in the POINTS list — or, after
+body-part row, it applies to the parts selected in LAYERS — or, after
 asking, to all of them.
 
 ### Regions: circle, rectangle, polygon
 
 A region tracks a whole patch as one point (its fitted centre) — good for a
-textureless body or a marker that is larger than a dot. The **▾** on the Add
-button chooses the shape:
+textureless body or a marker that is larger than a dot. The **▾** on the Point
+button (**Point ▾**) chooses the shape:
 
 - **circle** — press **N**, drag from the centre outward;
 - **rectangle** — press **N**, drag a box;
@@ -979,8 +1164,8 @@ clicks with the segment tool (**S**) are the exception: **Ctrl+Z** does not take
 them back (right-click a click → *Remove this click* does), and the status line
 says so.
 
-> ⚠ **Undo is only one step deep.** There is no second undo, and removing the
-> segment cannot be undone at all (the program asks first). Before anything
+> ⚠ **Undo is only one step deep.** There is no second undo, and removing an
+> animal cannot be undone at all (the program asks first). Before anything
 > drastic, save (**Ctrl+S**).
 
 ### Going one frame at a time
@@ -1005,7 +1190,7 @@ across both clears both. The highlighted band tells you in words what Delete wil
 remove before you press it. Right-click inside the band for the same choices
 spelled out, plus *Mark HIDDEN* / *Unmark hidden* for the window and *Extend
 selection to every lane*. **Ctrl+Z** brings it back. A drag along the frame numbers at the
-top that touches no row clears the body parts selected in the POINTS list — or,
+top that touches no row clears the body parts selected in LAYERS — or,
 after asking, all of them.
 
 ---
@@ -1015,13 +1200,15 @@ after asking, all of them.
 The timeline is the panel between the video and the bottom bar. It is both your
 map of the work and your scrubber.
 
-**Each horizontal row is one body part** (plus one row for the silhouette, if you
-have one, and a strip along the top for events and notes). Reading along a row
-from left to right is reading through the video. Click the name at the left end
+**Each horizontal row is one body part** (plus a strip along the top for events
+and notes). The rows follow LAYERS: each animal's silhouette row (if it has a
+silhouette), then its points' rows, indented and named by part, then the Scene
+points' rows. Reading along a row from left to right is reading through the
+video. Click the name at the left end
 of a row to select that body part; the selected part's row is drawn brighter.
 
 - **A solid coloured bar**, in the body part's own colour — this body part has a
-  position on those frames (the bar is faint while its tick in the POINTS list
+  position on those frames (the bar is faint while its tick in LAYERS
   is off).
 - **A gap** — no data there. Either not tracked yet, or deliberately empty
   because the part was out of the picture.
@@ -1044,7 +1231,8 @@ of a row to select that body part; the selected part's row is drawn brighter.
 
 **To move along a body part's track:** with it selected, **Shift+<** and
 **Shift+>** go to the **first and last frame it has a position on**. With
-nothing selected they go to the first and last frame of the silhouette instead.
+nothing selected they go to the first and last frame of the silhouette instead
+(with several animals: of the animals selected in LAYERS, else of all).
 **,** and **.** step between the frames you placed by hand. **J** jumps to the
 next red (low-confidence) stretch and **Shift+J** to the previous one — of the selected points, or of every point when nothing is
 selected. That is the fastest way to review a long video: press **J**, look, fix
@@ -1057,8 +1245,9 @@ or mark hidden, press **J** again.
 far enough, every frame gets its own column of pixels and you can click precisely
 the one you want. A small scroll bar appears along the bottom edge showing where
 you are in the whole video — drag it to move, or drag the timeline itself with
-the middle mouse button. Press the **⤢** button in the bottom bar to see
-everything again.
+the middle mouse button. The three magnifier buttons in the timeline's top-left
+corner, left of the frame numbers, zoom it out and in; the last one (**⤢**)
+shows the whole video again.
 
 **To make it taller** (more rows visible at once), drag the divider between the
 video and the timeline upward. The mouse wheel scrolls any rows that still do not
@@ -1260,18 +1449,18 @@ the numbers just get measured from the new starting point.
 
 **You track one camera at a time.** The camera you are working on is the one
 highlighted in the panel — click any view to switch to it. Everything else on
-screen — the POINTS list, the silhouette, the timeline, undo — always belongs to
+screen — the LAYERS list, the silhouette, the timeline, undo — always belongs to
 that camera. The other views follow along, showing the same instant, with their
 own markers drawn on them, but you cannot edit them until you switch.
 
 Switching cameras keeps you on the same instant, so you never lose your place.
 A plain click on another camera's picture **only switches** to it — it never
 places anything, so looking at a camera can never put a point in it. With **N**
-(＋ Add) armed it is different: you have said you want to place a point, so the
+(the **Point** tool) armed it is different: you have said you want to place a point, so the
 click switches to that camera **and places the point there**, in one go. The
 segment tool (**S**) and an event whose start you had marked with **E** are put
 down by a switch, so a click meant for one camera's silhouette can never land in
-another. The toggles in the bottom bar (Auto-pause, ROI, Body, Follow, Mask, the
+another. The toggles in the bottom bar (Auto-pause, ROI, Follow, Mask, the
 point model, semi-automatic mode) and the *View* settings — marker size, trails,
 the display filter and the like — stay as you set them: they belong to you, not
 to a camera. The selected body part comes along too: select *snout* in one
@@ -1286,14 +1475,17 @@ from the project; it asks first when the camera has tracked frames, and its
 tracks go with it.
 
 **Every camera has the same list of body parts, in the same order.** A point you
-add in one camera appears in the POINTS list of every other camera straight
-away, greyed until you place it there: select it in that camera, click it on the
-video, and track it. **＋ New point** (above the POINTS list) makes a point with
-no position yet, already selected, in every camera — the way to define your body
-parts first and then click each one in each camera. Renaming or deleting a point
-does the same in every camera (the delete question says which other cameras lose
-their tracks, and **Ctrl+Z** brings them all back). A skeleton chosen in one
-camera is given to the others, and a camera added later receives the whole list.
+add in one camera appears in LAYERS in every other camera straight
+away, under the same animal, greyed until you place it there: select it in that
+camera, click it on the video, and track it. **＋ Point** (above the LAYERS
+tree) makes a point with no position yet, already selected, in every camera —
+the way to define your body parts first and then click each one in each camera.
+Renaming, deleting or moving a point to another animal does the same in every
+camera (the delete question says which other cameras lose their tracks, and
+**Ctrl+Z** brings them all back). Animals are shared by name too: an animal
+made in one camera appears (with no silhouette) in the others. A skeleton chosen
+in one camera is given to the others, and a camera added later receives the
+whole list.
 That shared list is what lets the cameras be combined in 3D: the program matches
 them by name.
 
@@ -1366,7 +1558,7 @@ the direction you want to call +X, one towards +Y.)
 **Track the wand balls with SAM.** The two markers must be tracked in every
 camera under the *same two names* (say "wand A" and "wand B"). Do not track a
 ball as an ordinary point: a uniform ball gives the appearance tracker nothing
-to hold. Use **Add ▾ → Ball marker** instead and click the middle of each
+to hold. Use **Point ▾ → Ball marker** instead and click the middle of each
 ball. On every frame the program outlines the ball with SAM (the same model
 that outlines the animal), fits a circle to that outline and takes the
 circle's **centre** as the point — exact to a fraction of a pixel even when a
@@ -1379,7 +1571,7 @@ do on your side. Each extra window makes tracking a little slower. Balls as
 small as about 5 px across work. The fitted circle is drawn on the
 video so you can see what was found. If a ball leaves the picture its track
 simply ends and resumes when you click it again where it reappears (select
-it, Add ▾ → Ball marker, click, Track); if the program loses a ball that is
+it, Point ▾ → Ball marker, click, Track); if the program loses a ball that is
 still in the picture it stops there and tells you (with *Auto-pause* off it
 carries on, and names each such ball and the frame its track ended once the
 run is over). A third ball on the wand
@@ -1459,7 +1651,13 @@ close it without saving, the program offers to save it for you. The wizard:
    project (with nothing open that button reads **Close**); **Save lens
    file…** keeps it for other projects (`.klens.json`) —
    worth doing every time, since it stays valid as long as the camera keeps
-   the same lens, zoom and resolution. Already have a profile? On step 3 press
+   the same lens, zoom and resolution. Forgot? **3D → Export Lens Profile…**
+   saves any camera's profile at any time (however it was made: checkerboard,
+   GoPro's lens model, a file), as a Kinetrace `.klens.json` or for other
+   programs (OpenCV `.yml` / `.json`, Argus `.txt` for a standard lens), and
+   **3D → Load a Lens Profile for This Camera…** puts a saved profile on the
+   camera you are working on (same picture size only; replacing a profile is
+   asked first). Already have a profile? On step 3 press
    **I already have a lens file…** instead (a `.klens.json`, or an Argus /
    DLTdv camera profile `.txt`): it goes straight to this last page. From an
    Argus file with several lines each camera gets the line with its own camera
@@ -1473,8 +1671,11 @@ close it without saving, the program offers to save it for you. The wizard:
    same picture size does not prove the same lens.
 
 **Two hand checks on the last page.** The report says how many pixels the
-lens bends the edges by: a GoPro-style lens gives a few hundred at 2.7K, a
-phone or camcorder a few tens. It also says what **field of view** the model
+lens curves the picture edges by: how far an edge pixel sits from where a
+straight-line lens would put it. That is the lens's own curvature, not an
+error (the *fit error* is what measures the calibration): a GoPro-style lens
+gives several hundred to about a thousand at 2.7K, a phone or camcorder a few
+tens. It also says what **field of view** the model
 implies corner to corner; compare that with the camera's own figure (a GoPro
 "Wide" is roughly 120–150 degrees, "Linear" about 90–100, a phone 70–85). If
 instead it says the model **runs away in the corners**, the curve is being
@@ -1489,6 +1690,58 @@ limits in the verdicts are scaled by the picture's longer side, so a portrait
 video is judged like a landscape one.
 
 ---
+
+### GoPro footage
+
+Kinetrace recognises a video straight from a GoPro (HERO, Mission) by the
+information the camera writes into the file, and only then offers what follows.
+Videos from other cameras are not read this way. A copy of a GoPro video that
+another program exported or trimmed usually loses the settings and the lens
+model: work from the files as they came off the card.
+
+When a GoPro video opens, the program reads its recording settings (model,
+resolution, frame rate, lens mode such as Wide or Linear, stabilisation, shutter
+speed and ISO), how the camera was tilted (its gravity sensor), whether it was
+knocked or moved during the recording, whether it dropped frames, its start time
+(timecode), and GoPro's own model of the lens for that recording mode.
+
+It warns you, once, about what can spoil 3D:
+
+- **Stabilisation was on** (HyperSmooth or EIS): the camera re-warps every frame,
+  so no lens calibration holds. Record with stabilisation off.
+- **Dropped frames:** frame numbers after them no longer line up with the
+  other cameras.
+- **The camera moved during the recording:** a calibration made before the move
+  does not hold for that camera after it. The notice gives the frame.
+- **Settings that differ between cameras:** lens mode, frame rate or shutter
+  speed (a fast animal blurs differently in each camera).
+
+Click the notice, or use **3D → GoPro Cameras…**, for a table with every
+camera: settings, tilt, dropped frames and when it moved (click a *Moved* cell
+to go to that camera and frame).
+
+**GoPro's lens model.** Every GoPro video carries the maker's own model of how
+its lens bends the picture, for the exact mode it was recorded in, over the
+whole picture including the corners. Kinetrace uses it in two ways:
+
+- **Without a checkerboard:** 3D → GoPro Cameras… → *Use GoPro's lens model for
+  the cameras without a lens profile*, or *Use GoPro's lens without boards* in
+  3D → Calibrate a Lens. This is the lens *design*: each camera differs from it
+  by about 1 % in focal length and up to about 10 px in where the centre of the
+  lens is. The wand calibration fine-tunes the focal length.
+- **With a checkerboard (recommended):** in 3D → Calibrate a Lens, choose
+  *GoPro lens from the video + your boards* (chosen for you on GoPro footage).
+  GoPro's curve is kept and only this camera's focal length and centre are
+  measured from your boards, so the board does **not** need to reach the
+  corners of the picture, the hardest part of filming it. When the boards
+  cannot pin the centre down (two halves of them disagree), the program keeps
+  GoPro's and says so: tilting the board more, up and down as well as left and
+  right, measures it.
+
+**Syncing GoPros.** When every camera has timecode, 3D → Sync Cameras starts its
+search from the cameras' start times instead of the file names. The camera
+clocks are set only to about a second, so this is where the search starts, not
+the answer.
 
 ### Checking the boards before you trust the lens
 
@@ -1564,7 +1817,7 @@ page shows it as "attached, but NOT used" and says why.
 cameras of one project (section 10, *Setting it up*), align the offsets, then
 in **every camera** track the two wand markers as two landmarks with the **same
 names** in each camera — for example `wand A` and `wand B`, the same physical
-end under the same name everywhere: **Add ▾ → Ball marker** and click each
+end under the same name everywhere: **Point ▾ → Ball marker** and click each
 ball (for a painted dot or a tape mark rather than a ball, press **N** and click
 it instead), rename them (right-click → rename), press **Track ▶**, and correct
 where the tracker slips (the annotation click and the **J** key make this
@@ -1871,7 +2124,7 @@ calibration switches the first one on.
   where that spot can be in the other cameras (a dashed "?" ring marks the spot;
   **Esc** clears it). A plain click with no body part selected places nothing
   either, and says so on the video: press **N** to add a point, or select one in
-  the POINTS list first.
+  LAYERS first.
 - **Snapping.** Right-click the part → **Snap to the other cameras' rays here** moves it
   there for you (the nearest point on one line, the crossing of two or more),
   marks the frame hand-placed, and Track re-seeds from it — that is how a
@@ -2021,7 +2274,8 @@ seen before it is saved (a click on the video with a point selected places that
 point). If what changed was put back (Ctrl+Z), it says nothing differs any
 more. **Save** writes the
 project, **Discard** drops the unsaved work, **Cancel** keeps the program open.
-Closing that question any other way keeps the unsaved work for File → Recover
+Opening another video or project asks the same question (Cancel then opens
+nothing). Closing that question any other way keeps the unsaved work for File → Recover
 Unsaved Work…. Moving through the video, zooming and switching toggles are not
 changes that need saving: close without saving and the project still opens where
 you left it.
@@ -2043,7 +2297,7 @@ is a spreadsheet-style CSV file that Excel, MATLAB, R or Python open directly �
 nothing to unzip. Each camera has a folder (`cameras/cam1`), and in it one file
 per landmark (`tracks/snout.csv`: one row per frame that has a position, pixel
 positions counted from 0), the landmark list (`points.csv`), events and notes;
-the segment's area and position per frame are in `silhouette/summary.csv`, the
+each animal's silhouette area and position per frame are in `silhouette/summary.csv`, the
 3D result in `reconstruction/points`. Silhouette outlines and body poses are
 NumPy `.npy` arrays, which Python, MATLAB and R can read. The folder's
 `README.txt` says what every file is. If you edit a file by hand, close the
@@ -2102,6 +2356,8 @@ next camera's picture and export again for each one.
 |---|---|
 | **Wide CSV** | the general-purpose table — one row per frame, `x`, `y` and a visible flag per body part. Opens in Excel. **Start here if unsure.** |
 | **DeepLabCut CSV** | to load your results into a DeepLabCut workflow |
+| **DeepLabCut multi-animal CSV** | the same for DeepLabCut's multi-animal projects: one *individual* per animal in LAYERS, and the Scene points as DeepLabCut's unique body parts (under `single`). Needs at least one animal with points |
+| **SLEAP analysis CSV** | to load your results into SLEAP or a script written for it: one track per animal, plus a `scene` track for the Scene points; columns `track`, `frame_idx`, `instance.score`, then `<part>.x`, `<part>.y`, `<part>.score` per body part. Needs at least one animal with points |
 | **DLTdv8 xypts CSV** | to load one camera into DLTdv8. Written the way DLTdv8 writes its own files: pixels counted from 1, origin at the top-left, `NaN` where there is no data. A DLTdv export is exactly two files: the points file and the `_pointnames.csv` beside it, which names the body parts (the real names, quoted properly even when one contains a comma) and states this |
 | **DLTdv xypts CSV, bottom-left origin** | the same for older DLTdv versions and Argus Clicker, which count y from the bottom edge. If a re-imported file lands upside down, you picked the wrong one of these two |
 | **Sparse TSV** | only the frames that actually have data — much smaller for sparse tracks |
@@ -2109,8 +2365,8 @@ next camera's picture and export again for each one.
 | **ALL CAMERAS — DLTdv8 xypts** | **the 3D one.** Every camera in one file (`pt1_cam1_X`, `pt1_cam1_Y`, `pt1_cam2_X` …), landmarks matched across cameras **by name**, DLTdv8's pixel convention. One row per frame of the **reference camera** (the first in CAMERAS), starting at its frame 0; the other cameras are read at the same instant through their offsets. A camera that did not film that instant, or has no landmark of that name, gives `NaN`. The `_pointnames.csv` beside it names the landmarks and states the pixel convention, what the rows are, and which video is cam1, cam2 … |
 | **3D landmarks** | the reconstructed positions (after *3D → Reconstruct 3D Landmarks*, Ctrl+3), one row per frame of the reference camera, `NaN` where there is no 3D position, with a second file (`_xyzres.csv`) giving each position's residual, how many cameras saw it and each camera's own error |
 | **3D landmarks — Anipose / DLTdv xyzpts** | the same positions in the layout Anipose writes (`name_x`, `name_y`, `name_z`, `name_error`, `name_ncams`, `fnum`) or DLTdv's own xyzpts file (`pt1_X` …, one row per frame of the reference camera from 0, `NaN` where none, names in `_pointnames.csv`) |
-| **Silhouette outlines** | the segment's outline on every frame as polygons, in a JSON file (pixels counted from 0) |
-| **Silhouette masks** | one black-and-white PNG per frame with a silhouette (white = the segment), in a folder beside the name you chose — for other segmentation or measuring tools. Many thousands of frames make many thousands of files, so *Everything* leaves this one out |
+| **Silhouette outlines** | the animal's outline on every frame as polygons, in a JSON file (pixels counted from 0); with several animals, one file each, named `…_<animal>.json` |
+| **Silhouette masks** | one black-and-white PNG per frame with a silhouette (white = the animal), in a folder beside the name you chose (one folder per animal when there are several, `…_<animal>_masks`) — for other segmentation or measuring tools. Many thousands of frames make many thousands of files, so *Everything* leaves this one out |
 | **3D kinematics** | **speeds and accelerations.** The 3D positions smoothed, then velocity (X, Y, Z and speed) and acceleration per landmark, plus a report in words. See below |
 | **Everything** | every format above that applies, at once, sharing one base filename: the DLTdv8 file once (not the bottom-left variant), *ALL CAMERAS* only with two or more cameras, the 3D files only after a Reconstruct, and the kinematics with **Automatic** smoothing (it does not ask). It runs in the background with a count and a Cancel; if one format cannot be written (a `.mat` open in MATLAB, say) it goes on with the others and lists at the end what failed |
 
@@ -2235,7 +2491,7 @@ silhouettes) work the same way: they say what they did, or why not.
   written.
 * **Silhouettes (mask images)…** is all or nothing: if any image in the folder is
   the wrong size or unreadable, nothing is stored and the message names that
-  file, so a half-imported segment never sits unnoticed in the project.
+  file, so a half-imported silhouette never sits unnoticed in the project.
 
 **Without opening the program.** The same conversions run from a command
 window, which is handy for many files at once: `python -m kinetrace.convert`
@@ -2609,20 +2865,23 @@ really is and press Track. Leave it on while you are learning. Turn it off for
 footage with a lot of hiding-behind-things, where you would rather review
 afterwards than be interrupted.
 
-**Body** (bottom bar, on by default; it acts only where there is a segment
-silhouette) — keeps landmarks honest about the animal. A
-landmark that wanders a few pixels across the outline (the outline itself
-jitters from frame to frame) is nudged back onto the silhouette. A landmark
-that actually **leaves** the silhouette **stops the run at that frame**: the
-program does not pull it back onto some other part of the animal and carry on,
-because the spot it would land on is not the spot you clicked. Its track ends
-on the last frame it was on the body; click it where it really is and press
-Track. Turn Body off for reference markers that are *supposed* to sit on the
-background, or right-click an individual point → **May leave the segment (free
-point)**. When a run stops this way, the message names the point and the frame.
-With Body on, selecting a landmark that is kept on the silhouette brings the
-segment into the run even if the segment's own row is not selected: without the
-outline there would be nothing to hold the landmark to.
+**Keep its points on its silhouette** (not a switch in the bottom bar: a
+setting of each animal — right-click the animal in LAYERS; **off** until you
+tick it; it needs a silhouette) — keeps that animal's landmarks honest about
+its outline. A landmark tracked by appearance that wanders a few pixels across
+the outline (the outline itself jitters from frame to frame) is nudged back
+onto the silhouette. A landmark that actually **leaves** the silhouette **stops
+the run at that frame**: the program does not pull it back onto some other
+part of the animal and carry on, because the spot it would land on is not the
+spot you clicked. Its track ends on the last frame it was on the body; click it
+where it really is and press Track. To let one point of the animal off its
+outline, right-click it → **May leave its silhouette (free point)**. Points in
+**Scene** (reference markers on a rock, wand ends) are never held. When a run
+stops this way, the message names the point and the frame. An animal with this
+ticked shows a small dot inside its swatch in LAYERS. With it ticked,
+selecting one of its points brings the animal's silhouette into the run even
+if the animal's own row is not selected: without the outline there would be
+nothing to hold the point to.
 
 **ROI** (bottom bar, on by default) — when your animal is small in a big frame,
 the program works on a zoomed-in crop so it can see more detail. It decides for
@@ -2666,8 +2925,9 @@ opacity**, how strongly the silhouette is tinted over the video.
 **Marker px** (bottom bar) — how big the markers are drawn. Shrink them when a
 marker hides the very thing you are trying to see.
 
-**Mask** (bottom bar, on by default) — shows or hides the silhouette on the
-video; the checkbox on the segment's row in the right panel does the same.
+**Mask** (bottom bar, on by default) — shows or hides every silhouette on the
+video; the checkbox on an animal's row in LAYERS shows or hides just that
+animal's.
 
 **Settings** (**Ctrl+,**, or the last entry of the **Segment ▾** dropdown) —
 your name for events and notes (*Annotator*), the segmentation model, a
@@ -2696,7 +2956,7 @@ them: Track tracks each selected point with its own tracker.
 | An animal, a person or an object whose shape you can see — even a small one, if you can make out its body | **AllTracker** (the default), with **Segment** (SAM 3) for the outline | one click per body part to start |
 | Painted dots or stickers on a body, with strong contrast, when speed matters | **CoTracker3** | one click per point |
 | A target that is only a dot — small enough to be one point (a few pixels to about 20 across), with no shape of its own — often over a background that moves (waves, ripples, sky, leaves): a squid's head spot from a ship, a distant bat, bird or insect | **Moving spot** | the dot on two frames in a row to start; 20 frames in a row for the test below |
-| A round marker such as a wand ball | **Add ▾ → Ball marker** (whatever the point model) | one click per ball |
+| A round marker such as a wand ball | **Point ▾ → Ball marker** (whatever the point model) | one click per ball |
 
 Moving spot follows **one point per target**. On anything bigger it would
 follow only the centre of a blob — if you want the head *and* the tail, or the
@@ -2755,7 +3015,7 @@ right-click the point → *Test the point models on its clicks*:
 
 The program suggests this in two situations: when you have corrected a point
 by hand on 5 of the last 20 frames, and when a new point sits on a small,
-isolated spot in a camera that has no segment. Click the notice to act on it.
+isolated spot in a camera that has no silhouette. Click the notice to act on it.
 
 ---
 
@@ -2881,16 +3141,16 @@ the frame before it is kept and saved, the playhead waits there, and a window
 blank with a message ("frame N could not be decoded … The frame shows blank;
 Shift+C retries."). Copy the file from the camera card again if you can. To go
 on with this one, go to a frame after the damaged one, place the points there
-again (select each in the POINTS list and click it on the video) and press
+again (select each in LAYERS and click it on the video) and press
 **Track ▶**; or make a clean copy with the command the window gives (`ffmpeg -i
 "clip.mp4" -c:v libx264 -crf 18 fixed.mp4`) and open the copy, which starts as
 a new, empty session, so do this before tracking much.
 
 **Keyboard shortcuts do nothing.** The keys work wherever the keyboard focus
-happens to be — a number box, the POINTS list, the right panel even when you
+happens to be — a number box, the LAYERS tree, the right panel even when you
 have floated it as a window of its own — except when:
 
-- you are typing a name (renaming a point or the segment): letters are text
+- you are typing a name (renaming a point or an animal): letters are text
   until you press **Enter** or **Esc**;
 - another window is in front — a dialog, this manual, the body side-by-side
   view: click the main window first;
@@ -2905,7 +3165,7 @@ decimal point, **Enter**, **Delete** — stay with the box.
 **The buttons at the bottom lost their names, or the window does not fit.**
 The window opens sized to your screen. When the bar at the bottom is too
 narrow for every label, the tool buttons give up their names one at a time,
-least-used first (Pan, ROI, Mask, Follow, Body, Auto-pause, Segment, Add), and
+least-used first (Pan, ROI, Mask, Follow, Auto-pause, Segment, Point), and
 show only their icons; hover over one to see what it does. The names come back as soon as there is room: widen the window, or hide
 the right panel with **Ctrl+1**. The Track button always keeps its words.
 
@@ -2939,11 +3199,24 @@ and about half that with AllTracker, the default (**Track ▾** chooses). An
 outline adds its own time on top.
 
 **It tracked only one body part when you wanted all of them (or nothing at all).**
-Track follows exactly what is selected: the points selected in the POINTS list,
-and the segment only while its row in SEGMENT is selected. Press **Ctrl+A** to
-select every point and the segment, then Track again. The Track button always
-says what it is about to do (*Track · 3 points + segment ▶*); with nothing
+Track follows exactly what is selected in LAYERS: a point row is that point, an
+animal row is its silhouette and all its points. Press **Ctrl+A** to select
+every animal and every point, then Track again. The Track button always says
+what it is about to do (*Track · 3 points + silhouette ▶*); with nothing
 selected it tracks nothing and a notice tells you to select something.
+
+**The silhouette was not tracked along with a point.** A point selected on its
+own is tracked on its own. Select the animal's row too (or the animal row
+alone, for the silhouette and all its points), or tick *Keep its points on its
+silhouette* on the animal (right-click it in LAYERS).
+
+**A new point landed in the wrong animal (or in Scene).** Drag it in LAYERS onto
+the right animal, or right-click it → **Move to ▸**. To steer the next one,
+select the animal's row before pressing **N**.
+
+**S does nothing when I click the video.** With several animals, **S** needs to
+know which one to outline: select that animal's row in LAYERS (one row), or
+press **＋ Animal** for a new one. A notice over the video says so.
 
 **Speeds, times or camera matching are off by a round factor (8×, 33×…).**
 The file probably states a slow-motion playback rate instead of the rate the
@@ -2977,20 +3250,25 @@ drive, or move them next to the project), and open the project again.
 
 ## 16. Glossary
 
+**Animal** — one individual animal or object in the LAYERS panel, with its
+points underneath. It may have a silhouette (drawn with **S**) or not. Its
+points are named "*animal part*" ("squirrel snout") in exports and in every
+camera.
+
 **Auto-pause** — stopping tracking automatically when a body part is lost. The
 lost part's track is cut at the first frame where it became unreliable, so what
-is left can be trusted. (With *Body* on, a part that leaves the outline stops
-the run the same way.)
+is left can be trusted. (When the animal keeps its points on its silhouette, a
+part that leaves the outline stops the run the same way.)
 
 **Ball marker** — a round marker (a wand ball, a reflective dot, a dropped
 ball) found in every frame by outlining it and fitting a circle; the circle's
-centre is the tracked point. Added with **Add ▾ → Ball marker**.
+centre is the tracked point. Added with **Point ▾ → Ball marker**.
 
 **Confidence** — how sure the program is about a position. Low confidence is
 drawn red on the timeline.
 
 **Derived landmark** — a body part computed from the silhouette's shape rather
-than followed by appearance. Shown with a dotted square in the POINTS list and
+than followed by appearance. Shown with a dotted square in LAYERS and
 a dotted ring with an italic name on the video. Needs no clicking, and cannot
 be placed by hand: to place it yourself, right-click it → *Data source* →
 *Track by appearance*.
@@ -3006,6 +3284,9 @@ part is not really visible on a frame. Its position stays in the project but is
 left blank in every export and out of 3D. Drawn as a ring with a cross.
 
 **Landmark** — a named body part being measured.
+
+**Layers** — the right panel's tree of everything you track: each animal with
+its points, then Scene. Track tracks what is selected there.
 
 **Moving spot** — the point model for a target small enough to be **one
 point**: a dot with no visible shape (a squid's head spot on water, a distant
@@ -3033,11 +3314,16 @@ exportable as one file). Not the videos themselves.
 **Region** — an outlined area (circle, rectangle or polygon) tracked as a whole
 and reported as its centre, rather than a single spot.
 
-**Segment / silhouette** — the outline of the animal against the background,
+**Scene** — the LAYERS row for points that belong to no animal: wand ends,
+reference marks on a rock, calibration points. They are never held on a
+silhouette.
+
+**Segment / silhouette** — the outline of an animal against the background,
 found in every frame once you click the animal with the Segment tool (**S**).
 Optional: points track without it.
 
-**Skeleton** — a ready-made named list of landmarks for a kind of animal.
+**Skeleton** — a ready-made named list of landmarks for a kind of animal, put on
+one animal; it may include bones (lines between landmarks) and a head.
 
 **Tracking** — following something automatically from frame to frame.
 
@@ -3054,7 +3340,7 @@ three landmarks instead (Z follows the right-hand rule).
 ## 17. Keyboard and mouse reference
 
 The same list is in the program itself: **Help → Keyboard & Mouse Reference**.
-The keys work wherever the keyboard focus is — a number box, the POINTS list,
+The keys work wherever the keyboard focus is — a number box, the LAYERS tree,
 the right panel even when floated as its own window — except while you type a
 name. Most need a video open, and while tracking runs only stopping and the
 view keys work. Hover over any button or menu entry to see what it does.
@@ -3083,28 +3369,33 @@ view keys work. Hover over any button or menu entry to see what it does.
 | click (armed) | place a point, or continue the selected one where it has no data |
 | drag a circle (armed) | track a whole region as one point |
 | click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed (a click on a marker just selects that point). Two quick clicks are two clicks, so frame-by-frame digitizing never loses one. A landmark derived from the outline cannot be placed by hand |
-| **＋ New point** (POINTS panel) | a point with no position yet, selected — and in every camera's list |
+| **＋ Point** (LAYERS) | a point with no position yet, in the selected animal (else in Scene), selected — and in every camera's list |
+| **＋ Animal** (LAYERS) | a new animal with no silhouette yet, selected; give it points (**N** + click, or drag points onto it) and, if you like, outline it with **S** |
+| drag points in LAYERS | onto another animal (or one of its points), or onto Scene: they move there and are renamed "*animal part*" in every camera (one Ctrl+Z step) |
+| **Delete** (LAYERS, or the key with no timeline window selected) | delete what is selected in LAYERS; for an animal it asks whether its points move to Scene (Yes) or go too (No) |
 | **A** | with a calibration: place the selected point at the ◇, where two or more other cameras put it |
 | **Alt+click** | with a calibration: where this spot can be in the other cameras (nothing is edited) |
 | **Ctrl+click** | move the selected point here |
 | **Shift+<** / **Shift+>** | first / last frame the selected point has data on (nothing selected: the silhouette's) |
 | **,** / **.** | previous / next frame placed by hand for the selected point |
 | right-click a marker (a short click) | clear that point on this frame only, and select it (one Ctrl+Z step). On one of several selected markers: all the selected **points** on this frame, never the silhouette. Does nothing while the Pan tool (**H**) is on |
-| hold the right button on a marker (half a second), or right-click its name in POINTS | its menu: go to its first / last / hand-placed / doubtful frames; clear it on this frame, in the selected window, or entirely; fill its gaps between hand placements with a curve; with a calibration, snap it to the other cameras' rays, or place it at the ◇ |
+| hold the right button on a marker (half a second), or right-click its name in LAYERS | its menu: go to its first / last / hand-placed / doubtful frames; clear it on this frame, in the selected window, or entirely; fill its gaps between hand placements with a curve; with a calibration, snap it to the other cameras' rays, or place it at the ◇ |
+| (the same menu) | also: rename, delete, lock it to its look, change how it is found (appearance or silhouette), hidden on this frame, may leave its silhouette, **Move to ▸** another animal or Scene, use it as its animal's head |
+| two points of one animal selected → right-click | **Connect them with a bone** (again: **Remove the bone between them**) |
+| right-click an animal in LAYERS | its menu: rename, outline it (S), show its silhouette, keep its points on its silhouette, midlines, jump to its first / last silhouette, clear silhouettes, save its points and bones as a skeleton template, forget its bones and head, remove it |
 | **J** / **Shift+J** | next / previous low-confidence (red) stretch |
 | **Shift+X** | mark the selected point hidden on this frame (again to unmark) |
 | **Shift+N** | note on this frame |
-| Add **▾** | region shape: circle, rectangle, polygon (click the corners, then Enter or a double-click); **Ball marker** — click a ball, SAM outlines it every frame and the fitted circle's centre is the point (balls far apart get a window each, so any spacing works) |
-| (the same menu) | also: rename, delete, lock it to its look, change how it is found (appearance or silhouette), hidden on this frame, may leave the segment |
-| **S** (the Segment button) | the outlining tool — click the animal (Shift+click = not the animal, drag = a box around it, right-click a click to remove it); **S** or **Esc** when done |
+| Point **▾** | region shape: circle, rectangle, polygon (click the corners, then Enter or a double-click); **Ball marker** — click a ball, SAM outlines it every frame and the fitted circle's centre is the point (balls far apart get a window each, so any spacing works) |
+| **S** (the Segment button) | the outlining tool — it outlines the animal selected in LAYERS (the first click makes one when there is none). Click the animal (Shift+click = not the animal, drag = a box around it, right-click a click to remove it); **S** or **Esc** when done |
 | **Esc** | cancel whatever you just started: a drag or polygon, the segment tool, the armed crosshair, the pan tool, a half-marked event, a selected stretch of the timeline, the look-here line of an Alt+click — and, with nothing left to cancel, deselect the point |
 
 ### Tracking
 
 | Key | Does |
 |---|---|
-| **Ctrl+A** | select everything to track: every point and the segment (Edit → Select Everything to Track) |
-| **Track ▶** or **T** | start tracking from this frame: **only what is selected** — the points selected in POINTS, and the segment only while its row is selected (with Track ▾ → **Every camera**: in each camera that has the points). Nothing selected = nothing tracked |
+| **Ctrl+A** | select everything to track: every animal and every point (Edit → Select Everything to Track) |
+| **Track ▶** or **T** | start tracking from this frame: **only what is selected** in LAYERS — a point row is that point, an animal row its silhouette and all its points (with Track ▾ → **Every camera**: in each camera that has them). A point alone does not bring its animal's silhouette unless the animal keeps its points on its silhouette. Nothing selected = nothing tracked |
 | **Shift+T** | several cameras: this run in every camera that has the points here, all at the same time |
 | **X** or **Space** | stop (during **3D → Re-track Disagreeing Stretches** it stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run it stops every camera at once) |
 | **F** (semi-automatic mode) | track exactly one frame (in every camera with Track ▾ → Every camera) |
@@ -3114,11 +3405,11 @@ view keys work. Hover over any button or menu entry to see what it does.
 
 | Key | Does |
 |---|---|
-| wheel, **+** / **−** | zoom the video (a sideways swipe on a touchpad does not zoom) |
-| **R** | fit the whole picture back in the window |
-| **H** (the Pan button) | the tool for looking only: while it is on, a click or a right click on a marker edits nothing. Press **H** again or **Esc** to stop — picking **Add** or **Segment** also stops it. Does nothing until a video is open |
+| wheel, **+** / **−**, or the zoom buttons in the picture's lower-right corner | zoom the video (a sideways swipe on a touchpad does not zoom) |
+| **R**, or the fit button in that corner | fit the whole picture back in the window |
+| **H** (the Pan button) | the tool for looking only: while it is on, a click or a right click on a marker edits nothing. Press **H** again or **Esc** to stop — picking **Point** or **Segment** also stops it. Does nothing until a video is open |
 | middle-drag | pan, at any time — even while tracking |
-| **Shift + +** / **Shift + −**, or **Ctrl+wheel** over the timeline | zoom the timeline's time axis |
+| **Shift + +** / **Shift + −**, **Ctrl+wheel** over the timeline, or the three magnifier buttons in the timeline's top-left corner | zoom the timeline's time axis (the last button shows the whole video) |
 | **Ctrl+1** | show / hide the right panel |
 | **Ctrl+2** | show only the camera you are working on |
 | **Ctrl+Shift+2** | Active view only: only the working camera reads its video; the others stay where they are until Sync all views (again: back to Sync all views; also *View → Other cameras*) |
@@ -3147,7 +3438,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | Key | Does |
 |---|---|
 | **Shift+drag** | select frames *and* rows |
-| **Delete** | clear what the selection covers — or delete the selected points |
+| **Delete** | clear what the selection covers — or, with no frame window selected, delete what is selected in LAYERS |
 | **E**, then **E** | mark the start and end of an event |
 
 ---

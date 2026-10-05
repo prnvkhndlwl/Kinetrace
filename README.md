@@ -72,7 +72,9 @@ More in [Accuracy](https://github.com/prnvkhndlwl/Kinetrace/wiki/Accuracy) and
   mammals) or people and want positions, angles or 3D out of the video.
 - **No GPU needed:** an NVIDIA card or a Mac's own GPU makes it faster;
   without one everything still works, only slower.
-- **One animal per video** for now.
+- **Several animals in one video**, each with its own points, skeleton and
+  (optional) silhouette; identities come from your clicks (no automatic
+  re-identification yet).
 - **Non-commercial use only** (research, teaching, study) — see below.
 
 ## Learn more

@@ -387,16 +387,16 @@ def drive_context_menus(state):
         for pid in range(min(s.n_points, MAX_PIDS)):
             i = 0
             while True:
-                if pid >= win.point_list.count():
+                if pid >= win.layers.n_point_rows():
                     break
-                item = win.point_list.item(pid)
-                pos = win.point_list.visualItemRect(item).center()
+                item = win.layers.point_item(pid)
+                pos = win.layers.visualItemRect(item).center()
                 MENU_PICK["i"] = i
                 MENU_PICK["label"] = "?"
                 _CTX.update(state=state, what=f"list menu pid {pid} entry {i}", mode=mode)
                 n0 = len(EXC)
                 try:
-                    win._point_list_menu(pos)
+                    win._layers_menu(pos)
                     pump(0.05)
                 except Exception:       # noqa: BLE001
                     EXC.append((state, _CTX["what"], traceback.format_exc()[-1500:]))

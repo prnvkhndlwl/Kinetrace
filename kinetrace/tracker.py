@@ -59,7 +59,7 @@ from __future__ import annotations
 import threading
 import traceback
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import cv2
@@ -70,8 +70,8 @@ from PySide6.QtCore import QThread, Signal
 
 from kinetrace import alltracker_backend as at_backend
 from kinetrace.downloads import DownloadError
-from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, get_segmenter,
-                                     score_to_confidence, summarize_mask, working_size)
+from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity,
+                                     get_segmenter, score_to_confidence, summarize_mask, working_size)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
 from kinetrace.session import in_frame
 from kinetrace.video_source import FrameCache, ReadAhead, VideoSource
@@ -145,13 +145,67 @@ class PointSpec:
 
 @dataclass
 class AnimalSpec:
-    """The segment to segment during a run: the user's prompts per frame and,
-    when resuming, the mask at the start frame (working resolution) that
-    seeds the segmentation session."""
+    """One segment of a run: the user's prompts per frame and, when resuming, the mask at the
+    start frame (working resolution) that seeds the segmentation session. A run takes any number
+    of them (G149, owner 2026-10-03): ONE SAM session, each segment its own object. `index` = the
+    session's segment the results belong to (the app's numbering, carried on every summary as
+    "seg"); `name` = how the messages call it; `head_pid` / `on_body` / `constrain` = its landmarks
+    (each landmark belongs to one segment). `stored` (a MaskTrack-like: has / rasterize) = no SAM:
+    this segment's STORED silhouettes are only a constraint (the second pass of a two-pass run,
+    I185)."""
     prompts: dict = field(default_factory=dict)     # frame -> [(x, y, label)] native px
     boxes: dict = field(default_factory=dict)       # frame -> (x0, y0, x1, y1)
     seed_mask: np.ndarray | None = None             # bool, working res, at start_frame
     backend: str = DEFAULT_BACKEND
+    index: int = 0
+    name: str = "segment"
+    head_pid: int | None = None
+    on_body: set = field(default_factory=set)
+    constrain: set = field(default_factory=set)
+    stored: object = None
+
+
+class _SegState:
+    """One segment's per-run worker state (G149). The worker's per-frame segment code reads it
+    through properties (`_seg_attr`) of the CURRENT segment (`TrackingWorker._cur`), so the code
+    that worked for one segment works for each of several unchanged."""
+
+    def __init__(self, k: int, spec: AnimalSpec | None, start_frame: int):
+        self.k, self.spec = k, spec
+        self.obj_id = k + 1                           # SAM object id (the single segment was 1)
+        self.mask_hist: dict = {}                     # frame -> (mask_work, scale)
+        self.summ: dict = {}                          # frame -> summarize_mask(...)
+        self.mid_cache: dict = {}
+        self.dil_cache: dict = {}
+        self.snap_cache: dict = {}
+        self.prev_head = None
+        self.prev_f = None
+        self.prev_len = None
+        self.prev_path = None
+        self.anchor_lost: set = set()
+        self.anchor_verdict = None
+        self.derived_hist: dict = {}
+        self.snapped: dict = {}
+        self.collapsed: dict = {}
+        self.identity = SegmentIdentity()
+        self.identity_end: int | None = None
+        self.counted_until = start_frame - 1
+        self.lost_run = 0
+        self.lost_start = start_frame
+        self.stored_last = start_frame - 1
+        self.ended: tuple[int, str] | None = None     # (first frame without it, "lost" | "switched")
+        self.head_pid = spec.head_pid if spec is not None else None
+        self.on_body = set(spec.on_body) if spec is not None else set()
+        self.constrain = set(spec.constrain) if spec is not None else set()
+
+    @property
+    def live(self) -> bool:
+        """Segmented by SAM in this run (not a stored constraint)."""
+        return self.spec is not None and self.spec.stored is None
+
+
+def _seg_attr(name: str):
+    return property(lambda self: getattr(self._cur, name), lambda self, v: setattr(self._cur, name, v))
 
 
 class BallSpec:
@@ -188,9 +242,10 @@ class SpotSpec:
 
 @dataclass
 class DerivedSpec:
-    """An output column computed from the segment's silhouette, not tracked."""
+    """An output column computed from a segment's silhouette, not tracked."""
     pid: int
     spec: str        # "tip" | "midline:<f>" | "centroid" | "ext:L|R|FL|FR|HL|HR"
+    seg: int = 0     # which of the run's segments (position in `animals`) it is derived from (G149)
 
 
 SUPPORT_POINTS = 24        # extra CoTracker queries sampled inside the mask (never emitted)
@@ -400,6 +455,43 @@ class MultiTrackingWorker(QThread):
 class TrackingWorker(QThread):
     """Tracks all seeded points forward from start_frame until EOF or pause."""
 
+    # (G149) the per-segment state of the CURRENT segment (`_cur`, a _SegState): every segment of
+    # the run is processed by the same code, one after the other
+    _mask_hist = _seg_attr("mask_hist")
+    _summ = _seg_attr("summ")
+    _mid_cache = _seg_attr("mid_cache")
+    _dil_cache = _seg_attr("dil_cache")
+    _snap_cache = _seg_attr("snap_cache")
+    _prev_head = _seg_attr("prev_head")
+    _prev_f = _seg_attr("prev_f")
+    _prev_len = _seg_attr("prev_len")
+    _prev_path = _seg_attr("prev_path")
+    _anchor_lost = _seg_attr("anchor_lost")
+    _anchor_verdict = _seg_attr("anchor_verdict")
+    _derived_hist = _seg_attr("derived_hist")
+    _snapped = _seg_attr("snapped")
+    _collapsed = _seg_attr("collapsed")
+    _identity = _seg_attr("identity")
+    _identity_end = _seg_attr("identity_end")
+    _animal_counted_until = _seg_attr("counted_until")
+    _lost_run = _seg_attr("lost_run")
+    _lost_start = _seg_attr("lost_start")
+    _stored_last = _seg_attr("stored_last")
+    head_pid = _seg_attr("head_pid")
+    on_body = _seg_attr("on_body")
+    constrain = _seg_attr("constrain")
+
+    @property
+    def animal(self) -> "AnimalSpec | None":
+        """The current segment's spec when SAM segments it in this run (None for a stored one)."""
+        return self._cur.spec if self._cur.live else None
+
+    @property
+    def _stored(self):
+        """The current segment's stored silhouettes (a two-pass run's second pass, I185)."""
+        s = self._cur.spec
+        return s.stored if s is not None else None
+
     model_loading = Signal()
     # (what is being downloaded, bytes done, bytes in all -- 0 when unknown), first use only (G45)
     model_progress = Signal(str, float, float)
@@ -426,7 +518,8 @@ class TrackingWorker(QThread):
                  derived: list[DerivedSpec] | None = None,
                  head_pid: int | None = None, on_body_pids=None, constrain_pids=None,
                  point_backend: str = "cotracker3", balls: list[BallSpec] | None = None,
-                 spots: list[SpotSpec] | None = None, stored_masks=None):
+                 spots: list[SpotSpec] | None = None, stored_masks=None,
+                 animals: list[AnimalSpec] | None = None):
         super().__init__()
         self.video_path = video_path
         self.start_frame = start_frame
@@ -450,50 +543,51 @@ class TrackingWorker(QThread):
         self.refine = refine
         self.roi = roi
         self.autopause = autopause
-        self.animal = animal
-        self.head_pid = head_pid
-        self.on_body = set(on_body_pids or [])
         self.point_backend = point_backend if point_backend in POINT_BACKENDS else "cotracker3"
-        # physical constraint: these tracked points can never leave the animal's
-        # silhouette — predictions outside it are snapped to the nearest mask pixel
-        self.constrain = set(constrain_pids or [])
-        # (I185) The second pass of a two-pass run (AllTracker points, then CoTracker3 points)
-        # runs no SAM: the silhouettes the first pass just made are the mask source, as a
-        # CONSTRAINT only -- on-body rules (nudge, exit stop, off-body / merged demotion) and
-        # the same support points / ROI bounding box a live segment gives the run; no masks
-        # are emitted, no derived landmark is computed. `stored_masks` = anything with
-        # `has(frame)` and `rasterize(frame, h, w)` (a segmenter.MaskTrack: the session's
-        # silhouettes). A live segment (`animal`) wins when both are given.
-        self._stored = stored_masks if self.animal is None else None
-        self._stored_last = start_frame - 1
+        # (G149) the run's segments: `animals` (any number, one SAM session), or the single-segment
+        # form -- `animal` + head_pid / on_body_pids / constrain_pids, or (I185) `stored_masks`. The
+        # second pass of a two-pass run (AllTracker points, then CoTracker3 points) runs no SAM: the
+        # silhouettes the first pass just made are the mask source, as a CONSTRAINT only -- on-body
+        # rules (nudge, exit stop, off-body / merged demotion) and the same support points / ROI
+        # bounding box a live segment gives the run; no masks are emitted, no derived landmark is
+        # computed. A stored mask track = anything with `has(frame)` and `rasterize(frame, h, w)`.
+        # A live segment (`animal`) wins when both are given.
+        # physical constraint: a segment's `constrain` points can never leave ITS silhouette --
+        # predictions outside it are snapped to the nearest mask pixel
+        if animals is None:
+            animals = []
+            if animal is not None or stored_masks is not None:
+                # (I264) a COPY: the head / on-body / constrain filled in below are this run's, not the caller's spec's
+                one = replace(animal) if animal is not None else AnimalSpec(stored=stored_masks)
+                if one.head_pid is None:
+                    one.head_pid = head_pid
+                if not one.on_body:
+                    one.on_body = set(on_body_pids or [])
+                if not one.constrain:
+                    one.constrain = set(constrain_pids or [])
+                animals = [one]
+        self.animals: list[AnimalSpec] = list(animals)
+        self._segs = [_SegState(k, a, start_frame) for k, a in enumerate(self.animals)]
+        self._none = _SegState(-1, None, start_frame)        # the state when the run has no segment
+        self._cur = self._segs[0] if self._segs else self._none
+        self._all_constrain = set().union(*[st.constrain for st in self._segs]) if self._segs else set()
         self._stored_work: tuple[int, int] | None = None     # (w, h) working size, set once the frame size is known
-        if self.animal is None and self.derived:
-            raise ValueError("silhouette-derived points need a segment to derive from")
-        if not self.specs and self.animal is None and not self.balls and not self.spots:
+        for d in self.derived:
+            if not (0 <= d.seg < len(self._segs)) or not self._segs[d.seg].live:
+                raise ValueError("silhouette-derived points need a segment to derive from")
+        if not self.specs and not self._segs and not self.balls and not self.spots:
             raise ValueError("nothing to track: no seeded points, no balls, no spots and no segment")
         self._pause = False
         self._autopause_hit: tuple[int, int] | None = None
-        self._autopause_reason = ""          # "exit" | "lowconf" | "lost" | "spot": what the app says
+        self._autopause_reason = ""          # "exit" | "lowconf" | "lost" | "switched" | "spot": what the app says
         self._exit_hit: tuple[int, int] | None = None   # (frame, pid) of the first landmark to leave the segment
         # animal layer state (per run)
         self._seg = None
         self._sxy = None               # (sx, sy) native / working, set by the first segmented frame (I61)
         self._seg_last = start_frame - 1
-        self._mask_hist: dict[int, tuple[np.ndarray, float]] = {}   # frame -> (mask_work, scale)
-        self._summ: dict[int, dict] = {}                             # frame -> summarize_mask(...)
-        self._mid_cache: dict[int, tuple] = {}
-        self._dil_cache: dict[int, np.ndarray] = {}
-        self._snap_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}   # frame -> (labels, lut)
-        self._prev_head: np.ndarray | None = None
-        # derived-skeleton continuity + landmark identity (see the constants)
-        self._prev_f: int | None = None                # the frame the three values below belong to
-        self._prev_len: float | None = None            # previous midline length, working px
-        self._prev_path: np.ndarray | None = None      # previous midline path, working px
-        self._anchor_lost: set[int] = set()            # frames whose head anchor could not be trusted
-        self._anchor_verdict: tuple | None = None      # (frame, anchor at an end?, free midline) last checked
-        self._derived_hist: dict[int, dict[int, np.ndarray]] = {}   # column -> {frame: native xy}
-        self._snapped: dict[int, set[int]] = {}        # frame -> query indices the constraint moved
-        self._collapsed: dict[int, set[int]] = {}      # frame -> query indices merged with another
+        # per segment (a _SegState each, read through the properties above): the mask / summary
+        # history, the midline / dilation / snap caches, the derived-skeleton continuity and
+        # landmark identity (see the constants), the identity guard (I260) and the lost counter
         self._col2q: dict[int, int] = {}               # spec index -> query index (point specs)
         self._q2col: dict[int, int] = {}               # query index -> OUTPUT column (point specs)
         self._back_run: dict[int, int] = {}            # pid -> frames back since it was declared lost
@@ -502,9 +596,9 @@ class TrackingWorker(QThread):
         self.decode_transient = False        # ... and a fresh capture CAN read it: a hiccup, not damage (I240)
         self._read_exc: BaseException | None = None   # an exception the decoder raised before the run's end (I240)
         self._detector_stop = False          # the read loop's own detector (balls / spots) stopped the run (I192)
-        self._animal_counted_until = start_frame - 1
-        self._lost_run = 0
-        self._lost_start = start_frame
+        # (G149) segments that ended in this run: {session segment index: (first frame without it,
+        # "lost" | "switched")}; the others go on (owner 2026-10-03: end that one, keep going)
+        self._seg_ended: dict[int, tuple[int, str]] = {}
         # ball markers (balls.py): one SAM session on a crop, every ball an object
         self._ball_trk = None
         self._ball_last = start_frame - 1
@@ -581,15 +675,17 @@ class TrackingWorker(QThread):
             raise RuntimeError(f"Could not decode frame {self.start_frame}")
         nh, nw = probe.shape[:2]
         self._frame_wh = (nw, nh)
-        if self._stored is not None:
+        if any(not st.live for st in self._segs):
             self._stored_setup(nw, nh)
-        if self.animal is not None:
-            engine = get_segmenter(self.animal.backend, **dl)
+        live = [st for st in self._segs if st.live]
+        if live:
+            # ONE session for every segment of the run, each its own object (G149)
+            engine = get_segmenter(live[0].spec.backend, **dl)
             self._seg = engine.new_session(self.start_frame, (nw, nh))
         if self.balls:
             from kinetrace.balls import BallTracker
             from kinetrace.segmenter import preferred_backend
-            backend = (self.balls[0].backend or (self.animal.backend if self.animal is not None else "")
+            backend = (self.balls[0].backend or (live[0].spec.backend if live else "")
                        or preferred_backend())
             self._ball_trk = BallTracker(get_segmenter(backend, **dl), (nw, nh))
         if self.spots:
@@ -681,8 +777,9 @@ class TrackingWorker(QThread):
     def _can_still_give_data(self, frame: int) -> bool:
         """Can anything in this run still give data after `frame`, with no point
         model left? A segment can; a Moving spot until it has stopped; a ball while
-        it is followed or has a click on a later frame (I191, I257)."""
-        if self.animal is not None:
+        it is followed or has a click on a later frame (I191, I257). A segment until it has
+        ended (G149)."""
+        if any(st.live and st.ended is None for st in self._segs):
             return True
         if any(sp.pid not in self._spot_gone for sp in self.spots):
             return True
@@ -751,10 +848,11 @@ class TrackingWorker(QThread):
         for sp in specs:
             r = sp.radius if sp.kind == "group" else 0.0
             pts += [(sp.seed[0] - r, sp.seed[1] - r), (sp.seed[0] + r, sp.seed[1] + r)]
-        summ = self._summ.get(seg_start) if seg_start is not None else None
-        if summ is not None and summ["area"] > 0:
-            x0, y0, x1, y1 = summ["bbox"]
-            pts += [(x0, y0), (x1, y1)]
+        for st in self._segs:              # every segment's mask at the segment start (G149)
+            summ = st.summ.get(seg_start) if seg_start is not None else None
+            if summ is not None and summ["area"] > 0:
+                x0, y0, x1, y1 = summ["bbox"]
+                pts += [(x0, y0), (x1, y1)]
         if not pts:
             return None
         pts = np.asarray(pts, np.float64)
@@ -839,11 +937,13 @@ class TrackingWorker(QThread):
             first = src.get_frame(seg_start)
             if first is not None:
                 self._seg_step(seg_start, first)
-        elif self._stored is not None and seg_start > self._stored_last:
-            self._stored_step(seg_start)                          # (I185)
-        # support queries: a sparse grid inside the animal's mask so the joint
-        # solve is anchored to the body; never emitted, re-sampled every segment
-        q_seeds += list(self._support_points(seg_start))
+        self._stored_steps(seg_start)                             # (I185)
+        # support queries: a sparse grid inside each segment's mask so the joint
+        # solve is anchored to the bodies; never emitted, re-sampled every segment
+        for st in self._segs:
+            self._cur = st
+            q_seeds += list(self._support_points(seg_start))
+        self._cur = self._first()
         q_seeds_arr = np.asarray(q_seeds, np.float32)   # (Q, 2) native px
 
         crop = self._compute_crop(specs, seg_start)
@@ -923,7 +1023,10 @@ class TrackingWorker(QThread):
                 tr = self._refine_window(w0, tr.astype(np.float32), vi, gray_hist,
                                          seg_start, anchor_q)
             tr = tr.astype(np.float32)
-            self._constrain_to_mask(w0, tr, specs, out_map, first_seg, col_idx)
+            for st in self._segs or [self._none]:     # each segment's own landmarks (G149)
+                self._cur = st
+                self._constrain_to_mask(w0, tr, specs, out_map, first_seg, col_idx)
+            self._cur = self._first()
 
             out_tr = np.full((L, K, 2), np.nan, np.float32)
             out_vi = np.zeros((L, K), bool)
@@ -951,8 +1054,11 @@ class TrackingWorker(QThread):
                 out_vi[0, :n_track] = True
                 out_cf[0, :n_track] = 1.0
 
-            self._demote_off_body(w0, out_tr, out_cf)
-            self._demote_merged(w0, out_cf)
+            for st in self._segs:
+                self._cur = st
+                self._demote_off_body(w0, out_tr, out_cf)
+                self._demote_merged(w0, out_cf)
+            self._cur = self._first()
             self._finish_chunk(w0, out_tr, out_vi, out_cf, members, pending,
                                lambda: self._check_autopause(w0, out_tr, out_vi, out_cf, specs, col_idx))
             pending = []
@@ -964,10 +1070,11 @@ class TrackingWorker(QThread):
                     and self.decode_failed_at is None)   # nothing to restart into past a damaged frame
             if crop is not None and room and self._autopause_hit is None and not self._pause:
                 pts = [out_tr[-1, :n_track]] + [members[k][-1] for k in members]
-                summ_last = self._summ.get(w0 + L - 1)
-                if summ_last is not None and summ_last["area"] > 0:
-                    bx0, by0, bx1, by1 = summ_last["bbox"]   # the animal nearing the edge restarts too
-                    pts.append(np.array([[bx0, by0], [bx1, by1]], np.float32))
+                for st in self._segs:
+                    summ_last = st.summ.get(w0 + L - 1)
+                    if summ_last is not None and summ_last["area"] > 0:
+                        bx0, by0, bx1, by1 = summ_last["bbox"]   # a segment nearing the edge restarts too
+                        pts.append(np.array([[bx0, by0], [bx1, by1]], np.float32))
                 pts = np.concatenate(pts, axis=0)
                 ok = np.isfinite(pts).all(axis=1)
                 mx, my = ROI_EDGE_FRAC * cw, ROI_EDGE_FRAC * ch
@@ -1116,37 +1223,74 @@ class TrackingWorker(QThread):
         s = self._sxy if self._sxy is not None else scale
         return (np.asarray(p, np.float32) + 0.5) / s - 0.5
 
+    def _first(self) -> "_SegState":
+        return self._segs[0] if self._segs else self._none
+
     def _seg_step(self, abs_idx: int, native: np.ndarray) -> None:
-        """Segment one frame (strictly sequential). Prompts on this frame — the
-        user's clicks/boxes, or the seed mask on the start frame — are applied
-        first, so a click placed on a later frame corrects the run when the
-        run gets there."""
-        a = self.animal
+        """Segment one frame for EVERY live segment in one SAM call, each its own object (G149;
+        strictly sequential). Prompts on this frame — the user's clicks/boxes, or the seed mask
+        on the start frame — are applied first, so a click placed on a later frame corrects the
+        run when the run gets there."""
         prompts: list[Prompt] = []
-        clicks = a.prompts.get(abs_idx, [])
-        box = a.boxes.get(abs_idx)
-        if clicks or box is not None:
-            pts = np.array([[c[0], c[1]] for c in clicks], np.float32) if clicks else None
-            labs = np.array([c[2] for c in clicks], np.int64) if clicks else None
-            prompts.append(Prompt(1, pts, labs, box))
-        elif abs_idx == self.start_frame and a.seed_mask is not None and a.seed_mask.any():
-            prompts.append(Prompt(1, mask=a.seed_mask))
-        if abs_idx == self.start_frame and not prompts:
-            raise RuntimeError(
-                f"The animal has no click, box or mask on frame {abs_idx}. Press S and click "
-                "the animal on this frame, then start tracking again.")
+        prompted: set[int] = set()
+        live = [st for st in self._segs if st.live]
+        for st in live:
+            a = st.spec
+            clicks = a.prompts.get(abs_idx, [])
+            box = a.boxes.get(abs_idx)
+            if clicks or box is not None:
+                pts = np.array([[c[0], c[1]] for c in clicks], np.float32) if clicks else None
+                labs = np.array([c[2] for c in clicks], np.int64) if clicks else None
+                prompts.append(Prompt(st.obj_id, pts, labs, box))
+                prompted.add(st.k)
+            elif abs_idx == self.start_frame and a.seed_mask is not None and a.seed_mask.any():
+                prompts.append(Prompt(st.obj_id, mask=a.seed_mask))
+                prompted.add(st.k)
+            if abs_idx == self.start_frame and st.k not in prompted:
+                who = "The animal" if len(live) == 1 else f"The segment {a.name}"
+                raise RuntimeError(
+                    f"{who} has no click, box or mask on frame {abs_idx}. Press S and click "
+                    "it on this frame, then start tracking again.")
         fm = self._seg.step(native, abs_idx, prompts or None)
-        mask = fm.mask(1)
-        score = float(fm.scores[fm.index(1)])
         self._seg_last = abs_idx
-        self._mask_hist[abs_idx] = (mask, fm.scale)
         sxy = getattr(fm, "scale_xy", None)
         if sxy is not None:
             self._sxy = np.asarray(sxy, np.float32)
-        summ = summarize_mask(mask, sxy if sxy is not None else fm.scale, score)
-        summ["frame"] = abs_idx
-        self._summ[abs_idx] = summ
-        self._prune_masks(abs_idx)
+        for st in live:
+            self._cur = st
+            if st.obj_id in fm.obj_ids:
+                mask = fm.mask(st.obj_id)
+                score = float(fm.scores[fm.index(st.obj_id)])
+            else:
+                mask = np.zeros(fm.masks.shape[1:], bool)
+                score = -10.0
+            summ = summarize_mask(mask, sxy if sxy is not None else fm.scale, score)
+            if self._identity_end is None and st.ended is None:
+                # (I260) a prompted frame (the start's seed too) is the user's segment by definition
+                end = self._identity.check(abs_idx, summ, prompted=st.k in prompted)
+                if end is not None:
+                    self._identity_end = end
+            gone = min([f for f in (self._identity_end, st.ended[0] if st.ended else None) if f is not None],
+                       default=None)
+            if gone is not None and abs_idx >= gone:
+                # another object, or a segment that ended (G149): this frame has no silhouette of it
+                # (nothing derived from it, nothing constrained to it, nothing stored)
+                mask = np.zeros_like(mask)
+                summ = summarize_mask(mask, sxy if sxy is not None else fm.scale, score)
+            self._mask_hist[abs_idx] = (mask, fm.scale)
+            summ["frame"] = abs_idx
+            summ["seg"] = int(st.spec.index)
+            self._summ[abs_idx] = summ
+            self._prune_masks(abs_idx)
+        self._cur = self._first()
+
+    def _stored_steps(self, abs_idx: int) -> None:
+        """`_stored_step` for every stored segment that has not seen this frame (I185, G149)."""
+        for st in self._segs:
+            if not st.live and st.spec is not None and abs_idx > st.stored_last:
+                self._cur = st
+                self._stored_step(abs_idx)
+        self._cur = self._first()
 
     def _prune_masks(self, abs_idx: int) -> None:
         """Forget the per-frame mask state older than MASK_HIST frames."""
@@ -1368,6 +1512,8 @@ class TrackingWorker(QThread):
             body_len_native = (float(ml.length) * scale) if ml is not None else float("nan")
             roles = None
             for j, d in enumerate(self.derived):
+                if d.seg != self._cur.k:
+                    continue                    # another segment's landmark (G149)
                 if d.spec.startswith("ext:") and roles is None and ml is not None:
                     roles = extremity_roles(ml)
                 p = self._derived_xy(d.spec, ml, summ, scale, roles)
@@ -1609,9 +1755,30 @@ class TrackingWorker(QThread):
                     out_cf[i, k] = min(out_cf[i, k], OFF_BODY_CONF)
 
     def _check_animal_lost(self, w0: int, L: int) -> None:
-        """Auto-pause when the segment has not been present for ANIMAL_LOST_RUN
-        consecutive frames (left the frame, or the segmentation lost it)."""
-        if not self.autopause or self.animal is None or self._autopause_hit is not None:
+        """Every live segment: one that has not been present for ANIMAL_LOST_RUN consecutive frames
+        (left the frame, or the segmentation lost it; with auto-pause on), or whose silhouette turned
+        into ANOTHER object (`_identity_end`, I260; whatever the auto-pause setting: what follows
+        would be wrong data), ENDS there -- the others go on (G149, owner 2026-10-03) and the app
+        names it (`_seg_ended`). The run stops (auto-pause, pid -1) only when that leaves nothing to
+        track: no point, ball or spot, no other segment -- a single segment alone stops as before."""
+        if self._autopause_hit is not None:
+            return
+        for st in self._segs:
+            if st.live and st.ended is None:
+                self._cur = st
+                self._segment_lost(st, w0, L)
+        self._cur = self._first()
+        if (self._segs and self._seg_ended and not self.specs and not self.balls and not self.spots
+                and all(st.ended is not None for st in self._segs if st.live)):
+            k, (f, why) = min(self._seg_ended.items(), key=lambda kv: kv[1][0])
+            self._autopause_hit = (f, -1)
+            self._autopause_reason = why
+
+    def _segment_lost(self, st: "_SegState", w0: int, L: int) -> None:
+        if self._identity_end is not None and self._identity_end < w0 + L:
+            self._end_segment(st, self._identity_end, "switched")
+            return
+        if not self.autopause:
             return
         for f in range(w0, w0 + L):
             if f <= self._animal_counted_until:
@@ -1625,16 +1792,17 @@ class TrackingWorker(QThread):
                     self._lost_start = f
                 self._lost_run += 1
                 if self._lost_run >= ANIMAL_LOST_RUN:
-                    self._autopause_hit = (self._lost_start, -1)
-                    self._autopause_reason = "lost"
+                    self._end_segment(st, self._lost_start, "lost")
                     return
             else:
                 self._lost_run = 0
 
+    def _end_segment(self, st: "_SegState", frame: int, why: str) -> None:
+        st.ended = (int(frame), why)
+        self._seg_ended[int(st.spec.index)] = (int(frame), why)
+
     def _emit_masks(self, w0: int, L: int) -> None:
-        if self.animal is None:
-            return
-        summaries = [self._summ[f] for f in range(w0, w0 + L) if f in self._summ]
+        summaries = [st.summ[f] for f in range(w0, w0 + L) for st in self._segs if st.live and f in st.summ]
         if summaries:
             self.masks_ready.emit(summaries)
 
@@ -1645,7 +1813,10 @@ class TrackingWorker(QThread):
         auto-pause check (windows only: `autopause_check`), the animal-lost check, the
         masks (BEFORE the chunk, so the display always has the mask), then `chunk_ready`."""
         L = out_tr.shape[0]
-        self._fill_derived(w0, out_tr, out_vi, out_cf)
+        for st in self._segs:                     # each segment's derived landmarks (G149)
+            self._cur = st
+            self._fill_derived(w0, out_tr, out_vi, out_cf)
+        self._cur = self._first()
         self._fill_balls(w0, out_tr, out_vi, out_cf)
         self._fill_spots(w0, out_tr, out_vi, out_cf)
         if autopause_check is not None:
@@ -1662,8 +1833,7 @@ class TrackingWorker(QThread):
         re-reads frames the segmenter already did)."""
         if self._seg is not None and abs_idx > self._seg_last:
             self._seg_step(abs_idx, native)
-        if self._stored is not None and abs_idx > self._stored_last:
-            self._stored_step(abs_idx)                            # (I185)
+        self._stored_steps(abs_idx)                               # (I185)
         if self._ball_trk is not None and abs_idx > self._ball_last:
             self._ball_step(abs_idx, native)
         if self._spot_run is not None and abs_idx > self._spot_last:
@@ -1737,8 +1907,8 @@ class TrackingWorker(QThread):
                 buf.append(abs_idx)
                 if len(buf) >= step:
                     flush()
-                if (self.balls or self.spots) and not self._can_still_give_data(abs_idx):
-                    break                       # every spot stopped or left, every ball gone: nothing is tracked any more
+                if (self.balls or self.spots or self._segs) and not self._can_still_give_data(abs_idx):
+                    break                       # every spot stopped, every ball gone, every segment ended (G149)
                 yield                           # (I141)
         finally:
             reader.stop()
@@ -1946,10 +2116,10 @@ class TrackingWorker(QThread):
                 # constraint's invention, not a track: that IS lost. Without
                 # this, one camera's neck landmark in a real stereo test exported 601 frames
                 # of confident-but-wrong coordinates.
-                constrained = sp.pid in self.constrain
+                constrained = sp.pid in self._all_constrain        # by its own segment (G149)
                 q = self._col2q.get(a)
                 snapped_here = (constrained and q is not None
-                                and q in self._snapped.get(f, ()))
+                                and any(q in st.snapped.get(f, ()) for st in self._segs))
                 gone = (low and not out_vi[i, k] and (not constrained or snapped_here))
                 if new_row and inside:     # OOB neither counts nor resets the run
                     if low:

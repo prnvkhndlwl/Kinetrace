@@ -117,7 +117,7 @@ for v, marks in ((1, (name_dot, name_ball)), (2, (name_ball,))):
     s = p.sessions[v]
     for nm in marks:
         j = s.pid_by_name(nm)
-        win.point_list.setCurrentRow(j)
+        win.layers.setCurrentItem(win.layers.point_item(j))
         truth = dot_r if nm == name_dot else ball_r
         win._on_annotate(float(truth[v, F0, 0]), float(truth[v, F0, 1]))
         pump(0.05)
@@ -269,9 +269,9 @@ pump(0.2)
 fb = p.map_frame(0, 1, f_a)
 kept = bool(sb.tracked[fb, jd_b])
 sb.tracked[fb, jd_b] = False            # camB lacks the dot on its frame of this instant
-win.point_list.clearSelection()
-win.point_list.setCurrentRow(jd_a)
-win.point_list.item(jd_a).setSelected(True)
+win.layers.clearSelection()
+win.layers.setCurrentItem(win.layers.point_item(jd_a))
+win.layers.point_item(jd_a).setSelected(True)
 called = []
 win._start_tracking = lambda *a, **k: called.append(k)
 win._toggle_tracking()

@@ -416,12 +416,137 @@ class Project:
 
     def landmark_changes(self, primary: int | None = None) -> list[int]:
         """The cameras `sync_landmarks(primary)` would change (a name missing,
-        or the list in another order) -- what an undo step must snapshot."""
+        or the list in another order; a segment name missing, G149) -- what an
+        undo step must snapshot."""
         if self.n_views < 2:
             return []
         order = self.landmark_order(primary)
-        return [v for v, s in enumerate(self.sessions) if [m.name for m in s.points] != order]
+        segs = self.missing_segments()
+        return [v for v, s in enumerate(self.sessions) if [m.name for m in s.points] != order or v in segs]
 
+    # (G149, G153) ANIMALS are shared BY NAME too: an animal made in one camera exists (no clicks, no
+    # silhouette; its skeleton and hold) in every camera -- one animal in every view (its visual hull,
+    # its landmarks). Its points are named "<animal> <part>" in every camera alike.
+    def missing_segments(self) -> dict[int, list]:
+        """{view: [AnimalMeta another camera has and this one lacks, ...]}."""
+        first: dict[str, object] = {}
+        for s in self.sessions:
+            for a in s.segments:
+                first.setdefault(a.name, a)
+        out: dict[int, list] = {}
+        for v, s in enumerate(self.sessions):
+            have = set(s.segment_names())
+            lack = [a for n, a in first.items() if n not in have]
+            if lack:
+                out[v] = lack
+        return out
+
+    def _free_landmark_name(self, desired: str, olds: dict[int, str | None]) -> str:
+        """`desired`, or 'desired (2)' …: a landmark name free in EVERY camera (`olds` = per camera
+        the point being renamed there, so its own name does not count as taken)."""
+        from kinetrace.session import formula_safe
+        base = formula_safe(desired)
+        cand, k = base, 2
+        while any(s.unique_name(cand, exclude_pid=s.pid_by_name(olds[v]) if olds.get(v) else None) != cand
+                  for v, s in enumerate(self.sessions)):
+            cand, k = f"{base} ({k})", k + 1
+        return cand
+
+    def rename_segment(self, old: str, desired: str) -> str:
+        """Rename animal `old` in EVERY camera to one name free in all of them; its points follow
+        ("<new> <part>", each one name free in every camera, G153). Returns the name applied."""
+        from kinetrace.session import formula_safe, qualified
+        base = formula_safe(desired or "animal", "animal")
+        cand, k = base, 2
+
+        def free(s, name):
+            i = s.segment_index(old)
+            return s.unique_segment_name(name, exclude=i) == name
+        while not all(free(s, cand) for s in self.sessions):
+            cand, k = f"{base} {k}", k + 1
+        if cand == old:
+            return old
+        # the points first, by name in every camera, then the animal itself
+        parts: dict[str, str] = {}
+        for s in self.sessions:
+            i = s.segment_index(old)
+            if i is not None:
+                for pid in s.points_of(i):
+                    parts.setdefault(s.points[pid].name, s.part_name(pid))
+        for oldname, part in parts.items():
+            olds = {v: oldname for v, _pid in self.landmark_views(oldname)}
+            new = self._free_landmark_name(qualified(cand, part), olds)
+            for v, pid in self.landmark_views(oldname):
+                s = self.sessions[v]
+                s.points[pid].name = new
+                s.points[pid].segment = cand
+        for s in self.sessions:
+            i = s.segment_index(old)
+            if i is not None:
+                s.segments[i].name = cand
+                for q in s.points:                 # a point the loop above did not reach
+                    if q.segment == old:
+                        q.segment = cand
+                s._touch()
+        return cand
+
+    def move_landmarks(self, names, animal: str) -> list[tuple[str, str]]:
+        """Landmarks `names` into animal `animal` ("" = Scene) in EVERY camera (G153: membership is
+        one per landmark, like its name): renamed "<animal> <part>" to one name free in all cameras.
+        Returns [(old name, new name)] of those that changed."""
+        from kinetrace.session import qualified
+        out = []
+        for oldname in names:
+            where = self.landmark_views(oldname)
+            if not where:
+                continue
+            v0, p0 = where[0]
+            s0 = self.sessions[v0]
+            if (s0.points[p0].segment if s0.segment_of(p0) is not None else "") == animal:
+                continue
+            part = s0.part_name(p0)
+            new = self._free_landmark_name(qualified(animal, part), {v: oldname for v, _pid in where})
+            for v, pid in where:
+                s = self.sessions[v]
+                if animal and s.segment_index(animal) is None:
+                    continue                       # (sync_landmarks gives every camera the animal first)
+                s.points[pid].segment = animal
+                s.points[pid].name = new
+                s._touch()
+            out.append((oldname, new))
+        return out
+
+    def remove_segment(self, name: str, keep_points: bool = True) -> list[int]:
+        """Remove animal `name` from every camera; its points go to Scene (named by their part, one
+        name free in every camera) or, `keep_points=False`, are removed too. Returns the cameras it
+        was removed from."""
+        names = sorted({s.points[pid].name for s in self.sessions
+                        for pid in s.points_of(s.segment_index(name)) if s.segment_index(name) is not None})
+        if keep_points:
+            self.move_landmarks(names, "")
+        out = []
+        for v, s in enumerate(self.sessions):
+            i = s.segment_index(name)
+            if i is not None:
+                s.remove_segment(i, keep_points=keep_points)
+                out.append(v)
+        return out
+
+    def share_animal(self, name: str, from_view: int | None = None) -> None:
+        """Animal `name`'s skeleton and hold, as camera `from_view` (the working one) has them, in
+        every camera (G153: they belong to the animal, not to a picture)."""
+        from kinetrace.session import _copy_json
+        src = self.sessions[self.active if from_view is None else from_view]
+        i = src.segment_index(name)
+        if i is None:
+            return
+        a = src.segments[i]
+        for s in self.sessions:
+            j = s.segment_index(name)
+            if s is not src and j is not None:
+                s.segments[j].skeleton = _copy_json(a.skeleton)
+                s.segments[j].hold = a.hold
+                s._touch()
     def sync_landmarks(self, primary: int | None = None) -> int:
         """Give every camera every landmark any camera has, in ONE order
         (`landmark_order(primary)`, G26); returns how many points were added.
@@ -435,6 +560,12 @@ class Project:
             for meta in metas:
                 self.sessions[v].add_placeholder(meta)
                 added += 1
+        for v, segs in self.missing_segments().items():          # (G149) segments by name too
+            s = self.sessions[v]
+            keep, had = s.active_seg, len(s.segments)
+            for a in segs:
+                s.add_segment(a.name, color=a.color, meta=a, shared=True)   # its skeleton and hold too (G153)
+            s.active_seg = keep if had else 0             # the camera keeps the segment it was working on
         order = self.landmark_order(primary)
         for s in self.sessions:
             names = [m.name for m in s.points]
@@ -460,11 +591,16 @@ class Project:
         them (a per-camera suffix would split one landmark into two for 3D).
         Returns the name applied."""
         where = self.landmark_views(old)
-        from kinetrace.session import formula_safe
+        from kinetrace.session import formula_safe, qualified
         base = formula_safe(desired)
-        cand, k = base, 2
-        while any(s.unique_name(cand, exclude_pid=s.pid_by_name(old)) != cand for s in self.sessions):
-            cand, k = f"{base} ({k})", k + 1
+        if where:                              # (G153) a point of an animal keeps its prefix
+            s0, p0 = self.sessions[where[0][0]], where[0][1]
+            k0 = s0.segment_of(p0)
+            if k0 is not None and not base.startswith(s0.segments[k0].name + " "):
+                base = qualified(s0.segments[k0].name, base)
+        # (simplify 2026-10-04) `base` is already formula-safe (animal names are), so the shared
+        # helper's formula_safe leaves it as it is
+        cand = self._free_landmark_name(base, {v: old for v in range(len(self.sessions))})
         for v, pid in where:
             self.sessions[v].rename_point(pid, cand)
         return cand

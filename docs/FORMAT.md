@@ -54,7 +54,8 @@ lenses.json                          lens profiles per camera, if any
 reconstruction/meta.json             the last 3D result, if any: its landmarks, unit, first frame
 reconstruction/points/<landmark>.csv   its positions: frame, x, y, z, residual, n_cams, <camera>_px
 cameras/<folder>/view.json           this camera: frame on screen, selected point(s), zoom, timeline zoom
-cameras/<folder>/points.csv          the points (landmarks) and their settings
+cameras/<folder>/points.csv          the points (landmarks) and their settings (`animal` = the
+                                     animal a landmark belongs to; empty = Scene, no animal)
 cameras/<folder>/tracks/<landmark>.csv   one landmark's positions: one row per frame that has data
 cameras/<folder>/events.csv          marked events
 cameras/<folder>/notes.csv           notes on frames
@@ -63,10 +64,14 @@ cameras/<folder>/spots.json          per landmark, the Moving spot point model's
                                      Test the point models on my clicks chose: {"P1": {"cue":
                                      "bright", "radius": 6.0, "speed_gain": 0.0, "sigma": 1.5}}
                                      (only when a test chose them; a landmark not listed is automatic)
-cameras/<folder>/skeleton.json       the named skeleton (only with one)
-cameras/<folder>/segment.json        the segment's name, colour and SAM clicks / boxes (only with a segment)
-cameras/<folder>/silhouette/summary.csv   the segment per frame: area, score, centroid, box
-cameras/<folder>/silhouette/*.npy    the segment's outline and midline per frame (binary)
+cameras/<folder>/segment.json        the first animal: its name, colour, SAM clicks / boxes, its own
+                                     skeleton, whether it holds its points and whether its silhouette
+                                     is shown (only with an animal)
+cameras/<folder>/silhouette/summary.csv   the first animal's silhouette per frame: area, score, centroid, box
+cameras/<folder>/silhouette/*.npy    the first animal's outline and midline per frame (binary)
+cameras/<folder>/segments/<name>/    every further animal (a project may have any number): its own
+                                     segment.json (with its "order") and silhouette/, as above; the
+                                     first animal stays where a one-animal project has it
 cameras/<folder>/body/*.npy          body poses and mesh (binary; only after a Body run)
 exports/                             files for other programs, refreshed at each save (only when chosen);
                                      DLTdv files there are the points file + `_pointnames.csv` only
@@ -90,7 +95,7 @@ the file).
 ### `kinetrace.json`
 
 ```json
-{"format": "kinetrace-project", "format_version": 2, "app_version": "0.3.0",
+{"format": "kinetrace-project", "format_version": 3, "app_version": "0.3.0",
  "project_id": "5f0c…", "saved_at": "2026-09-29T21:04:11.482113+00:00",
  "cameras": [{"folder": "cam1", "name": "cam1"}], "videos_relative_to": "project"}
 ```
@@ -100,7 +105,10 @@ is matched to it); `saved_at` identifies the save: the moment kinetrace.json
 is replaced is the moment a save counts. `videos_relative_to` = where the
 videos' `relative_path`s start (`project` = the project folder itself;
 `container` = the folder holding a single file). A project whose
-`format_version` is newer than the program is refused with a message.
+`format_version` is newer than the program is refused with a message. Format 3
+(animal layers) adds `points.csv`'s `animal` column and keeps each animal's
+skeleton in its own `segment.json`; there is no camera-level `skeleton.json`
+any more.
 
 ### `project.json`
 
@@ -137,17 +145,18 @@ videos' `relative_path`s start (`project` = the project folder itself;
 
 ### `cameras/<folder>/points.csv`
 
-`name, color, shown, kind, radius, anchor, source, spec, free, shape, outline, file, tracker`
+`name, color, shown, kind, radius, anchor, source, spec, free, shape, outline, file, tracker, animal`
 
 | column | meaning |
 |---|---|
-| `name` | unique within the camera; the same name in two cameras is the same landmark (that is how 3D matches them) |
+| `name` | unique within the camera; the same name in two cameras is the same landmark (that is how 3D matches them). A point of an animal is named `<animal> <part>` ("squirrel snout") |
+| `animal` | the name of the animal the point belongs to (its `segment.json`'s `name`); empty = Scene, no animal |
 | `file` | its positions: `tracks/<file>` (the name itself, with `< > : " / \ \| ? *` as `_`; blank = from the name) |
 | `kind` | `point` or `group` (a region tracked as a whole) |
 | `radius`, `shape`, `outline` | a region's size and outline (`circle` / `rect` / `polygon`; `outline` = space-separated `x y x y …` in pixels) |
 | `anchor` | 1 = the appearance lock is on |
-| `source` | `track` (followed by the point tracker), `silhouette` (computed from the segment; `spec` says how) or `ball` |
-| `free` | 1 = may leave the animal (not held on its silhouette) |
+| `source` | `track` (followed by the point tracker), `silhouette` (computed from its animal's silhouette; `spec` says how) or `ball` |
+| `free` | 1 = may leave its silhouette (not held on it even when its animal holds its points) |
 | `tracker` | the point's own tracker: `alltracker`, `cotracker3` or `spot` (Moving spot); blank = the project's default point model (`state.json` `tools`). Any other value reads as blank |
 
 ### `cameras/<folder>/tracks/<landmark>.csv`
@@ -169,6 +178,25 @@ position, the rest 0.
 | `hidden` | 1 = marked hidden (Shift+X): exported as blank, left out of 3D |
 | `radius` | a ball marker's fitted radius, in pixels |
 
+### `segment.json` (one per animal)
+
+```json
+{"name": "squirrel", "color": [255, 160, 60],
+ "prompts": {"120": [[812.5, 440.0, 1]]}, "boxes": {},
+ "hold": false,
+ "skeleton": {"name": "Gliding mammal", "landmarks": ["snout", "tail_tip"],
+              "bones": [["snout", "tail_tip"]], "derived": {"tail_tip": "tip"}, "head": "snout"}}
+```
+
+The first animal's is `cameras/<folder>/segment.json`, every further one's
+`cameras/<folder>/segments/<name>/segment.json` (with its `order`). `prompts`
+= the Segment tool's clicks per frame (`x, y, 1` = the animal, `0` = not it),
+`boxes` = boxes drawn per frame (`x0, y0, x1, y1`). `hold` = *Keep its points
+on its silhouette*. (Whether its silhouette is drawn is display state:
+`view.json`'s `hidden_animals`.) `skeleton` (only when
+it has one) is in **part** names — the points themselves are named `<animal>
+<part>` in `points.csv`.
+
 ### `events.csv` and `notes.csv`
 
 `events.csv`: `name, start, end, color, note, author` (frames, inclusive).
@@ -181,12 +209,15 @@ auto-pause, ROI, marker size, trails, display filter, point model, …) and
 `layout` (window rectangle, side panel shown / floating, splitter sizes, solo
 mode, step size, the getting-started strip). `view.json` (per camera):
 `current_frame`, `selected_point` (by name), `selected_points` (a list of names:
-every point selected in the POINTS list, which is what Track will track; names,
+every point selected in LAYERS, which is what Track will track; full names,
 never indices, so a reordered list still selects the right points) and
-`segment_selected` (true = the SEGMENT row is selected, so Track runs the
-segment too; both are written only once the app has recorded a selection, and a file
-without them simply has none recorded), `zoom`,
+`segment_selected` (true = an animal's row is selected in LAYERS, so Track runs
+its silhouette too) and `selected_animals` (which animals' rows are selected, by
+name); they are written only once the app has recorded a selection, and a file
+without them simply has none recorded, `zoom`,
 `center_x`, `center_y`, `user_zoomed`, `timeline` (`[first, last]` frame shown),
+`hidden_animals` (the animals whose LAYERS checkbox is off: their silhouettes
+are not drawn; toggling it never makes the project unsaved),
 `annotator` and `counters` (the point / event name counters). Odd or missing
 values fall back to the defaults: this is never data.
 
@@ -215,7 +246,7 @@ A list, one entry per camera (`null` without a profile): `width`, `height`,
 
 ### `cameras/<folder>/silhouette/summary.csv`
 
-`frame, area, score, centroid_x, centroid_y, x0, y0, x1, y1` — the segment per
+`frame, area, score, centroid_x, centroid_y, x0, y0, x1, y1` — the animal's silhouette per
 frame (area in pixels², presence score, centroid, bounding box inclusive), one
 row per frame that has one.
 
@@ -235,7 +266,7 @@ camera's frames (the first camera's), `residual` = DLTdv's rmse in pixels,
 `score`, `bbox`, `focal`, `cam_t` (frames × people × joints …), `box_src`
 (frames × people, `int8`: where the person's box on that frame came from —
 0 = unknown, a track made before this was recorded, counted as detected;
-1 = the person detector; 2 = given, i.e. the segment silhouette or a box drawn by
+1 = the person detector; 2 = given, i.e. an animal's silhouette or a box drawn by
 hand, whose `score` is 1.0 meaning "you said so" and not a detection confidence;
 3 = no box, the whole frame was taken as the person), `meta.json` (rig, people's
 names, backend), and the mesh. An older body track without `box_src` opens with
@@ -335,13 +366,13 @@ file is kept as `name.kinetrace.bak`) or to keep saving it as one file.
 
 Kinetrace converts these for you (File → Import, 3D → Export Calibration,
 Ctrl+E, and `python -m kinetrace.convert`). The plain CSV, DeepLabCut and sparse
-TSV exports also write an `_events.csv` and (with a segment) a `_segment.csv`
+TSV exports also write an `_events.csv` and (with a silhouette) a `_segment.csv`
 beside them; the DLTdv exports do not. For reference:
 
 | Program | Pixels | What Kinetrace reads / writes |
 |---|---|---|
-| **DeepLabCut** | top-left, pixel centres on whole numbers (as Kinetrace) | CSV with `scorer` / `bodyparts` / `coords` rows, `x, y, likelihood`, first column = frame (videos analysed by DLC; single animal) |
-| **SLEAP** | (0, 0) is the centre of the top-left pixel (as Kinetrace; sleap-io documentation) | SLEAP 1.x analysis CSV (`track, frame_idx, instance.score, node.x, node.y, node.score`) and sleap-io's `sleap` / `instances` / `points` / `frames` CSV layouts; one track |
+| **DeepLabCut** | top-left, pixel centres on whole numbers (as Kinetrace) | CSV with `scorer` / `bodyparts` / `coords` rows, `x, y, likelihood`, first column = frame (videos analysed by DLC; single animal). Kinetrace also writes the **multi-animal** CSV (`scorer` / `individuals` / `bodyparts` / `coords` rows): one individual per animal, the Scene points as DeepLabCut's unique body parts under `single` |
+| **SLEAP** | (0, 0) is the centre of the top-left pixel (as Kinetrace; sleap-io documentation) | reads the SLEAP 1.x analysis CSV (`track, frame_idx, instance.score, node.x, node.y, node.score`) and sleap-io's `sleap` / `instances` / `points` / `frames` CSV layouts, one track; writes the analysis CSV with one track per animal plus a `scene` track for the Scene points (`track, frame_idx, instance.score, <part>.x, <part>.y, <part>.score`) |
 | **DLTdv8 / easyWand** | first pixel = **1**, top-left | xypts `pt1_cam1_X …` (NaN = none) with a `_pointnames.csv` sidecar (CSV-quoted, so a landmark name with a comma or a quote survives; it holds the real names); xyzpts `pt1_X …` (a frame with no 3D position is a row of NaN / empty cells, so row = reference frame); dltCoefs.csv (11 rows, a column per camera). A DLTdv export from Kinetrace is **points only**: the points file and its `_pointnames.csv`, with no events or silhouette files beside it |
 | **older DLTdv, Argus** | first pixel = 1, y up from the **bottom** edge | xypts (the sidecar's `convention` line says `bottom-left`); Argus lens profile lines `cam f w h cx cy AR k1 k2 t1 t2 k3` (OpenCV pixels) |
 | **Anipose / aniposelib** | OpenCV | `calibration.toml`: `[cam_0]` `name`, `size = [w, h]`, `matrix` (K), `distortions` (k1 k2 p1 p2 k3; 4 + `fisheye = true`), `rotation` (Rodrigues vector), `translation`; x_cam = R X + t. 3D output CSV `name_x, name_y, name_z, name_error, name_ncams, name_score, …, fnum` |

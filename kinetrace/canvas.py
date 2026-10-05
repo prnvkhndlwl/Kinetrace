@@ -40,7 +40,8 @@ from PySide6.QtGui import (QBrush, QColor, QCursor, QImage, QPainter, QPainterPa
                            QPixmap, QPolygonF, QTransform)
 from PySide6.QtWidgets import (QApplication, QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem,
                                QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene,
-                               QGraphicsSimpleTextItem, QGraphicsView, QLabel, QMenu)
+                               QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QLabel, QMenu,
+                               QToolButton, QWidget)
 
 from kinetrace.widgets import WheelSteps
 
@@ -571,6 +572,43 @@ class VideoCanvas(QGraphicsView):
         self._prompt_box_item.setZValue(11)
         self._prompt_box_item.setVisible(False)
         self._scene.addItem(self._prompt_box_item)
+        self._build_zoom_bar()
+
+    def _build_zoom_bar(self) -> None:
+        """(G152) The VIDEO's zoom in / out / fit, in the picture's lower-right corner: the wheel,
+        +/− and R had no buttons, and the timeline's zoom buttons beside play / pause were taken
+        for these. Zooms about the middle of the view (the pointer is on the button)."""
+        from kinetrace import icons
+        bar = QWidget(self.viewport())
+        bar.setObjectName("video_zoom")
+        bar.setAttribute(Qt.WA_StyledBackground, True)
+        bar.setStyleSheet("#video_zoom { background: rgba(20, 20, 24, 150); border-radius: 5px; }")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setSpacing(1)
+        self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_fit = (QToolButton(bar) for _ in range(3))
+        for b, ic, tip, act in (
+                (self.btn_zoom_out, icons.zoom_out(), "Zoom the VIDEO out (−, or the mouse wheel)",
+                 lambda: self.zoom_step(1 / ZOOM_STEP, centre=True)),
+                (self.btn_zoom_in, icons.zoom_in(), "Zoom the VIDEO in (+, or the mouse wheel over the picture)",
+                 lambda: self.zoom_step(ZOOM_STEP, centre=True)),
+                (self.btn_zoom_fit, icons.zoom_fit(), "Fit the whole picture in the view (R)", self.fit)):
+            b.setIcon(ic)
+            b.setAutoRaise(True)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setToolTip(tip)
+            b.clicked.connect(act)
+            lay.addWidget(b)
+        bar.adjustSize()
+        bar.setVisible(False)
+        self._zoom_bar = bar
+
+    def _place_zoom_bar(self) -> None:
+        bar = self._zoom_bar
+        vp = self.viewport().rect()
+        bar.move(vp.right() - bar.width() - 6, vp.bottom() - bar.height() - 6)
+        bar.setVisible(self._native_size is not None)
+        bar.raise_()
 
     # ---------------------------------------------------------------- frames
 
@@ -587,11 +625,13 @@ class VideoCanvas(QGraphicsView):
         self._placeholder.setVisible(False)
         self._user_zoomed = False
         self.fit()
+        self._place_zoom_bar()
 
     def clear_video(self) -> None:
         self._native_size = None
         self._pixitem.setPixmap(QPixmap())
         self._placeholder.setVisible(True)
+        self._place_zoom_bar()
         self.set_points(np.zeros((0, 2)), np.zeros(0, bool), [], None)
         self.clear_group_members()
         self.set_mask(None)
@@ -614,16 +654,20 @@ class VideoCanvas(QGraphicsView):
     def set_mask(self, polys, color: tuple[int, int, int] = (77, 227, 176),
                  opacity: float = 0.35) -> None:
         """Silhouette overlay from native-px outline polygons (None hides it)."""
+        self._mask_rect = self._fill_mask_item(self._mask_item, polys, color, opacity)
+
+    def _fill_mask_item(self, item, polys, color, opacity: float):
+        """One silhouette layer onto `item`; returns its bounding QRectF (None = hidden)."""
         if not polys:
-            self._mask_item.setVisible(False)
-            self._mask_rect = None
-            return
+            item.setVisible(False)
+            return None
         path = QPainterPath()
         path.setFillRule(Qt.WindingFill)
+        rect = None
         allpts = np.concatenate([np.asarray(q, np.float64).reshape(-1, 2) for q in polys if len(q) >= 3]) if polys else np.zeros((0, 2))
         if len(allpts):
             lo, hi = allpts.min(axis=0), allpts.max(axis=0)
-            self._mask_rect = QRectF(float(lo[0]), float(lo[1]), float(hi[0] - lo[0]), float(hi[1] - lo[1]))
+            rect = QRectF(float(lo[0]), float(lo[1]), float(hi[0] - lo[0]), float(hi[1] - lo[1]))
         for poly in polys:
             pts = np.asarray(poly, np.float64)
             if len(pts) < 3:
@@ -631,18 +675,23 @@ class VideoCanvas(QGraphicsView):
             # outlines are OpenCV pixel-centre points, like the scene (I24)
             path.addPolygon(QPolygonF([QPointF(float(x), float(y)) for x, y in pts]))
             path.closeSubpath()
-        self._mask_item.setPath(path)
+        item.setPath(path)
         fill = QColor(*color)
         fill.setAlpha(int(np.clip(opacity, 0.0, 1.0) * 255))
-        self._mask_item.setBrush(QBrush(fill))
+        item.setBrush(QBrush(fill))
         pen = QPen(QColor(*color, 230), 1.5)
         pen.setCosmetic(True)
-        self._mask_item.setPen(pen)
-        self._mask_item.setVisible(True)
+        item.setPen(pen)
+        item.setVisible(True)
+        return rect
 
     def set_midline(self, pts, color: tuple[int, int, int] = (77, 227, 176)) -> None:
+        self._fill_midline_item(self._midline_item, pts, color)
+
+    @staticmethod
+    def _fill_midline_item(item, pts, color) -> None:
         if pts is None or len(pts) < 2:
-            self._midline_item.setVisible(False)
+            item.setVisible(False)
             return
         path = QPainterPath()
         pts = np.asarray(pts, np.float64)
@@ -651,9 +700,46 @@ class VideoCanvas(QGraphicsView):
             path.lineTo(float(p[0]), float(p[1]))
         pen = QPen(QColor(*color, 210), 2.0)
         pen.setCosmetic(True)
-        self._midline_item.setPen(pen)
-        self._midline_item.setPath(path)
-        self._midline_item.setVisible(True)
+        item.setPen(pen)
+        item.setPath(path)
+        item.setVisible(True)
+
+    def set_masks(self, layers, opacity: float = 0.35) -> None:
+        """(G149) Every segment's silhouette on this frame: `layers` = [(outline polygons or None,
+        colour, midline points or None)], each in its own colour. The first layer uses the items a
+        single segment always had; further ones get their own items (made on first use)."""
+        layers = list(layers or [])
+        if not layers:
+            layers = [(None, (77, 227, 176), None)]
+        polys, color, mid = layers[0]
+        self.set_mask(polys, color, opacity)
+        self.set_midline(mid, color)
+        rects = [self._mask_rect] if self._mask_rect is not None else []
+        extra = getattr(self, "_extra_masks", None)
+        if extra is None:
+            extra = self._extra_masks = []
+        while len(extra) < len(layers) - 1:
+            mi, li = QGraphicsPathItem(), QGraphicsPathItem()
+            mi.setZValue(self._mask_item.zValue())
+            li.setZValue(self._midline_item.zValue())
+            self._scene.addItem(mi)
+            self._scene.addItem(li)
+            extra.append((mi, li))
+        for k, (mi, li) in enumerate(extra):
+            if k + 1 < len(layers):
+                polys, color, mid = layers[k + 1]
+                r = self._fill_mask_item(mi, polys, color, opacity)
+                if r is not None:
+                    rects.append(r)
+                self._fill_midline_item(li, mid, color)
+            else:
+                mi.setVisible(False)
+                li.setVisible(False)
+        if rects:
+            u = rects[0]
+            for r in rects[1:]:
+                u = u.united(r)
+            self._mask_rect = u
 
     def set_prompts(self, clicks, box, color: tuple[int, int, int] = (77, 227, 176)) -> None:
         """Show this frame's segment prompts: clicks [(x, y, label)] and a box."""
@@ -756,6 +842,7 @@ class VideoCanvas(QGraphicsView):
         super().resizeEvent(ev)
         if not self._user_zoomed:
             self.fit()
+        self._place_zoom_bar()
 
     # ---------------------------------------------------------------- points
 
@@ -1474,9 +1561,10 @@ class VideoCanvas(QGraphicsView):
             self._apply_follow()
             self._refresh_loupe()
 
-    def zoom_step(self, factor: float) -> None:
+    def zoom_step(self, factor: float, centre: bool = False) -> None:
         """Keyboard zoom (+/-), anchored under the mouse pointer when it is
-        over the video, else at the viewport center."""
+        over the video, else at the viewport center (`centre`: always the
+        centre -- the zoom buttons, whose pointer sits in the corner, G152)."""
         if self._native_size is None:
             return
         current = self.transform().m11()
@@ -1484,7 +1572,7 @@ class VideoCanvas(QGraphicsView):
             return
         vp = self.viewport()
         pos = vp.mapFromGlobal(QCursor.pos())
-        if not vp.rect().contains(pos):
+        if centre or not vp.rect().contains(pos):
             pos = vp.rect().center()
         anchor = self.mapToScene(pos)
         prev = self.transformationAnchor()
@@ -1553,13 +1641,13 @@ class VideoCanvas(QGraphicsView):
                            "ignored by 3D. Shift+X toggles it for the selected point; on the\n"
                            "timeline, Shift+drag a window and right-click to mark a stretch.")
         acts["occluded"] = act_occ
-        act_free = menu.addAction("May leave the segment (free point)")
+        act_free = menu.addAction("May leave its silhouette (free point)")
         act_free.setCheckable(True)
         act_free.setChecked(bool(getattr(meta, "free", False)) if meta is not None else False)
-        act_free.setToolTip("With the Body toggle on, tracked points are kept inside the segment's "
-                            "silhouette, and one that clearly leaves it stops the run. Check this for a "
-                            "point that legitimately lives elsewhere (a marker on the ground, a reference "
-                            "object).")
+        act_free.setToolTip("When its animal keeps its points on its silhouette (right-click the animal in "
+                            "LAYERS), a tracked point is held inside that silhouette, and one that clearly "
+                            "leaves it stops the run. Check this for a point that legitimately lives "
+                            "elsewhere (a marker on the ground, a reference object).")
         acts["free"] = act_free
         acts["delete"] = menu.addAction("Delete point")
         if callable(self.menu_extra):

@@ -378,6 +378,8 @@ assert w._add_view(VB)
 pump(0.5)
 w.session.add_point(0, 80.0, 70.0)
 w.session.add_point(0, 90.0, 75.0)
+w._refresh_point_list()             # as every add in the app does: the timeline gets room for its lanes (G158)
+pump(0.2)                           # BEFORE the user shrinks it below
 w._on_select(1)
 w.btn_follow.setChecked(True)
 w.btn_autopause.setChecked(False)

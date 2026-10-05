@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import traceback
+import weakref
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, Q
 from kinetrace import APP_NAME, APP_TAGLINE, APP_VERSION, theme
 from kinetrace import alltracker_backend
 from kinetrace.camerapanel import CameraPanel
+from kinetrace.layers import LayersPanel, ROLE_HAS, ROLE_NAME
 from kinetrace.view3d import CalibrationDialog, Scene3D, View3D
 from kinetrace.canvas import (ZOOM_STEP as CANVAS_ZOOM_STEP,
                                   TRAIL_FRAMES, TRAIL_MAX, DISPLAY_FILTERS, REGION_SHAPES)
@@ -37,7 +39,8 @@ from kinetrace.project import MAX_VIEWS, REFERENCE_VIEW, Project
 from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_token,
                                      model_is_cached as seg_is_cached, preferred_backend,
                                      save_token, working_size)
-from kinetrace import projectfile, recovery, trackio
+from kinetrace import gpmf, projectfile, recovery, trackio
+from kinetrace.lens import lens_label
 from kinetrace.errors import plain_error as _plain_error
 from kinetrace.session import TrackingSession
 from kinetrace.viewgrid import ViewGrid, caption_for
@@ -104,10 +107,10 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>frame box</td><td>type a frame number + Enter</td></tr>
 </table>
 <h3>Tracking</h3><table>
-<tr><td class=k>T</td><td>start tracking / pause (semi-automatic mode: one step). Only what is <b>selected</b> is tracked: the points selected in POINTS and the segment when its SEGMENT row is selected — nothing selected, nothing tracked</td></tr>
-<tr><td class=k>Ctrl+A</td><td>select everything to track: every point and the segment</td></tr>
-<tr><td class=k>several selected</td><td>right-click one of them in POINTS (or hold right on one of their markers): one menu for all — track these, clear here / in the window / whole tracks, delete, hidden here, show / hide, Tracker, fill gaps (the segment too when its row is selected); a short right click on one of their markers clears all of them on this frame</td></tr>
-<tr><td class=k>AT / CT / MS</td><td>beside a point's name in POINTS: its tracker — AllTracker, CoTracker3 or Moving spot (right-click → Tracker). One Track press tracks each selected point with its own tracker; AllTracker and CoTracker3 points run one after the other (two passes over the same frames), and a point that stops ends the run for all</td></tr>
+<tr><td class=k>T</td><td>start tracking / pause (semi-automatic mode: one step). Only what is <b>selected</b> in LAYERS is tracked: the points selected there, and an animal row = its silhouette and all its points — nothing selected, nothing tracked</td></tr>
+<tr><td class=k>Ctrl+A</td><td>select everything to track: every animal and every point</td></tr>
+<tr><td class=k>several selected</td><td>right-click one of them in LAYERS (or hold right on one of their markers): one menu for all — track these, clear here / in the window / whole tracks, delete, hidden here, show / hide, Tracker, fill gaps, <b>Move to</b> another animal, and for two points of one animal <b>Connect them with a bone</b>; a short right click on one of their markers clears all of them on this frame</td></tr>
+<tr><td class=k>AT / CT / MS</td><td>beside a point's name in LAYERS: its tracker — AllTracker, CoTracker3 or Moving spot (right-click → Tracker). One Track press tracks each selected point with its own tracker; AllTracker and CoTracker3 points run one after the other (two passes over the same frames), and a point that stops ends the run for all</td></tr>
 <tr><td class=k>Shift+T</td><td>several cameras: this run in <b>every camera</b> that has the point(s) here, all at the same time (Track ▾ → <i>Every camera</i> makes T and F always do that)</td></tr>
 <tr><td class=k>X / Space</td><td>pause a running track (during 3D → Re-track Disagreeing Stretches: stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run: stops every camera at once)</td></tr>
 <tr><td class=k>Track ▾</td><td>dropdown: Automatic (to the end) or Semi-automatic (F steps); <b>Every camera</b> (several cameras: the selected points tracked in each camera that has them at this instant, ball markers included, all at the same time, each live in its own view; the button says "· 3 cams"; X stops them all; one Ctrl+Z undoes all; the menu stays open while you tick, so mode, Every camera and point model combine); <b>point model</b>: sets the tracker of the selected points and the project's default for the others — AllTracker (default: animals and objects with a visible shape), CoTracker3 (faster, sub-pixel on high-contrast markers) or Moving spot (only a target small enough to be ONE point — a dot up to about 20 px with no visible shape; no model, stops where it loses the spot); <b>Test the point models on my clicks</b> (place a point by hand on 20 frames in a row first) recommends one; the choice is saved with the project</td></tr>
@@ -116,41 +119,42 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>Ctrl+Z</td><td>undo the last tracking run, bulk edit or hand edit (a click, a right-click clear, Ctrl+click, deleted point, Shift+X) — one step</td></tr>
 </table>
 <h3>Points &amp; regions (on the video)</h3><table>
-<tr><td class=k>Body</td><td>keep tracked points on the segment: a point a few pixels off the silhouette is nudged back onto it; a point that <b>leaves</b> it stops the run at that frame and its track ends there — click it where it really is and Track again (right-click a point → "May leave the segment (free point)" to exempt it)</td></tr>
-<tr><td class=k>N (or Add)</td><td>arm the crosshair: the next click places a point — stray clicks never edit</td></tr>
+<tr><td class=k>N (or Point)</td><td>arm the crosshair: the next click places a new point — stray clicks never edit. It joins the animal selected in LAYERS, else the animal whose silhouette is under the click, else the animal of the selected point, else Scene (a notice says where, with a click to move it)</td></tr>
 <tr><td class=k>click (armed)</td><td>place a new point — or continue the selected point where it has no data</td></tr>
 <tr><td class=k>hold left + move</td><td>pan the view (from a marker too: points are never dragged — a click places them)</td></tr>
-<tr><td class=k>right-click a marker</td><td>clear that point on <b>this frame only</b> and select it (one Ctrl+Z step); with several points selected, a short right click on one of their markers clears all of them on this frame (points only — the segment is not touched)</td></tr>
-<tr><td class=k>hold right on a marker</td><td>(half a second) the point's menu — the same menu as a right click on its name in POINTS</td></tr>
+<tr><td class=k>right-click a marker</td><td>clear that point on <b>this frame only</b> and select it (one Ctrl+Z step); with several points selected, a short right click on one of their markers clears all of them on this frame (points only — the silhouettes are not touched)</td></tr>
+<tr><td class=k>hold right on a marker</td><td>(half a second) the point's menu — the same menu as a right click on its name in LAYERS</td></tr>
 <tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing is placed (a notice on the video says so). One Ctrl+Z step. A click on or right beside the ◇ places it exactly there. A landmark derived from the silhouette cannot be placed by hand (right-click → Data source → Track by appearance first)</td></tr>
-<tr><td class=k>＋ New point</td><td>POINTS panel: a named point with no position yet, selected (and in every camera's list) — then click it on the video</td></tr>
+<tr><td class=k>＋ Point</td><td>LAYERS: a named point with no position yet, in the selected animal (else in Scene), selected (and in every camera's list) — then click it on the video</td></tr>
 <tr><td class=k>A</td><td>with a calibration: place the selected point at the <b>◇</b> — where two or more other cameras put it — exactly (one Ctrl+Z step)</td></tr>
 <tr><td class=k>Alt+click</td><td>with a calibration: <b>look here</b> — where this spot can be in the other cameras (a dashed line there, a "?" ring here). Nothing is edited; Esc clears it</td></tr>
-<tr><td class=k>Shift+&lt; / Shift+&gt;</td><td>jump to the selected point's <b>first / last frame with data</b>; with nothing selected, the segment's first / last silhouette</td></tr>
+<tr><td class=k>Shift+&lt; / Shift+&gt;</td><td>jump to the selected point's <b>first / last frame with data</b>; with no point selected, the first / last silhouette of the animals selected in LAYERS (else of every animal)</td></tr>
 <tr><td class=k>point menu (curve)</td><td><b>Fill its gaps between hand placements</b> / <b>Replace everything between its hand placements with that curve</b>: keyframe digitizing — a smooth curve through the frames you placed by hand fills the frames between (confidence 0.6); frames you marked hidden are left alone; Ctrl+Z undoes</td></tr>
 <tr><td class=k>point menu</td><td>also: go to its first / last frame, its first / last hand-placed frame, its first doubtful stretch; clear its position on this frame, in the selected frame window, or its whole track; with a calibration, <b>Snap to the other cameras' rays here</b> and <b>Place it where the other cameras put it (◇)</b></td></tr>
 <tr><td class=k>, / .</td><td>previous / next hand-placed frame of the selected point</td></tr>
 <tr><td class=k>J / Shift+J</td><td>next / previous low-confidence stretch (the red runs) — of the selected points, or of all</td></tr>
 <tr><td class=k>Shift+X</td><td>mark the selected point <b>hidden</b> on this frame (kept, not exported, not used for 3D); again to unmark. On the timeline: Shift+drag a window, right-click → Mark hidden</td></tr>
 <tr><td class=k>Shift+N</td><td>note on this frame (▲ on the timeline; right-click it to edit)</td></tr>
-<tr><td class=k>Add ▾</td><td>region shape for an armed drag: circle · rectangle · polygon (click corners, Enter closes) · <b>Ball marker</b>: click a ball, SAM outlines it every frame and the fitted circle's centre is the point (wand balls, markers, a dropped ball — add one per ball; they track together in one window, and balls too far apart for one (about 740 px) get a window each — any spacing works)</td></tr>
+<tr><td class=k>Point ▾</td><td>region shape for an armed drag: circle · rectangle · polygon (click corners, Enter closes) · <b>Ball marker</b>: click a ball, SAM outlines it every frame and the fitted circle's centre is the point (wand balls, markers, a dropped ball — add one per ball; they track together in one window, and balls too far apart for one (about 740 px) get a window each — any spacing works)</td></tr>
 <tr><td class=k>O</td><td>onion skin: ghost markers of the previous (solid) and next (dashed) frame</td></tr>
 <tr><td class=k>L</td><td>loupe: magnifier under the cursor with a crosshair on the exact pixel</td></tr>
 <tr><td class=k>View → Trails</td><td>Off / Last 10 frames / Custom… (any length) — fading, optional upcoming path; in every camera while Track ▾ → Every camera is ticked; View → Display filter: contrast / brighten / frame difference (display only)</td></tr>
-<tr><td class=k>drag (armed)</td><td>outline a region in the Add ▾ shape (circle or rectangle; a polygon is clicked corner by corner) → tracked as one point (its fitted center)</td></tr>
+<tr><td class=k>drag (armed)</td><td>outline a region in the Point ▾ shape (circle or rectangle; a polygon is clicked corner by corner) → tracked as one point (its fitted center)</td></tr>
 <tr><td class=k>Ctrl+click</td><td>move the selected point here (one Ctrl+Z step)</td></tr>
-<tr><td class=k>right-click (list) / hold right (marker)</td><td>the point's menu: rename · lock to seed appearance · data source · hidden on this frame · may leave the segment · tracker · delete</td></tr>
-<tr><td class=k>Ctrl/Shift+click (list)</td><td>select several points</td></tr>
-<tr><td class=k>Delete</td><td>delete selected point(s) — or clear the selected frame window (below)</td></tr>
+<tr><td class=k>right-click (LAYERS) / hold right (marker)</td><td>the point's menu: rename · lock to seed appearance · data source · hidden on this frame · may leave its silhouette · Move to (another animal / Scene) · use it as its animal's head · tracker · delete</td></tr>
+<tr><td class=k>Ctrl/Shift+click (LAYERS)</td><td>select several rows (points and animals)</td></tr>
+<tr><td class=k>drag in LAYERS</td><td>drop points on another animal (or Scene) to move them there: renamed "&lt;animal&gt; &lt;part&gt;" in every camera, one Ctrl+Z step</td></tr>
+<tr><td class=k>Delete</td><td>delete what is selected in LAYERS (an animal asks whether its points go too) — or clear the selected frame window (below)</td></tr>
 <tr><td class=k>Esc</td><td>drops a drag or polygon in progress; then, one per press: the segment tool, the armed crosshair, the pan tool, a half-marked event, the frame-window selection, the look-here line (Alt+click); then deselects</td></tr>
 </table>
-<h3>Segment &amp; skeleton (optional)</h3><table>
-<tr><td class=k>S (or Segment)</td><td>segment tool: <b>click the animal</b> — its silhouette appears within a second. Shift+click = "not the animal", drag = box around it. Right-click a click marker to remove it. S or Esc when done. Optional: points track without a segment. The ▾ on the Segment button picks the segmentation model; its last entry is Settings (Ctrl+,)</td></tr>
-<tr><td class=k>Track ▶</td><td>with a segment defined, a run also segments every frame: the silhouette follows the animal, the crop follows the silhouette, and silhouette landmarks (tail tip, midline, feet) fill in</td></tr>
-<tr><td class=k>Skeleton ▾</td><td>apply a named landmark set for your study animal; select a landmark, press N and click it. Landmarks marked <i>from silhouette</i> need no click — they come from the mask</td></tr>
+<h3>Animals, silhouettes &amp; skeletons</h3><table>
+<tr><td class=k>LAYERS</td><td>the right panel: each <b>animal</b> with its points under it, then <b>Scene</b> (points of no animal: wand ends, reference markers). <b>＋ Animal</b> makes one; double-click renames (its points follow: "&lt;animal&gt; &lt;part&gt;"); its checkbox shows / hides its silhouette; <b>right-click</b> an animal: outline it (S), keep its points on its silhouette, jump to its first / last silhouette, clear its silhouettes, save its points and bones as a skeleton template, forget its bones, remove it (its points go to Scene, or with it)</td></tr>
+<tr><td class=k>S (or Segment)</td><td>segment tool, for the animal selected in LAYERS (with no animal yet, it makes one): <b>click the animal</b> — its silhouette appears within a second. Shift+click = "not the animal", drag = box around it. Right-click a click marker to remove it. S or Esc when done. Optional: points track without a segment. The ▾ on the Segment button picks the segmentation model; its last entry is Settings (Ctrl+,)</td></tr>
+<tr><td class=k>Track ▶</td><td>with an animal's silhouette in the run (its row selected, or one of its points held on it), a run also segments every frame: the silhouette follows the animal, the crop follows the silhouette, and silhouette landmarks (tail tip, midline, feet) fill in</td></tr>
+<tr><td class=k>Skeleton ▾</td><td>give the selected animal a named landmark set (its points become "&lt;animal&gt; &lt;part&gt;"); select a landmark, press N and click it. Landmarks marked <i>from silhouette</i> need no click — they come from the mask. Bones: select two points of one animal, right-click → Connect them with a bone</td></tr>
 <tr><td class=k>right-click a point</td><td>Data source: track by appearance, or derive from the silhouette (tail tip, midline %, extremities). Switching asks first, because it erases the point's track (Ctrl+Z brings it back). Feet and wing tips are named as seen from above; filmed from below, left and right swap</td></tr>
-<tr><td class=k>Mask</td><td>show / hide the silhouette overlay (View menu: midline, bones; Settings: opacity, model)</td></tr>
-<tr><td class=k>SEGMENT row (panel)</td><td>the segment has its own row in the right panel: checkbox = show / hide its silhouette, double-click = rename, <b>right-click</b> = jump to its first / last silhouette, clear it on this frame / in the selected frame window / everywhere (your clicks stay), or remove the segment</td></tr>
+<tr><td class=k>Mask</td><td>show / hide every silhouette (View menu: midline, bones; Settings: opacity, model)</td></tr>
+<tr><td class=k>keep on the silhouette</td><td>an animal's points tracked by appearance stay on its silhouette: a point a few pixels off is nudged back; a point that <b>leaves</b> it stops the run at that frame and its track ends there (right-click the animal → Keep its points on its silhouette; a point → "May leave its silhouette" exempts it; Scene points are never held)</td></tr>
 <tr><td class=k>fix a wrong mask</td><td>pause, go to the frame, press S, click again (Shift+click to exclude), press Track — the correction applies from there on</td></tr>
 </table>
 <h3>New to tracking?</h3><table>
@@ -229,7 +233,11 @@ class _VideoProbe(QThread):
 
     def run(self):
         try:
-            self.done.emit(probe_video(self._path, progress=lambda st, facts: self.step.emit(st, facts)))
+            info = probe_video(self._path, progress=lambda st, facts: self.step.emit(st, facts))
+            # (G145) THE GoPro flag: GoPro footage carries its own metadata (lens model, settings, sensors);
+            # anything else gets None and none of the GoPro workflow. Never fails the open.
+            info.gopro = gpmf.read_safe(self._path)
+            self.done.emit(info)
         except Exception as e:  # noqa: BLE001 — reported to the user verbatim
             self.done.emit(str(e))
 
@@ -599,7 +607,7 @@ class _SaveWorker(QThread):
 # ui_state entries that belong to the USER (tools, display), not to one camera:
 # carried across a camera switch (I50). Frame, selection and zoom stay per camera.
 GLOBAL_UI_KEYS = ("follow", "autopause", "roi", "track_mode", "track_all", "marker_size", "show_mask", "mask_opacity",
-                  "show_midline", "show_bones", "seg_backend", "on_body", "point_backend", "trail_len",
+                  "show_midline", "show_bones", "seg_backend", "point_backend", "trail_len",
                   "trail_future", "onion", "loupe", "epipolar", "display_filter", "region_shape")
 
 
@@ -632,13 +640,11 @@ class _OpenPlan:
 
 
 class _SegmentSpecs(NamedTuple):
-    """The segment's part of a run (R8, `MainWindow._segment_specs`): what the worker gets for it."""
-    animal: object            # AnimalSpec, None = no segment in this run
-    derived: object           # [DerivedSpec], None without a segment
-    head_pid: int | None      # the head landmark, when it is among the run's points
-    on_body: list             # the points the skeleton names (the off-body demotion)
-    constrain: list           # the points held on the silhouette (Body on, not "free")
-    stored: object            # the silhouettes an earlier pass wrote (a two-pass run's second pass)
+    """The segments' part of a run (R8, `MainWindow._segment_specs`): what the worker gets for them
+    (G149: any number of segments, each with its head landmark, its on-body points and the points held
+    on it; a stored one = the silhouettes an earlier pass wrote, the second pass of a two-pass run)."""
+    animals: list             # [AnimalSpec], [] = no segment in this run
+    derived: list             # [DerivedSpec] (each with the position of its segment in `animals`)
 
 
 # Where a run stopped at a point, by `MainWindow._stop_kind` (the worker's `_autopause_reason`): `short`
@@ -651,11 +657,18 @@ _STOP_TEXTS = {
                "visible here, press <b>S</b>, click it, then Track. Or turn <b>Auto-pause</b> off (bottom "
                "bar) to run through."),
         status="Auto-paused: the segment was lost around frame {frame}"),
+    "switched": dict(     # (I260) SAM took another object after losing the animal: stops whatever Auto-pause says
+        short="{name} turned into another object", ms=20000,
+        toast=("Stopped at frame {frame}: <b>{name}</b> disappeared here, and SAM then picked up "
+               "<b>something else</b> (another animal or a look-alike, far from where yours was heading), so "
+               "its silhouette ends at frame {prev}. If your animal is visible on a later frame, go there, "
+               "press <b>S</b>, click it, then Track."),
+        status="Stopped: the segment was lost at frame {frame} and SAM took another object instead"),
     "ball": dict(
         short="{name} was lost", ms=15000,
         toast=("Stopped at frame {frame}: SAM could not find the ball <b>{name}</b> any more, and it had "
                "not reached the picture edge, so its track ends at frame {prev}. If the ball is visible "
-               "here, select it, Add ▾ → Ball marker, click it, then Track. A ball that leaves the picture "
+               "here, select it, Point ▾ → Ball marker, click it, then Track. A ball that leaves the picture "
                "never stops the run."),
         status="Stopped: the ball {name} was lost at frame {frame}"),
     "spot": dict(
@@ -672,10 +685,10 @@ _STOP_TEXTS = {
         saw_two="saw two candidates for", saw_none="lost"),
     "exit": dict(
         short="{name} left the segment", ms=15000,
-        toast=("Stopped at frame {frame}: <b>{name}</b> left the segment's silhouette, so its track ends "
+        toast=("Stopped at frame {frame}: <b>{name}</b> left its animal's silhouette, so its track ends "
                "at frame {prev}. Click it where it really is and press Track. If it is allowed off the "
-               "segment, right-click it → <i>May leave the segment</i>."),
-        status="Stopped: {name} left the segment at frame {frame}"),
+               "silhouette, right-click it → <i>May leave its silhouette</i>."),
+        status="Stopped: {name} left its animal's silhouette at frame {frame}"),
     "unreliable": dict(
         short="{name} was lost", ms=12000,
         toast=("Auto-paused: <b>{name}</b> became unreliable at frame {frame}, so its track is cut there "
@@ -689,7 +702,7 @@ _STOP_TEXTS = {
 
 def _stop_short(reason: str, name: str) -> str:
     """How the every-camera summary names a stop (`_STOP_TEXTS` `short`): by the worker's reason."""
-    return _STOP_TEXTS[reason if reason in ("exit", "spot") else "unreliable"]["short"].format(name=name)
+    return _STOP_TEXTS[reason if reason in ("exit", "spot", "switched") else "unreliable"]["short"].format(name=name)
 
 
 class MainWindow(QMainWindow):
@@ -756,9 +769,11 @@ class MainWindow(QMainWindow):
         self._point_backend = self._preferred_point_backend()   # Track dropdown
         self._spot_hints: set = set()          # the one-time Moving spot hints already shown (G58)
         self._passes = None                    # a Track press with AllTracker AND CoTracker3 points (G63)
+        # (G158) each session's lane count when LAYERS last rebuilt (weak: a freed session drops out)
+        self._tl_rows_seen = weakref.WeakKeyDictionary()
         self._spot_corrections: dict = {}      # (project, camera, point) -> frames corrected by hand
         self._mask_opacity = 0.35
-        self._region_shape = "circle"               # Add ▾: circle | rect | polygon
+        self._region_shape = "circle"               # Point ▾: circle | rect | polygon
         self._overlay = None                        # running OverlayRenderer, if any
         self.body_win = None                        # BodySideBySide, when open
         self._body_worker = None                    # running BodyPoseWorker
@@ -968,19 +983,8 @@ class MainWindow(QMainWindow):
         self.spin = QSpinBox()
         self.spin.setToolTip("Jump to a frame number (type and press Enter)")
         self.spin.setFixedWidth(118)
-        # time-axis zoom: precise frame navigation on long videos
-        self.btn_tz_in = QToolButton()
-        self.btn_tz_in.setIcon(icons.zoom_in())
-        self.btn_tz_out = QToolButton()
-        self.btn_tz_out.setIcon(icons.zoom_out())
-        self.btn_tz_fit = QToolButton()
-        self.btn_tz_fit.setIcon(icons.zoom_fit())
-        self.btn_tz_in.setToolTip("Zoom the timeline in around the playhead (Shift++ or Ctrl+wheel over the timeline)")
-        self.btn_tz_out.setToolTip("Zoom the timeline out (Shift+−)")
-        self.btn_tz_fit.setToolTip("Show the whole video on the timeline")
-        self.btn_tz_in.clicked.connect(lambda: self.timeline.zoom_time(TIME_ZOOM_STEP))
-        self.btn_tz_out.clicked.connect(lambda: self.timeline.zoom_time(1 / TIME_ZOOM_STEP))
-        self.btn_tz_fit.clicked.connect(lambda: self.timeline.zoom_fit())
+        # (G152) the time-axis zoom is on the timeline itself (TimelinePanel.btn_zoom_*): beside play /
+        # pause it read as the video's zoom
         self.spin.editingFinished.connect(self._on_spin_seek)
 
         self.step_spin = QSpinBox()
@@ -1005,7 +1009,7 @@ class MainWindow(QMainWindow):
             lambda px: [cv.set_marker_size(px) for cv in self.grid.canvases])
 
     def _build_tool_buttons(self) -> None:
-        """The labelled tool buttons of the control bar (Follow, Auto-pause, ROI, Add ▾, Segment ▾, Mask, Body,
+        """The labelled tool buttons of the control bar (Follow, Auto-pause, ROI, Point ▾, Segment ▾, Mask, Body,
         Pan), each from `_tool_button`."""
         self.btn_follow = self._tool_button(
             "Follow", icons.follow(),
@@ -1024,8 +1028,8 @@ class MainWindow(QMainWindow):
             "occlusion does not trigger this). Its track is cut back to the first unreliable frame,\n"
             "the playhead jumps there and the point is selected: click where it really is, then\n"
             "Track. Also stops when the segment is lost for 16 frames, or a ball marker is lost\n"
-            "inside the picture. Uncheck to always run to the end. (With Body on, a landmark that\n"
-            "leaves the segment stops the run either way.)",
+            "inside the picture. Uncheck to always run to the end. (A landmark held on its animal's\n"
+            "silhouette that leaves it stops the run either way.)",
             checked=True)
 
         self.btn_roi = self._tool_button(
@@ -1035,9 +1039,10 @@ class MainWindow(QMainWindow):
             "model's internal resolution. Engages only when it clearly helps (≥2× zoom).",
             checked=True)
 
+        # (G152) named by its noun, like Segment: arming the tool is the "add"
         self.btn_add = self._tool_button(
-            "Add", icons.add(),
-            "Add a point (N): arms the crosshair — the next click places a point\n"
+            "Point", icons.add(),
+            "Point (N): arms the crosshair — the next click places a new point\n"
             "(drag instead to outline a region: the ▾ picks circle / rectangle / polygon).\n"
             "Stray clicks never edit anything. One placement per press; Esc cancels.")
         self.btn_add.toggled.connect(self._on_add_mode)
@@ -1097,21 +1102,13 @@ class MainWindow(QMainWindow):
 
         self.btn_mask = self._tool_button(
             "Mask", icons.mask(),
-            "Mask: show / hide the segment's silhouette overlay",
+            "Mask: show / hide the animals' silhouettes (each animal's checkbox in LAYERS hides its own)",
             checked=True)
-        self.btn_mask.toggled.connect(lambda _on: (self._refresh_overlay(),
-                                                   self._refresh_animal_panel()))
-
-        self.btn_onbody = self._tool_button(
-            "Body", icons.body(),
-            "Body: keep tracked points ON the segment (only when there is a segment, S). A point\n"
-            "that strays a few pixels past the silhouette's edge is nudged back onto it.\n"
-            "A point that clearly LEAVES the silhouette stops the run at that frame and its\n"
-            "track ends there: it is never pulled onto some other spot of the animal.\n"
-            "Right-click a point → \"May leave the segment\" to exempt it (markers on\n"
-            "the ground, reference objects).",
-            checked=True)
-        self.btn_onbody.toggled.connect(self._on_onbody_toggled)
+        # the overlay only: no LAYERS row shows the toggle (each animal's own checkbox is `shown`)
+        self.btn_mask.toggled.connect(lambda _on: self._refresh_overlay())
+        # (G156) no global Body toggle: holding points on a silhouette is a setting of each animal
+        # (its LAYERS menu -> Keep its points on its silhouette), and a point of no animal (Scene)
+        # is never held
 
         self.btn_pan = self._tool_button(
             "Pan", icons.pan(),
@@ -1237,9 +1234,6 @@ class MainWindow(QMainWindow):
         tl.addSpacing(8)
         for w in (self.btn_prev, self.btn_play, self.btn_next):
             tl.addWidget(w)
-        tl.addSpacing(4)
-        for w in (self.btn_tz_out, self.btn_tz_in, self.btn_tz_fit):
-            tl.addWidget(w)
         tl.addSpacing(8)
         tl.addWidget(hairline())
         tl.addSpacing(8)
@@ -1256,7 +1250,6 @@ class MainWindow(QMainWindow):
         tl.addSpacing(8)
         tl.addWidget(self.btn_follow)
         tl.addWidget(self.btn_mask)
-        tl.addWidget(self.btn_onbody)
         tl.addWidget(self.btn_autopause)
         tl.addWidget(self.btn_roi)
         tl.addStretch(1)
@@ -1275,11 +1268,10 @@ class MainWindow(QMainWindow):
         # least-needed first, only as far as the width requires.
         self._controls = controls
         self._compact_btns = [self.btn_add, self.btn_animal, self.btn_pan, self.btn_follow,
-                              self.btn_mask, self.btn_onbody, self.btn_autopause, self.btn_roi]
+                              self.btn_mask, self.btn_autopause, self.btn_roi]
         self._compact_order = [self.btn_pan, self.btn_roi, self.btn_mask, self.btn_follow,
-                               self.btn_onbody, self.btn_autopause, self.btn_animal, self.btn_add]
-        self._compact_icons = [self.btn_prev, self.btn_play, self.btn_next,
-                               self.btn_tz_out, self.btn_tz_in, self.btn_tz_fit]
+                               self.btn_autopause, self.btn_animal, self.btn_add]
+        self._compact_icons = [self.btn_prev, self.btn_play, self.btn_next]
         for b in self._compact_icons:
             b.setProperty("compact", True)
         for b in self._compact_btns:
@@ -1323,11 +1315,15 @@ class MainWindow(QMainWindow):
         """The centre: the video grid above the timeline in a vertical splitter, the onboarding strip over
         the video, the control bar under the timeline."""
         self.timeline = TimelinePanel()
+        # (G152) the time zoom buttons are the timeline's own, in the corner left of its ruler
+        self.btn_tz_out, self.btn_tz_in, self.btn_tz_fit = (
+            self.timeline.btn_zoom_out, self.timeline.btn_zoom_in, self.timeline.btn_zoom_fit)
         self.timeline.seek_requested.connect(self._goto)
         self.timeline.point_selected.connect(self._on_select)
         self.timeline.events_changed.connect(self._on_events_changed)
         self.timeline.clear_requested.connect(self._clear_tracked_window)
-        self.timeline.clear_masks_requested.connect(self._clear_masks_window)
+        self.timeline.clear_masks_requested.connect(
+            lambda f0, f1: self._clear_masks_window(f0, f1, self.timeline.sel_segs))     # (G149) the lanes covered
         self.timeline.clear_both_requested.connect(self._clear_window_both)
         self.timeline.occlude_requested.connect(self._occlude_window)
         self.timeline.note_requested.connect(self._edit_note)
@@ -1359,30 +1355,24 @@ class MainWindow(QMainWindow):
         self._bottom = bottom
 
     def _build_side_panel(self) -> None:
-        """The right dock: cameras, the segment's row, the points list."""
-        # point list dock
-        self.point_list = QListWidget()
-        self.point_list.setToolTip(
-            "Tracked points — double-click to rename, checkbox toggles display.\n"
-            "Select one, then a plain click on the video places it on this frame.\n"
-            "Right-click: rename, data source, hidden here, jump to its first / last\n"
-            "frame, clear a stretch, fill gaps between hand placements, delete.\n"
-            "Track tracks ONLY what is selected here (and the segment's row when it\n"
-            "is selected): Ctrl+click for several, Ctrl+A for everything. AT / CT / MS\n"
-            "beside a name = its tracker (right-click → Tracker to change it).\n"
-            "Ctrl/Shift+click selects several: Delete removes them all; with a\n"
-            "frame window selected on the timeline, Delete clears just that window\n"
-            "(Shift+drag the timeline over the lanes you want cleared).")
-        self.point_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.point_list.setIconSize(QSize(34, 14))        # colour + the point's tracker (G62)
-        self.point_list.itemChanged.connect(self._on_item_changed)
-        self.point_list.currentRowChanged.connect(self._on_list_select)
+        """The right dock: cameras, then LAYERS -- every animal with its points, then Scene (G154)."""
+        self.layers = LayersPanel()
+        self.layers.setToolTip(
+            "LAYERS: each animal with its points under it, then Scene (points of no animal).\n"
+            "Click a row to select it (Ctrl / Shift+click for several, Ctrl+A for everything): Track tracks\n"
+            "exactly what is selected -- an animal row = its silhouette and all its points.\n"
+            "With a point selected, a plain click on the video places it on this frame.\n"
+            "Drag points onto another animal (or Scene) to move them there. Double-click renames;\n"
+            "the checkbox shows / hides; right-click for everything else. AT / CT / MS beside a point =\n"
+            "its tracker.")
+        self.layers.itemChanged.connect(self._on_layer_item_changed)
+        self.layers.currentItemChanged.connect(self._on_layer_current)
         # the run scope follows the selection: keep the Track button's wording current
-        self.point_list.itemSelectionChanged.connect(self._on_point_selection_changed)     # (G80)
-        self.point_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.point_list.customContextMenuRequested.connect(self._point_list_menu)
+        self.layers.itemSelectionChanged.connect(self._on_point_selection_changed)     # (G80)
+        self.layers.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.layers.customContextMenuRequested.connect(self._layers_menu)
+        self.layers.move_requested.connect(self._on_layers_move)
 
-        # right panel: cameras, then the segment (silhouette), then the points
         panel = QWidget()
         pl = QVBoxLayout(panel)
         pl.setContentsMargins(8, 6, 8, 6)
@@ -1400,76 +1390,63 @@ class MainWindow(QMainWindow):
         sep0.setFixedHeight(1)
         sep0.setStyleSheet(f"background: {theme.HAIRLINE};")
         pl.addWidget(sep0)
-        head = QLabel("SEGMENT")
+        head = QLabel("LAYERS")
         head.setStyleSheet(f"color: {theme.TEXT_DIM}; font-weight: 600; letter-spacing: 1px;")
         pl.addWidget(head)
-        # the segment gets a ROW of its own, like a point: the user sees it the
-        # moment it exists and can rename / hide / clear / delete it from here
-        # instead of hunting through menus
-        self.animal_list = QListWidget()
-        self.animal_list.setFixedHeight(26)   # one row; re-measured once it has an item
-        self.animal_list.setSelectionMode(QAbstractItemView.MultiSelection)   # a click toggles it (G61)
-        self.animal_list.itemSelectionChanged.connect(self._update_track_button)
-        self.animal_list.setToolTip(
-            "The tracked segment. Click its name to select it: Track then tracks it (with the points "
-            "selected in POINTS). The checkbox shows / hides its silhouette; double-click to rename; "
-            "right-click to clear a stretch of silhouettes or remove it entirely.")
-        self.animal_list.itemChanged.connect(self._on_animal_item_changed)
-        self.animal_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.animal_list.customContextMenuRequested.connect(self._animal_menu)
-        self.animal_list.setVisible(False)
-        pl.addWidget(self.animal_list)
+        # two short rows (one long row widened the panel and folded the control bar's labels)
+        self.btn_new_segment = QToolButton()
+        self.btn_new_segment.setText("＋ Animal")
+        self.btn_new_segment.setFocusPolicy(Qt.NoFocus)
+        self.btn_new_segment.setToolTip(
+            "Add an animal (a layer): give it points by selecting it and clicking them on the video (N), or by "
+            "dragging points onto it; press S and click it on the video to outline its silhouette (optional).")
+        self.btn_new_segment.clicked.connect(self._new_segment)
+        self.btn_new_point = QToolButton()
+        self.btn_new_point.setText("＋ Point")
+        self.btn_new_point.setFocusPolicy(Qt.NoFocus)
+        self.btn_new_point.setToolTip(
+            "Make a named point with no position yet, in the selected animal (else in Scene), and select it; "
+            "then click it on the video. With several cameras it is in every camera's list: click it in one "
+            "camera, click the next camera, click it there (on the dashed line, or on the ◇ once two cameras "
+            "have it). Double-click the name to rename it. (N + click makes and places a point in one go.)")
+        self.btn_new_point.clicked.connect(self._new_point)
+        row1 = QHBoxLayout()
+        row1.setSpacing(4)
+        row1.addWidget(self.btn_new_segment)
+        row1.addWidget(self.btn_new_point)
+        row1.addStretch(1)
+        pl.addLayout(row1)
+        self.btn_skeleton = QToolButton()
+        self.btn_skeleton.setText("Skeleton ▾")
+        self.btn_skeleton.setPopupMode(QToolButton.InstantPopup)
+        self.btn_skeleton.setToolTip("Give the selected animal a named set of body points (a template), or save "
+                                     "its points and bones as one")
+        self.m_skeleton_btn = QMenu(self.btn_skeleton)
+        self.btn_skeleton.setMenu(self.m_skeleton_btn)
+        self.btn_clear_animal = QToolButton()
+        self.btn_clear_animal.setText("Delete")
+        self.btn_clear_animal.setFocusPolicy(Qt.NoFocus)
+        self.btn_clear_animal.setToolTip("Delete what is selected in LAYERS: points (with their tracks) and / or "
+                                         "animals (you choose whether their points go too). Ctrl+Z undoes points.")
+        self.btn_clear_animal.clicked.connect(lambda _=False: self._delete_layers())
+        row2 = QHBoxLayout()
+        row2.setSpacing(4)
+        row2.addWidget(self.btn_skeleton)
+        row2.addWidget(self.btn_clear_animal)
+        row2.addStretch(1)
+        pl.addLayout(row2)
+        pl.addWidget(self.layers, 1)
         self.animal_label = QLabel("")
         self.animal_label.setWordWrap(True)
         self.animal_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.animal_label.setStyleSheet(f"color: {theme.TEXT_DIM};")
         pl.addWidget(self.animal_label)
-        row = QHBoxLayout()
-        row.setSpacing(4)
-        self.btn_skeleton = QToolButton()
-        self.btn_skeleton.setText("Skeleton ▾")
-        self.btn_skeleton.setPopupMode(QToolButton.InstantPopup)
-        self.btn_skeleton.setToolTip("Apply a named landmark set for your study segment")
-        self.m_skeleton_btn = QMenu(self.btn_skeleton)
-        self.btn_skeleton.setMenu(self.m_skeleton_btn)
-        self.btn_clear_animal = QToolButton()
-        self.btn_clear_animal.setText("Clear segment")
-        self.btn_clear_animal.setToolTip("Remove the segment's clicks and silhouettes (points stay)")
-        self.btn_clear_animal.clicked.connect(self._clear_animal)
-        row.addWidget(self.btn_skeleton)
-        row.addWidget(self.btn_clear_animal)
-        row.addStretch(1)
-        pl.addLayout(row)
-        sep = QWidget()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background: {theme.HAIRLINE};")
-        pl.addWidget(sep)
-        head2 = QLabel("POINTS")
-        head2.setStyleSheet(f"color: {theme.TEXT_DIM}; font-weight: 600; letter-spacing: 1px;")
-        row2 = QHBoxLayout()
-        row2.setSpacing(4)
-        row2.addWidget(head2)
-        row2.addStretch(1)
-        # define a point in the panel, then click it in each camera (G26)
-        self.btn_new_point = QToolButton()
-        self.btn_new_point.setText("＋ New point")
-        self.btn_new_point.setFocusPolicy(Qt.NoFocus)
-        self.btn_new_point.setToolTip(
-            "Make a named point with no position yet and select it; then click it on the video. With several "
-            "cameras it is in every camera's list: click it in one camera, click the next camera, click it "
-            "there (on the dashed line, or on the ◇ once two cameras have it), and so on. Double-click the name "
-            "to rename it. (N + click makes and places a point in one go.)")
-        self.btn_new_point.clicked.connect(self._new_point)
-        row2.addWidget(self.btn_new_point)
-        pl.addLayout(row2)
-        pl.addWidget(self.point_list, 1)
-        dock = QDockWidget("Segment && Points", self)   # && = a literal ampersand (not a mnemonic)
+        dock = QDockWidget("Layers", self)
         dock.setWidget(panel)
         dock.setMinimumWidth(230)
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self.dock = dock
-
     def _build_file_menu(self) -> None:
         """File menu (and its Import submenu)."""
         # menu / toolbar actions
@@ -1540,8 +1517,8 @@ class MainWindow(QMainWindow):
         m_edit.addAction(self.act_undo)
         self.act_select_all = QAction("Select &Everything to Track", self, shortcut=QKeySequence("Ctrl+A"),
                                       triggered=self._select_all_tracked)
-        self.act_select_all.setToolTip("Selects every point in POINTS and the segment's row: Track then tracks "
-                                       "all of them (only what is selected is tracked). Esc clears the selection.")
+        self.act_select_all.setToolTip("Selects every animal and every point in LAYERS: Track then tracks all of "
+                                       "them (only what is selected is tracked). Esc clears the selection.")
         m_edit.addAction(self.act_select_all)
         m_edit.addSeparator()
         self.act_note = QAction("&Note at This Frame…   (Shift+N)", self, triggered=lambda: self._edit_note())
@@ -1556,12 +1533,20 @@ class MainWindow(QMainWindow):
         self.act_annotator.setToolTip("Recorded on the events and notes you add")
         for a in (self.act_note, self.act_hidden, self.act_annotator):
             m_edit.addAction(a)
+        m_edit.addSeparator()
+        # (G147) fixing which point is which
+        self.act_point_tools = QAction("&Point Tools… (swap, move, fill, split)", self,
+                                       triggered=lambda: self._point_tools())
+        self.act_point_tools.setToolTip("Swap two points the tracker mixed up, give a stretch of one point's data "
+                                        "to another, fill one point's empty frames from another, or split a point "
+                                        "in two at a frame. Each is one Ctrl+Z step.")
+        m_edit.addAction(self.act_point_tools)
 
     def _build_view_menu(self) -> None:
         """View menu: panel, other cameras, overlays, trails, display filters."""
         m_view = self.menuBar().addMenu("&View")
         act_panel = self.dock.toggleViewAction()
-        act_panel.setText("Segment && Points panel")
+        act_panel.setText("Layers panel")
         act_panel.setShortcut(QKeySequence("Ctrl+1"))
         act_panel.setIcon(icons.panel())
         m_view.addAction(act_panel)
@@ -1706,6 +1691,14 @@ class MainWindow(QMainWindow):
         self.act_lens.setToolTip("Measure how a lens bends the picture from a video of a printed checkerboard. "
                                  "Needed for wide-angle / action cameras before a wand calibration; explains "
                                  "when you need it and when you do not.")
+        # (G148) a camera's lens profile out to a file, and a file onto a camera, at any time
+        self.act_export_lens = QAction("E&xport Lens Profile…", self, triggered=self._export_lens_profile)
+        self.act_export_lens.setToolTip("Save a camera's lens profile (from the checkerboard, GoPro's lens model or a\n"
+                                        "file) to reuse it later: for this camera in other projects, or for other\n"
+                                        "cameras of the same model, lens, zoom and recording mode")
+        self.act_load_lens = QAction("Load a Lens Profile for This Camera…", self, triggered=self._load_lens_profile)
+        self.act_load_lens.setToolTip("Attach a saved lens profile (.klens.json, OpenCV .yml / .json, Argus .txt) to\n"
+                                      "the working camera; the picture size must match")
         self.act_wand = QAction("Calibrate Cameras with a &Wand…", self, triggered=self._wand_wizard)
         self.act_wand.setToolTip("Work out where the cameras are from a wand of known length waved in "
                                  "front of them — no MATLAB, no easyWand. Explains every step.")
@@ -1753,11 +1746,16 @@ class MainWindow(QMainWindow):
         self.act_export_mesh = QAction("Export &Mesh of This Frame…", self, triggered=self._export_mesh)
         self.act_export_mesh.setToolTip("Writes the volume carved at this frame (Carve Volume, Ctrl+4) as an OBJ / PLY\n"
                                         "mesh. Carve a volume at this frame first.")
+        self.act_gopro = QAction("&GoPro Cameras…", self, triggered=self._gopro_dialog)       # (G145)
+        self.act_gopro.setToolTip("For GoPro footage only: each camera's recording settings, its tilt from the\n"
+                                  "gravity sensor, dropped frames, when it moved, and GoPro's own lens model\n"
+                                  "(for the cameras that have no lens profile yet)")
         # the 3D menu's entry, also under File -> Import (its own action: "Import" is the submenu's word)
         self.act_import_calib = QAction("&Calibration…", self, triggered=self._import_calibration)
         self.act_import_calib.setToolTip(self.act_calib.toolTip())
         self._m_import.insertAction(self.act_import_xyz, self.act_import_calib)
-        for a in (self.act_sync, None, self.act_lens, self.act_wand, self.act_calib, self.act_export_cal,
+        for a in (self.act_sync, self.act_gopro, None, self.act_lens, self.act_load_lens, self.act_export_lens,
+                  self.act_wand, self.act_calib, self.act_export_cal,
                   self.act_offsets3d, None, self.act_recon, self.act_set_axes, self.act_retrack, self.act_hull, None,
                   self.act_view3d,
                   self.act_export_mesh):
@@ -2000,14 +1998,13 @@ class MainWindow(QMainWindow):
         tracking = self.state == TRACKING
         for w in (self.spin, self.btn_prev, self.btn_next, self.btn_play):
             w.setEnabled(has_video and not tracking)
-        self.point_list.setEnabled(has_video and not tracking)
-        self.animal_list.setEnabled(has_video and not tracking)
+        self.layers.setEnabled(has_video and not tracking)
         # a run belongs to ONE camera: switching views or retiming mid-run would
         # pull the session out from under the worker
         self.cameras.setEnabled(has_video and not tracking)
         self._refresh_cameras()
         s = self.session
-        exportable = s is not None and (s.n_points > 0 or (s.masks is not None and s.masks.n_masked() > 0))
+        exportable = s is not None and (s.n_points > 0 or any(m.n_masked() > 0 for m in s.seg_masks))  # (G151m)
         self.act_export.setEnabled(has_video and not tracking and exportable)
         self.act_overlay.setEnabled(has_video and not tracking and self._overlay is None)
         # 3D layer: needs several cameras, then a calibration, then a result
@@ -2024,10 +2021,13 @@ class MainWindow(QMainWindow):
         self.act_wand.setEnabled(not tracking)
         self.act_lens.setEnabled(not tracking)
         self.act_export_cal.setEnabled(live3d)
+        self.act_export_lens.setEnabled(live3d)      # (G148) clickable; it says when no camera has a profile
+        self.act_load_lens.setEnabled(live3d)
         self.act_offsets3d.setEnabled(live3d)
         self.act_sync.setEnabled(live3d)
         self.act_recon.setEnabled(live3d)
         self.act_set_axes.setEnabled(live3d)        # clickable like the others; it explains what it needs
+        self.act_gopro.setEnabled(live3d and bool(self._gopro_infos()))          # (G145) GoPro footage only
         has_rec = bool(has_cal and self.project is not None and self.project.reconstruction is not None
                        and self.project.reconstruction.per_cam is not None)
         self.act_retrack.setEnabled(has_rec and not tracking)
@@ -2070,12 +2070,14 @@ class MainWindow(QMainWindow):
         if tracking and self.btn_animal.isChecked():
             self.btn_animal.setChecked(False)
         self.btn_mask.setEnabled(has_video)
-        self.btn_onbody.setEnabled(has_video and not tracking)
         self.btn_skeleton.setEnabled(has_video and not tracking)
         self.btn_new_point.setEnabled(has_video and not tracking)
+        self.btn_new_segment.setEnabled(has_video and not tracking)
+        self.act_point_tools.setEnabled(has_video and not tracking)      # (G147) the dialog says when there are no points
         self.m_skeleton.setEnabled(has_video and not tracking)
-        self.btn_clear_animal.setEnabled(has_video and not tracking and s is not None
-                                         and s.animal is not None)
+        # (G164) LAYERS -> Delete deletes points as well as animals (G154): usable whenever there is either
+        self.btn_clear_animal.setEnabled(bool(has_video and not tracking and s is not None
+                                              and (s.n_segments or s.n_points)))
         self.btn_pan.setEnabled(has_video)  # panning is view-only: fine mid-run
         for act in (self.act_mode_auto, self.act_mode_semi, self.act_track_all):
             act.setEnabled(not tracking)
@@ -2103,9 +2105,9 @@ class MainWindow(QMainWindow):
                 [False, False, False, False],
                 "Open a video (Ctrl+O) or a project (Ctrl+Shift+O) to begin  ·  F1 = manual")
             return
-        seg = s.animal is not None and (s.animal.n_prompts() > 0 or (s.masks is not None and s.masks.n_masked() > 0))
+        seg = any(s.has_silhouette(k) for k in range(s.n_segments))   # any (G151m)
         # the skeleton step ticks as soon as a skeleton is applied or any landmark exists
-        landmarks = s.skeleton is not None or s.n_points > 0
+        landmarks = any(a.skeleton for a in s.segments) or s.n_points > 0
         tracked = int(s.tracked.sum()) > sum(1 for i in range(s.n_points) if s.tracked[:, i].any())
         done = [True, seg, landmarks, tracked]
         # Segmenting is OPTIONAL. An animal a few pixels across (seen from
@@ -2126,39 +2128,136 @@ class MainWindow(QMainWindow):
             self.act_onboarding.setChecked(False)
 
     def _run_scope(self):
-        """Which points a run covers: EXACTLY the points selected in POINTS (owner,
-        2026-10-02, G61 -- nothing selected used to mean everything). Returns
-        (set of pids, n_selected)."""
+        """Which points a run covers: EXACTLY what is selected in LAYERS (owner, 2026-10-02, G61 --
+        nothing selected used to mean everything): the selected points and every point of a
+        selected animal row (G154: an animal row stands for its silhouette and all its points).
+        Returns (set of pids, n_selected)."""
         s = self.session
         if s is None:
             return set(), 0
         sel = {p for p in self._selected_pids() if p < s.n_points}
+        for k in self._selected_segments():
+            sel |= set(s.points_of(k))
         return sel, len(sel)
 
     def _segment_selected(self) -> bool:
-        """The SEGMENT row is selected: the segment is part of the next run (G61)."""
-        it = self.animal_list.item(0) if self.animal_list.count() else None
-        return bool(it is not None and it.isSelected())
+        """An animal row is selected: its silhouette is part of the next run (G61, G154)."""
+        return bool(self._selected_segments())
+
+    def _selected_segments(self) -> list[int]:
+        """The animals whose rows are selected in LAYERS (G154)."""
+        return self.layers.selected_animals()
+
+    def _select_segments(self, idx, on: bool = True) -> None:
+        self.layers.set_selected(animals=list(idx), on=on)
+
+    def _selection_animals(self) -> list[int]:
+        """The animals the LAYERS selection names (G154): the selected animal rows and the animals of
+        the selected points."""
+        s = self.session
+        if s is None:
+            return []
+        ks = set(self._selected_segments())
+        for q in self._selected_pids():
+            k = s.segment_of(q)
+            if k is not None:
+                ks.add(k)
+        return sorted(ks)
+
+    def _s_target(self) -> int | None:
+        """The ONE animal the selection names -- what the S tool outlines and the clicks drawn on the
+        video belong to (G154); None when the selection names none or several. It replaces the
+        hidden 'active segment' (G150, G151a): the active index only ever follows this."""
+        ks = self._selection_animals()
+        if len(ks) == 1:
+            return ks[0]
+        s = self.session
+        # the only animal there is, when the selection names none (fix a mask: S, click -- as ever)
+        return 0 if (not ks and s is not None and s.n_segments == 1) else None
+
+    def _sync_s_target(self) -> None:
+        """Point the session's active animal at the selection's one animal, so the S tool and the
+        drawn clicks are the selected animal's."""
+        s = self.session
+        k = self._s_target()
+        if s is not None and k is not None and k != s.active_seg:
+            s.active_seg = k
+        if s is not None:
+            self.animal_label.setText(self._animal_status_text())
+
+    def _pick_segment(self, what: str) -> int | None:
+        """The ONE animal an action works on (G151, G154): the only animal; else the one the LAYERS
+        selection names; else the user picks it. None = no animal or Cancel. Never a hidden
+        'active' animal on its own: that is how G150 removed the wrong one."""
+        s = self.session
+        if s is None or not s.segments:
+            return None
+        if s.n_segments == 1:
+            return 0
+        k = self._s_target()
+        if k is not None:
+            return k
+        names = s.segment_names()
+        name, ok = QInputDialog.getItem(
+            self, "Which animal?",
+            f"{what} -- which animal? (Select that animal in LAYERS to skip this question.)",
+            names, s.active_seg if 0 <= s.active_seg < len(names) else 0, False)
+        return names.index(name) if ok and name in names else None
+
+    def _segments_for_view(self) -> list[int]:
+        """The animals a look-at action without a lane of its own uses (G151): the ones the selection
+        names, else every animal."""
+        s = self.session
+        if s is None:
+            return []
+        return self._selection_animals() or list(range(s.n_segments))
+
+    def _held(self, s, q: int) -> bool:
+        """Point q is held on its animal's silhouette (G156): it belongs to an animal that holds its
+        points and has a silhouette, is tracked by appearance and is not marked 'may leave'."""
+        if not (0 <= q < s.n_points):
+            return False
+        k = s.segment_of(q)
+        m = s.points[q]
+        return (k is not None and s.segments[k].hold and s.has_silhouette(k)
+                and not m.derived and not m.is_ball and not m.free)
+
+    def _run_segments(self, scope, s=None) -> list[int]:
+        """The animals whose silhouettes a run with `scope` covers (G149, G154): the selected animal
+        rows, the animal a selected landmark is derived from (it cannot fill in without the
+        silhouette), and the animal a selected point is held on (I185, G156)."""
+        s = s if s is not None else self.session
+        if s is None or not s.segments:
+            return []
+        out = set(self._selected_segments()) if s is self.session else set()
+        for q in scope:
+            if 0 <= q < s.n_points:
+                k = s.segment_of(q)
+                if k is not None and (s.points[q].derived or self._held(s, q)):
+                    out.add(k)
+        return sorted(k for k in out if k < s.n_segments and s.has_silhouette(k))
+
+    def _seg_list(self, scope, segment, s=None) -> list[int]:
+        """The animals of a run: `segment` None = the selection rule (`_run_segments`), False = none,
+        True = those or the animals of the scope's points, a list = these animal NAMES (an
+        every-camera run names the working camera's animals) plus the ones the scope's points ride
+        on (G149)."""
+        s = s if s is not None else self.session
+        if s is None or not s.segments or segment is False:
+            return []
+        if isinstance(segment, (list, tuple, set)):
+            named = [k for k, n in enumerate(s.segment_names()) if n in set(segment)]
+            return sorted(set(named) | set(self._run_segments(scope, s)))
+        segs = self._run_segments(scope, s)
+        if segment is True and not segs:
+            # the animals the run's own points belong to (G151n; was the invisible active row)
+            segs = sorted({k for q in scope if 0 <= q < s.n_points for k in [s.segment_of(q)]
+                           if k is not None and s.has_silhouette(k)})
+        return segs
 
     def _run_segment(self, scope) -> bool:
-        """The segment runs when its row is selected, when a selected landmark is derived from it
-        (it cannot fill in without the silhouette), or -- Body on -- when a selected point is held
-        on the body by it (I185)."""
-        s = self.session
-        return bool(s is not None and s.animal is not None
-                    and (self._segment_selected()
-                         or any(0 <= q < s.n_points and s.points[q].derived for q in scope)
-                         or self._segment_rides(s, scope)))
-
-    def _segment_rides(self, s, pids) -> bool:
-        """The segment is part of the run only because Body is on (I185): the on-body rules (the
-        constraint, the stop where a landmark leaves the animal, the off-body demotion) live in the
-        run that has the silhouette, and since G61 / G63 a run without the segment's row selected
-        had none of them, said nothing. True with Body on, a segment in this camera and a point in
-        `pids` that the rules hold on the body (not marked 'may leave the segment')."""
-        return bool(s is not None and s.animal is not None and self.btn_onbody.isChecked()
-                    and any(0 <= q < s.n_points and not s.points[q].derived and not s.points[q].is_ball
-                            and not s.points[q].free for q in pids))
+        """A silhouette runs (G149: any of them) -- see `_run_segments`."""
+        return bool(self._run_segments(scope))
 
     def _tracker_of(self, pid: int, s=None) -> str:
         """A point's tracker (G62): its own, else the project's default point model."""
@@ -2190,8 +2289,9 @@ class MainWindow(QMainWindow):
         order = [k for k in ("alltracker", "cotracker3") if k in nn]
         if not order:
             return [rest]
-        head = s.head_pid() if s.animal is not None else None
-        if len(order) == 2 and head is not None and head in nn[order[1]]:
+        # every segment's head (G151c: `head_pid()` alone is the FIRST segment's)
+        heads = {s.head_pid(k) for k in range(s.n_segments)} - {None}
+        if len(order) == 2 and heads & set(nn[order[1]]) and not heads & set(nn[order[0]]):
             # the pass holding the head landmark runs FIRST and carries the segment: the other
             # pass's points are then anchored to a silhouette that exists, and are kept on the
             # silhouettes the first pass wrote (the worker's `stored_masks`, I185)
@@ -2211,7 +2311,7 @@ class MainWindow(QMainWindow):
         if stops is not None and stops.get(p.active if p is not None else 0) is None:
             return False
         return bool(any(s.tracked[self.current, q] and not s.points[q].derived for q in pids)
-                    or (carries_seg and s.animal_seedable_at(self.current)))
+                    or (carries_seg and any(s.animal_seedable_at(self.current, k) for k in range(s.n_segments))))
 
     def _plan_passes(self, scope, step: bool, every: bool) -> list[list[int]]:
         """The passes one Track press runs, from what can START on this frame (I203, G63):
@@ -2244,17 +2344,18 @@ class MainWindow(QMainWindow):
             return
         s = self.session
         scope, n_sel = self._run_scope()
-        seg = self._run_segment(scope)
+        segs = self._run_segments(scope)    # once per refresh: it runs on every playhead move (simplify 2026-10-04)
+        seg = bool(segs)
         # the button itself says what a run covers: exactly what is selected (G61)
         what_sel = []
         if n_sel:
             what_sel.append(f"{n_sel} point{'s' if n_sel != 1 else ''}")
         if seg:
-            what_sel.append("segment")
+            what_sel.append("silhouette" if len(segs) == 1 else f"{len(segs)} silhouettes")     # (G154) the animals'
         # the same rule the press uses: only passes that can start on this frame count (I203)
         n_pass = len(self._plan_passes(scope, semi, self.act_track_all.isChecked())) \
             if (s is not None and scope and self.state == READY) else 1
-        # Body on: the segment rides along although its row is not selected (I185)
+        # a held point brings its animal's silhouette although the animal's row is not selected (I185, G160)
         rides = bool(seg and s is not None and not self._segment_selected()
                      and not any(0 <= q < s.n_points and s.points[q].derived for q in scope))
         label = "Step" if semi else "Track"
@@ -2264,7 +2365,7 @@ class MainWindow(QMainWindow):
         n_cams = len(self._multi_jobs(semi)) if self.act_track_all.isChecked() and self.state == READY else 0
         if n_cams > 1:
             self.btn_track.setText(self.btn_track.text() + f" · {n_cams} cams")   # Track ▾ → Every camera (G29)
-        pids_here, animal_ok = self._startable_here(scope, seg)
+        pids_here, animal_ok = self._startable_here(scope, seg, segs)
         n = len(pids_here)
         # Nothing to start from: the button stays ENABLED, only drawn quiet, because Qt
         # disables a disabled button's menu too and Track ▾'s choices must stay reachable;
@@ -2273,9 +2374,9 @@ class MainWindow(QMainWindow):
         if self.state == IDLE:
             blocked = "Open a video first (Ctrl+O) or a project (Ctrl+Shift+O)"
         elif s is not None and not scope and not seg and (s.n_points or s.animal is not None):
-            blocked = ("Select what to track: click the points in the POINTS list (Ctrl+click for several, "
-                       "Ctrl+A for all)" + (", and the segment's row in SEGMENT" if s.animal is not None else "")
-                       + " — only what is selected is tracked")
+            blocked = ("Select what to track in LAYERS: click a point or an animal (an animal = its silhouette "
+                       "and all its points; Ctrl+click for several, Ctrl+A for all) — only what is selected is "
+                       "tracked")
         elif s is None or (n == 0 and not animal_ok):
             if scope and all(0 <= q < s.n_points and s.points[q].derived for q in scope):
                 # silhouette-derived landmarks are never placed by hand: they fill in from the
@@ -2308,13 +2409,14 @@ class MainWindow(QMainWindow):
             if animal_ok:
                 what.append("the segment (silhouette)")
             what = " and ".join(what)
-            if rides and animal_ok and not self._segment_selected():
-                what += (" (Body is on, so the segment rides along to keep the points on the animal — turn Body "
-                         "off, or mark a point 'may leave the segment', to track without it)")
+            if rides and animal_ok:
+                what += (" (its animal keeps its points on its silhouette, so the silhouette rides along — "
+                         "right-click the animal → untick 'Keep its points on its silhouette', or mark a point "
+                         "'may leave its silhouette', to track without it)")
             if n_pass > 1:
                 what += (" — in two passes, one after the other: the AllTracker points, then the CoTracker3 points "
                          "over the same frames (a point that stops ends the run for all"
-                         + ("; the pass holding the head landmark goes first, with the segment, and the "
+                         + ("; the pass holding the head landmark goes first, with the silhouette, and the "
                             "second pass is kept on the silhouettes the first one makes — no second "
                             "segmentation" if seg else "") + ")")   # (I185)
             if semi:
@@ -2814,8 +2916,26 @@ class MainWindow(QMainWindow):
 
     def _open_video_dialog(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open video", "", VIDEO_FILTER)
-        if path:
-            self._open_video(path)
+        if not path:
+            return
+        settled = self._settle_unsaved(f"opening {Path(path).name}")     # (G143)
+        if settled is not None:
+            self._open_video(path, discard=settled == "discard")
+
+    def _settle_unsaved(self, doing: str) -> str | None:
+        """(G143) Before another video / project REPLACES this one: the close question (Save /
+        Discard / Cancel) when there is unsaved work. Returns None = Cancel (or a Save that did not
+        happen): open nothing; "discard" = the opener drops the unsaved work once the new one is
+        really opening (`_leave_project(discard=True)`); "keep" = nothing unsaved, saved, or any
+        other answer (the unsaved work goes to the recovery folder, as before)."""
+        if self.project is None or not self.project.dirty:
+            return "keep"
+        answer = self._ask_save_before_close(doing)
+        if answer == QMessageBox.Cancel:
+            return None
+        if answer == QMessageBox.Save:
+            return "keep" if self._save_project() else None
+        return "discard" if answer == QMessageBox.Discard else "keep"
 
     def _open_folder_dialog(self):
         """File → Open Folder of Videos… (G30): the folder's videos listed, the user
@@ -2833,9 +2953,11 @@ class MainWindow(QMainWindow):
         paths, save_to = list(dlg.result_paths), dlg.result_project
         dlg.deleteLater()
         if accepted and paths:
-            self._import_folder(paths, save_to)
+            settled = self._settle_unsaved(f"opening the videos of {Path(folder).name}")     # (G143)
+            if settled is not None:
+                self._import_folder(paths, save_to, discard=settled == "discard")
 
-    def _import_folder(self, paths: list[str], save_to: str | None = None) -> None:
+    def _import_folder(self, paths: list[str], save_to: str | None = None, discard: bool = False) -> None:
         """Open `paths[0]` (the base camera) as a new project, add the others, name
         every camera after its file, and save to `save_to` when given."""
         if not paths or self.state == TRACKING:
@@ -2861,7 +2983,7 @@ class MainWindow(QMainWindow):
         self._busy_set_cancel(tok, None)
         self._busy_step("Building the project: the timeline, every camera's view and the first pictures…")
         try:
-            self._attach_video(binfo)
+            self._attach_video(binfo, discard=discard)
             p = self.project
             names = camera_names(paths)                 # unique, even for cam1/GX01.MP4 ... cam8/GX01.MP4 (I223)
             p.names[0] = names[0] or p.names[0]
@@ -2898,11 +3020,14 @@ class MainWindow(QMainWindow):
             f"<b>{p.name(0)}</b>." + (f" {missed} could not be added." if missed else "") + saved
             + " Next: line them up in time with <b>3D → Sync Cameras (Sound / Motion)</b>.", "info", 12000)
 
-    def _open_video(self, path: str, then=None, title: str | None = None, hint: str | None = None):
+    def _open_video(self, path: str, then=None, title: str | None = None, hint: str | None = None,
+                    discard: bool = False):
         """Probe in a worker thread, then wire everything up. `then(info)` runs
         after success (used by project loading). The loading card says each step,
         and stays until the first picture is on screen; Cancel (while the file is
-        still being read) leaves whatever is open untouched."""
+        still being read) leaves whatever is open untouched. `discard`: the user
+        chose Discard for the open project's unsaved work (G143) -- dropped only
+        once the new video really replaces it."""
         name = Path(path).name
         try:
             size = f" ({Path(path).stat().st_size / 1024 ** 2:,.0f} MB)"
@@ -2941,19 +3066,19 @@ class MainWindow(QMainWindow):
                 self._busy_pop(tok)
                 QMessageBox.critical(self, "Could not open video", result)
                 return
-            self._attach_with_card(result, then, tok)
+            self._attach_with_card(result, then, tok, discard)
 
         probe.done.connect(done)
         probe.start()
 
-    def _attach_with_card(self, info, then, tok: int) -> None:
+    def _attach_with_card(self, info, then, tok: int, discard: bool = False) -> None:
         """Build the project on `info` with the loading card's level `tok` up: past
         this point the open cannot be taken back (no Cancel); the level goes when
         the working camera's first picture is on screen."""
         self._busy_set_cancel(tok, None)
         self._busy_step("Preparing the timeline and the first picture…", OPEN_STAGES - 1, OPEN_STAGES)
         try:
-            self._attach_video(info, then)
+            self._attach_video(info, then, discard=discard)
         except Exception:
             self._busy_pop(tok)
             raise
@@ -2965,16 +3090,19 @@ class MainWindow(QMainWindow):
         else:
             self._busy_pop(tok)
 
-    def _attach_video(self, info: VideoInfo, then=None):
+    def _attach_video(self, info: VideoInfo, then=None, discard: bool = False):
         """Open `info` as a brand-new single-camera project (extra cameras are
-        added afterwards with `_add_video_dialog`)."""
+        added afterwards with `_add_video_dialog`). `discard`: drop the replaced
+        project's unsaved work instead of keeping it in recovery (G143)."""
         # Track ▾ is usable with no video open (G34): what was chosen there carries
         # into this first video instead of snapping back to the defaults
         chosen = None if self.project is not None else {
             "track_mode": self._track_mode, "track_all": self.act_track_all.isChecked(),
             "point_backend": self._point_backend}
-        self._leave_project()   # unsaved work -> recovery, where the user was -> view sidecar
+        self._leave_project(discard)   # unsaved work -> recovery (or dropped, G143), where the user was -> view sidecar
         self._teardown_video()
+        self._gopro_said = set()                 # (G145) a new project: its GoPro notes are new
+        self._gopro_soon()
         self._epi_probe = None
         self._wand_result = (None, None)      # a new project: no wand run belongs to it (I33)
         self.project = Project([TrackingSession(info.path, info.n_frames, info.fps,
@@ -3157,21 +3285,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Could not open video", info)
             return False
         s = TrackingSession(info.path, info.n_frames, info.fps, info.width, info.height)
-        # a second camera of the same animal wants the same landmark names —
-        # matching names across views is exactly what the 3D export joins on
-        ref = self.project.session
-        if ref is not None and ref.skeleton:
-            # only the landmarks some camera still has: deleting one leaves its name in
-            # the skeleton, and applying that whole template brought it back (I234)
-            have = set(self.project.landmark_order())
-            sk = ref.skeleton
-            t = dict(sk)
-            t["landmarks"] = [n for n in sk.get("landmarks", []) if n in have]
-            t["bones"] = [b for b in sk.get("bones", []) if all(n in have for n in b)]
-            t["derived"] = {k: v for k, v in sk.get("derived", {}).items() if k in have}
-            if sk.get("head") not in have:
-                t.pop("head", None)
-            s.apply_skeleton(t)
+        # (G153) the animals (with their skeletons) and the landmarks of the other cameras arrive by
+        # name in `sync_landmarks` below: a deleted landmark is not brought back (I234)
         if name is None or name.lower() in {str(n).lower() for n in self.project.names}:
             name = camera_names([path], taken=self.project.names)[0]      # (I223)
         had_3d, had_hull = self.project.reconstruction is not None, bool(self._hull_cache)
@@ -3192,6 +3307,7 @@ class MainWindow(QMainWindow):
         self._drop_reconstruction("a camera was added", had=had_3d, had_hull=had_hull)    # (I206) the camera set changed
         if getattr(info, "fps_note", ""):
             self.toast.show_message(f"{self.project.name(i)}: {info.fps_note}", "warn", 12000)
+        self._gopro_soon()                       # (G145)
         cal = self.project.calibration
         if cal is not None and 0 < len(cal) < self.project.n_views:
             # the 3D menu greys out (it needs every camera calibrated): say why,
@@ -3264,7 +3380,7 @@ class MainWindow(QMainWindow):
                 if self.selected is not None and self.selected < s0.n_points else None)
         # the WHOLE selection comes along too: it is what Track tracks (G61)
         keep_all = {s0.points[q].name for q in self._selected_pids() if q < s0.n_points}
-        keep_seg = self._segment_selected()
+        keep_seg = [s0.segments[k].name for k in self._selected_segments() if k < s0.n_segments]   # (G149) by name
         prev = p.name(p.active)
         # the camera being left shows ITS frame at this instant; the one taken up is
         # driven by the playhead from now on (Active view only keeps the first where
@@ -3277,17 +3393,15 @@ class MainWindow(QMainWindow):
         self._apply_active_view(target if target is not None else p.session.current_frame)
         self._update_disagreement()            # the band is per camera: recompute for this one
         j = p.session.pid_by_name(keep) if keep is not None else None
+        # selects it (and shows its epipolar guides) and the whole selection, by name; ClearAndSelect
+        # (G66)
+        sv = p.session
+        self.layers.select_only([q for q in (sv.pid_by_name(nm) for nm in keep_all | ({keep} if keep else set()))
+                                 if q is not None],
+                                [k for k, n in enumerate(sv.segment_names()) if n in keep_seg], current=j)
         if j is not None:
-            from PySide6.QtCore import QItemSelectionModel
-            # selects it (and shows its epipolar guides); ClearAndSelect: a bare setCurrentRow only
-            # replaces the last selection operation (G66)
-            self.point_list.setCurrentRow(j, QItemSelectionModel.ClearAndSelect)
-        for nm in keep_all:
-            q = p.session.pid_by_name(nm)
-            if q is not None and q < self.point_list.count():
-                self.point_list.item(q).setSelected(True)
-        if keep_seg and self.animal_list.count():
-            self.animal_list.item(0).setSelected(True)
+            self.selected = j
+        self._sync_s_target()
         self._update_track_button()
         self._enter_camera_tools(add_on)
         msg = f"Working in {p.name(i)} — points, silhouette and timeline are this camera's"
@@ -3939,13 +4053,7 @@ class MainWindow(QMainWindow):
                     if rt.seek is None:
                         self._start_seek_service(i)
                     rt.seek.request(f)
-            if s.animal is not None and s.masks is not None and self.btn_mask.isChecked():
-                cv.set_mask(s.masks.contours.get(f), s.animal.color, self._mask_opacity)
-                cv.set_midline(s.masks.midline.get(f)
-                               if self.act_show_midline.isChecked() else None, s.animal.color)
-            else:
-                cv.set_mask(None)
-                cv.set_midline(None)
+            cv.set_masks(self._mask_layers(s, f), self._mask_opacity)       # every segment (G149)
             cv.set_bones(s.bones() if self.act_show_bones.isChecked() else [])
             sel_name = (self.session.points[self.selected].name if self.selected is not None
                         and self.session is not None and self.selected < self.session.n_points else None)
@@ -4065,14 +4173,14 @@ class MainWindow(QMainWindow):
         elif self._region_shape == "polygon":
             self.statusBar().showMessage(
                 "Polygon region: click each corner, Enter (or a double-click) closes it; a single "
-                "point needs Add ▾ → Region shape: circle first. Esc cancels", 9000)
+                "point needs Point ▾ → Region shape: circle first. Esc cancels", 9000)
         else:
             self.statusBar().showMessage(
                 "Place a point: click where it should track — or drag to outline a "
-                "region (circle or rectangle, chosen under Add ▾). Esc cancels (N toggles)", 8000)
+                "region (circle or rectangle, chosen under Point ▾). Esc cancels (N toggles)", 8000)
 
     def _arm_ball(self):
-        """Add ▾ → Ball marker: the next click segments a ball with SAM."""
+        """Point ▾ → Ball marker: the next click segments a ball with SAM."""
         if self.session is None or self.state != READY:
             return
         self._place_kind = "ball"
@@ -4102,14 +4210,15 @@ class MainWindow(QMainWindow):
                 return
             self._begin_edit()                  # adding is one undo step too (I123)
             pid = s.add_ball(self.current, x, y)
+            where = self._assign_new_point(pid, x, y)      # its animal, or Scene (G155)
             self._share_landmarks()
             self.selected = pid
             self._refresh_point_list()
             self._refresh_overlay()
             self._apply_state()
             self.statusBar().showMessage(
-                f"Added ball marker {s.points[pid].name} at ({x:.0f}, {y:.0f}) on frame {self.current}. "
-                "Add the other balls the same way (Add ▾ → Ball marker), then press Track: SAM outlines "
+                f"Added ball marker {s.points[pid].name}{where} at ({x:.0f}, {y:.0f}) on frame {self.current}. "
+                "Add the other balls the same way (Point ▾ → Ball marker), then press Track: SAM outlines "
                 "each ball and the fitted circle's centre is its point", 9000)
             return
         # If the selected point has no position on this frame (it left the
@@ -4134,6 +4243,7 @@ class MainWindow(QMainWindow):
         derived_sel = (self.selected is not None and self.selected < s.n_points
                        and s.points[self.selected].derived)
         pid = s.add_point(self.current, x, y)
+        where = self._assign_new_point(pid, x, y)          # its animal, or Scene (G155)
         self._share_landmarks()
         self.selected = pid
         self._refresh_point_list()
@@ -4141,9 +4251,87 @@ class MainWindow(QMainWindow):
         self._apply_state()
         self._hint_small_spot(pid, x, y)
         self.statusBar().showMessage(
-            f"Added {s.points[pid].name} at ({x:.0f}, {y:.0f}) on frame {self.current}"
+            f"Added {s.points[pid].name}{where} at ({x:.0f}, {y:.0f}) on frame {self.current}"
             + (" — the landmark that was selected is derived from the silhouette and cannot be placed by "
                "hand, so a NEW point was added" if derived_sel else ""), 6000 if derived_sel else 4000)
+
+    def _owner_for_new_point(self, x: float | None = None, y: float | None = None) -> tuple[int | None, str]:
+        """(G155) The animal a new point joins, and why: (1) the one animal row selected in LAYERS;
+        (2) the one animal whose silhouette holds the click on this frame; (3) the animal of the
+        selected point(s) (adding point after point to one animal); else Scene (None). Two
+        silhouettes over the click and no selection to decide = Scene, said."""
+        s = self.session
+        if s is None or not s.segments:
+            return None, ""
+        rows = self._selected_segments()
+        if len(rows) == 1:
+            return rows[0], "selected"
+        if x is not None:
+            inside = [k for k in range(s.n_segments) if self._silhouette_holds(s, k, self.current, x, y)]
+            if len(inside) == 1:
+                return inside[0], "silhouette"
+            if len(inside) > 1:
+                return None, "overlap"
+        of = {s.segment_of(q) for q in self._selected_pids()} - {None}
+        if len(of) == 1:
+            return next(iter(of)), "selected"
+        return None, ""
+
+    @staticmethod
+    def _silhouette_holds(s, k: int, f: int, x: float, y: float) -> bool:
+        """Animal k's silhouette on frame f contains (x, y) (its outline polygons)."""
+        import cv2
+        polys = s.seg_masks[k].contours.get(f) if 0 <= k < s.n_segments else None
+        inside = False
+        for poly in polys or []:
+            pts = np.asarray(poly, np.float32).reshape(-1, 1, 2)
+            if len(pts) >= 3 and cv2.pointPolygonTest(pts, (float(x), float(y)), False) >= 0:
+                inside = not inside                # a hole inside an outline flips it back
+        return inside
+
+    def _assign_new_point(self, pid: int, x: float | None = None, y: float | None = None) -> str:
+        """Give a point just made its animal (G155, owner: assigned automatically and shown, not asked):
+        `_owner_for_new_point`. A notice says where it went when a silhouette decided it or a
+        silhouette under the click belongs to another animal, with a click that moves it. Returns
+        ' (in <animal>)' / ' (in Scene)' for the status line ('' with no animals)."""
+        s = self.session
+        if s is None or not s.segments:
+            return ""
+        k, why = self._owner_for_new_point(x, y)
+        if k is not None:
+            s.move_points([pid], k)
+        name = s.points[pid].name
+        where = s.segments[k].name if k is not None else "Scene"
+        under = ([j for j in range(s.n_segments) if j != k and self._silhouette_holds(s, j, self.current, x, y)]
+                 if x is not None else [])
+        if why == "silhouette" or why == "overlap" or under:
+            text = (f"<b>{name}</b> was put in <b>{where}</b>"
+                    + (" (its silhouette is under the click)" if why == "silhouette" else "")
+                    + (" — the click is on the silhouettes of more than one animal" if why == "overlap" else "")
+                    + (f" — it is on <b>{s.segments[under[0]].name}</b>'s silhouette" if under else "")
+                    + ". Click here to move it, or drag it in LAYERS.")
+            self.toast.show_message(text, "info", 9000,
+                                    on_click=lambda n=name: self._move_menu_for_name(n))
+        return f" (in {where})"
+
+    def _move_menu_for_name(self, name: str) -> None:
+        """A small menu at the pointer: move point `name` to an animal or Scene (G155's notice)."""
+        s = self.session
+        pid = s.pid_by_name(name) if s is not None else None
+        if pid is None or self.state != READY:
+            return
+        menu = QMenu(self)
+        acts = {}
+        for k, a in enumerate(s.segments):
+            if s.segment_of(pid) != k:
+                acts[menu.addAction(f"Move {name} to {a.name}")] = k
+        if s.segment_of(pid) is not None and not s.points[pid].derived:
+            acts[menu.addAction(f"Move {name} to Scene")] = None
+        from PySide6.QtGui import QCursor
+        chosen = menu.exec(QCursor.pos())
+        menu.deleteLater()
+        if chosen in acts:
+            self._move_points([pid], acts[chosen])
 
     def _new_point(self) -> None:
         """POINTS → ＋ New point: a point with no position yet, in every camera's
@@ -4155,6 +4343,7 @@ class MainWindow(QMainWindow):
             self.btn_add.setChecked(False)      # the next click places THIS point
         self._begin_edit()                      # one undo step, in every camera (I123, G19)
         pid = s.add_empty_point()
+        self._assign_new_point(pid)             # the selected animal, else Scene (G155)
         self._share_landmarks()
         self.selected = pid
         self._epi_probe = None
@@ -4179,6 +4368,7 @@ class MainWindow(QMainWindow):
         s = self.session
         self._begin_edit()                      # (I123)
         pid = s.add_point(self.current, cx, cy, kind="group", radius=radius)
+        self._assign_new_point(pid, cx, cy)     # its animal, or Scene (G155)
         self._share_landmarks()
         self.selected = pid
         self._refresh_point_list()
@@ -4206,198 +4396,394 @@ class MainWindow(QMainWindow):
                     "missed part. Then press <b>Track</b>.", "info", 9000)
 
     def _animal_status_text(self) -> str:
+        """The line under LAYERS: the selected animal's numbers (G154), or what to do."""
         s = self.session
-        if s is None or s.animal is None:
-            return ("No segment yet. Press <b>S</b> and click it on the video; the silhouette "
-                    "then follows it when you track, and tail tip / midline / feet landmarks "
-                    "can be derived from it.")
-        a, m = s.animal, s.masks
-        n_masked = m.n_masked() if m is not None else 0
+        if s is None or not s.segments:
+            return ("No animal yet: ＋ Animal makes one (a layer for its points), or press <b>S</b> and click "
+                    "the animal on the video to outline it (optional) — tail tip / midline / feet landmarks can "
+                    "then be derived from its silhouette.")
+        k = self._s_target()
+        if k is None:
+            return (f"{s.n_segments} animal(s). Select one in LAYERS to see its numbers; with one animal "
+                    "selected, S + a click on the video outlines it.")
+        a, m = s.segments[k], s.seg_masks[k]
+        n_masked = m.n_masked()
         pf = a.prompt_frames()
         here = " (this frame)" if self.current in pf else ""
-        # the name lives in the row above; this line is the numbers
-        txt = (f"{a.n_prompts()} click(s)/box(es) on {len(pf)} frame(s){here}; "
-               f"silhouette on {n_masked:,} of {s.n_frames:,} frames.")
-        if s.derived_pids():
-            txt += f" {len(s.derived_pids())} landmark(s) derive from it."
+        n_pts = len(s.points_of(k))
+        txt = (f"<b>{a.name}</b>: {n_pts} point(s); {a.n_prompts()} click(s)/box(es) on {len(pf)} frame(s)"
+               f"{here}; silhouette on {n_masked:,} of {s.n_frames:,} frames.")
+        n_der = sum(1 for q in s.points_of(k) if s.points[q].derived)
+        if n_der:
+            txt += f" {n_der} landmark(s) derive from it."
         if n_masked == 0 and pf:
             txt += " Press Track to segment the video."
+        elif not pf and not n_masked:
+            txt += " S + a click on the video outlines it (optional)."
         return txt
 
     def _refresh_animal_panel(self):
-        """The SEGMENT section: one row for the segment itself (when there is
-        one) plus the status line. Rebuilt like the point list, signals blocked
-        so the rebuild is not mistaken for a user edit."""
-        self.animal_label.setText(self._animal_status_text())
+        """The animals changed (a click, a silhouette, a rename): the line under LAYERS and the tree."""
+        self._refresh_point_list()
+
+    def _new_segment(self) -> None:
+        """LAYERS -> ＋ Animal (G149, G154): another animal, in every camera's list (by name), selected.
+        It is a layer: points join it by being made while it is selected or by being dragged onto it;
+        its silhouette is optional (S + a click on the video while it is selected)."""
         s = self.session
-        seg_sel = self._segment_selected()
-        self.animal_list.blockSignals(True)
-        self.animal_list.clear()
-        has = s is not None and s.animal is not None
-        self.animal_list.setVisible(has)
-        if has:
-            a = s.animal
-            n_masked = s.masks.n_masked() if s.masks is not None else 0
-            item = QListWidgetItem(a.name)
-            pm = QPixmap(14, 14)
-            pm.fill(Qt.transparent)
-            from PySide6.QtGui import QBrush, QPainter, QPen
-            painter = QPainter(pm)
-            painter.setRenderHint(QPainter.Antialiasing)
-            # a filled blob, not the points' square: the segment is an area
-            col = QColor(*a.color)
-            painter.setPen(QPen(col, 1.5))
-            painter.setBrush(QBrush(QColor(a.color[0], a.color[1], a.color[2], 140)))
-            painter.drawEllipse(1, 2, 12, 10)
-            painter.end()
-            item.setIcon(QIcon(pm))
-            item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if self.btn_mask.isChecked() else Qt.Unchecked)
-            item.setToolTip(
-                f"{a.name}: silhouette on {n_masked:,} of {s.n_frames:,} frames, from "
-                f"{a.n_prompts()} click(s)/box(es).\n"
-                "Checkbox: show / hide the silhouette. Double-click: rename. "
-                "Right-click: clear a stretch, jump to the silhouette, or remove the segment.")
-            if n_masked == 0:
-                item.setForeground(QColor(theme.TEXT_DIM))
-            self.animal_list.addItem(item)
-            item.setSelected(seg_sel)               # a rebuild keeps it in (or out of) the next run (G61)
-            # exactly one row tall at whatever font / DPI this machine uses
-            self.animal_list.setFixedHeight(
-                self.animal_list.sizeHintForRow(0) + 2 * self.animal_list.frameWidth() + 2)
-        self.animal_list.blockSignals(False)
+        if s is None or self.state != READY:
+            return
+        k = s.add_segment()
+        self._share_landmarks(undoable=False)
+        self.timeline.set_session(s)             # one more lane
+        self._refresh_point_list(keep=(set(), {s.segments[k].name}))
+        self._apply_state()
+        self.statusBar().showMessage(
+            f"{s.segments[k].name} made and selected: press N and click its points on the video (they join it), "
+            "or drag points onto it; S + a click on the video outlines its silhouette (optional). "
+            "Double-click its name to rename it", 12000)
 
-    def _on_animal_item_changed(self, item):
-        """The segment row was edited: the checkbox toggles the silhouette
-        overlay, the text renames the segment."""
+    def _on_layer_item_changed(self, item, col: int = 0):
+        """A LAYERS row was edited (G154): a point's name (the part: the animal's prefix is kept) or
+        checkbox, an animal's name or checkbox (its silhouette shown), Scene's checkbox (its points)."""
+        from kinetrace.session import qualified
         s = self.session
-        if s is None or s.animal is None:
+        kind = self.layers.kind_of(item)
+        if s is None or not kind:
             return
-        want = item.checkState() == Qt.Checked
-        if want != self.btn_mask.isChecked():
-            self.btn_mask.setChecked(want)       # drives _refresh_overlay + this panel
-            return
-        desired = item.text().strip()
-        if desired and desired != s.animal.name:
-            name = s.rename_animal(desired)
-            self.timeline.refresh()
-            self.statusBar().showMessage(f"Segment renamed to {name}", 4000)
-        self._refresh_animal_panel()
-        self._refresh_overlay()
+        if kind[0] == "point":
+            pid = kind[1]
+            if pid >= s.n_points:
+                return
+            meta = s.points[pid]
+            k = s.segment_of(pid)
+            text = item.text(0).strip()
+            part = s.part_name(pid)
+            if not text:
+                # an emptied name keeps the old one: the row used to stay blank (G126)
+                self.layers.blockSignals(True)
+                item.setText(0, part)
+                self.layers.blockSignals(False)
+            elif text != part:
+                applied = self._apply_rename(pid, qualified(s.segments[k].name, text) if k is not None else text)
+                self.layers.blockSignals(True)
+                item.setText(0, s.part_name(pid))
+                item.setData(0, ROLE_NAME, applied)
+                self.layers.blockSignals(False)
+                self._refresh_overlay()
+            want = item.checkState(0) == Qt.Checked
+            if want != meta.display:
+                self._begin_edit()                    # the checkbox is one Ctrl+Z step too (G68)
+                meta.display = want
+                s.dirty = True
+                self._refresh_overlay()
+        elif kind[0] == "animal":
+            k = kind[1]
+            if not (0 <= k < s.n_segments):
+                return
+            a = s.segments[k]
+            want = item.checkState(0) == Qt.Checked
+            if want != a.shown:
+                a.shown = want                      # display state: view.json, not an edit (G154)
+                self._refresh_overlay()
+            desired = item.text(0).strip()
+            if desired and desired != a.name:
+                self._rename_segment(k, desired)
+            elif not desired:
+                self.layers.blockSignals(True)
+                item.setText(0, a.name)
+                self.layers.blockSignals(False)
+        elif kind[0] == "scene":
+            want = item.checkState(0) == Qt.Checked
+            mine = [q for q in s.points_of(None) if s.points[q].display != want]
+            if mine:
+                self._begin_edit()
+                for q in mine:
+                    s.points[q].display = want
+                s.dirty = True
+                self._refresh_point_list()
+                self._refresh_overlay()
 
-    # ---- the segment row's context menu ----------------------------------
+    # ---- an animal's context menu -----------------------------------------
 
-    def _build_animal_menu(self):
+    def _build_animal_menu(self, k: int | None = None):
         """Menu + action map, built separately so tests can drive the entries
-        (the canvas point menu uses the same pattern)."""
+        (the canvas point menu uses the same pattern). `k` = the animal the menu is for: the row
+        right-clicked (G151b; None = the active one); it rides in acts["_seg"]."""
         s = self.session
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
-        acts = {}
-        n_masked = s.masks.n_masked() if (s is not None and s.masks is not None) else 0
-        acts["rename"] = menu.addAction("Rename segment…")
+        if s is not None and not (k is not None and 0 <= k < s.n_segments):
+            k = s.active_seg
+        acts = {"_seg": k}
+        ok = s is not None and 0 <= k < s.n_segments
+        a = s.segments[k] if ok else None
+        m = s.seg_masks[k] if ok else None
+        n_masked = m.n_masked() if m is not None else 0
+        acts["rename"] = menu.addAction("Rename the animal…")
+        acts["outline"] = menu.addAction("Outline it on the video (S)")
+        acts["outline"].setToolTip("Selects this animal and switches the S tool on: click the animal on the video "
+                                   "(Shift+click = not it, a drag = a box)")
         a_mask = menu.addAction("Show its silhouette")
         a_mask.setCheckable(True)
-        a_mask.setChecked(self.btn_mask.isChecked())
+        a_mask.setChecked(bool(a is not None and a.shown))
         acts["show_mask"] = a_mask
-        a_mid = menu.addAction("Show its midline")
+        a_hold = menu.addAction("Keep its points on its silhouette")
+        a_hold.setCheckable(True)
+        a_hold.setChecked(bool(a is not None and a.hold))
+        a_hold.setToolTip("Its points tracked by appearance are nudged back when they slip just past the "
+                          "silhouette's edge, and a run stops where one clearly leaves it (a point marked 'May "
+                          "leave its silhouette' is exempt). Needs a silhouette.")
+        acts["hold"] = a_hold
+        a_mid = menu.addAction("Show the midlines")
         a_mid.setCheckable(True)
         a_mid.setChecked(self.act_show_midline.isChecked())
         acts["show_midline"] = a_mid
         menu.addSeparator()
         acts["first"] = menu.addAction("Jump to its first silhouette")
         acts["last"] = menu.addAction("Jump to its last silhouette")
-        for k in ("first", "last"):
-            acts[k].setEnabled(bool(n_masked > 0))
-        menu.addSeparator()
-        a_here = menu.addAction(f"Clear the silhouette on frame {self.current}")
-        a_here.setEnabled(bool(s is not None and s.masks is not None and s.masks.has(self.current)))
+        for key in ("first", "last"):
+            acts[key].setEnabled(bool(n_masked > 0))
+        a_here = menu.addAction(f"Clear its silhouette on frame {self.current}")
+        a_here.setEnabled(bool(m is not None and m.has(self.current)))
         acts["clear_here"] = a_here
         sel = self.timeline.sel_range
         a_win = menu.addAction(
-            f"Clear the silhouettes in frames {sel[0]}–{sel[1]}" if sel else
-            "Clear the silhouettes in the selected frame window")
+            f"Clear its silhouettes in frames {sel[0]}–{sel[1]}" if sel else
+            "Clear its silhouettes in the selected frame window")
         a_win.setEnabled(bool(sel is not None and n_masked > 0))
         a_win.setToolTip("Shift+drag across the timeline to select a frame window first")
         acts["clear_window"] = a_win
-        a_all = menu.addAction(f"Clear ALL {n_masked:,} silhouettes (keep the clicks)")
+        a_all = menu.addAction(f"Clear ALL {n_masked:,} of its silhouettes (keep the clicks)")
         a_all.setEnabled(bool(n_masked > 0))
         a_all.setToolTip("The clicks stay, so pressing Track segments the video again")
         acts["clear_all"] = a_all
         menu.addSeparator()
-        acts["remove"] = menu.addAction("Remove the segment (clicks and silhouettes)")
+        acts["save_tpl"] = menu.addAction("Save its points and bones as a skeleton template…")
+        acts["save_tpl"].setEnabled(bool(ok and s.points_of(k)))
+        acts["save_tpl"].setToolTip("Another animal (this video or the next) then gets the same points from "
+                                    "Skeleton ▾")
+        acts["forget_sk"] = menu.addAction("Forget its bones and head (keep the points)")
+        acts["forget_sk"].setEnabled(bool(a is not None and a.skeleton))
+        menu.addSeparator()
+        acts["remove"] = menu.addAction("Remove the animal (its points go to Scene)")
+        acts["remove_all"] = menu.addAction("Remove the animal and its points")
+        acts["remove_all"].setEnabled(bool(ok and s.points_of(k)))
         return menu, acts
 
-    def _animal_menu(self, pos):
-        if self.session is None or self.session.animal is None or self.state != READY:
-            return
-        menu, acts = self._build_animal_menu()
-        chosen = menu.exec(self.animal_list.viewport().mapToGlobal(pos))
-        menu.deleteLater()          # release the shown menu (see canvas._context_menu)
-        self._animal_menu_action(chosen, acts)
+    def _rename_segment(self, i: int, desired: str) -> str:
+        """Animal i renamed in every camera (one name free in all, G149), its points with it (G153)."""
+        s, p = self.session, self.project
+        old = s.segments[i].name
+        names = [s.points[q].name for q in s.points_of(i)]
+        # its points' names and its own name come back with Ctrl+Z in every camera -- one where it has
+        # no points too (G153)
+        self._begin_edit(names, animals=[old])
+        new = p.rename_segment(old, desired)     # every camera; one camera is the one-element case
+        self._refresh_companions()
+        self.timeline.refresh()
+        self._refresh_point_list()
+        self._refresh_overlay()
+        self.statusBar().showMessage(f"Animal renamed to {new} (its points with it)", 5000)
+        return new
 
     def _animal_menu_action(self, chosen, acts):
-        """Apply one entry of the segment menu (the exec result, or an action
-        picked by a test)."""
+        """Apply one entry of the animal menu (the exec result, or an action picked by a test) to the
+        menu's animal, acts["_seg"] (G151b)."""
         s = self.session
-        if chosen is None or s is None or s.animal is None:
+        if chosen is None or s is None or not s.segments:
             return
+        k = acts.get("_seg")
+        if k is None or not (0 <= k < s.n_segments):
+            k = s.active_seg
+        a = s.segments[k]
         if chosen is acts["rename"]:
-            name, ok = QInputDialog.getText(self, "Rename segment", "Name:", text=s.animal.name)
+            name, ok = QInputDialog.getText(self, "Rename the animal", "Name:", text=a.name)
             if ok and name.strip():
-                applied = s.rename_animal(name)
-                self.timeline.refresh()
-                self._refresh_animal_panel()
-                self.statusBar().showMessage(f"Segment renamed to {applied}", 4000)
+                self._rename_segment(k, name)
+        elif chosen is acts["outline"]:
+            self._refresh_point_list(keep=(set(), {a.name}))
+            self._on_point_selection_changed()
+            if not self.btn_animal.isChecked():
+                self.btn_animal.setChecked(True)
         elif chosen is acts["show_mask"]:
-            self.btn_mask.setChecked(acts["show_mask"].isChecked())
+            a.shown = acts["show_mask"].isChecked()     # display state: view.json, not an edit (G154)
+            if a.shown and not self.btn_mask.isChecked():
+                self.btn_mask.setChecked(True)
+            self._refresh_point_list()
+            self._refresh_overlay()
+        elif chosen is acts["hold"]:
+            self._begin_edit(animals=[a.name])      # every camera share_animal changes
+            a.hold = acts["hold"].isChecked()
+            if self.project is not None:
+                self.project.share_animal(a.name)
+            s.dirty = True
+            self._refresh_point_list()
+            self.statusBar().showMessage(
+                f"{a.name}: its points are kept on its silhouette (next run)" if a.hold else
+                f"{a.name}: its points may drift off its silhouette", 6000)
         elif chosen is acts["show_midline"]:
             self.act_show_midline.setChecked(acts["show_midline"].isChecked())
             self._refresh_overlay()
         elif chosen is acts["first"] or chosen is acts["last"]:
-            fr = s.mask_frames()
+            fr = s.mask_frames(k)
             if len(fr):
                 self._goto(int(fr[-1] if chosen is acts["last"] else fr[0]))
         elif chosen is acts["clear_here"]:
-            self._clear_masks_window(self.current, self.current)
+            self._clear_masks_window(self.current, self.current, [k])
         elif chosen is acts["clear_window"]:
             sel = self.timeline.sel_range
             if sel is not None:
-                self._clear_masks_window(sel[0], sel[1])
+                self._clear_masks_window(sel[0], sel[1], [k])
         elif chosen is acts["clear_all"]:
-            n = s.masks.n_masked() if s.masks is not None else 0
+            n = s.seg_masks[k].n_masked()
             if QMessageBox.question(
                     self, "Clear silhouettes",
-                    f"Remove {s.animal.name}'s silhouettes on {n:,} frames?\n\nIts clicks stay, so "
+                    f"Remove {a.name}'s silhouettes on {n:,} frames?\n\nIts clicks stay, so "
                     "pressing Track segments the video again. Ctrl+Z undoes this.",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
-                self._clear_masks_window(0, s.n_frames - 1)
+                self._clear_masks_window(0, s.n_frames - 1, [k])
+        elif chosen is acts["save_tpl"]:
+            self._save_animal_template(k)
+        elif chosen is acts["forget_sk"]:
+            self._clear_skeleton_of(k)
         elif chosen is acts["remove"]:
-            self._clear_animal()
-        if self.session is not None:
-            self.btn_clear_animal.setEnabled(self.state == READY and self.session.animal is not None)
+            self._clear_animal([k])                 # the row right-clicked (G150)
+        elif chosen is acts["remove_all"]:
+            self._clear_animal([k], with_points=True)
 
+    def _save_animal_template(self, k: int) -> None:
+        """An animal's points, bones, head and derived rules as a template in skeletons/ (G157), so
+        the next animal gets them from Skeleton ▾."""
+        from kinetrace.skeletons import save_user_template, user_template_path
+        s = self.session
+        name, ok = QInputDialog.getText(self, "Save as a skeleton template", "Template name:",
+                                        text=(s.segments[k].skeleton or {}).get("name") or s.segments[k].name)
+        if not ok or not name.strip():
+            return
+        t = s.skeleton_template(k, name.strip())
+        try:
+            try:
+                path = save_user_template(t)
+            except FileExistsError:
+                if QMessageBox.question(
+                        self, "Replace the saved skeleton?",
+                        f"{user_template_path(t).name} already exists in skeletons/. Replace it?",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                    return
+                path = save_user_template(t, overwrite=True)
+        except OSError as e:
+            QMessageBox.warning(self, "Template not saved", _plain_error(e, "The template could not be saved"))
+            return
+        self._refresh_skeleton_menu()
+        self.toast.show_message(
+            f"Template <b>{t['name']}</b> saved ({len(t['landmarks'])} points, {len(t['bones'])} bones): select "
+            f"another animal and choose it under Skeleton ▾. ({Path(str(path)).name})", "success", 9000)
+
+    def _layers_menu(self, pos):
+        """Right-click in LAYERS (G154): a point = the point menu (several selected = the menu for all of
+        them, G64); an animal = its menu; Scene = a short one."""
+        item = self.layers.itemAt(pos)
+        s = self.session
+        if item is None or s is None or self.state != READY:
+            return
+        kind = self.layers.kind_of(item)
+        gpos = self.layers.viewport().mapToGlobal(pos)
+        if kind and kind[0] == "point":
+            self._point_list_menu_for(kind[1], gpos)
+        elif kind and kind[0] == "animal":
+            menu, acts = self._build_animal_menu(kind[1])
+            chosen = menu.exec(gpos)
+            menu.deleteLater()          # release the shown menu (see canvas._context_menu)
+            self._animal_menu_action(chosen, acts)
+        elif kind and kind[0] == "scene":
+            menu = QMenu(self)
+            a_new = menu.addAction("＋ Point in Scene")
+            chosen = menu.exec(gpos)
+            menu.deleteLater()
+            if chosen is a_new:
+                self.layers.select_only()
+                self._on_point_selection_changed()
+                self._new_point()
+
+    def _on_layers_move(self, pids, target: int) -> None:
+        """Points dragged onto an animal (`target`) or Scene (-1) in LAYERS (G154, owner: "allow the user
+        to drag and drop points from one animal parent to another")."""
+        self._move_points(list(pids), None if target < 0 else int(target))
+
+    def _move_points(self, pids, k: int | None) -> None:
+        """Points `pids` into animal k (None = Scene) in every camera, renamed "<animal> <part>", as one
+        Ctrl+Z step (G153). A landmark derived from the silhouette needs an animal: it is not moved to
+        Scene."""
+        s = self.session
+        if s is None or self.state != READY:
+            return
+        derived = [q for q in pids if 0 <= q < s.n_points and s.points[q].derived]
+        if k is None and derived:
+            self.toast.show_message(
+                "A landmark derived from the silhouette (" + ", ".join(s.points[q].name for q in derived)
+                + ") belongs to an animal: it was not moved to Scene. Drag it onto another animal, or switch it "
+                "to tracking by appearance first (right-click → Data source).", "warn", 9000)
+            pids = [q for q in pids if q not in derived]
+        pids = [q for q in pids if 0 <= q < s.n_points and s.segment_of(q) != k]
+        if not pids:
+            return
+        names = [s.points[q].name for q in pids]
+        target = s.segments[k].name if k is not None else ""
+        self._begin_edit(names)
+        changes = self.project.move_landmarks(names, target)    # every camera (one = the 1-element case)
+        self._refresh_companions()
+        new_names = {n for _o, n in changes}
+        self._refresh_point_list(keep=(new_names, set()))
+        self._on_point_selection_changed()
+        self._refresh_overlay()
+        self.timeline.refresh()
+        where = target or "Scene"
+        self.statusBar().showMessage(
+            f"{len(changes)} point(s) moved to {where}" + (f" (now {', '.join(sorted(new_names))})"
+                                                           if len(new_names) <= 4 else "")
+            + " — Ctrl+Z puts them back", 8000)
     def _current_rgb(self):
         return self.cache.get(self.current) if self.session is not None else None
+
+    def _segment_tool_target(self) -> tuple[int | None, bool]:
+        """The animal an S click / box outlines (G154): the one the LAYERS selection names; with no
+        animal yet, a new one (True = made now). (None, False) = the selection names none or several
+        of the animals there are: nothing is clicked, a notice says to select one."""
+        s = self.session
+        k = self._s_target()
+        if k is not None:
+            s.active_seg = k
+            return k, False
+        if not s.segments:
+            return s.add_segment(), True
+        self.toast.show_message(
+            "Select the animal to outline in LAYERS (one animal), or ＋ Animal for a new one: the S tool "
+            "outlines the selected animal.", "warn", 8000)
+        return None, False
 
     def _on_animal_click(self, x: float, y: float, positive: bool):
         s = self.session
         if s is None or self.state != READY:
             return
-        new = s.animal is None
+        k, new = self._segment_tool_target()
+        if k is None:
+            return
         dropped = self._undo_not_for_prompts()
-        s.ensure_animal()
-        s.animal.add_click(self.current, x, y, positive)
+        s.segments[k].add_click(self.current, x, y, positive)
+        s._touch()
         self._after_prompt_change("excluded" if not positive else "marked", new, dropped)
 
     def _on_animal_box(self, x0: float, y0: float, x1: float, y1: float):
         s = self.session
         if s is None or self.state != READY:
             return
-        new = s.animal is None
+        k, new = self._segment_tool_target()
+        if k is None:
+            return
         dropped = self._undo_not_for_prompts()
-        s.ensure_animal()
-        s.animal.set_box(self.current, (x0, y0, x1, y1))
+        s.segments[k].set_box(self.current, (x0, y0, x1, y1))
+        s._touch()
         self._after_prompt_change("boxed", new, dropped)
 
     def _on_prompt_remove(self, index: int):
@@ -4434,15 +4820,21 @@ class MainWindow(QMainWindow):
         return had
 
     def _after_prompt_change(self, verb: str, new_segment: bool = False, dropped_undo: bool = False):
+        if new_segment:
+            self._share_landmarks(undoable=False)     # the first segment in every camera's list (G149)
+            self.timeline.set_session(self.session)
         self._refresh_overlay()
         self._refresh_animal_panel()
-        if new_segment and self.animal_list.count():
-            # the segment a click has just made is part of the next run, like a new point
-            # (G120): its row is selected, so "Press Track now" is true
-            self.animal_list.item(0).setSelected(True)
+        if new_segment:
+            # the animal a click has just made is part of the next run, like a new point (G120), and
+            # the S tool's target (G154): its row alone is selected, so "Press Track now" is true
+            s = self.session
+            self.layers.select_only(animals=[s.active_seg])
+            self._on_point_selection_changed()
         self._apply_state()
-        self.statusBar().showMessage(f"Segment {verb} on frame {self.current} — computing its "
-                                     "silhouette…" + (self._UNDO_DROPPED if dropped_undo else ""),
+        a = self.session.animal
+        self.statusBar().showMessage(f"{a.name if a is not None else 'Animal'} {verb} on frame {self.current} — "
+                                     "computing its silhouette…" + (self._UNDO_DROPPED if dropped_undo else ""),
                                      8000 if dropped_undo else 5000)
         self._preview_mask()
 
@@ -4455,7 +4847,7 @@ class MainWindow(QMainWindow):
             self._preview_again = True   # rerun with the newest prompts when it finishes
             return
         head = None
-        hp = s.head_pid()
+        hp = s.head_pid(s.active_seg)          # the head of the segment clicked for (G151d)
         if hp is not None and s.tracked[self.current, hp]:
             head = s.tracks[self.current, hp]
         clicks = list(s.animal.prompts.get(self.current, []))
@@ -4464,6 +4856,8 @@ class MainWindow(QMainWindow):
                                (self.info.width, self.info.height), clicks, box,
                                self._seg_backend, head)
         w.target_session = s            # the camera may change while SAM works (I66)
+        # (I262) ... and the animal it was clicked for: the OBJECT, so a rename while SAM works still finds it (G149)
+        w.target_animal = s.animal
         w.loading.connect(self._on_seg_loading)
         w.progress.connect(self._on_seg_progress)
         # bound to THIS worker: a result that arrives after the video was replaced must
@@ -4538,6 +4932,13 @@ class MainWindow(QMainWindow):
         if s is None or s.animal is None or self.project is None or not any(s is x for x in self.project.sessions):
             return                      # the camera it was clicked in was removed (I188)
         f = int(summ["frame"])
+        # the animal it was clicked for (G149), found by identity: renamed meanwhile is the same animal;
+        # removed meanwhile = the silhouette belongs to no one and is dropped (never the active animal's)
+        want = getattr(w, "target_animal", None) if w is not None else None
+        k = next((i for i, a in enumerate(s.segments) if a is want), None) if want is not None else s.active_seg
+        if k is None:
+            return
+        summ["seg"] = k
         s.write_mask_summaries([summ])
         if s is not self.session:     # finished after a camera switch: stored in ITS camera (I66)
             self.statusBar().showMessage(
@@ -4575,47 +4976,102 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Segmentation failed", _crash_text(
             tb, hint, "The segment could not be found on this frame because of an unexpected error."))
 
-    def _clear_animal(self):
+    def _delete_layers(self) -> None:
+        """LAYERS -> Delete (and the Delete key when no frame window is selected): exactly the rows
+        selected in LAYERS (G150, G154) -- points with their tracks, animals (asked whether their
+        points go too). Nothing selected = nothing deleted, and said."""
         s = self.session
-        if s is None or s.animal is None or self.state != READY:
+        if s is None or self.state != READY:
             return
-        n = s.masks.n_masked() if s.masks is not None else 0
-        if QMessageBox.question(
-                self, "Clear segment",
-                f"Remove the segment's {s.animal.n_prompts()} click(s)/box(es) and its "
-                f"silhouettes on {n:,} frames?\n\nPoints and their tracks are kept; "
-                "silhouette-derived landmarks keep their data until you track again.\n\n"
+        ks, pids = self._selected_segments(), self._selected_pids()
+        if ks:
+            self._clear_animal(ks, extra_pids=[q for q in pids if s.segment_of(q) not in ks])
+        elif len(pids) > 1:
+            self._delete_points(pids)
+        elif pids:
+            self._on_delete(pids[0])
+        else:
+            self.toast.show_message("Select what to delete in LAYERS (points and / or animals), or right-click a "
+                                    "row.", "info", 6000)
+
+    def _clear_animal(self, idx=None, with_points: bool | None = None, extra_pids=()) -> None:
+        """Remove animals `idx` (indices; None = the active one) in this camera and, by name, in every
+        other camera. ONE question names them all and, when they have points, whether those go too
+        (`with_points` None = ask; kept points move to Scene with their tracks). `extra_pids` = other
+        selected points deleted in the same step. An animal cannot be brought back by Ctrl+Z (its
+        clicks are in no snapshot, G70 / I124): the question says so."""
+        s = self.session
+        if s is None or not s.segments or self.state != READY:
+            return
+        idx = [s.active_seg] if idx is None else sorted({i for i in idx if 0 <= i < s.n_segments})
+        if not idx:
+            return
+        names = [s.segments[i].name for i in idx]
+        mine = sorted({q for k in idx for q in s.points_of(k)})
+        extra = [q for q in extra_pids if 0 <= q < s.n_points and q not in mine]
+        n = sum(s.seg_masks[i].n_masked() for i in idx)
+        clicks = sum(s.segments[i].n_prompts() for i in idx)
+        p = self.project
+        others = [p.name(v) for v in p.others()
+                  if any(p.sessions[v].segment_index(nm) is not None for nm in names)] \
+            if p is not None and p.n_views > 1 else []
+        what = (f"the animal {names[0]}: its" if len(names) == 1
+                else f"{len(names)} animals ({', '.join(names)}): their")
+        text = (f"Remove {what} {clicks} click(s)/box(es) and silhouettes on {n:,} frames?"
+                + (f" {'It goes' if len(names) == 1 else 'They go'} from the other cameras too "
+                   f"({', '.join(others)})." if others else "")
+                + (f"\n\nAlso delete the {len(extra)} other selected point(s) "
+                   f"({', '.join(s.points[q].name for q in extra[:4])}{', …' if len(extra) > 4 else ''})."
+                   if extra else ""))
+        keep = True
+        if mine and with_points is None:
+            ans = QMessageBox.question(
+                self, "Remove animal" if len(names) == 1 else "Remove animals",
+                text + f"\n\nKeep {'its' if len(names) == 1 else 'their'} {len(mine)} point(s)?\n"
+                "Yes = they move to Scene with their tracks.  No = they are deleted too.\n\n"
                 "This cannot be undone with Ctrl+Z.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-            return
-        s.clear_animal()
-        # an older snapshot would restore something else and not the segment (I124)
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes)
+            if ans not in (QMessageBox.Yes, QMessageBox.No):
+                return
+            keep = ans == QMessageBox.Yes
+        else:
+            if with_points is not None:
+                keep = not with_points
+            if QMessageBox.question(
+                    self, "Remove animal" if len(names) == 1 else "Remove animals",
+                    text + ("" if not mine else (f"\n\nIts {len(mine)} point(s) " + (
+                        "move to Scene with their tracks." if keep else "are deleted too.")))
+                    + "\n\nThis cannot be undone with Ctrl+Z.",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+        self.canvas.cancel_gesture()
+        gone = [s.points[q].name for q in sorted(set(extra) | (set() if keep else set(mine)))]
+        for q in sorted((s.pid_by_name(nm) for nm in gone), reverse=True):
+            if q is not None:
+                s.remove_point(q)
+        self._remove_landmarks_elsewhere(gone)
+        for name in names:                         # by NAME: the indices shift as each one goes
+            p.remove_segment(name, keep_points=True)  # one list of animals in every camera (G149)
+        # an older snapshot would restore something else and not the animal (I124)
         self._undo_snap = None
         self.act_undo.setEnabled(False)
         self.btn_animal.setChecked(False)
+        self.selected = None
         self.timeline.set_session(s)   # lane layout changes
+        self._refresh_point_list(keep=(set(), set()))
+        self._on_point_selection_changed()
         self._refresh_overlay()
-        self._refresh_animal_panel()
         self._apply_state()
-        self.statusBar().showMessage("Segment cleared", 4000)
+        self.statusBar().showMessage(
+            f"{'Animal' if len(names) == 1 else 'Animals'} {', '.join(names)} removed"
+            + (f"; {len(mine)} point(s) moved to Scene" if keep and mine else "")
+            + (f"; {len(gone)} point(s) deleted" if gone else ""), 6000)
 
-    def _clear_masks_window(self, f0: int, f1: int):
-        """Drop the segment's silhouettes inside [f0, f1], leaving every tracked
-        point alone (timeline clear_masks_requested)."""
-        self._clear_window(f0, f1, [], do_points=False, do_masks=True)
+    def _clear_masks_window(self, f0: int, f1: int, segs=None):
+        """Drop silhouettes inside [f0, f1] -- of `segs` (the timeline lanes the marquee covered, or
+        the menu's row), else `_resolve_window_segs` (G151h) -- leaving every tracked point alone (G149)."""
+        self._clear_window(f0, f1, [], do_points=False, do_masks=True, segs=segs)
         self._refresh_animal_panel()
-
-    def _on_onbody_toggled(self, on: bool):
-        if self.session is None:
-            return
-        if on:
-            self.statusBar().showMessage(
-                "Body constraint ON: small slips past the silhouette's edge are nudged back; a tracked point "
-                "that clearly leaves the segment stops the run there (applies to the next run; right-click a "
-                "point → May leave the segment to exempt it)", 8000)
-        else:
-            self.statusBar().showMessage("Body constraint off: points may drift off the segment", 5000)
-
     # ------------------------------------------------ view options (display)
 
     def _display_filter_key(self) -> str:
@@ -4710,6 +5166,7 @@ class MainWindow(QMainWindow):
         self._begin_edit()                      # (I123)
         pid = s.add_point(self.current, float(c[0]), float(c[1]), kind="group", radius=radius,
                           shape=shape, outline=pts.tolist())
+        self._assign_new_point(pid, float(c[0]), float(c[1]))     # its animal, or Scene (G155)
         self._share_landmarks()
         self.selected = pid
         self._refresh_point_list()
@@ -4858,9 +5315,9 @@ class MainWindow(QMainWindow):
         s.dirty = True
         name = s.points[pid].name
         self.statusBar().showMessage(
-            f"{name}: may leave the segment (not constrained to the silhouette)" if free
-            else f"{name}: kept on the segment while the Body toggle is on (if it clearly leaves it, "
-                 "the run stops there)", 6000)
+            f"{name}: may leave its silhouette (not held on it)" if free
+            else f"{name}: held on its animal's silhouette when the animal keeps its points on it (right-click "
+                 "the animal in LAYERS; if the point clearly leaves it, the run stops there)", 6000)
 
     def _on_source_change(self, pid: int, spec: str):
         s = self.session
@@ -4885,14 +5342,29 @@ class MainWindow(QMainWindow):
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 self._refresh_point_list()
                 return
+        k = None
+        if spec and s.n_segments > 1:
+            # (G151e) from the segment the user names (one highlighted row, or asked), never the
+            # invisible active row
+            k = self._pick_segment(f"Derive {meta.name} from the silhouette of")
+            if k is None:
+                self._refresh_point_list()
+                return
         # an undo point whether or not there was data to lose: the source change itself
-        # is an edit, and Ctrl+Z would otherwise undo an older one (G70)
-        self._begin_edit()
+        # is an edit, and Ctrl+Z would otherwise undo an older one (G70); every camera the move to its
+        # animal renames (G153)
+        self._begin_edit([meta.name])
         if spec:
             if s.animal is None:
                 self.toast.show_message(
                     f"<b>{meta.name}</b> will derive from the animal's silhouette — press "
                     "<b>S</b> and click the animal first, then Track.", "info", 8000)
+            else:
+                # (G153) the landmark becomes the animal's: "<animal> <part>", in every camera
+                if k is None:
+                    k = 0 if s.segment_of(pid) is None else s.segment_of(pid)
+                if s.segment_of(pid) != k:
+                    self.project.move_landmarks([meta.name], s.segments[k].name)
             s.set_source(pid, "silhouette", spec)
             self.statusBar().showMessage(
                 f"{meta.name}: derived from the silhouette ({spec}) — fills in when you track", 6000)
@@ -4921,30 +5393,40 @@ class MainWindow(QMainWindow):
                 menu.addAction(f"{len(probs)} problem(s) in the skeletons/ folder…",
                                lambda pr=tuple(probs): QMessageBox.warning(
                                    self, "Skeleton files", "\n\n".join(pr)))
-            if self.session is not None and self.session.skeleton:
+            if self.session is not None and any(a.skeleton for a in self.session.segments):
                 menu.addSeparator()
-                menu.addAction(f"Forget skeleton “{self.session.skeleton.get('name', '')}” "
-                               "(keep the points)", self._clear_skeleton)
+                menu.addAction("Forget the selected animal's bones and head (keep the points)", self._clear_skeleton)
             menu.setToolTipsVisible(True)
 
     def _apply_skeleton_template(self, t: dict):
         s = self.session
         if s is None or self.state != READY:
             return
+        # (G151f, G153) the animal the skeleton is for: the one the LAYERS selection names, else asked;
+        # with no animal yet, a new one ("animal") is made for it -- a skeleton belongs to an animal
+        if s.segments:
+            k = self._pick_segment(f"Put the skeleton {t.get('name', '')} on")
+            if k is None:
+                return
+            made = False
+        else:
+            k, made = s.add_segment(), True
+        seg_name = s.segments[k].name
         # one undo step, in every camera the template gives landmarks to (G70, G19)
         self._undo_snap = s.snapshot()
         self.act_undo.setEnabled(True)
         if self.project is not None and self.project.n_views > 1:
             for v in self.project.others():
                 self._undo_extra[v] = self.project.sessions[v].snapshot()
-        new = s.apply_skeleton(t)
+        new = s.apply_skeleton(t, k)
         if self.project is not None and self.project.n_views > 1:
-            # the same animal in every camera: a camera without a skeleton adopts
-            # this one (bones, head anchor); the landmarks go to all of them (G19)
-            for v in self.project.others():
-                if not self.project.sessions[v].skeleton:
-                    self.project.sessions[v].apply_skeleton(t)
+            # the same animal in every camera: its skeleton (bones, head) and its landmarks (G19)
             self._share_landmarks(undoable=False)
+            self.project.share_animal(seg_name)
+        self._refresh_point_list(keep=(set(), {seg_name}))
+        self._on_point_selection_changed()
+        if made:
+            self.timeline.set_session(s)
         self._refresh_point_list()
         self._refresh_overlay()
         self._refresh_skeleton_menu()
@@ -4953,10 +5435,12 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._fit_timeline_height)
         derived = [s.points[p].name for p in new if s.points[p].derived]
         placed = [s.points[p].name for p in new if not s.points[p].derived]
-        msg = f"Skeleton <b>{t['name']}</b>: {len(new)} landmark(s) added."
+        msg = f"Skeleton <b>{t['name']}</b>" + (f" on {seg_name}" if seg_name else "") + \
+            f": {len(new)} landmark(s) added."
         if placed:
-            msg += (f" Select one in the panel, press <b>N</b> and click it on the video "
-                    f"(start with <b>{t.get('head', placed[0])}</b>).")
+            head = t["head"] if t.get("head") else s.part_name(s.pid_by_name(placed[0]))
+            msg += (f" Select one in LAYERS, press <b>N</b> and click it on the video "
+                    f"(start with <b>{head}</b>).")
         if derived:
             msg += f" {len(derived)} come from the animal's silhouette when you track."
         self.toast.show_message(msg, "success", 12000)
@@ -5052,13 +5536,27 @@ class MainWindow(QMainWindow):
         self._apply_skeleton_template(t)
 
     def _clear_skeleton(self):
-        if self.session is None:
+        """Skeleton ▾ -> Forget: the bones and head of the animal the selection names (asked otherwise)."""
+        s = self.session
+        if s is None or not s.segments:
             return
-        self._begin_edit()                             # the skeleton is in the snapshot (G70)
-        self.session.clear_skeleton()
+        k = self._pick_segment("Forget the bones and head of")
+        if k is not None:
+            self._clear_skeleton_of(k)
+
+    def _clear_skeleton_of(self, k: int) -> None:
+        """Animal k's bones and head forgotten in every camera, its points kept: one Ctrl+Z step
+        (Skeleton ▾ -> Forget and the animal menu)."""
+        s = self.session
+        # the skeleton is in the snapshot (G70), of every camera share_animal changes
+        self._begin_edit(animals=[s.segments[k].name])
+        s.clear_skeleton(k)
+        if self.project is not None:
+            self.project.share_animal(s.segments[k].name)
         self._refresh_skeleton_menu()
         self._refresh_overlay()
-        self.statusBar().showMessage("Skeleton forgotten — the points remain", 4000)
+        self.statusBar().showMessage(f"{s.segments[k].name}'s bones and head forgotten — its points remain "
+                                     "(Ctrl+Z)", 6000)
 
     # ---------------------------------------------------------------- events
 
@@ -5160,51 +5658,61 @@ class MainWindow(QMainWindow):
         signals blocked only replaced the LAST selection operation (P2 + P3 + P4 selected, P1
         clicked -> P1 + P2 + P3) -- and the Track button follows, since T tracks exactly what is
         selected (it kept the stale verdict, and a semi-automatic F trusted it)."""
-        from PySide6.QtCore import QItemSelectionModel
         self.selected = pid
-        self.point_list.blockSignals(True)
-        self.point_list.setCurrentRow(pid, QItemSelectionModel.ClearAndSelect)
-        self.point_list.blockSignals(False)
+        self.layers.select_only([pid], current=pid)
+        self._sync_s_target()
         self._refresh_overlay()
         self._refresh_companions()          # the same landmark is ringed in the other cameras (G22)
         self._update_track_button()
 
     def _on_point_selection_changed(self):
-        """The POINTS selection changed (a click, Ctrl+click, Ctrl+A, ...): `self.selected` -- the
+        """The LAYERS selection changed (a click, Ctrl+click, Ctrl+A, ...): `self.selected` -- the
         point a plain click on the video places and Delete acts on -- stays one of the SELECTED
-        rows, or None when nothing is selected (G80: Ctrl+click-deselecting the current row left it
-        on a point that was not highlighted, and Ctrl+A left it None, so a click on the video said
-        that no point is selected); then the Track button, which follows the selection (G61)."""
+        point rows, or None when none is selected (G80: Ctrl+click-deselecting the current row left
+        it on a point that was not highlighted, and Ctrl+A left it None, so a click on the video said
+        that no point is selected); the S tool's animal follows the selection (G154); then the Track
+        button, which follows the selection (G61)."""
         s = self.session
         if s is not None:
             sel = self._selected_pids()
             want = self.selected
+            cur = self.layers.current_pid()
             if not sel:
                 want = None
+            elif cur in sel:
+                # the row just clicked (Ctrl+click adds it): Qt moves the current row BEFORE the selection,
+                # so `_on_layer_current` saw it unselected and left `selected` behind (G80)
+                want = cur
             elif want is None or want not in sel:
-                cur = self.point_list.currentRow()
-                want = cur if cur in sel else sel[0]
-            if want != self.selected:
+                want = sel[0]
+            target_was = s.active_seg
+            self._sync_s_target()
+            if want != self.selected or s.active_seg != target_was:
                 self.selected = want
                 self._epi_probe = None
                 self._refresh_overlay()
                 self._refresh_companions()
         self._update_track_button()
 
-    def _on_list_select(self, row: int):
-        if row >= 0:
-            self.selected = row
-            self._epi_probe = None
-            self._refresh_overlay()
-            self._refresh_companions()          # the same landmark is ringed in the other cameras
-            s = self.session
-            if s is not None and row < s.n_points and not s.tracked[self.current, row]:
-                self.statusBar().showMessage(
-                    (f"{s.points[row].name} is derived from the silhouette: it fills in when you track "
-                     "with a segment (it cannot be placed by hand)" if s.points[row].derived else
-                     f"{s.points[row].name} has no position on this frame — click on the video "
-                     "to place it here and continue the same point"), 6000)
-
+    def _on_layer_current(self, cur, _prev=None):
+        """The current LAYERS row moved to a point: it is the one a click on the video places."""
+        kind = self.layers.kind_of(cur)
+        if not kind or kind[0] != "point":
+            return
+        row = kind[1]
+        if not cur.isSelected():
+            return                               # a Ctrl+click that deselected it (G80)
+        self.selected = row
+        self._epi_probe = None
+        self._refresh_overlay()
+        self._refresh_companions()          # the same landmark is ringed in the other cameras
+        s = self.session
+        if s is not None and row < s.n_points and not s.tracked[self.current, row]:
+            self.statusBar().showMessage(
+                (f"{s.points[row].name} is derived from the silhouette: it fills in when you track "
+                 "its animal (it cannot be placed by hand)" if s.points[row].derived else
+                 f"{s.points[row].name} has no position on this frame — click on the video "
+                 "to place it here and continue the same point"), 6000)
     def _set_undo_point(self, snap, extra: dict | None = None) -> None:
         """Make `snap` the undo point and enable Ctrl+Z (R10): for an edit that took its snapshot
         BEFORE it knew whether it would change anything (a fill that found nothing to fill takes no
@@ -5225,19 +5733,22 @@ class MainWindow(QMainWindow):
         self._set_undo_point(snaps.get(p.active, self.session.snapshot()),
                              {v: sn for v, sn in snaps.items() if v != p.active})
 
-    def _begin_edit(self, names=None) -> None:
+    def _begin_edit(self, names=None, animals=None) -> None:
         """The undo point BEFORE an edit (I123, G68): the working camera's snapshot, plus -- for an
-        edit made by landmark name, which changes every camera that has it (G19) -- each of those
-        cameras' (`_undo_extra`). Not while a run is live: its pre-run snapshot is the undo point."""
+        edit made by landmark name, which changes every camera that has it (G19), or to an ANIMAL
+        (`animals`, by name: its skeleton, hold or name, which `Project.share_animal` /
+        `rename_segment` change in every camera, G153, G162) -- each of those cameras' (`_undo_extra`).
+        Not while a run is live: its pre-run snapshot is the undo point."""
         s = self.session
         if s is None or self.state != READY:
             return
         extra = {}
         p = self.project
-        if names and p is not None and p.n_views > 1:
+        if (names or animals) and p is not None and p.n_views > 1:
             for v in p.others():
                 sv = p.sessions[v]
-                if any(sv.pid_by_name(n) is not None for n in names):
+                if (any(sv.pid_by_name(n) is not None for n in names or ())
+                        or any(sv.segment_index(a) is not None for a in animals or ())):
                     extra[v] = sv.snapshot()
         self._undo_snap = s.snapshot()           # (setting it forgets the extras)
         self._undo_extra.update(extra)
@@ -5294,9 +5805,9 @@ class MainWindow(QMainWindow):
             # that "changed into a crosshair" and never reached the POINTS list
             multi = self._guides_ready()
             self.toast.show_message(
-                "Nothing was placed: no point is selected. Press <b>N</b> (＋ Add) and click to add a point"
+                "Nothing was placed: no point is selected. Press <b>N</b> (Point) and click to add a point"
                 + (" (it appears in every camera's list)" if multi else "")
-                + ", or pick one in the POINTS list and click where it is."
+                + ", or pick one in LAYERS and click where it is."
                 + (" <b>Alt+click</b> shows where a spot can be in the other cameras." if multi else ""),
                 "info", 7000)
             return
@@ -5327,7 +5838,7 @@ class MainWindow(QMainWindow):
         has data on — tracked or hand-placed, whichever the point actually has
         (on an ordinary tracked point the hand-placed-only rule looked like a
         dead key). With no point selected it walks the
-        segment's silhouette instead. `,` / `.` still step between hand-placed
+        silhouettes of the highlighted segments (else every segment's, G151g) instead. `,` / `.` still step between hand-placed
         frames."""
         if self.state != READY or self.session is None:
             return
@@ -5348,17 +5859,20 @@ class MainWindow(QMainWindow):
                 f"{s.points[pid].name}: {which} frame with data ({len(frames):,} frames"
                 f"{extra}). , and . step between hand-placed frames", 5000)
             return
-        frames = s.mask_frames()
+        # (G151g) the highlighted segments' silhouettes, else every segment's (not the active one's)
+        ks = self._segments_for_view()
+        frames = (np.unique(np.concatenate([s.mask_frames(k) for k in ks])) if ks
+                  else np.zeros(0, np.int64))
         if len(frames):
-            name = s.animal.name if s.animal is not None else "the segment"
+            name = s.segments[ks[0]].name if len(ks) == 1 else "The segments"
             self._goto(int(frames[-1] if last else frames[0]))
             self.statusBar().showMessage(
                 f"{name}: {which} frame with a silhouette ({len(frames):,} frames). "
                 "Select a point in the list to walk that point instead", 5000)
             return
         self.statusBar().showMessage(
-            "Nothing to jump to: select a point in the POINTS list (Shift+< / Shift+> go to its "
-            "first / last frame), or outline the segment with S and Track", 6000)
+            "Nothing to jump to: select a point in LAYERS (Shift+< / Shift+> go to its "
+            "first / last frame), or outline an animal with S and Track", 6000)
 
     def _on_delete(self, pid: int):
         if self.session is None or pid >= self.session.n_points:
@@ -5419,9 +5933,14 @@ class MainWindow(QMainWindow):
                     sv.remove_point(j)
         self._refresh_companions()
 
+    def _animal_item(self, k: int):
+        """Animal k's LAYERS row (None when it has none)."""
+        return self.layers.animal_item(k)
+
     def _selected_pids(self) -> list[int]:
-        """Rows multi-selected in the point panel (Ctrl/Shift+click)."""
-        return sorted(self.point_list.row(it) for it in self.point_list.selectedItems())
+        """The point rows selected in LAYERS (Ctrl/Shift+click; not the points of a selected animal
+        row -- `_run_scope` adds those for a run)."""
+        return self.layers.selected_pids()
 
     def _delete_selected(self):
         """Delete key: clear the timeline's selected frame window — the lanes the
@@ -5432,7 +5951,9 @@ class MainWindow(QMainWindow):
         if self.timeline.request_delete_selection():
             return
         pids = self._selected_pids()
-        if len(pids) > 1:
+        if self._selected_segments():
+            self._delete_layers()                # animals selected in LAYERS (G154)
+        elif len(pids) > 1:
             self._delete_points(pids)
         elif self.selected is not None:
             self._on_delete(self.selected)
@@ -5495,10 +6016,28 @@ class MainWindow(QMainWindow):
             return None
         return list(range(s.n_points))
 
-    def _clear_window(self, f0: int, f1: int, pids, do_points: bool, do_masks: bool):
-        """Core of the timeline-window deletes: tracked points and / or the
-        segment's silhouettes inside [f0, f1], as ONE undoable step. The points
-        themselves survive — only that stretch of their tracks is removed."""
+    def _resolve_window_segs(self, f0: int, f1: int) -> list[int] | None:
+        """Whose silhouettes a window clear takes when the drag covered no segment lane (G151h, the
+        rule `_resolve_window_pids` has for points): the highlighted rows, else the only segment, else
+        -- after a question -- every segment. None = the user backed out."""
+        s = self.session
+        sel = self._selected_segments()
+        if sel or s.n_segments <= 1:
+            return sel or list(range(s.n_segments))
+        if QMessageBox.question(
+                self, "Clear every animal's silhouettes?",
+                f"The drag named no silhouette lane and no animal is selected in LAYERS — clear the silhouettes "
+                f"of ALL {s.n_segments} animals ({', '.join(s.segment_names())}) in frames {f0}–{f1}?\n\n"
+                "Ctrl+Z restores them.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return None
+        return list(range(s.n_segments))
+
+    def _clear_window(self, f0: int, f1: int, pids, do_points: bool, do_masks: bool, segs=None):
+        """Core of the timeline-window deletes: tracked points and / or silhouettes inside [f0, f1],
+        as ONE undoable step. The points themselves survive — only that stretch of their tracks is
+        removed. `segs` = the segments whose silhouettes go (G149; None / empty = see
+        `_resolve_window_segs`, G151h)."""
         s = self.session
         if s is None or self.state != READY:
             return
@@ -5509,6 +6048,11 @@ class MainWindow(QMainWindow):
             if resolved is None:
                 return                      # confirmation declined
             use = resolved
+        segs = [k for k in (segs or []) if 0 <= k < s.n_segments]
+        if do_masks and not segs:
+            segs = self._resolve_window_segs(f0, f1)
+            if segs is None:
+                return                      # confirmation declined
         if not use and not do_masks:
             self.statusBar().showMessage(
                 "Nothing to clear in that window — Shift+drag across the lanes you "
@@ -5518,7 +6062,7 @@ class MainWindow(QMainWindow):
         # the undo point, so the last tracking run could no longer be undone -- and says so
         lo, hi = max(0, min(f0, f1)), min(s.n_frames - 1, max(f0, f1))
         would_pts = int(s.tracked[lo:hi + 1][:, use].sum()) if use else 0
-        would_msk = int((s.masks.area[lo:hi + 1] > 0).sum()) if do_masks else 0
+        would_msk = sum(int((s.seg_masks[k].area[lo:hi + 1] > 0).sum()) for k in segs) if do_masks else 0
         if not would_pts and not would_msk:
             self.statusBar().showMessage(
                 f"Nothing to clear in frames {f0}–{f1}: "
@@ -5527,7 +6071,7 @@ class MainWindow(QMainWindow):
             return None
         self._begin_edit()
         n_pts = s.clear_window(use, f0, f1) if use else 0
-        n_msk = s.clear_masks(f0, f1) if do_masks else 0
+        n_msk = sum(s.clear_masks(f0, f1, k) for k in segs) if do_masks else 0
         self.timeline.clear_selection()
         self._refresh_overlay()
         self._refresh_animal_panel()
@@ -5574,29 +6118,30 @@ class MainWindow(QMainWindow):
             "A long right press opens its menu", 6000)
 
     def _clear_window_both(self, f0: int, f1: int, pids=None):
-        """Points AND silhouettes inside [f0, f1], as one undo step."""
-        self._clear_window(f0, f1, pids, do_points=True, do_masks=True)
+        """Points AND silhouettes (of the segment lanes the marquee covered, G149) inside [f0, f1],
+        as one undo step."""
+        self._clear_window(f0, f1, pids, do_points=True, do_masks=True, segs=self.timeline.sel_segs)
 
     def _select_all_tracked(self) -> None:
-        """Ctrl+A: every point and the segment -- Track covers only what is selected (G61)."""
-        if self.session is None:
+        """Ctrl+A: every point and every animal -- Track covers only what is selected (G61)."""
+        s = self.session
+        if s is None:
             return
-        self.point_list.selectAll()
-        if self.animal_list.count():
-            self.animal_list.item(0).setSelected(True)
+        self.layers.select_only(range(s.n_points), range(s.n_segments))
         self._on_point_selection_changed()      # a current row too (G80) + the Track button
         self.statusBar().showMessage("Everything selected: Track tracks every point"
-                                     + (" and the segment" if self.session.animal is not None else ""), 5000)
+                                     + (" and every silhouette" if s.segments else ""), 5000)
 
     def _deselect(self):
-        if self._segment_selected():
-            self.animal_list.clearSelection()
+        if self._segment_selected() and not self._selected_pids():
+            self.layers.select_only()
+            self._sync_s_target()
+            self._update_track_button()
         if self.selected is not None or self._selected_pids():
             self.selected = None
-            self.point_list.blockSignals(True)
-            self.point_list.clearSelection()
-            self.point_list.setCurrentRow(-1)
-            self.point_list.blockSignals(False)
+            self.layers.select_only()
+            self.layers.setCurrentItem(None)
+            self._sync_s_target()
             self._refresh_overlay()
             self._refresh_companions()      # the other cameras drop the selection ring too (G22)
             self._update_track_button()     # nothing selected = nothing to track (G61)
@@ -5629,11 +6174,11 @@ class MainWindow(QMainWindow):
             self._refresh_companions()
         else:
             applied = self.session.rename_point(pid, desired)
-        it = self.point_list.item(pid)
+        it = self.layers.point_item(pid)
         if it is not None and applied != old:
-            self.point_list.blockSignals(True)
-            it.setData(Qt.UserRole, applied)        # the list carries its selection by name (G67)
-            self.point_list.blockSignals(False)
+            self.layers.blockSignals(True)
+            it.setData(0, ROLE_NAME, applied)     # LAYERS carries its selection by name (G67)
+            self.layers.blockSignals(False)
         if applied != desired:
             self.statusBar().showMessage(
                 f"“{desired}” is already another point's name — renamed to "
@@ -5650,17 +6195,15 @@ class MainWindow(QMainWindow):
             self._refresh_point_list()
             self._refresh_overlay()
 
-    def _point_list_menu(self, pos):
+    def _point_list_menu_for(self, pid: int, gpos):
         """Same menu as right-clicking the marker — findable even when markers
         overlap or the point currently has no position on screen."""
-        item = self.point_list.itemAt(pos)
-        if item is None or self.session is None or self.state != READY:
+        if self.session is None or self.state != READY or not (0 <= pid < self.session.n_points):
             return
-        pid = self.point_list.row(item)
-        if self._maybe_multi_menu(pid, self.point_list.viewport().mapToGlobal(pos)):
+        if self._maybe_multi_menu(pid, gpos):
             return                              # several selected: the menu for all of them (G64)
         menu, acts = self.canvas._build_context_menu(pid)
-        chosen = menu.exec(self.point_list.viewport().mapToGlobal(pos))
+        chosen = menu.exec(gpos)
         menu.deleteLater()          # a shown menu otherwise lingers as a child of the canvas
         if self._point_menu_extra_action(chosen, acts, pid):
             return
@@ -5736,6 +6279,22 @@ class MainWindow(QMainWindow):
         acts["fill"] = menu.addAction("Fill their gaps between hand placements")
         acts["fill"].setToolTip("For each point with two or more hand-placed frames: a smooth curve through "
                                 "them fills the empty frames between (one Ctrl+Z step)")
+        # (G153, G157) their animal; two points of one animal: a bone between them
+        menu.addSeparator()
+        acts["move_to"] = self._move_submenu(menu, list(sel))
+        two = len(sel) == 2
+        why = s.bone_problem(sel[0], sel[1]) if two else "Select exactly two points of one animal."
+        has = two and why is None and s.has_bone(sel[0], sel[1])
+        acts["bone"] = menu.addAction("Remove the bone between them" if has else "Connect them with a bone")
+        acts["bone"].setEnabled(two and why is None)
+        acts["bone"].setToolTip("Bones are drawn on the video and in the 3D view, and saved with the animal's "
+                                "skeleton" if why is None else why)
+        # (G147) two points selected: the identity tools
+        menu.addSeparator()
+        acts["swap_two"] = menu.addAction("Swap these two points…" if two else "Swap two points… (select two)")
+        acts["swap_two"].setEnabled(two and s.point_tool_problem(sel[0], sel[1]) is None)
+        acts["swap_two"].setToolTip("They exchange their data over the frames you choose: where the tracker "
+                                    "swapped them (left and right foot). Edit → Point Tools… has the other tools.")
         return menu, acts
 
     TRACKER_HINTS = {"alltracker": " — a visible shape (an animal, an object)",
@@ -5790,6 +6349,12 @@ class MainWindow(QMainWindow):
             self._refresh_overlay()
         elif chosen in acts["tracker"]:
             self._set_tracker(sel, acts["tracker"][chosen])
+        elif chosen is acts.get("swap_two") and len(sel) == 2:
+            self._point_tools(sel[0], sel[1], "swap")
+        elif chosen in acts.get("move_to", {}):
+            self._move_points(list(sel), acts["move_to"][chosen])
+        elif chosen is acts.get("bone") and len(sel) == 2:
+            self._toggle_bone(sel[0], sel[1])
         elif chosen is acts["fill"]:
             snap, done = self._interpolate_pids(
                 [q for q in sel if not s.points[q].derived and len(s.manual_frames(q)) >= 2], replace=False)
@@ -5801,6 +6366,63 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"{n} frame(s) filled from the curves through the hand placements"
                                          + (" — Ctrl+Z undoes" if n else " (nothing to fill)"), 7000)
 
+    def _move_submenu(self, menu, pids: list[int]) -> dict:
+        """'Move to' with every animal and Scene (G153): {action: animal index or None}."""
+        s = self.session
+        sub = menu.addMenu("Move to")
+        out: dict = {}
+        owners = {s.segment_of(q) for q in pids}
+        for k, a in enumerate(s.segments):
+            act = sub.addAction(a.name)
+            act.setEnabled(owners != {k})
+            out[act] = k
+        act = sub.addAction("Scene (no animal)")
+        act.setEnabled(owners != {None} and not any(s.points[q].derived for q in pids))
+        act.setToolTip("A landmark derived from a silhouette needs its animal")
+        out[act] = None
+        sub.menuAction().setEnabled(bool(s.segments))
+        sub.menuAction().setToolTip("Give the point(s) to another animal or to Scene — renamed "
+                                    "\u201c<animal> <part>\u201d in every camera; drag in LAYERS does the same"
+                                    if s.segments else "Make an animal first (＋ Animal in LAYERS)")
+        return out
+
+    def _toggle_bone(self, a: int, b: int) -> None:
+        """Connect two points of one animal with a bone, or remove the one there is (G157): one Ctrl+Z
+        step, in every camera (the skeleton belongs to the animal)."""
+        s = self.session
+        why = s.bone_problem(a, b)
+        if why:
+            self.statusBar().showMessage(why, 6000)
+            return
+        k = s.segment_of(a)
+        self._begin_edit(animals=[s.segments[k].name])    # every camera share_animal changes
+        had = s.has_bone(a, b)
+        (s.remove_bone if had else s.connect_bone)(a, b)
+        if self.project is not None:
+            self.project.share_animal(s.segments[k].name)
+        if not self.act_show_bones.isChecked() and not had:
+            self.act_show_bones.setChecked(True)
+        self._refresh_overlay()
+        self._refresh_companions()
+        self.statusBar().showMessage(
+            f"Bone {'removed' if had else 'drawn'} between {s.part_name(a)} and {s.part_name(b)} "
+            f"({s.segments[k].name}) — Ctrl+Z undoes it", 6000)
+
+    def _set_head(self, pid: int) -> None:
+        """A point becomes its animal's head (G157): the silhouette's midline starts there."""
+        s = self.session
+        k = s.segment_of(pid)
+        if k is None or s.points[pid].derived or s.points[pid].is_ball:      # `set_head`'s refusal: no undo step
+            self.statusBar().showMessage("Only a point of an animal, tracked by appearance, can be its head", 6000)
+            return
+        self._begin_edit(animals=[s.segments[k].name])    # every camera share_animal changes
+        s.set_head(pid)
+        if self.project is not None:
+            self.project.share_animal(s.segments[k].name)
+        self._refresh_point_list()
+        self.statusBar().showMessage(f"{s.part_name(pid)} is now {s.segments[k].name}'s head: its midline (tail tip, "
+                                     "midline points) is measured from it — Ctrl+Z undoes it", 7000)
+
     def _multi_clear(self, sel, f0: int, f1: int, masks: bool | None = None) -> None:
         """Several selected points (and the segment, when its row is selected and `masks` is not
         False) cleared on frames f0..f1, as one undo step (G64). The message counts what really
@@ -5809,8 +6431,9 @@ class MainWindow(QMainWindow):
         seg = (self._segment_selected() if masks is None else bool(masks)) and s.animal is not None
         lo, hi = max(0, min(f0, f1)), min(s.n_frames - 1, max(f0, f1))
         n_pts = sum(1 for q in sel if q < s.n_points and s.tracked[lo:hi + 1, q].any())
-        n_seg = bool(seg and s.masks is not None and (s.masks.area[lo:hi + 1] > 0).any())
-        if self._clear_window(f0, f1, list(sel), do_points=True, do_masks=seg) is None:
+        n_seg = bool(seg and any((s.seg_masks[k].area[lo:hi + 1] > 0).any() for k in self._selected_segments()
+                                 if k < s.n_segments))
+        if self._clear_window(f0, f1, list(sel), do_points=True, do_masks=seg, segs=self._selected_segments()) is None:
             return
         self.statusBar().showMessage(
             f"{n_pts} of the {len(sel)} points" + (" and the segment" if n_seg else "")
@@ -5829,6 +6452,18 @@ class MainWindow(QMainWindow):
         frames = s.data_frames(pid)
         manual = s.manual_frames(pid)
         low = s.low_conf_runs([pid])
+        # (G153, G157) its animal: move it, make it the head
+        menu.addSeparator()
+        acts["move_to"] = self._move_submenu(menu, [pid])
+        k = s.segment_of(pid)
+        a_head = menu.addAction(f"Use it as {s.segments[k].name}'s head (the midline's anchor)" if k is not None
+                                else "Use it as its animal's head")
+        a_head.setCheckable(True)
+        a_head.setChecked(k is not None and s.head_pid(k) == pid)
+        a_head.setEnabled(k is not None and not s.points[pid].derived and not s.points[pid].is_ball)
+        a_head.setToolTip("The silhouette's midline (tail tip, midline points) is measured from this point"
+                          if k is not None else "Only a point of an animal can be its head: drag it onto the animal")
+        acts["set_head"] = a_head
         menu.addSeparator()
         a_first = menu.addAction(
             f"Go to its first frame  ({frames[0]})" if len(frames) else "Go to its first frame")
@@ -5893,6 +6528,20 @@ class MainWindow(QMainWindow):
                           "stretch where the tracker drifted and you have re-placed the part by hand at both "
                           "ends (and anywhere in between). Ctrl+Z undoes it.")
         acts["interp_replace"] = a_repl
+        # (G147) which point is which: swap, move, fill, split
+        menu.addSeparator()
+        why = s.point_tool_problem(pid)
+        a_tools = menu.addAction("Swap / move / fill with another point…")
+        a_tools.setEnabled(why is None and s.n_points > 1)
+        a_tools.setToolTip("Point Tools with this point as A: swap it with another point, give its data to another, "
+                           "or fill another point's empty frames from it" if why is None else f"Not for this point: {why}")
+        acts["point_tools"] = a_tools
+        a_split = menu.addAction(f"Split it into a new point from frame {self.current}")
+        a_split.setEnabled(why is None and bool(s.tracked[self.current:, pid].any()))
+        a_split.setToolTip(f"From frame {self.current} on, {name}'s data becomes a new point named "
+                           f"\u201c{name} (2)\u201d (rename it afterwards); {name} ends on the frame before. "
+                           "One Ctrl+Z step." if why is None else f"Not for this point: {why}")
+        acts["split_here"] = a_split
         # with a calibration, the other cameras' rays say where this landmark
         # can be here: an epipolar-constrained re-seed the user can see
         guides = self._epipolar_guides(pid) if (self.project is not None and self.project.calibration) else []
@@ -5942,8 +6591,20 @@ class MainWindow(QMainWindow):
         if chosen is None or s is None or not (0 <= pid < s.n_points):
             return False
         name = s.points[pid].name
+        if chosen in acts.get("move_to", {}):
+            self._move_points([pid], acts["move_to"][chosen])
+            return True
+        if chosen is acts.get("set_head"):
+            self._set_head(pid)
+            return True
         if chosen is acts.get("test_models"):
             self._test_point_models(pid)
+            return True
+        if chosen is acts.get("point_tools"):
+            self._point_tools(pid)
+            return True
+        if chosen is acts.get("split_here"):
+            self._apply_point_tool(dict(op="split", a=pid, b=None, f0=self.current, f1=s.n_frames - 1, name=None))
             return True
         if chosen in acts.get("tracker", {}):
             # this menu is only shown for ONE point (several selected = the multi menu), so [pid]
@@ -5992,6 +6653,69 @@ class MainWindow(QMainWindow):
                 "the list, so you can place it again. Ctrl+Z undoes this.")
             return True
         return False
+
+    def _point_tools(self, a: int | None = None, b: int | None = None, op: str = "swap") -> None:
+        """Edit → Point Tools… (G147): the dialog, started on point `a` (the selected point when None)
+        and `b`, then `_apply_point_tool` with what was chosen."""
+        from kinetrace.pointedit import PointToolsDialog
+        s = self.session
+        if s is None or self.state != READY:
+            return
+        if s.n_points == 0:
+            self.statusBar().showMessage("Point tools work on tracked points: add some first (N, then click)", 7000)
+            return
+        if a is None:
+            a = self.selected if self.selected is not None and 0 <= self.selected < s.n_points else 0
+        cam = self.project.name(self.project.active) if self.project is not None and self.project.n_views > 1 else ""
+        dlg = PointToolsDialog(self, s, a, b, op, self.current, self.timeline.sel_range, cam)
+        ok = dlg.exec() == QDialog.Accepted
+        res = dlg.result
+        dlg.deleteLater()
+        if ok and res:
+            self._apply_point_tool(res)
+
+    def _apply_point_tool(self, r: dict) -> None:
+        """Apply one point tool (`pointedit.OPS`) to the working camera as ONE undo step; a split's
+        new point joins every camera's list (G19) in the same step. Nothing changed = no undo point."""
+        s = self.session
+        if s is None or self.state != READY:
+            return
+        op, a, b, f0, f1 = r["op"], int(r["a"]), r.get("b"), int(r["f0"]), int(r["f1"])
+        why = s.point_tool_problem(a, None if b is None else int(b))
+        if why is not None:
+            self.statusBar().showMessage(f"Point tools: {why}", 7000)
+            return
+        an = s.points[a].name
+        bn = s.points[int(b)].name if b is not None else ""
+        snap = s.snapshot()
+        new = None
+        if op == "swap":
+            n = s.swap_points(a, int(b), f0, f1)
+            said = f"{an} and {bn} swapped on {n:,} frame(s) in {f0}\u2013{f1}"
+        elif op == "move":
+            n = s.move_point_data(a, int(b), f0, f1)
+            said = f"{n:,} frame(s) of {an}'s data in {f0}\u2013{f1} moved to {bn}"
+        elif op == "fill":
+            n = s.fill_point_gaps(a, int(b), f0, f1)
+            said = f"{bn}'s empty frames filled from {an} on {n:,} frame(s) in {f0}\u2013{f1}"
+        else:
+            new, n = s.split_point(a, f0, r.get("name"))
+            said = (f"{an} split at frame {f0}: its {n:,} frame(s) from there on are now "
+                    f"\u201c{s.points[new].name}\u201d (double-click the name to rename it)" if n else "")
+        if not n:
+            self.statusBar().showMessage("Point tools: nothing to change in those frames", 6000)
+            return
+        self._set_undo_point(snap)
+        if new is not None:
+            self._share_landmarks()              # the new name in every camera, in the same Ctrl+Z step
+            self.selected = new
+        self._refresh_point_list()
+        self._refresh_overlay()
+        self._refresh_companions()
+        self.timeline.refresh()
+        self._update_track_button()
+        self._apply_state()
+        self.statusBar().showMessage(said + " \u2014 Ctrl+Z undoes it", 9000)
 
     def _clear_whole_tracks(self, pids, title: str, text: str) -> None:
         """'Clear the whole track(s)?' of the single and the multi-point menu (R13): ask (No is the
@@ -6052,30 +6776,6 @@ class MainWindow(QMainWindow):
                else f"{name}: appearance lock off — plain tracking")
         self.statusBar().showMessage(msg, 6000)
 
-    def _on_item_changed(self, item: QListWidgetItem):
-        pid = self.point_list.row(item)
-        if self.session is None or pid >= self.session.n_points:
-            return
-        meta = self.session.points[pid]
-        new_name = item.text().strip()
-        if not new_name:
-            # an emptied name keeps the old one: the row used to stay blank (G126)
-            self.point_list.blockSignals(True)
-            item.setText(meta.name)
-            self.point_list.blockSignals(False)
-        elif new_name != meta.name:
-            applied = self._apply_rename(pid, new_name)
-            if applied != new_name:
-                self.point_list.blockSignals(True)
-                item.setText(applied)
-                self.point_list.blockSignals(False)
-            self._refresh_overlay()
-        want = item.checkState() == Qt.Checked
-        if want != meta.display:
-            self._begin_edit()                    # the checkbox is one Ctrl+Z step too (G68)
-            meta.display = want
-            self.session.dirty = True
-            self._refresh_overlay()
 
     def _fit_timeline_height(self):
         """Give the timeline enough height for all lanes (up to its default
@@ -6090,114 +6790,105 @@ class MainWindow(QMainWindow):
             self._split.setSizes([total - want, want])
             self.timeline.refresh()
 
-    def _refresh_point_list(self):
+    def _refresh_point_list(self, keep=None):
+        """Rebuild LAYERS from the session (G154): the animals with their points, then Scene. A
+        rebuild keeps the selection BY NAME (G61, G67: when a point is deleted the rows after it move
+        up, and row numbers used to select the neighbours: P2 + P3 selected, P1 deleted -> P3 + P4,
+        and T overwrote P4's track). `keep` = (point names, animal names) to select instead."""
         if getattr(self, "timeline", None) is not None and self.project is not None:
             self._update_disagreement()        # columns follow the point list
-        from PySide6.QtCore import QItemSelectionModel
-        from PySide6.QtGui import QPainter, QPen
-        self.point_list.blockSignals(True)
-        # A rebuild keeps the multi-selection (G61) BY NAME (G67): when a point is deleted the rows
-        # after it move up, and the old row numbers used to select the neighbours instead (P2 + P3
-        # selected, P1 deleted -> P3 + P4, and T overwrote P4's track).
-        keep = {it.data(Qt.UserRole) for it in self.point_list.selectedItems()} - {None}
-        if getattr(self, "_point_list_project", None) is not self.project:
-            keep = set()                       # another video / project: nothing carries over by name
-        self._point_list_project = self.project
         s = self.session
-        cur_name = s.points[self.selected].name if (s is not None and self.selected is not None
-                                                    and self.selected < s.n_points) else None
-        if cur_name is not None and cur_name not in keep:
-            keep = set()                       # the current point is a NEW one: select just it
-        # (G81: a Ctrl+A selection with no current point is kept -- the test used to be `self.selected
-        # not in keep`, which treated None as "a new point" and dropped it)
-        self.point_list.clear()
-        if self.session is not None:
-            has = s.tracked.any(axis=0)
-            for pid, meta in enumerate(s.points):
-                item = QListWidgetItem(meta.name)
-                item.setData(Qt.UserRole, meta.name)
-                pm = QPixmap(34, 14)
-                pm.fill(Qt.transparent)
-                painter = QPainter(pm)
-                painter.setRenderHint(QPainter.Antialiasing)
-                if meta.derived:   # hollow dotted square = computed from the silhouette
-                    pen = QPen(QColor(*meta.color), 1.5, Qt.DotLine)
-                    painter.setPen(pen)
-                    painter.drawRect(2, 2, 10, 10)
-                elif meta.is_ball:  # ring = a ball SAM outlines, tracked as its circle centre
-                    pen = QPen(QColor(*meta.color), 2.0)
-                    painter.setPen(pen)
-                    painter.drawEllipse(2, 2, 10, 10)
-                else:
-                    painter.fillRect(1, 1, 12, 12, QColor(*meta.color))
-                tag = "" if (meta.derived or meta.is_ball) else self.TRACKER_TAGS.get(self._tracker_of(pid, s), "")
-                if tag:                     # its tracker, on its row (G62)
-                    f = painter.font()
-                    f.setPixelSize(9)
-                    f.setBold(True)
-                    painter.setFont(f)
-                    painter.setPen(QColor(theme.TEXT_DIM))
-                    painter.drawText(16, 0, 18, 14, Qt.AlignVCenter | Qt.AlignLeft, tag)
-                painter.end()
-                item.setIcon(QIcon(pm))
-                item.setFlags(item.flags() | Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked if meta.display else Qt.Unchecked)
-                self._style_point_item(item, pid, bool(has[pid]))
-                self.point_list.addItem(item)
-            rows = [q for q, m in enumerate(s.points) if m.name in keep]
-            if self.selected is not None and self.selected < s.n_points and self.selected not in rows:
-                rows.append(self.selected)
-            if self.selected is None and rows:
-                self.selected = rows[0]          # a selection always has a current point (G80)
-            for q in rows:
-                self.point_list.item(q).setSelected(True)
-            if self.selected is not None and self.selected < s.n_points:
-                self.point_list.setCurrentRow(self.selected, QItemSelectionModel.NoUpdate)
-        self.point_list.blockSignals(False)
+        if keep is None:
+            pk, ak = self.layers.selected_names()
+            if getattr(self, "_point_list_project", None) is not self.project:
+                pk, ak = set(), set()          # another video / project: nothing carries over by name
+            cur_name = s.points[self.selected].name if (s is not None and self.selected is not None
+                                                        and self.selected < s.n_points) else None
+            if cur_name is not None and cur_name not in pk:
+                pk, ak = {cur_name}, set()     # the current point is a NEW one: select just it
+            # (G81: a Ctrl+A selection with no current point is kept)
+            keep = (pk, ak)
+        self._point_list_project = self.project
+        # (G163) an explicit `keep` is the WHOLE selection (a new animal alone, the points just moved): the current
+        # point is not added to it -- it named a second animal, and S then had no one animal to outline
+        if s is not None and self.selected is not None and (self.selected >= s.n_points
+                                                            or s.points[self.selected].name not in keep[0]):
+            self.selected = None
+        has = s.tracked.any(axis=0) if s is not None else None     # once per rebuild (simplify 2026-10-04)
+        self.layers.rebuild(
+            s, tag_of=(lambda q: "" if (s.points[q].derived or s.points[q].is_ball)
+                       else self.TRACKER_TAGS.get(self._tracker_of(q, s), "")) if s is not None else None,
+            style_point=(lambda it, q: self._style_point_item(it, q, bool(has[q])))
+            if s is not None else None,
+            keep=keep, current=self.selected)
+        if s is not None:
+            sel = self._selected_pids()
+            if self.selected is None and sel:
+                self.selected = sel[0]           # a selection always has a current point (G80)
+                self.layers.select_only(sel, self._selected_segments(), current=self.selected)
+            if self.selected is not None and self.selected not in sel:
+                self.selected = sel[0] if sel else None
+            self._sync_s_target()
+            # (G158) the timeline gained lanes (an animal, a point): give it room for them once, as after
+            # a skeleton template -- a timeline the user shrank is not grown again until more lanes come
+            # A session seen for the first time (a project opened, another camera) only records its count:
+            # its layout was just restored and must stand (verify_recovery's exact working state)
+            # (counted from the SESSION: while a project opens the timeline still shows the previous one)
+            n_rows = s.n_points + s.n_segments
+            seen = self._tl_rows_seen
+            if s in seen and n_rows > seen[s]:
+                QTimer.singleShot(0, self._fit_timeline_height)
+            seen[s] = n_rows
+        else:
+            self.animal_label.setText(self._animal_status_text())
 
     def _style_point_item(self, item, pid: int, has_any: bool) -> None:
-        """A POINTS row's tooltip and dimming: dim while the point has no position in this camera
+        """A LAYERS point row's tooltip and dimming: dim while the point has no position in this camera
         (a landmark another camera made, or a cleared track)."""
         s = self.session
         meta = s.points[pid]
-        item.setData(Qt.UserRole + 1, has_any)
-        item.setData(Qt.ForegroundRole, None if (meta.derived or has_any) else QColor(theme.TEXT_DIM))
+        item.setData(0, ROLE_HAS, has_any)
+        item.setData(0, Qt.ForegroundRole, None if (meta.derived or has_any) else QColor(theme.TEXT_DIM))
+        k = s.segment_of(pid)
+        owner = f" ({s.segments[k].name})" if k is not None else " (Scene)"
         if meta.derived:
-            item.setToolTip(f"{meta.name}: derived from the segment's silhouette ({meta.spec}) "
-                            "— fills in when you track with a segment defined (S)")
+            item.setToolTip(0, f"{meta.name}: derived from its animal's silhouette ({meta.spec}) "
+                               "— fills in when you track the animal with its silhouette (S)")
         elif not has_any:
-            item.setToolTip(f"{meta.name}: not placed in this camera yet — select it and click it "
-                            "on the video (with a calibration, on the dashed line from the other "
-                            "cameras), then Track")
+            item.setToolTip(0, f"{meta.name}{owner}: not placed in this camera yet — select it and click it "
+                               "on the video (with a calibration, on the dashed line from the other "
+                               "cameras), then Track")
         elif meta.is_ball:
-            item.setToolTip(f"{meta.name}: a ball marker — SAM outlines it each frame and the "
-                            "fitted circle's centre is the point (its circle is drawn on the video)")
+            item.setToolTip(0, f"{meta.name}{owner}: a ball marker — SAM outlines it each frame and the "
+                               "fitted circle's centre is the point (its circle is drawn on the video)")
         else:
             t = self._tracker_of(pid, s)
-            item.setToolTip(f"{meta.name}: tracked by {self.TRACKER_NAMES.get(t, t)}"
-                            + ("" if meta.tracker else " (the project's default)")
-                            + " — right-click → Tracker to change it")
+            item.setToolTip(0, f"{meta.name}{owner}: tracked by {self.TRACKER_NAMES.get(t, t)}"
+                               + ("" if meta.tracker else " (the project's default)")
+                               + (", kept on its animal's silhouette" if self._held(s, pid) else "")
+                               + " — right-click → Tracker to change it; drag it onto another animal to move it")
 
     def _restyle_point_rows(self) -> None:
         """Rows go stale after edits that do not rebuild the list (G126): a placeholder's first
         placement undims it, a cleared whole track dims it, a name that changed under the row (an
         undo) is put back. Cheap: one `any` over the bool array; not while a run is live."""
         s = self.session
-        if s is None or self.state == TRACKING or self.point_list.count() != s.n_points:
+        if s is None or self.state == TRACKING or self.layers.n_point_rows() != s.n_points:
             return
         has = s.tracked.any(axis=0)
-        blocked = self.point_list.blockSignals(True)
+        blocked = self.layers.blockSignals(True)
         try:
             for pid in range(s.n_points):
-                item = self.point_list.item(pid)
-                if item.text() != s.points[pid].name:
-                    item.setText(s.points[pid].name)
-                    item.setData(Qt.UserRole, s.points[pid].name)
-                if item.data(Qt.UserRole + 1) != bool(has[pid]):
+                item = self.layers.point_item(pid)
+                if item is None:
+                    continue
+                if item.data(0, ROLE_NAME) != s.points[pid].name:
+                    item.setText(0, s.part_name(pid))
+                    item.setData(0, ROLE_NAME, s.points[pid].name)
+                if item.data(0, ROLE_HAS) != bool(has[pid]):
                     self._style_point_item(item, pid, bool(has[pid]))
         finally:
-            self.point_list.blockSignals(blocked)
-
+            self.layers.blockSignals(blocked)
     # ------------------------------------------------ epipolar guides (3D)
 
     GUIDE_COLORS = [(255, 120, 200), (120, 220, 255), (255, 200, 90), (170, 255, 140),
@@ -6822,15 +7513,12 @@ class MainWindow(QMainWindow):
         ghost_next = s.tracks[f + 1] if (onion and f + 1 < s.n_frames) else None
         positions = s.positions_at(f)
         # animal overlays first (they sit under the markers)
-        if s.animal is not None and s.masks is not None and self.btn_mask.isChecked():
-            self.canvas.set_mask(s.masks.contours.get(f), s.animal.color, self._mask_opacity)
-            self.canvas.set_midline(s.masks.midline.get(f) if self.act_show_midline.isChecked()
-                                    else None, s.animal.color)
-        else:
-            self.canvas.set_mask(None)
-            self.canvas.set_midline(None)
-        if s.animal is not None and self.state == READY:
-            self.canvas.set_prompts(s.animal.prompts.get(f, []), s.animal.boxes.get(f), s.animal.color)
+        self.canvas.set_masks(self._mask_layers(s, f), self._mask_opacity)     # every segment (G149)
+        # the clicks of the animal the selection names (G154): S adds to it, a right click removes them
+        k = self._s_target() if s is self.session else None
+        if k is not None and self.state == READY:
+            a = s.segments[k]
+            self.canvas.set_prompts(a.prompts.get(f, []), a.boxes.get(f), a.color)
         else:
             self.canvas.set_prompts([], None)
         self.canvas.set_bones(s.bones() if self.act_show_bones.isChecked() else [])
@@ -7095,7 +7783,9 @@ class MainWindow(QMainWindow):
         scope, _n = self._run_scope()
         if names is None:
             names = {self.session.points[i].name for i in scope if i < self.session.n_points}
-        seg = self._run_segment(scope) if segment is None else segment
+        # (G149) the working camera's run segments, BY NAME: each camera runs its segments of those names
+        seg_names = (list(segment) if isinstance(segment, (list, tuple, set)) else
+                     [self.session.segments[k].name for k in self._seg_list(scope, segment)])
         jobs = []
         for v in [p.active] + p.others():
             sv = p.sessions[v]
@@ -7104,9 +7794,12 @@ class MainWindow(QMainWindow):
             if fv is None or rt is None or not (0 <= fv < rt.n_frames - (1 if step else 0)):
                 continue
             pids = [q for q in sv.seedable_at(fv) if sv.points[q].name in names]
-            # Body on: this camera's segment rides along for its on-body points (I185)
-            seg_v = bool(seg or (segment is None and self._segment_rides(sv, pids)))
-            seg_ok = bool(seg_v and sv.animal_seedable_at(fv))
+            # this camera's animals ride along for the points they hold (I185, G160)
+            segs_v = self._seg_list(scope, seg_names, sv) if segment is not False else []
+            if segment is None:
+                segs_v = sorted(set(segs_v) | set(self._run_segments([q for q in pids], sv)))
+            seg_v = [sv.segments[k].name for k in segs_v]
+            seg_ok = bool(any(sv.animal_seedable_at(fv, k) for k in segs_v))
             if not pids and not seg_ok:
                 continue
             # a run that re-segments fills the silhouette-derived landmarks of the run too (I184):
@@ -7117,7 +7810,8 @@ class MainWindow(QMainWindow):
                 if v not in stops or stops[v] is None:
                     continue
                 stop = stops[v] if stop is None else min(stop, stops[v])
-            jobs.append({"view": v, "frame": int(fv), "pids": pids + dpids, "stop": stop, "segment": seg_v})
+            jobs.append({"view": v, "frame": int(fv), "pids": pids + dpids, "stop": stop,
+                         "segment": seg_v if seg_v else False})
         return jobs
 
     def _tracking_engine_ready(self) -> bool:
@@ -7192,6 +7886,16 @@ class MainWindow(QMainWindow):
             f"Tracking in {len(order)} cameras at the same time: "
             + ", ".join(p.name(v) for v, _w, _f in order) + " — X stops them all", 8000)
 
+    def _mask_layers(self, s, f: int, midline: bool = True) -> list:
+        """Every segment's silhouette on frame f, each in its colour, with its midline when shown
+        (G149): what `VideoCanvas.set_masks` draws. Empty with the silhouettes switched off."""
+        if s is None or not s.segments or not self.btn_mask.isChecked():
+            return []
+        mid = midline and self.act_show_midline.isChecked()
+        # an animal whose LAYERS checkbox is off is not drawn (G154)
+        return [(m.contours.get(f) if a.shown else None, a.color, m.midline.get(f) if (mid and a.shown) else None)
+                for a, m in zip(s.segments, s.seg_masks)]
+
     def _render_side(self) -> None:
         """Draw the newest frame of each other camera of a simultaneous run in its
         own view, with its points (I141); never more than 16 frames behind."""
@@ -7213,8 +7917,7 @@ class MainWindow(QMainWindow):
                 continue
             cv.set_stale(False)
             cv.set_frame(rgb)
-            if s.animal is not None and s.masks is not None and self.btn_mask.isChecked():
-                cv.set_mask(s.masks.contours.get(idx), s.animal.color, self._mask_opacity)
+            cv.set_masks(self._mask_layers(s, idx, midline=False), self._mask_opacity)    # (G149)
             trails, future = self._companion_trails(s, idx)    # (G33)
             cv.set_points(s.positions_at(idx), s.visibility[idx], s.points, None,
                           trails, future, occluded=s.occluded[idx], radii=s.radius[idx])
@@ -7428,10 +8131,10 @@ class MainWindow(QMainWindow):
         specs = self._point_specs(pids, seeds)
         balls = self._ball_specs(ball_pids, seeds)
         seg = self._segment_specs(pids, scope, animal_ok, segment, specs)
-        if not specs and not balls and not spot_specs and seg.animal is None:
+        if not specs and not balls and not spot_specs and not seg.animals:
             self.toast.show_message(
                 f"Nothing to start from on frame {self.current}: place a point with <b>N</b>, a ball "
-                "with Add ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
+                "with Point ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
             self.act_undo.setEnabled(self._undo_snap is not None)       # no run: Ctrl+Z stays what it was
             return
         end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
@@ -7440,9 +8143,8 @@ class MainWindow(QMainWindow):
                            specs=specs,
                            roi=self.btn_roi.isChecked(),
                            autopause=self.btn_autopause.isChecked(),
-                           animal=seg.animal, derived=seg.derived, head_pid=seg.head_pid,
-                           on_body_pids=seg.on_body, constrain_pids=seg.constrain,
-                           point_backend=backend, balls=balls, spots=spot_specs, stored_masks=seg.stored)
+                           animals=seg.animals, derived=seg.derived,             # (G149) every segment
+                           point_backend=backend, balls=balls, spots=spot_specs)
         # the points hand-placed on the start frame: `write_segment` clears the flag of every row it
         # writes, the start row (the user's click, position kept) included -- restored at the end of
         # the run (I189)
@@ -7461,19 +8163,23 @@ class MainWindow(QMainWindow):
         scope, _n_sel = self._run_scope()   # exactly the panel selection (G61)
         if only_pids is not None:
             scope = set(int(q) for q in only_pids)
-        run_seg = self._run_segment(scope) if segment is None else bool(segment)
-        pids, animal_ok = self._startable_here(scope, run_seg)
+        segs = self._seg_list(scope, segment)                 # (G149) every segment of the run
+        run_seg = bool(segs)
+        pids, animal_ok = self._startable_here(scope, run_seg, segs)
         return scope, pids, run_seg, animal_ok
 
-    def _startable_here(self, scope, run_seg: bool):
-        """(the scope's points that have a position on this frame, whether the segment -- when it
-        runs -- can start here from a click or a silhouette): what a run can start from, one rule
-        for the Track button (`_update_track_button`) and for a Track press (R8)."""
+    def _startable_here(self, scope, run_seg: bool, segs=None):
+        """(the scope's points that have a position on this frame, whether a segment of the run --
+        `segs`, else the selection rule -- can start here from a click or a silhouette): what a run
+        can start from, one rule for the Track button (`_update_track_button`) and for a Track press
+        (R8, G149)."""
         s = self.session
         if s is None:
             return [], False
+        if run_seg and segs is None:
+            segs = self._run_segments(scope)
         return ([p for p in s.seedable_at(self.current) if p in scope],
-                bool(run_seg and s.animal_seedable_at(self.current)))
+                bool(run_seg and any(s.animal_seedable_at(self.current, k) for k in (segs or []))))
 
     def _say_nothing_to_start(self, scope, run_seg: bool) -> None:
         """Track was pressed with nothing that can start on this frame: why, as a notice (the
@@ -7481,9 +8187,8 @@ class MainWindow(QMainWindow):
         s = self.session
         if not scope and not run_seg:
             self.toast.show_message(
-                "Nothing is selected, so nothing was tracked. Select what to track: the points in the "
-                "<b>POINTS</b> list (Ctrl+click for several, <b>Ctrl+A</b> for all)"
-                + (" and the segment's row in <b>SEGMENT</b>" if s.animal is not None else "") + ".",
+                "Nothing is selected, so nothing was tracked. Select what to track in <b>LAYERS</b>: points, "
+                "or an animal (its silhouette and all its points); Ctrl+click for several, <b>Ctrl+A</b> for all.",
                 "warn", 8000)
         elif scope:
             self.toast.show_message(
@@ -7504,8 +8209,10 @@ class MainWindow(QMainWindow):
         s = self.session
         skipped = sum(1 for i in range(s.n_points) if not s.points[i].derived and i in scope) - len(pids)
         self.statusBar().showMessage(
-            f"Tracking the {len(pids)} selected point(s)" + (" and the segment" if animal_ok else "")
-            + " — only what is selected in the panel is tracked", 6000)
+            f"Tracking the {len(pids)} selected point(s)"
+            + ((" and the silhouette" if len(self._run_segments(scope)) < 2 else
+                f" and {len(self._run_segments(scope))} silhouettes") if animal_ok else "")
+            + " — only what is selected in LAYERS is tracked", 6000)
         if skipped:
             self.statusBar().showMessage(
                 f"{skipped} point(s) have no position at frame {self.current} and will be "
@@ -7521,9 +8228,10 @@ class MainWindow(QMainWindow):
         cols = list(pids) + ([q for q in s.derived_pids() if q in scope] if animal_ok else [])
         ahead = (s.tracked[self.current + 1:][:, cols].any(axis=1) if cols
                  else np.zeros(max(0, s.n_frames - self.current - 1), bool))
-        if animal_ok and s.masks is not None:
+        if animal_ok:
             has_mask = np.zeros(s.n_frames, bool)
-            has_mask[s.mask_frames()] = True
+            for k in self._seg_list(scope, True):      # the run's segments (G149, G151n)
+                has_mask[s.mask_frames(k)] = True
             ahead = ahead | has_mask[self.current + 1:]
         frames_after = int(ahead.sum())
         last = self.current + 1 + int(np.nonzero(ahead)[0][-1]) if frames_after else self.current
@@ -7570,7 +8278,7 @@ class MainWindow(QMainWindow):
                 "<b>Moving spot</b> follows single points only, so "
                 + ", ".join(f"<b>{n}</b>" for n in left_out)
                 + " (a region) is left out of this run. Give it AllTracker or CoTracker3 (right-click its row "
-                "in POINTS → Tracker).", "info", 9000)
+                "in LAYERS → Tracker).", "info", 9000)
         return pids, ball_pids, spot_specs, backend
 
     @staticmethod
@@ -7607,49 +8315,55 @@ class MainWindow(QMainWindow):
                                   self._seg_backend))
         return balls
 
+    def _segment_roles(self, s, k: int, pids) -> dict:
+        """Animal k's landmarks among `pids` (G149, G156): the head (when among them) and the points
+        it holds -- its appearance-tracked points not marked 'may leave', when the animal keeps its
+        points on its silhouette: they are both demoted when off the body and constrained to it. A
+        point of no animal (Scene) is never held."""
+        hp = s.head_pid(k)
+        held = {q for q in pids if s.segment_of(q) == k and self._held(s, q)}
+        return dict(head_pid=hp if hp in pids else None, on_body=set(held), constrain=set(held))
+
     def _segment_specs(self, pids, scope, animal_ok: bool, segment, specs) -> _SegmentSpecs:
-        """The segment's part of a run: its prompts, the derived landmarks to fill in, the head
-        landmark, and the on-body rules for `pids` (the constraint, the stop where a landmark leaves
-        the animal, the off-body demotion). `stored` = the silhouettes an earlier pass wrote, for
-        the second pass of a two-pass run (I185)."""
+        """The segments' part of a run (G149: every segment of the run, one SAM session): each one's
+        prompts (or its stored silhouette on this frame as the seed), the derived landmarks to fill in,
+        and its landmarks' on-body rules (the constraint, the stop where a landmark leaves the animal,
+        the off-body demotion). A two-pass run's second pass gets the silhouettes the first pass wrote
+        as STORED segments (I185): no SAM, the same rules."""
         from kinetrace.tracker import AnimalSpec, DerivedSpec
         s = self.session
-        animal = derived = None
-        head_pid = None
-        on_body: list[int] = []
-        constrain: list[int] = []
+        animals: list = []
+        derived: list = []
         if animal_ok:
-            seed_mask = None
-            if not s.animal.has_prompt(self.current) and s.masks.has(self.current):
-                ww, wh = working_size(self.info.width, self.info.height)
-                seed_mask = s.masks.rasterize(self.current, wh, ww)
-            animal = AnimalSpec({f: list(v) for f, v in s.animal.prompts.items()},
-                                dict(s.animal.boxes), seed_mask, self._seg_backend)
-            derived = [DerivedSpec(pid, s.points[pid].spec) for pid in s.derived_pids() if pid in scope]
-            hp = s.head_pid()
-            head_pid = hp if hp in pids else None
-            if s.skeleton:
-                on_body = [p for p in pids if s.points[p].name in s.skeleton.get("landmarks", [])]
-            if self.btn_onbody.isChecked():
-                constrain = [p for p in pids if not s.points[p].free]
-            if self._passes is not None and not self._passes.get("done") and self.project is not None:
-                # pass 1 of a two-pass run carries this camera's segment: its silhouettes are what
+            segs = [k for k in self._seg_list(scope, segment) if s.animal_seedable_at(self.current, k)]
+            for j, k in enumerate(segs):
+                a, mt = s.segments[k], s.seg_masks[k]
+                seed_mask = None
+                if not a.has_prompt(self.current) and mt.has(self.current):
+                    ww, wh = working_size(self.info.width, self.info.height)
+                    seed_mask = mt.rasterize(self.current, wh, ww)
+                animals.append(AnimalSpec({f: list(v) for f, v in a.prompts.items()}, dict(a.boxes), seed_mask,
+                                          self._seg_backend, index=k, name=a.name, **self._segment_roles(s, k, pids)))
+                derived += [DerivedSpec(pid, s.points[pid].spec, seg=j) for pid in s.derived_pids()
+                            if pid in scope and s.segment_of(pid) == k]
+            if segs and self._passes is not None and not self._passes.get("done") and self.project is not None:
+                # pass 1 of a two-pass run carries this camera's segments: their silhouettes are what
                 # the later pass is kept on (I185)
-                self._passes.setdefault("seg_views", set()).add(self.project.active)
-        stored = None
+                self._passes.setdefault("seg_views", {})[self.project.active] = [s.segments[k].name for k in segs]
         pp = self._passes
-        if (segment is False and animal is None and pp is not None and pp.get("done") and specs
-                and self.project is not None and self.project.active in pp.get("seg_views", ())
-                and s.animal is not None and len(s.mask_frames())):
+        if (segment is False and not animals and pp is not None and pp.get("done") and specs
+                and self.project is not None and self.project.active in pp.get("seg_views", {})):
             # (I185) the second pass of a two-pass run: no SAM, but the silhouettes pass 1 just wrote
-            # into the session hold its on-body points to the same rules as a run with the segment
-            # (the constraint, the stop where a landmark leaves the animal, the off-body demotion)
-            stored = s.masks
-            if s.skeleton:
-                on_body = [p for p in pids if s.points[p].name in s.skeleton.get("landmarks", [])]
-            if self.btn_onbody.isChecked():
-                constrain = [p for p in pids if not s.points[p].free]
-        return _SegmentSpecs(animal, derived, head_pid, on_body, constrain, stored)
+            # into the session hold its on-body points to the same rules as a run with the segments.
+            # {camera: segment names}; a plain set of cameras (no names) = every segment there
+            sv = pp["seg_views"]
+            names = sv[self.project.active] if isinstance(sv, dict) else s.segment_names()
+            for name in names:
+                k = s.segment_index(name)
+                if k is not None and len(s.mask_frames(k)):
+                    animals.append(AnimalSpec(index=k, name=name, stored=s.seg_masks[k],
+                                              **self._segment_roles(s, k, pids)))
+        return _SegmentSpecs(animals, derived)
 
     def _spot_velocity(self, pid: int, f: int):
         """A Moving spot run's starting speed (px / frame): from the frame before
@@ -7725,7 +8439,7 @@ class MainWindow(QMainWindow):
         self.toast.show_message(
             f"<b>{s.points[pid].name}</b> is now tracked by <b>{result.label}</b>"
             + (f" ({result.settings.describe()})" if result.model == "spot" else "")
-            + ". Its tracker shows on its row in POINTS; right-click the row → Tracker changes it.", "success", 8000)
+            + ". Its tracker shows on its row in LAYERS; right-click the row → Tracker changes it.", "success", 8000)
 
     def _hint_corrections(self, pid: int) -> None:
         """G58: once per point, when it has been corrected by hand on 5 of the last
@@ -8079,6 +8793,11 @@ class MainWindow(QMainWindow):
         reason = getattr(self.worker, "_autopause_reason", "")
         ball_ended = dict(getattr(self.worker, "_ball_ended", {}) or {})
         spot_ended = dict(getattr(self.worker, "_spot_ended", {}) or {})
+        # (G149) segments that ended in this run (lost, or SAM took another object) and the landmarks
+        # each held on itself: those end where their segment did
+        seg_ended = dict(getattr(self.worker, "_seg_ended", {}) or {})
+        seg_holds = {int(a.index): set(a.constrain) for a in (getattr(self.worker, "animals", None) or [])
+                     if getattr(a, "stored", None) is None}
         # the result can arrive while the thread still releases its capture (a
         # network share can stall that past the wait): keep it until it ends --
         # dropping the last reference to a running QThread aborts the app (I133)
@@ -8087,16 +8806,23 @@ class MainWindow(QMainWindow):
         self._restore_start_flags()         # before the autosave (I189)
         step_run = self._end_run()
         self._refresh_animal_panel()
+        self._segments_ended(seg_ended, seg_holds, last,
+                             say=not (self._autopause_info is not None and self._autopause_info[1] < 0))
         if self._autopause_info is not None:
             fail_frame, pid = self._autopause_info
             self._autopause_info = None
             self._goto(min(fail_frame, self.n_frames - 1), force=True)
             self._apply_state()
             self._track_label.setText("")
-            aname = (self.session.animal.name
-                     if self.session and self.session.animal else "the segment")
+            # (G151i) the segment(s) the run ended, not the active one
+            ss = self.session
+            n_seg = ss.n_segments if ss is not None else 0
+            ended = (sorted((k for k in seg_ended if 0 <= k < n_seg), key=lambda k: seg_ended[k][0])
+                     or sorted(k for k in seg_holds if 0 <= k < n_seg))      # else the run's segments
+            aname = (", ".join(ss.segments[k].name for k in ended) if ended
+                     else ss.animal.name if ss is not None and ss.animal is not None else "the segment")
             if pid < 0:  # the animal itself
-                self._say_stop("segment", aname, fail_frame)
+                self._say_stop("switched" if reason == "switched" else "segment", aname, fail_frame)
                 return
             name = (self.session.points[pid].name
                     if self.session and pid < self.session.n_points else f"point {pid}")
@@ -8142,7 +8868,7 @@ class MainWindow(QMainWindow):
             parts = [f"<b>{s.points[pid].name}</b> at frame {f}" for pid, f, why in ended]
             self.toast.show_message(
                 "Ball markers lost inside the picture (auto-pause is off, so the run went on): "
-                + ", ".join(parts) + ". Their tracks end there. Select one, Add ▾ → Ball marker, click it "
+                + ", ".join(parts) + ". Their tracks end there. Select one, Point ▾ → Ball marker, click it "
                 "where it is and press Track.", "warn", 15000)
         stopped = [(pid, f, why) for pid, (f, why) in sorted(spot_ended.items()) if s is not None and pid < s.n_points]
         if stopped:
@@ -8152,6 +8878,31 @@ class MainWindow(QMainWindow):
             self.toast.show_message(
                 "Moving spot stopped (auto-pause is off, so the run went on for the rest): " + ", ".join(parts)
                 + ". Their tracks end there. Select one, click it where it is and press Track.", "warn", 15000)
+
+    def _segments_ended(self, ended: dict, holds: dict, last: int, say: bool = True) -> None:
+        """(G149, owner 2026-10-03: end that one, keep going) Segments that ended during the run: the
+        landmarks held on each end with it (from that frame to the run's last; their body is gone, the
+        on-body rule cannot hold them), and a notice names each segment, the frame and why."""
+        s = self.session
+        if not ended or s is None:
+            return
+        parts, cut = [], 0
+        for k, (f, why) in sorted(ended.items(), key=lambda kv: kv[1][0]):
+            if not (0 <= k < s.n_segments):
+                continue
+            pids = [q for q in holds.get(k, ()) if 0 <= q < s.n_points]
+            if pids and f <= last:
+                cut += s.clear_window(pids, f, last)
+            parts.append(f"<b>{s.segments[k].name}</b> at frame {f}"
+                         + (" (SAM took another object)" if why == "switched" else " (lost)"))
+        if cut:
+            self._refresh_overlay()
+            self.timeline.refresh()
+        if say and parts:
+            self.toast.show_message(
+                "Segments that ended during the run: " + ", ".join(parts) + ". Their silhouettes end on the frame "
+                "before" + (", and so do the landmarks held on them" if cut else "") + "; everything else went on. "
+                "Where one is visible again, select its row, press S, click it, and Track.", "warn", 15000)
 
     def _stop_kind(self, reason: str, pid: int) -> str:
         """Which `_STOP_TEXTS` entry a run's stop at point `pid` takes, from the worker's
@@ -8311,9 +9062,13 @@ class MainWindow(QMainWindow):
         # names go to all of them -- the selection travels with the user across a camera switch
         names = [self.session.points[q].name for q in self._selected_pids() if q < self.session.n_points]
         seg_sel = bool(self._segment_selected())
+        seg_names = [self.session.segments[k].name for k in self._selected_segments() if k < self.session.n_segments]
         for sv in (self.project.sessions if self.project is not None else [self.session]):
             sv.ui_state["selected_names"] = list(names)
             sv.ui_state["segment_selected"] = seg_sel
+            sv.ui_state["segments_selected"] = list(seg_names)       # (G149) which segments, by name
+        for sv in (self.project.sessions if self.project is not None else [self.session]):
+            sv.ui_state["hidden_animals"] = [a.name for a in sv.segments if not a.shown]     # (G154) display
         st["follow"] = self.btn_follow.isChecked()
         st["autopause"] = self.btn_autopause.isChecked()
         st["roi"] = self.btn_roi.isChecked()
@@ -8325,7 +9080,6 @@ class MainWindow(QMainWindow):
         st["show_midline"] = self.act_show_midline.isChecked()
         st["show_bones"] = self.act_show_bones.isChecked()
         st["seg_backend"] = self._seg_backend
-        st["on_body"] = self.btn_onbody.isChecked()
         st["point_backend"] = self._point_backend
         st["trail_len"] = int(self._trail_len)
         st["trail_future"] = bool(self._trail_future)
@@ -8345,7 +9099,6 @@ class MainWindow(QMainWindow):
         self.btn_autopause.setChecked(bool(st.get("autopause", True)))
         self.btn_roi.setChecked(bool(st.get("roi", True)))
         self.btn_mask.setChecked(bool(st.get("show_mask", True)))
-        self.btn_onbody.setChecked(bool(st.get("on_body", True)))
         pb = str(st.get("point_backend", "") or "")
         if pb == "alltracker" and not _alltracker_available():
             pb = "cotracker3"
@@ -8382,18 +9135,19 @@ class MainWindow(QMainWindow):
         # are the selection when there are any (a stale per-camera index would add a point the
         # user had not selected); the current point is the saved one when it is among them.
         rows = [q for q in (self.session.pid_by_name(str(nm)) for nm in (st.get("selected_names") or []))
-                if q is not None and q < self.point_list.count()]
+                if q is not None and q < self.session.n_points]
         if rows:
             self._on_select(sel if sel in rows else rows[0])
-            self.point_list.blockSignals(True)
-            for q in rows:
-                self.point_list.item(q).setSelected(True)
-            self.point_list.blockSignals(False)
+            self.layers.set_selected(pids=rows)
             self._update_track_button()
         elif 0 <= sel < self.session.n_points:
             self._on_select(sel)
-        if st.get("segment_selected") and self.animal_list.count():
-            self.animal_list.item(0).setSelected(True)
+        if isinstance(st.get("segments_selected"), list):       # (G149) by name
+            want = set(st.get("segments_selected"))
+            self._select_segments([k for k, n in enumerate(self.session.segment_names()) if n in want])
+        elif st.get("segment_selected") and self.session.segments:
+            self._select_segments([0])
+        self._sync_s_target()
         # view restore runs after the pending layout pass, else fit() wins
         zoom = float(st.get("zoom", 0.0))
         cx, cy = float(st.get("center_x", 0.0)), float(st.get("center_y", 0.0))
@@ -8534,11 +9288,20 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Could not keep a recovery copy: {err}", 10000)
         self._start_writer(frozen, zp, done, wait=wait, compresslevel=0, fsync=False, backup=False)
 
-    def _leave_project(self) -> None:
+    def _leave_project(self, discard: bool = False) -> None:
         """Before another video or project replaces this one: unsaved work into
         recovery; for a saved project, where the user was (frame, zoom,
-        toggles) into a small sidecar applied the next time it opens."""
+        toggles) into a small sidecar applied the next time it opens.
+        `discard` (the user chose Discard, G143): the unsaved work is dropped as
+        on close, and this state counts as handled, so a later `_leave_project`
+        of the same open does not write it back (an edit after it still would)."""
         if self.project is None:
+            return
+        if discard:
+            if self._save_worker is not None and self._save_worker.isRunning():
+                self._save_worker.wait()
+            recovery.discard(self._project_id)
+            self._recovery_sig = self._signature()
             return
         self._autosave(wait=True)
         if self._saved_at is not None and not self.project.dirty:
@@ -8952,6 +9715,10 @@ class MainWindow(QMainWindow):
         if s is None or self.state != READY:
             QMessageBox.information(self, "Import silhouettes", "Open the video the masks belong to first.")
             return
+        # (G151j) into the segment the user names (one highlighted row, or asked); none yet = a new one
+        k = self._pick_segment("Import the silhouettes into") if s.segments else None
+        if s.segments and k is None:
+            return
         folder = QFileDialog.getExistingDirectory(self, "Folder of mask images", str(Path(self.info.path).parent))
         if not folder:
             return
@@ -8962,7 +9729,8 @@ class MainWindow(QMainWindow):
         try:           # thousands of 4K images: off the GUI thread, counted (G52)
             summ = self._in_background(
                 "Importing silhouettes",
-                lambda report: trackio.import_masks_png(s, folder, lambda d, n: report(f"{d} of {n} images", d, n)),
+                lambda report: trackio.import_masks_png(s, folder, lambda d, n: report(f"{d} of {n} images", d, n),
+                                                        i=k),
                 detail=Path(folder).name, progress=True)
         except trackio.TrackImportError as e:
             QMessageBox.warning(self, "Cannot import these silhouettes", str(e))
@@ -8978,8 +9746,8 @@ class MainWindow(QMainWindow):
         self.timeline.update()
         self._apply_state()
         self.toast.show_message(summ["sentence"] + (" Ctrl+Z undoes it." if had_segment else
-                                                    " To take it back, right-click the segment's row → "
-                                                    "Remove the segment."), "info", 9000)
+                                                    " To take it back, right-click the animal in LAYERS → "
+                                                    "Remove the animal."), "info", 9000)
 
     def _apply_imported(self, imp, path: str) -> None:
         p = self.project
@@ -9028,8 +9796,11 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Open project — in a project folder, choose kinetrace.json",
                                               self._start_folder(),
                                               f"Kinetrace project (kinetrace.json *{PROJECT_SUFFIX})")
-        if path:
-            self._open_project_from_path(path)
+        if not path:
+            return
+        settled = self._settle_unsaved(f"opening {projectfile.project_root(path).name}")     # (G143)
+        if settled is not None:
+            self._open_project_from_path(path, discard=settled == "discard")
 
     def _announce_recovery(self) -> None:
         """At start-up: say (without a blocking dialog) that unsaved work is
@@ -9061,8 +9832,14 @@ class MainWindow(QMainWindow):
         choice, ok = QInputDialog.getItem(self, "Recover unsaved work",
                                           "Unsaved work kept by Kinetrace (newest first):", labels, 0, False)
         if ok and choice in labels:
-            self._open_project_from_path(str(recovery.paths(items[labels.index(choice)]["project_id"])[0]),
-                                         recovered=items[labels.index(choice)])
+            item = items[labels.index(choice)]
+            # (G143) the open project's unsaved work is asked about first -- unless the copy chosen
+            # IS that work (Discard would delete the very file being opened)
+            settled = ("keep" if item.get("project_id") == self._project_id
+                       else self._settle_unsaved("opening the recovered work"))
+            if settled is not None:
+                self._open_project_from_path(str(recovery.paths(item["project_id"])[0]), recovered=item,
+                                             discard=settled == "discard")
 
     def _locate_video(self, want: Path, label: str) -> Path | None:
         """Ask the user where a project's video went (projects are portable;
@@ -9088,10 +9865,11 @@ class MainWindow(QMainWindow):
         got = projectfile.locate_video(entry, self._project_dir, extra)
         return got if got is not None else self._locate_video(Path(proj.sessions[i].video_path), proj.name(i))
 
-    def _open_project_from_path(self, path: str, recovered: dict | None = None):
+    def _open_project_from_path(self, path: str, recovered: dict | None = None, discard: bool = False):
         """Open a project folder (given as the folder or its kinetrace.json) or
         a single-file .kinetrace. `recovered`: the file is a recovery copy
-        chosen in Recover Unsaved Work."""
+        chosen in Recover Unsaved Work. `discard`: drop the open project's
+        unsaved work instead of keeping it in recovery (G143)."""
         path = str(projectfile.project_root(path))   # kinetrace.json -> its folder, the project
         if self.state == TRACKING:
             return
@@ -9101,14 +9879,14 @@ class MainWindow(QMainWindow):
                                self._open_hint(path, "project"), immediate=True)
         QApplication.processEvents()
         try:
-            self._open_project_impl(path, recovered, pname)
+            self._open_project_impl(path, recovered, pname, discard)
         finally:
             self._busy_pop(ptok)             # the camera open, if it started, holds its own level
 
-    def _open_project_impl(self, path: str, recovered: dict | None, pname: str):
+    def _open_project_impl(self, path: str, recovered: dict | None, pname: str, discard: bool = False):
         """Open a project in five steps (R9): read it, decide about unsaved work, work out where its
         files are, find and read every camera's video, adopt it once the working camera is open."""
-        self._leave_project()
+        self._leave_project(discard)
         got = self._read_project(path, pname)
         if got is None:
             return
@@ -9218,6 +9996,7 @@ class MainWindow(QMainWindow):
                     for x, cv in zip(proj.sessions, view.get("cameras") or []):
                         x.current_frame = int(np.clip(int(cv.get("current_frame", 0)), 0, x.n_frames - 1))
                         x.ui_state.update({k: v for k, v in (cv.get("ui") or {}).items() if v is not None})
+                        projectfile.apply_hidden_animals(x)          # (G154) the silhouettes shown / hidden
                     for x in proj.sessions:
                         x.ui_state.update((state.get("tools") or {}))
                         x.dirty = False
@@ -9471,21 +10250,125 @@ class MainWindow(QMainWindow):
         wiz.deleteLater()                        # (I249) its scan and corner frames are not kept for the session
         if not accepted or profile is None or rview is None:
             return
-        from kinetrace.calibwizard import lens_size_mismatch
-        sv = p.sessions[rview]
-        bad = lens_size_mismatch(profile, sv.width, sv.height, p.name(rview))
+        bad = self._lens_misfit(profile, rview)
         if bad:                                  # a profile of another picture size (I31)
-            QMessageBox.warning(self, "Lens profile not attached", bad[0].upper() + bad[1:])
+            QMessageBox.warning(self, "Lens profile not attached", bad)
             return
-        while len(p.lenses) < p.n_views:
-            p.lenses.append(None)
-        for k in views:                          # the identical cameras it was shared with too (G40)
-            p.lenses[k] = profile
-        p.dirty = True
+        self._set_lenses({k: profile for k in views})   # the identical cameras it was shared with too (G40)
         v = str(profile.report.get("verdict", "loaded")).upper()
         self.toast.show_message(
             f"Lens profile attached to {', '.join(p.name(k) for k in views)} ({v}: {profile.summary()}). "
             "The wand calibration will use it; save the project to keep it.", "success", 9000)
+
+    LENS_SAVE_FILTER = ("Kinetrace lens (*.klens.json);;OpenCV lens (*.yml);;OpenCV lens, JSON (*.json);;"
+                        "Argus / DLTdv camera profile (*.txt)")
+
+    def _export_lens_profile(self) -> None:
+        """3D -> Export Lens Profile… (G148): a camera's lens profile to a file, whenever, however it was made
+        (checkerboard, GoPro's model, a file, the wand wizard's lens rows). The working camera's when it has
+        one, else the choice of the cameras that do. Kinetrace's own format keeps the report; OpenCV / Argus
+        are for other programs (an Argus line cannot hold a fisheye lens: said, nothing written)."""
+        from kinetrace import calibio
+        p = self.project
+        if p is None or self.state != READY:
+            return
+        have = [v for v in range(p.n_views) if v < len(p.lenses) and p.lenses[v] is not None]
+        if not have:
+            QMessageBox.information(
+                self, "No lens profile yet",
+                "No camera of this project has a lens profile yet.\n\nMake one with 3D → Calibrate a Lens "
+                "(checkerboard), load one with 3D → Load a Lens Profile for This Camera…"
+                + (", or give the GoPro cameras GoPro's lens model in 3D → GoPro Cameras…" if self._gopro_infos() else "")
+                + ". Then export it here.")
+            return
+        v = p.active if p.active in have else have[0]
+        if len(have) > 1 or v != p.active:
+            labels = [f"{p.name(k)} — {lens_label(p.lenses[k])}" for k in have]
+            choice, ok = QInputDialog.getItem(self, "Export lens profile", "The lens profile of:", labels,
+                                              have.index(v), False)
+            if not ok or choice not in labels:
+                return
+            v = have[labels.index(choice)]
+        prof = p.lenses[v]
+        safe = self._safe_name(p.name(v)).strip("_") or "camera"
+        start = Path(self._start_folder(str(Path(self.info.path).parent) if self.info else ""))             / f"{safe}_{prof.width}x{prof.height}.klens.json"
+        path, flt = QFileDialog.getSaveFileName(self, f"Export the lens profile of {p.name(v)}", str(start),
+                                                self.LENS_SAVE_FILTER)
+        if not path:
+            return
+        try:
+            if flt.startswith("Kinetrace") or path.lower().endswith(".klens.json") or not Path(path).suffix:
+                path = prof.save(path)
+            else:
+                calibio.write_lens(prof, path)
+        except calibio.CalibFormatError as e:      # a fisheye as an Argus line: a sentence already
+            QMessageBox.warning(self, "Lens profile not saved", str(e)[0].upper() + str(e)[1:])
+            return
+        except Exception as e:      # noqa: BLE001 - a full drive, a read-only folder: said
+            QMessageBox.warning(self, "Lens profile not saved", _plain_error(e, "The lens profile could not be saved"))
+            return
+        self.toast.show_message(
+            f"Lens profile of {p.name(v)} saved as {Path(path).name} ({prof.width}×{prof.height}). To use it again: "
+            "3D → Load a Lens Profile for This Camera… (or the lens wizard's <i>I already have a lens file…</i>), "
+            "for this camera in another project or for cameras of the same model, lens, zoom and recording mode.",
+            "success", 12000)
+
+    def _load_lens_profile(self) -> None:
+        """3D -> Load a Lens Profile for This Camera… (G148): a saved profile (.klens.json, OpenCV, Argus: the
+        lens wizard's reader, `lens.read_lens_for`) attached to the working camera after the picture-size
+        check every lens gets (I31). Replacing a profile the camera already has is asked first."""
+        from kinetrace import lens as lens_mod
+        from kinetrace.lenswizard import LENS_FILTER
+        p = self.project
+        if p is None or self.state != READY:
+            return
+        v = p.active
+        path, _ = QFileDialog.getOpenFileName(self, f"Lens profile for {p.name(v)}",
+                                              self._start_folder(str(Path(self.info.path).parent) if self.info else ""),
+                                              LENS_FILTER)
+        if not path:
+            return
+        try:
+            prof, which = lens_mod.read_lens_for(path, v, p.name(v))
+        except Exception as e:      # noqa: BLE001 - not a lens file, a damaged one: said
+            QMessageBox.warning(self, "Lens profile not loaded",
+                                _plain_error(e, f"{Path(path).name} could not be read", reading=True))
+            return
+        if prof is None:
+            QMessageBox.warning(self, "Lens profile not loaded", which)
+            return
+        bad = self._lens_misfit(prof, v)
+        if bad:
+            QMessageBox.warning(self, "Lens profile not attached", bad)
+            return
+        old = p.lenses[v] if v < len(p.lenses) else None
+        if old is not None and QMessageBox.question(
+                self, "Replace the lens profile?",
+                f"{p.name(v)} already has a lens profile ({lens_label(old)}). Replace it with "
+                f"{Path(path).name}?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._set_lenses({v: prof})
+        self.toast.show_message(f"Lens profile {Path(path).name}{which} attached to {p.name(v)} ({prof.summary()}). "
+                                "The wand calibration will use it; save the project to keep it.", "success", 10000)
+
+    def _lens_misfit(self, prof, v: int) -> str | None:
+        """Why lens profile `prof` does not fit camera v (another picture size, I31), as a sentence;
+        None when it fits. The one check of the lens wizard, Load a Lens Profile and GoPro's lens."""
+        from kinetrace.calibwizard import lens_size_mismatch
+        p = self.project
+        sv = p.sessions[v]
+        bad = lens_size_mismatch(prof, sv.width, sv.height, p.name(v))
+        return bad[0].upper() + bad[1:] if bad else None
+
+    def _set_lenses(self, by_view: dict) -> None:
+        """Attach lens profiles {camera: profile} to the project (the list padded to the cameras)."""
+        p = self.project
+        while len(p.lenses) < p.n_views:
+            p.lenses.append(None)
+        for v, prof in by_view.items():
+            p.lenses[v] = prof
+        if by_view:
+            p.dirty = True
 
     def _wand_wizard(self):
         """3D → Calibrate Cameras with a Wand: the native easyWand replacement,
@@ -9505,7 +10388,7 @@ class MainWindow(QMainWindow):
                 "1. File → Open Video… — the wand video of the first camera.\n"
                 "2. In the CAMERAS panel on the right, ＋ Add video — the wand video of each other "
                 "camera; set their offsets so they show the same instant (3D → Sync Cameras).\n"
-                "3. In every camera, track the two wand ends (Add ▾ → Ball marker on each ball, or N "
+                "3. In every camera, track the two wand ends (Point ▾ → Ball marker on each ball, or N "
                 "on a mark; the SAME names in every camera, e.g. 'wand A' and 'wand B'), then Track ▶.\n"
                 "4. Then 3D → Calibrate Cameras with a Wand… again.\n\n"
                 "Help → User Manual (F1), section 10, walks through all of it.")
@@ -9622,6 +10505,96 @@ class MainWindow(QMainWindow):
         hi = int(np.floor(span[1] + 1e-9))
         return (lo, hi) if lo <= hi else (0, -1)
 
+    # ------------------------------------------------------------- GoPro (G145, G146)
+    def _gopro_infos(self) -> dict:
+        """{view: gpmf.GoProInfo} of the cameras whose video is GoPro footage (THE flag, read at open)."""
+        return {v: rt.info.gopro for v, rt in enumerate(getattr(self, "_views", []))
+                if getattr(rt.info, "gopro", None) is not None}
+
+    def _gopro_soon(self) -> None:
+        """One GoPro notice after the cameras of an open / add have arrived (coalesced)."""
+        if not getattr(self, "_gopro_pending", False):
+            self._gopro_pending = True
+            QTimer.singleShot(0, self._gopro_report)
+
+    def _gopro_report(self) -> None:
+        """Say once per camera (and per rig finding) what in its GoPro metadata can spoil tracking or 3D:
+        stabilisation on, dropped frames, a camera that moved, settings that differ between cameras. A
+        GoPro camera with nothing to report gets one status line; other footage gets nothing."""
+        self._gopro_pending = False
+        p = self.project
+        infos = self._gopro_infos()
+        if p is None or not infos:
+            return
+        said = getattr(self, "_gopro_said", None)
+        if said is None:
+            said = self._gopro_said = set()
+        lines = []
+        for v, info in infos.items():
+            key = ("cam", info.path)
+            if key in said:
+                continue
+            said.add(key)
+            lines += gpmf.problems(info, p.name(v))
+        for s in gpmf.rig_problems({p.name(v): i for v, i in infos.items()}):
+            if ("rig", s) not in said:
+                said.add(("rig", s))
+                lines.append(s)
+        self._apply_state()                      # the GoPro entry lights up
+        if lines:
+            self.toast.show_message("GoPro footage: " + " ".join(lines) + " (Click for 3D → GoPro Cameras…)",
+                                    "warn", 25000, on_click=self._gopro_dialog)
+        else:
+            labels = sorted({i.label for i in infos.values()})
+            self.statusBar().showMessage(f"GoPro footage ({'; '.join(labels)}): stabilisation off, no dropped frames, "
+                                         "no camera moved. 3D → GoPro Cameras… shows the details and GoPro's lens "
+                                         "model.", 9000)
+
+    def _gopro_dialog(self) -> None:
+        """3D → GoPro Cameras…: the settings / sensors table and GoPro's lens for the cameras without one."""
+        from kinetrace.goprodialog import GoProDialog
+        p = self.project
+        if p is None or self.state != READY or not self._gopro_infos():
+            return
+        infos = [getattr(rt.info, "gopro", None) for rt in self._views]
+        dlg = GoProDialog(self, [p.name(v) for v in range(p.n_views)], infos,
+                          lambda: [p.lenses[v] if v < len(p.lenses) else None for v in range(p.n_views)],
+                          on_use_lenses=self._use_gopro_lenses,
+                          on_goto=lambda v, f: (dlg.accept(), self._goto_camera_frame(v, f)))
+        dlg.exec()
+        dlg.deleteLater()
+
+    def _goto_camera_frame(self, view: int, frame: int) -> None:
+        if self.project is None or not (0 <= view < self.project.n_views):
+            return
+        if view != self.project.active:
+            self._set_active_view(view)
+        self._goto(max(0, min(int(frame), self.n_frames - 1)))
+
+    def _use_gopro_lenses(self, views) -> str:
+        """GoPro's lens model (gpmf.lens_profile) for these cameras, which have no lens profile: a profile
+        of another picture size is refused, as for any lens (I31). Returns what was done, in words."""
+        p = self.project
+        done, refused = {}, []
+        for v in views:
+            info = getattr(self._views[v].info, "gopro", None) if v < len(self._views) else None
+            prof = gpmf.lens_profile(info) if info is not None else None
+            if prof is None:
+                continue
+            bad = self._lens_misfit(prof, v)
+            if bad:
+                refused.append(bad)
+                continue
+            done[v] = prof
+        self._set_lenses(done)
+        done = [p.name(v) for v in done]
+        said = (f"GoPro's lens model attached to {', '.join(done)}: the wand calibration will undistort with it; "
+                "save the project to keep it." if done else "No lens attached.")
+        if refused:
+            said += " Not attached: " + " ".join(refused)
+        self.statusBar().showMessage(said, 10000)
+        return said
+
     def _sync_dialog(self):
         """3D -> Sync Cameras (Sound / Motion): whole-frame offsets from the sound tracks or the pictures."""
         from kinetrace.syncdialog import SyncDialog
@@ -9635,7 +10608,8 @@ class MainWindow(QMainWindow):
         if self.state != READY:
             return
         before, had_3d = list(p.offsets), p.reconstruction is not None
-        dlg = SyncDialog(self, p, [rt.info.path for rt in self._views], self.current)
+        dlg = SyncDialog(self, p, [rt.info.path for rt in self._views], self.current,
+                         gopro=[getattr(rt.info, "gopro", None) for rt in self._views])     # (G145) timecode prior
         accepted = dlg.exec() == QDialog.Accepted
         n = getattr(dlg, "applied", 0)
         dlg.deleteLater()                    # (G96) never kept for the session (read `applied` first)
@@ -9838,15 +10812,19 @@ class MainWindow(QMainWindow):
             "A volume carved earlier was in the old axes and was cleared; carve it again (Ctrl+4). Export "
             "the calibration and the 3D points again to get them in the new world.", "success", 14000)
 
-    def _masks_at_instant(self, t: int):
+    def _masks_at_instant(self, t: int, name: str | None = None):
         """(cameras, raw masks) at reference instant t — None where a camera
-        has no silhouette there."""
+        has no silhouette there. `name` = the segment (G151k; None = the working camera's active one)."""
         p = self.project
+        if name is None:
+            name = self.session.animal.name if (self.session is not None and self.session.animal is not None) else None
         masks = []
         for c, s in enumerate(p.sessions):
             f = int(p.local_index(c, t))        # map_frame's tie rule, not Python's half-to-even (I258)
-            masks.append(s.masks.rasterize(f, s.height, s.width)
-                         if s.masks is not None and s.masks.has(f) else None)
+            # (G149) the working camera's active segment, matched by name in every camera
+            k = s.segment_index(name) if name is not None else None
+            m = s.seg_masks[k] if k is not None else s.masks
+            masks.append(m.rasterize(f, s.height, s.width) if m is not None and m.has(f) else None)
         return masks
 
     def _carve_hull_here(self, quiet: bool = False):
@@ -9854,8 +10832,16 @@ class MainWindow(QMainWindow):
         p = self.project
         if not self._need_calibration("Carve Volume"):
             return
+        # (G151k) the segment the user names (one highlighted row, or asked), matched by name in every camera
+        s = self.session
+        seg_name = None
+        if s is not None and s.n_segments > 1:
+            k = self._pick_segment("Carve the volume of")
+            if k is None:
+                return
+            seg_name = s.segments[k].name
         t = self._reference_instant()         # the hull cache is keyed by the reference instant (I114)
-        masks = self._masks_at_instant(t)
+        masks = self._masks_at_instant(t, seg_name)
         n_masks = sum(1 for m in masks if m is not None)
         if n_masks < 3:
             # Two silhouettes carve a sliver the full depth of the intersection
@@ -9971,7 +10957,7 @@ class MainWindow(QMainWindow):
             idx = {nm: i for i, nm in enumerate(r.names)}
             s = p.session
             scene.bones = [(idx[a], idx[b]) for a, b in
-                           (p.session.skeleton.get("bones", []) if s and s.skeleton else [])
+                           (p.session.bone_names() if s else [])
                            if a in idx and b in idx]
             scene.unit = r.unit
         if p.calibration is not None:
@@ -10006,7 +10992,16 @@ class MainWindow(QMainWindow):
         s = self.session
         if s is None or self.state != READY or self._body_worker is not None:
             return
-        has_masks = s.masks is not None and s.masks.n_masked() > 0
+        # (G151l) the silhouette that can drive the run: the segment the user names when several have one
+        with_sil = [k for k in range(s.n_segments) if s.seg_masks[k].n_masked() > 0]
+        if len(with_sil) > 1:
+            k = self._pick_segment("Find the person inside the silhouette of")
+            if k is None:
+                return
+        else:
+            k = with_sil[0] if with_sil else None
+        seg_masks = s.seg_masks[k] if k is not None else None
+        has_masks = seg_masks is not None and seg_masks.n_masked() > 0
         # existing=: the dialog asks before a run that cannot be merged (I82)
         dlg = BodyRunDialog(self, self.n_frames, self.current, self.timeline.sel_range,
                             has_masks, self._body_backend, self._lens_focal_px(),
@@ -10017,7 +11012,7 @@ class MainWindow(QMainWindow):
         self._body_backend = opts.backend
         self._begin_edit()                  # Ctrl+Z takes the whole run back
         # target=: the result belongs to THIS camera, whatever is active when it ends (I83)
-        w = BodyPoseWorker(self.info.path, self.n_frames, opts, s.masks, target=s)    # (G78) fps is a no-op
+        w = BodyPoseWorker(self.info.path, self.n_frames, opts, seg_masks, target=s)    # (G78) fps is a no-op
         self._body_worker = w
         total = max(1, (opts.end - opts.start) // max(1, opts.step) + 1)
         dl = QProgressDialog("Looking for people…", "Stop", 0, total, self)
@@ -10308,6 +11303,9 @@ class MainWindow(QMainWindow):
         # (filter label, suffix, key)
         ("Wide CSV — one row per frame (*.csv)", ".csv", "wide"),
         ("DeepLabCut CSV — scorer/bodyparts/coords header, likelihood (*.csv)", ".csv", "dlc"),
+        ("DeepLabCut multi-animal CSV — one individual per animal, Scene points as 'single' (*.csv)",
+         ".csv", "dlc_ma"),
+        ("SLEAP analysis CSV — one track per animal, <part>.x / .y / .score (*.csv)", ".csv", "sleap"),
         ("DLTdv8 xypts CSV — pt1_cam1_X… rows per frame, top-left origin, first pixel = 1 (*.csv)",
          ".csv", "dltdv"),
         ("DLTdv xypts CSV, bottom-left origin — older DLTdv / Argus Clicker (*.csv)", ".csv", "dltdv_bl"),
@@ -10370,11 +11368,20 @@ class MainWindow(QMainWindow):
         notes: list[str] = []
         no_3d = "No 3D reconstruction yet: run 3D -> Reconstruct 3D Landmarks (Ctrl+3) first."
         no_sil = "No silhouette to export: segment the animal first (S)."
-        has_sil = s.masks is not None and s.masks.n_masked() > 0
+        any_sil = any(m.n_masked() > 0 for m in s.seg_masks)        # (G149) any segment
         if key == "wide":
             s.export_csv(path)
         elif key == "dlc":
             s.export_dlc_csv(path, scorer=self._dlc_scorer())
+        elif key in ("dlc_ma", "sleap"):
+            # (G159) individuals = the animals: nothing to write without one
+            if not s.segments or not any(s.points_of(k) for k in range(s.n_segments)):
+                return [], ["No animal has points: make an animal (＋ Animal in LAYERS) and give it points first; "
+                            "the plain DeepLabCut / Wide CSV exports write points of no animal."]
+            if key == "dlc_ma":
+                s.export_dlc_multi_csv(path, scorer=self._dlc_scorer())
+            else:
+                s.export_sleap_csv(path)
         elif key in ("dltdv", "dltdv_bl"):
             s.export_dltdv_csv(path, flip_y=(key == "dltdv_bl"))
             written.append(str(Path(path).with_name(Path(path).stem + "_pointnames.csv")))
@@ -10407,24 +11414,40 @@ class MainWindow(QMainWindow):
                 notes.append("The 3D points are in the same world as the cameras Export Calibration writes"
                              + (" -- a mirrored (left-handed) one; 3D -> Set World Axes… first gives the "
                                 "calibration a right-handed world" if models.mirrored else "") + ".")
-        elif key == "sil_json":
-            if not has_sil:
+        elif key in ("sil_json", "sil_png"):
+            # (G151m) every segment with silhouettes, one file / folder each (a "_<segment>" suffix
+            # when there are several); it used to be the active segment's alone
+            ks = [k for k in range(s.n_segments) if s.seg_masks[k].n_masked() > 0]
+            if not ks:
                 return [], [no_sil]                  # nothing is written, not even an empty file (G108)
-            trackio.export_masks_json(s, path)
-        elif key == "sil_png":
-            folder = str(Path(path).with_suffix("")) + "_masks"
-            n = s.masks.n_masked() if s.masks is not None else 0
-            if not n:
-                return [], [no_sil]
+            stem, suf = str(Path(path).with_suffix("")), Path(path).suffix
 
-            def step(done, total):
-                if report is not None:
-                    report(f"{done} of {total} mask images", done, total)
-                return not (cancelled is not None and cancelled())
-            wrote = trackio.export_masks_png(s, folder, step)
-            if wrote < n:
-                return ([folder] if wrote else []), [f"Cancelled: {wrote} of {n} mask images were written."]
-            return [folder], notes                   # the files written: here the folder that holds them
+            def tagged(k):
+                return "" if s.n_segments == 1 else "_" + self._safe_name(s.segments[k].name)
+            if key == "sil_json":
+                files = []
+                for k in ks:
+                    dest = stem + tagged(k) + suf
+                    trackio.export_masks_json(s, dest, k)
+                    files.append(dest)
+                return files, notes
+            total = sum(s.seg_masks[k].n_masked() for k in ks)
+            files, done = [], 0
+            for k in ks:
+                folder = stem + tagged(k) + "_masks"
+
+                def step(d, _t, base=done):
+                    if report is not None:
+                        report(f"{base + d} of {total} mask images", base + d, total)
+                    return not (cancelled is not None and cancelled())
+                n = s.seg_masks[k].n_masked()
+                wrote = trackio.export_masks_png(s, folder, step, k)
+                if wrote:
+                    files.append(folder)
+                done += wrote
+                if wrote < n:
+                    return files, [f"Cancelled: {done} of {total} mask images were written."]
+            return files, notes                      # the files written: here the folders that hold them
         elif key == "kin":
             from kinetrace.kinematics import export_kinematics
             r = p.reconstruction if p else None
@@ -10439,10 +11462,11 @@ class MainWindow(QMainWindow):
                 side = stem + "_events.csv"
                 s.export_events_csv(side)
                 written.append(side)
-            if has_sil:
-                side = stem + "_segment.csv"
-                s.export_animal_csv(side)
-                written.append(side)
+            for k, (a, m) in enumerate(zip(s.segments, s.seg_masks)):    # one file per segment (G149)
+                if any_sil and m.n_masked() > 0:
+                    side = stem + ("_segment.csv" if s.n_segments == 1 else f"_segment_{self._safe_name(a.name)}.csv")
+                    s.export_animal_csv(side, k)
+                    written.append(side)
         return written, notes
 
     def _ask_smoothing(self):
@@ -10493,13 +11517,15 @@ class MainWindow(QMainWindow):
                         continue    # the all-cameras file is meaningless for one camera
                     if k in ("xyz", "kin", "xyz_anipose", "xyz_dltdv") and self.project.reconstruction is None:
                         continue    # no 3D yet: nothing to write
-                    if k == "sil_png" or (k == "sil_json" and (self.session.masks is None
-                                                               or not self.session.masks.n_masked())):
+                    if k == "sil_png" or (k == "sil_json" and not any(m.n_masked() for m in self.session.seg_masks)):
                         continue    # a PNG per frame is its own export (it can be many thousand files)
                     if k == "dltdv_bl":
                         continue    # "Everything" writes the DLTdv8 convention once, not both
-                    tag = {"wide": "", "dlc": "_dlc", "dltdv": "_dltdv", "sparse": "",
-                           "mat": "", "multi": "_allcams", "xyz": "_xyz", "kin": "_kinematics",
+                    if k in ("dlc_ma", "sleap") and not any(self.session.points_of(j)
+                                                            for j in range(self.session.n_segments)):
+                        continue    # individuals = animals with points (G159)
+                    tag = {"wide": "", "dlc": "_dlc", "dlc_ma": "_dlc_multi", "sleap": "_sleap", "dltdv": "_dltdv",
+                           "sparse": "", "mat": "", "multi": "_allcams", "xyz": "_xyz", "kin": "_kinematics",
                            "xyz_anipose": "_points3d_anipose", "xyz_dltdv": "_xyzpts", "sil_json": "_silhouette"}[k]
                     # the events / segment files once, beside the wide CSV; none beside DLTdv files
                     jobs.append((lab.split(" (")[0], k, stem + tag + suf, k == "wide"))
@@ -10693,12 +11719,13 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------------------- close
 
-    def _ask_save_before_close(self):
-        """The close question: Save / Discard / Cancel (Esc and the window's x mean Cancel, G140)."""
+    def _ask_save_before_close(self, doing: str = "closing"):
+        """The close question: Save / Discard / Cancel (Esc and the window's x mean Cancel, G140).
+        `doing` = what replaces the project ("opening clip.mp4", G143)."""
         name = self.project_path.name if self.project_path else "this project"
         return QMessageBox.question(
             self, "Save changes?",
-            f"Save the changes to {name} before closing?\n\n{self._changes_text()}If you don't save, "
+            f"Save the changes to {name} before {doing}?\n\n{self._changes_text()}If you don't save, "
             "the unsaved work is dropped.",
             QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
 

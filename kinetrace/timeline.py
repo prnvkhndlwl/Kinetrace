@@ -32,7 +32,7 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QCursor, QFontMetrics, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QInputDialog, QMenu, QSizePolicy, QWidget
+from PySide6.QtWidgets import QInputDialog, QMenu, QSizePolicy, QToolButton, QWidget
 
 
 def _pop(menu: QMenu, pos):
@@ -47,13 +47,14 @@ def _pop(menu: QMenu, pos):
 
 GUTTER_W = 96      # left name column, px
 EVENTS_H = 18      # events lane height, px
-ANIMAL_H = 13      # animal presence lane (only when the session has an animal)
+ANIMAL_H = 13      # one segment's presence lane (one per segment, G149; none without a segment)
 LANE_H = 13        # per-point lane height, px
 STRIP_H = 6        # scroll strip at the bottom while time-zoomed
 DEFAULT_LANES = 10  # lanes assumed for the initial size hint (resize for more)
 MIN_SPAN = 16      # tightest time zoom, frames
 TIME_ZOOM_STEP = 1.5  # time-axis zoom factor per keypress / wheel notch
 LOW_CONF = 0.5     # below this a tracked span gets the warning overlay
+ZOOM_BTN = 15      # the time-zoom buttons in the ruler's corner (G152), px
 
 # colors come from the shared design tokens so the painted panel and the
 # styled widgets read as one surface
@@ -112,10 +113,12 @@ class TimelinePanel(QWidget):
         # covered no point lane (a segment-lane-only drag) — the two must stay
         # distinguishable or a silhouette-only delete would clear points too.
         self.sel_rows: list[int] | None = None
-        self.sel_seg = False                   # marquee covers the segment lane
+        self.sel_seg = False                   # marquee covers a segment lane
+        self.sel_segs: list[int] | None = None  # ... which ones (G149); None = not named (the active one)
         self._view = (0, 1)                    # displayed frame range, inclusive
         self._scroll = 0                       # first visible lane row
         self._laid_out_n = -1
+        self._rows_key, self._rows_cache = None, []     # the lanes in display order (G158)
         self._cache_key = None
         self._trk_col = None                   # (W, N) uint8, any tracked in column
         self._conf_col = None                  # (W, N) float32, min conf in column
@@ -138,6 +141,26 @@ class TimelinePanel(QWidget):
         # clicking the panel takes focus so Shift+± zooms even after typing in
         # a spinbox (which would otherwise swallow the keystrokes)
         self.setFocusPolicy(Qt.ClickFocus)
+        # (G152) the time zoom lives ON the timeline, in the corner left of its ruler: beside play /
+        # pause under the video it read as the video's zoom
+        from kinetrace import icons
+        self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_fit = (QToolButton(self) for _ in range(3))
+        for k, (b, ic, tip, act) in enumerate((
+                (self.btn_zoom_out, icons.zoom_out(), "Zoom the TIMELINE out (Shift+−)",
+                 lambda: self.zoom_time(1 / TIME_ZOOM_STEP)),
+                (self.btn_zoom_in, icons.zoom_in(),
+                 "Zoom the TIMELINE in around the playhead (Shift++, or Ctrl+wheel over the timeline)",
+                 lambda: self.zoom_time(TIME_ZOOM_STEP)),
+                (self.btn_zoom_fit, icons.zoom_fit(), "Show the whole video on the timeline", self.zoom_fit))):
+            b.setIcon(ic)
+            b.setIconSize(QSize(ZOOM_BTN - 4, ZOOM_BTN - 4))
+            b.setFixedSize(ZOOM_BTN, ZOOM_BTN)
+            b.setAutoRaise(True)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setToolTip(tip)
+            b.setProperty("timeline_zoom", True)
+            b.move(2 + k * (ZOOM_BTN + 1), (EVENTS_H - ZOOM_BTN) // 2)
+            b.clicked.connect(act)
 
     # ------------------------------------------------------------------- api
 
@@ -161,7 +184,9 @@ class TimelinePanel(QWidget):
         self.pending_event = None
         self.clear_selection()
         self._set_view(0, (session.n_frames - 1) if session is not None else 0)     # the whole video
-        self._laid_out_n = session.n_points if session is not None else 0
+        self._laid_out_n = len(self._rows())
+        for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_fit):
+            b.setEnabled(session is not None)
         self.updateGeometry()
         self.update()
 
@@ -203,6 +228,7 @@ class TimelinePanel(QWidget):
         self.sel_range = None
         self.sel_rows = None
         self.sel_seg = False
+        self.sel_segs = None
         self._drag_select_from = None
         self._drag_select_y = None
         self.update()
@@ -214,6 +240,7 @@ class TimelinePanel(QWidget):
         self.sel_range = (e.start, e.end)
         self.sel_rows = None
         self.sel_seg = False
+        self.sel_segs = None
         self.update()
 
     def select_all_lanes(self) -> None:
@@ -221,7 +248,8 @@ class TimelinePanel(QWidget):
         if self.sel_range is None or self.session is None:
             return
         self.sel_rows = list(range(self.session.n_points))
-        self.sel_seg = self._animal_h() > 0
+        self.sel_seg = self._n_segs() > 0
+        self.sel_segs = list(range(self._n_segs()))
         self.update()
 
 
@@ -246,7 +274,7 @@ class TimelinePanel(QWidget):
             self.clear_requested.emit(f0, f1, rows if rows else None)
 
     def refresh(self) -> None:
-        n = self.session.n_points if self.session is not None else 0
+        n = len(self._rows())
         if n != self._laid_out_n:
             # lane count changed: the layout caches sizeHint, so a bare
             # update() would leave new lanes clipped below the widget
@@ -256,8 +284,8 @@ class TimelinePanel(QWidget):
         self.update()
 
     def sizeHint(self):
-        n = self.session.n_points if self.session is not None else 1
-        h = EVENTS_H + self._animal_h() + LANE_H * max(1, min(n, DEFAULT_LANES)) + 6
+        n = len(self._rows()) if self.session is not None else 1
+        h = EVENTS_H + LANE_H * max(1, min(n, DEFAULT_LANES + self._n_segs())) + 6
         return QSize(400, h)
 
     def minimumSizeHint(self):
@@ -265,11 +293,38 @@ class TimelinePanel(QWidget):
 
     # -------------------------------------------------------------- geometry
 
+    def _n_segs(self) -> int:
+        return len(getattr(self.session, "segments", [])) if self.session is not None else 0
+
     def _animal_h(self) -> int:
-        return ANIMAL_H if (self.session is not None and self.session.animal is not None) else 0
+        """The height of all silhouette lanes together (one ANIMAL_H row per animal, G149) -- they sit
+        among the point lanes, each above its animal's points (G158)."""
+        return ANIMAL_H * self._n_segs()
+
+    def _rows(self) -> list[tuple]:
+        """(G158) The lanes in display order: each animal's silhouette lane ("seg", k) followed by
+        its points ("pt", pid), then the points of no animal (Scene); with no animal, the points in
+        list order. One row height for both kinds (ANIMAL_H == LANE_H)."""
+        s = self.session
+        if s is None:
+            return []
+        key = (id(s), getattr(s, "data_version", 0), s.n_points, self._n_segs())
+        if key == self._rows_key:
+            return self._rows_cache
+        if self._n_segs() == 0:
+            rows = [("pt", q) for q in range(s.n_points)]
+        else:
+            per_animal, scene = s.layer_groups()
+            rows = []
+            for k, pids in enumerate(per_animal):
+                rows.append(("seg", k))
+                rows += [("pt", q) for q in pids]
+            rows += [("pt", q) for q in scene]
+        self._rows_key, self._rows_cache = key, rows
+        return rows
 
     def _lanes_y0(self) -> int:
-        return EVENTS_H + 2 + self._animal_h()
+        return EVENTS_H + 2
 
     def _zoomed(self) -> bool:
         if self.session is None:
@@ -278,7 +333,7 @@ class TimelinePanel(QWidget):
 
     def _max_rows(self) -> int:
         """Visible lane capacity from the CURRENT height (panel is resizable)."""
-        return max(1, (self.height() - EVENTS_H - self._animal_h() - 6) // LANE_H)
+        return max(1, (self.height() - EVENTS_H - 6) // LANE_H)
 
     def _lane_w(self) -> int:
         return max(1, self.width() - GUTTER_W - 4)
@@ -304,22 +359,31 @@ class TimelinePanel(QWidget):
         v0, v1 = self._view
         return GUTTER_W + (frame - v0) / max(v1 - v0 + 1, 1) * self._lane_w()
 
-    def _in_animal_lane(self, y: float) -> bool:
-        return self._animal_h() > 0 and EVENTS_H + 2 <= y < EVENTS_H + 2 + ANIMAL_H
-
-    def _row_at(self, y: float) -> int | None:
-        if y < self._lanes_y0() or self.session is None:
+    def _entry_at(self, y: float) -> tuple | None:
+        """The lane at height y: ("seg", k) / ("pt", pid), None outside the drawn lanes."""
+        if self.session is None or y < self._lanes_y0():
             return None
-        row = int((y - self._lanes_y0()) // LANE_H) + self._scroll
+        i = int((y - self._lanes_y0()) // LANE_H) + self._scroll
+        rows = self._rows()
         # bound to the rows actually drawn — the widget can be taller than the
         # lane stack, and that strip must not select an off-screen point
-        return row if row in self._visible_rows() else None
+        return rows[i] if i in self._visible_rows() else None
+
+    def _seg_at(self, y: float) -> int | None:
+        """The animal whose silhouette lane is at height y (G149), None elsewhere."""
+        e = self._entry_at(y)
+        return e[1] if e is not None and e[0] == "seg" else None
+
+    def _row_at(self, y: float) -> int | None:
+        """The point whose lane is at height y, None elsewhere."""
+        e = self._entry_at(y)
+        return e[1] if e is not None and e[0] == "pt" else None
 
     def _clamp_scroll(self) -> None:
         """Keep the first visible row where a full page of lanes still fits: after
         the panel was enlarged the old scroll left lanes hidden above and the
         wheel had nothing to scroll (G90)."""
-        n = self.session.n_points if self.session is not None else 0
+        n = len(self._rows())
         self._scroll = int(np.clip(self._scroll, 0, max(0, n - self._max_rows())))
 
     def resizeEvent(self, ev):
@@ -328,37 +392,47 @@ class TimelinePanel(QWidget):
             self._clamp_scroll()
 
     def _visible_rows(self) -> range:
-        n = self.session.n_points if self.session is not None else 0
+        """The display rows (indices into `_rows()`) on screen."""
+        n = len(self._rows())
         self._clamp_scroll()
         return range(self._scroll, min(n, self._scroll + self._max_rows()))
 
-    def _row_rect_y(self, row: int) -> tuple[int, int]:
-        """Vertical extent of a point lane, in viewport px."""
-        y0 = self._lanes_y0() + (row - self._scroll) * LANE_H
+    def _row_y(self, i: int) -> int:
+        return self._lanes_y0() + (i - self._scroll) * LANE_H
+
+    def _row_rect_y(self, pid: int) -> tuple[int, int]:
+        """Vertical extent of point `pid`'s lane, in viewport px."""
+        rows = self._rows()
+        i = rows.index(("pt", pid)) if ("pt", pid) in rows else pid
+        y0 = self._row_y(i)
         return y0, y0 + LANE_H
 
     def _lanes_in_band(self, ya: float, yb: float) -> tuple[list[int] | None, bool]:
         """Which lanes a marquee spanning [ya, yb] vertically covers, as
-        (point rows, segment lane). A band that never leaves the ruler returns
+        (point ids, silhouette lane). A band that never leaves the ruler returns
         (None, False): the frame window is selected but no lane is named, so
-        Delete falls back to the point panel's selection.
+        Delete falls back to the LAYERS selection. The silhouette lanes covered
+        are in `_band_segs` (G149).
 
-        `[]` rows with segment True is the silhouette-only case and must stay
+        `[]` points with a silhouette lane is the silhouette-only case and must stay
         distinct from None."""
         top, bot = (min(ya, yb), max(ya, yb))
+        self._band_segs = []
         if bot < EVENTS_H:                      # ruler-only drag
             return None, False
-        seg = self._animal_h() > 0 and top < EVENTS_H + 2 + ANIMAL_H and bot >= EVENTS_H + 2
-        rows = []
-        for r in self._visible_rows():
-            ry0, ry1 = self._row_rect_y(r)
-            if top < ry1 and bot >= ry0:
-                rows.append(r)
-        if not rows and not seg:
+        rows = self._rows()
+        pids, segs = [], []
+        for i in self._visible_rows():
+            y0 = self._row_y(i)
+            if top < y0 + LANE_H and bot >= y0:
+                kind, ix = rows[i]
+                (segs if kind == "seg" else pids).append(ix)
+        self._band_segs = segs
+        if not pids and not segs:
             # dropped in the empty strip below the last lane: don't make the
             # gesture a no-op, fall back to the unspecified selection
             return None, False
-        return rows, seg
+        return pids, bool(segs)
 
     def _sel_band_y(self) -> tuple[float, float]:
         """Vertical extent to paint the selection band over: the covered lanes,
@@ -366,19 +440,17 @@ class TimelinePanel(QWidget):
         rows, seg = self.sel_rows, self.sel_seg
         if rows is None:
             return 0.0, float(self.height())
+        want = {("pt", q) for q in rows} | {("seg", k) for k in ((self.sel_segs or [0]) if seg else [])}
         tops, bots = [], []
-        if seg:
-            tops.append(EVENTS_H + 2)
-            bots.append(EVENTS_H + 2 + ANIMAL_H)
-        for r in rows:
-            if r in self._visible_rows():
-                y0, y1 = self._row_rect_y(r)
+        lanes = self._rows()
+        for i in self._visible_rows():
+            if lanes[i] in want:
+                y0 = self._row_y(i)
                 tops.append(y0)
-                bots.append(y1)
+                bots.append(y0 + LANE_H)
         if not tops:                            # covered lanes scrolled away
             return 0.0, float(self.height())
         return float(min(tops)), float(max(bots))
-
     def _sel_hint(self) -> str:
         """What Delete will do, for the band label and the tooltip."""
         rows, seg = self.sel_rows, self.sel_seg
@@ -388,7 +460,9 @@ class TimelinePanel(QWidget):
         rows = [r for r in rows if r < n]   # a deleted point can leave a stale row
         parts = []
         if seg:
-            parts.append("silhouettes")
+            ks = [k for k in (self.sel_segs or []) if k < self._n_segs()]
+            parts.append("silhouettes" if len(ks) != 1 or self._n_segs() == 1
+                         else f"{self.session.segments[ks[0]].name}'s silhouettes")
         if len(rows) == 1:
             parts.append(self.session.points[rows[0]].name)
         elif rows:
@@ -499,7 +573,7 @@ class TimelinePanel(QWidget):
         s = self.session
         w = self._lane_w()
         v0, v1 = self._view
-        key = (id(s), s.data_version, w, s.n_points, v0, v1, s.animal is not None)
+        key = (id(s), s.data_version, w, s.n_points, v0, v1, len(getattr(s, "segments", [])))
         if key == self._cache_key:
             return
         N = s.n_points
@@ -507,14 +581,15 @@ class TimelinePanel(QWidget):
         # column c covers view frames [c*Tv/W, (c+1)*Tv/W)
         bounds = np.minimum((np.arange(w, dtype=np.int64) * Tv) // w, Tv - 1)
         bounds = np.maximum.accumulate(bounds)  # reduceat needs non-decreasing
-        if s.masks is not None and s.animal is not None:
-            present = (s.masks.area[v0:v1 + 1] > 0)
-            self._ani_col = np.maximum.reduceat(present.astype(np.uint8), bounds, axis=0)
-            sc = np.where(present, np.nan_to_num(s.masks.score[v0:v1 + 1], nan=99.0), 99.0)
-            self._ani_low_col = np.minimum.reduceat(sc.astype(np.float32), bounds, axis=0) < 2.0
-        else:
-            self._ani_col = None
-            self._ani_low_col = None
+        # (G149) one presence / low-score column set per segment; `_ani_col` stays the first one's
+        self._seg_cols = []
+        for m in getattr(s, "seg_masks", []):
+            present = (m.area[v0:v1 + 1] > 0)
+            col = np.maximum.reduceat(present.astype(np.uint8), bounds, axis=0)
+            sc = np.where(present, np.nan_to_num(m.score[v0:v1 + 1], nan=99.0), 99.0)
+            low = np.minimum.reduceat(sc.astype(np.float32), bounds, axis=0) < 2.0
+            self._seg_cols.append((col, low))
+        self._ani_col = self._seg_cols[0][0] if self._seg_cols else None
         if N == 0:
             self._trk_col = np.zeros((w, 0), np.uint8)
             self._conf_col = np.ones((w, 0), np.float32)
@@ -568,9 +643,11 @@ class TimelinePanel(QWidget):
         # ---- events lane (doubles as the frame ruler) ----
         p.fillRect(QRect(GUTTER_W, 0, w + 4, EVENTS_H), LANE_BG.darker(115))
         p.setPen(RULER_FG)
-        gutter_note = f"events ×{(s.n_frames - 1) / span:.0f}" if self._zoomed() else "events"
-        p.drawText(QRect(2, 0, GUTTER_W - 6, EVENTS_H), Qt.AlignVCenter | Qt.AlignRight,
-                   gutter_note)
+        # the zoom buttons sit at the left of this cell (G152): the label takes what is left
+        gutter_note = f"×{(s.n_frames - 1) / span:.0f}" if self._zoomed() else "events"
+        x_lab = 2 + 3 * (ZOOM_BTN + 1) + 2
+        p.drawText(QRect(x_lab, 0, GUTTER_W - 4 - x_lab, EVENTS_H), Qt.AlignVCenter | Qt.AlignRight,
+                   fm.elidedText(gutter_note, Qt.ElideRight, GUTTER_W - 4 - x_lab))
         step = self._tick_step(span, w)
         minor = step // 5 if step >= 5 and (step / 5) / span * w >= 10 else 0
         p.setPen(QPen(RULER_FG.darker(170), 1))
@@ -617,45 +694,57 @@ class TimelinePanel(QWidget):
             p.setBrush(QBrush(PENDING))
             p.drawPolygon(QPolygonF([QPointF(x, 2), QPointF(x + 8, 6), QPointF(x, 10)]))
 
-        # ---- animal lane: where the silhouette exists (dim red = low presence score) ----
-        y = EVENTS_H + 2
-        if self._animal_h():
-            lane = QRect(GUTTER_W, y, w + 4, ANIMAL_H - 1)
-            p.fillRect(lane, LANE_BG.darker(108))
-            col = QColor(*s.animal.color)
-            p.setBrush(QBrush(col))
-            p.setPen(Qt.NoPen)
-            p.drawRect(QRect(4, y + (ANIMAL_H - 8) // 2, 8, 8))
-            p.setPen(QColor(210, 210, 215))
-            p.drawText(QRect(16, y, GUTTER_W - 20, ANIMAL_H), Qt.AlignVCenter,
-                       fm.elidedText(s.animal.name, Qt.ElideRight, GUTTER_W - 22))
-            if self._ani_col is not None:
-                pres = self._ani_col.astype(bool)
+        # ---- the lanes (G158): each animal's silhouette lane (where its silhouette exists; dim red =
+        # low presence score), then its points, then the points of no animal ----
+        rows = self._rows()
+        part = getattr(s, "part_name", None)
+        for i in self._visible_rows():
+            kind, ix = rows[i]
+            y = self._row_y(i)
+            if kind == "seg":
+                k, a = ix, s.segments[ix]
+                lane = QRect(GUTTER_W, y, w + 4, ANIMAL_H - 1)
+                p.fillRect(QRect(0, y, GUTTER_W + w + 4, ANIMAL_H - 1), LANE_BG.darker(108))
+                col = QColor(*a.color)
+                p.setBrush(QBrush(col))
                 p.setPen(Qt.NoPen)
-                for c0, c1 in self._runs(pres):
-                    p.fillRect(QRectF(GUTTER_W + c0, y + 2, max(c1 - c0, 1), ANIMAL_H - 5),
-                               QColor(*s.animal.color, 200))
-                for c0, c1 in self._runs(pres & self._ani_low_col):
-                    p.fillRect(QRectF(GUTTER_W + c0, y + 2, max(c1 - c0, 1), ANIMAL_H - 5),
-                               LOW_CONF_OVERLAY)
-            p.setPen(QPen(LANE_SEP, 1))
-            p.drawLine(lane.bottomLeft(), lane.bottomRight())
-            y += ANIMAL_H
-
-        # ---- point lanes ----
-        for row in self._visible_rows():
+                p.drawEllipse(QRect(3, y + (ANIMAL_H - 9) // 2, 10, 9))
+                f = self.font()
+                f.setBold(True)
+                p.setFont(f)
+                p.setPen(QColor(225, 225, 230))
+                p.drawText(QRect(16, y, GUTTER_W - 20, ANIMAL_H), Qt.AlignVCenter,
+                           fm.elidedText(a.name, Qt.ElideRight, GUTTER_W - 22))
+                f.setBold(False)
+                p.setFont(f)
+                if k < len(self._seg_cols):
+                    pres = self._seg_cols[k][0].astype(bool)
+                    p.setPen(Qt.NoPen)
+                    for c0, c1 in self._runs(pres):
+                        p.fillRect(QRectF(GUTTER_W + c0, y + 2, max(c1 - c0, 1), ANIMAL_H - 5),
+                                   QColor(*a.color, 200))
+                    for c0, c1 in self._runs(pres & self._seg_cols[k][1]):
+                        p.fillRect(QRectF(GUTTER_W + c0, y + 2, max(c1 - c0, 1), ANIMAL_H - 5),
+                                   LOW_CONF_OVERLAY)
+                p.setPen(QPen(LANE_SEP, 1))
+                p.drawLine(lane.bottomLeft(), lane.bottomRight())
+                continue
+            row = ix
             meta = s.points[row]
+            owned = part is not None and s.segment_of(row) is not None
+            indent = 8 if owned else 0               # under its animal's lane
             lane = QRect(GUTTER_W, y, w + 4, LANE_H - 1)
             p.fillRect(lane, LANE_BG.lighter(112) if row == self.selected else LANE_BG)
             p.setBrush(QBrush(QColor(*meta.color)))
             p.setPen(Qt.NoPen)
-            p.drawRect(QRect(4, y + (LANE_H - 8) // 2, 8, 8))
+            p.drawRect(QRect(4 + indent, y + (LANE_H - 8) // 2, 8, 8))
             f = self.font()
             f.setBold(row == self.selected)
             p.setFont(f)
             p.setPen(QColor(210, 210, 215) if meta.display else QColor(120, 120, 125))
-            p.drawText(QRect(16, y, GUTTER_W - 20, LANE_H), Qt.AlignVCenter,
-                       fm.elidedText(meta.name, Qt.ElideRight, GUTTER_W - 22))
+            label = part(row) if owned else meta.name
+            p.drawText(QRect(16 + indent, y, GUTTER_W - 20 - indent, LANE_H), Qt.AlignVCenter,
+                       fm.elidedText(label, Qt.ElideRight, GUTTER_W - 22 - indent))
             f.setBold(False)
             p.setFont(f)
             trk = self._trk_col[:, row].astype(bool)
@@ -700,13 +789,11 @@ class TimelinePanel(QWidget):
                 p.setPen(Qt.NoPen)
             p.setPen(QPen(LANE_SEP, 1))
             p.drawLine(lane.bottomLeft(), lane.bottomRight())
-            y += LANE_H
-        if s.n_points > self._max_rows():
+        if len(rows) > self._max_rows():
             p.setPen(RULER_FG)
             p.drawText(QRect(2, self.height() - 14, GUTTER_W - 6, 12),
                        Qt.AlignRight, f"{self._scroll + 1}–"
-                       f"{min(s.n_points, self._scroll + self._max_rows())}/{s.n_points}")
-
+                       f"{min(len(rows), self._scroll + self._max_rows())}/{len(rows)}")
         # ---- frame-window selection overlay ----
         if self.sel_range is not None:
             f0, f1 = self.sel_range
@@ -778,6 +865,7 @@ class TimelinePanel(QWidget):
                 self._drag_select_y = y
                 self.sel_range = (f, f)
                 self.sel_rows, self.sel_seg = self._lanes_in_band(y, y)
+                self.sel_segs = list(getattr(self, "_band_segs", [])) if self.sel_seg else None   # (G149)
                 self.update()
                 return
             if x < GUTTER_W:
@@ -811,6 +899,7 @@ class TimelinePanel(QWidget):
             self.sel_range = (min(self._drag_select_from, f),
                               max(self._drag_select_from, f))
             self.sel_rows, self.sel_seg = self._lanes_in_band(self._drag_select_y, y)
+            self.sel_segs = list(getattr(self, "_band_segs", [])) if self.sel_seg else None   # (G149)
             self.update()
             return
         if self._drag_seek and (ev.buttons() & Qt.LeftButton):
@@ -841,14 +930,16 @@ class TimelinePanel(QWidget):
             who = f" — {e.author}" if e.author else ""
             return (f"{e.name}: frames {e.start}–{e.end}{occ}{who}{note}\n— click to "
                     "select + jump, right-click for options")
-        if self._in_animal_lane(y):
-            m = self.session.masks
+        k = self._seg_at(y)
+        if k is not None:
+            m = self.session.seg_masks[k]
+            a = self.session.segments[k]
             if m is not None and m.has(f):
-                return (f"frame {f}{ts} · {self.session.animal.name}: silhouette "
+                return (f"frame {f}{ts} · {a.name}: silhouette "
                         f"{int(m.area[f])} px², score {m.score[f]:.1f} — "
                         "Shift+drag along this lane + Delete removes the "
                         "silhouettes there")
-            return (f"frame {f}{ts} · {self.session.animal.name}: no silhouette "
+            return (f"frame {f}{ts} · {a.name}: no silhouette "
                     "here (press S and click it, then Track)")
         row = self._row_at(y)
         if row is not None and self.session.occluded[f, row]:
@@ -893,7 +984,7 @@ class TimelinePanel(QWidget):
             pass
         elif ev.modifiers() & Qt.ControlModifier:
             self.zoom_time(TIME_ZOOM_STEP ** n, ev.position().x())
-        elif self.session.n_points > self._max_rows():
+        elif len(self._rows()) > self._max_rows():
             self._scroll = self._scroll - n
             self._clamp_scroll()
             self.update()
@@ -946,8 +1037,12 @@ class TimelinePanel(QWidget):
         act_masks = None
         act_both = None
         if has_animal:
-            act_masks = menu.addAction(
-                f"Clear {self.session.animal.name}'s silhouettes in frames {f0}–{f1}")
+            ks = [k for k in (self.sel_segs or []) if k < self._n_segs()]
+            # no lane covered: the rows selected in SEGMENT, else every segment (G151h, the app asks)
+            who = (f"{self.session.segments[ks[0]].name}'s" if len(ks) == 1 else
+                   "the covered segments'" if ks else
+                   f"{self.session.animal.name}'s" if self._n_segs() == 1 else "the selected animals'")
+            act_masks = menu.addAction(f"Clear {who} silhouettes in frames {f0}–{f1}")
             act_both = menu.addAction(f"Clear both in frames {f0}–{f1}")
         menu.addSeparator()
         act_hide = menu.addAction(

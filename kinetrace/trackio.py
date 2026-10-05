@@ -487,27 +487,28 @@ def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
 
 
 # ------------------------------------------------------------------ silhouettes
-def export_masks_json(session, path) -> int:
-    """The segment's outline per frame as polygons (OpenCV pixel centres from
-    0): {"frames": {"12": [[[x, y], ...], ...]}, "width", "height", ...}.
+def export_masks_json(session, path, i: int | None = None) -> int:
+    """Segment `i`'s (None = the active one's) outline per frame as polygons (OpenCV pixel
+    centres from 0): {"frames": {"12": [[[x, y], ...], ...]}, "width", "height", ...}.
     Returns the number of frames written."""
     import json
-    m = session.masks
+    m = session.masks_of(i)
+    a = session.animal if i is None else session.segments[i]
     frames = {} if m is None else {str(f): [p.reshape(-1, 2).tolist() for p in m.contours[f]]
                                     for f in sorted(m.contours) if m.has(f)}
     Path(path).write_text(json.dumps({
-        "format": "kinetrace-silhouette", "name": session.animal.name if session.animal else "segment",
+        "format": "kinetrace-silhouette", "name": a.name if a else "segment",
         "width": session.width, "height": session.height,
         "pixels": "OpenCV pixel centres, counted from 0, top-left", "frames": frames}), encoding="utf-8")
     return len(frames)
 
 
-def export_masks_png(session, folder, progress=None) -> int:
-    """One black / white PNG per frame with a silhouette (white = the segment),
-    named <video name>_<frame, 6 digits>.png. `progress(done, total)` may
-    return False to stop. Returns the number of files written."""
+def export_masks_png(session, folder, progress=None, i: int | None = None) -> int:
+    """One black / white PNG per frame with a silhouette of segment `i` (None = the active
+    one; white = the segment), named <video name>_<frame, 6 digits>.png. `progress(done,
+    total)` may return False to stop. Returns the number of files written."""
     import cv2
-    m = session.masks
+    m = session.masks_of(i)
     frames = [] if m is None else [int(f) for f in m.frames()]
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -521,10 +522,11 @@ def export_masks_png(session, folder, progress=None) -> int:
     return len(frames)
 
 
-def import_masks_png(session, folder, progress=None) -> dict:
+def import_masks_png(session, folder, progress=None, i: int | None = None) -> dict:
     """PNG masks (any image; nonzero = the segment) named with their frame
     number (the last number in the name: mask_000012.png, frame12.png) ->
-    the camera's segment. They must be the video's size. -> {frames, sentence}.
+    the camera's segment `i` (G151j; None = the active one, a new segment when
+    there is none). They must be the video's size. -> {frames, sentence}.
     `progress(done, total)` after each file (G52). EVERY file is read and
     checked before the session is touched (I224): one unreadable or wrongly
     sized image refuses the whole folder with nothing stored."""
@@ -558,9 +560,12 @@ def import_masks_png(session, folder, progress=None) -> dict:
         if progress is not None:
             progress(n + beyond, len(files))
     if staged:
-        session.ensure_animal()
+        target = session.masks_of(i)
+        if target is None or i is None:     # the active animal, made when there is none
+            session.ensure_animal()
+            target = session.masks
         for f, d in staged:
-            session.masks.set_summary(f, d)
+            target.set_summary(f, d)
         session._touch()
     sentence = f"{n} silhouette(s) imported from {folder.name}"
     if beyond:

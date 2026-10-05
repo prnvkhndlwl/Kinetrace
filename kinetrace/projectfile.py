@@ -10,11 +10,14 @@ programs can read and write (format 2, I145). See docs/FORMAT.md.
     lenses.json               lens profiles per camera, if any
     reconstruction/meta.json + points/<landmark>.csv   the last 3D result, if any
     cameras/<folder>/view.json        this camera's frame, zoom, selection, timeline zoom
-    cameras/<folder>/points.csv       one row per landmark (its tracks file in `file`)
+    cameras/<folder>/points.csv       one row per landmark (its tracks file in `file`, its animal in
+                                      `animal`, "" = Scene; G153)
     cameras/<folder>/tracks/<landmark>.csv   frame,x,y,confidence,visible,hand_placed,hidden
                                       (+ radius for ball markers); only frames with data
-    cameras/<folder>/events.csv, notes.csv, ball_prompts.json, spots.json, skeleton.json, segment.json
+    cameras/<folder>/events.csv, notes.csv, ball_prompts.json, spots.json, segment.json (the first
+                                      animal: name, colour, clicks, its skeleton and hold)
     cameras/<folder>/silhouette/summary.csv + *.npy   per-frame area / centroid / box
+    cameras/<folder>/segments/<name>/segment.json + silhouette/   every further animal (G149)
                                       (readable), outlines and midline (binary)
     cameras/<folder>/body/*.npy + meta.json  body poses and mesh (binary)
     exports/                  files for other programs, refreshed on save when asked (G42)
@@ -60,23 +63,27 @@ from kinetrace.recovery import safe_id  # noqa: F401 - the one project-id rule (
 _log = logging.getLogger("kinetrace.errors")        # the error log keeps what is logged here (crashlog.py)
 
 FORMAT = "kinetrace-project"
-FORMAT_VERSION = 2              # 2 = a folder, one CSV per landmark (I145); 1 = a zip, one tracks.csv per camera
+FORMAT_VERSION = 3              # 3 = animal layers (G153: points.csv `animal`, the skeleton per animal); 2 = a
+#                                  folder, one CSV per landmark (I145); 1 = a zip, one tracks.csv per camera
 SUFFIX = ".kinetrace"
 META = "kinetrace.json"
 CACHE_DIR, HISTORY_DIR, SAVING_DIR = ".cache", ".history", ".saving"
 EXPORTS_DIR, VIDEOS_DIR = "exports", "videos"
 _NOT_DATA = (CACHE_DIR, HISTORY_DIR, SAVING_DIR, EXPORTS_DIR, VIDEOS_DIR)   # never read as project data
 # the ui_state entries kept per camera (view.json); every other one is window-wide (state.json)
-# (G103) selected_names / segment_selected = the run scope: the points selected in POINTS (BY NAME) and the
-# SEGMENT row; view.json keeps them as selected_points / segment_selected
-VIEW_KEYS = ("selected", "selected_names", "segment_selected", "zoom", "center_x", "center_y", "user_zoomed",
-             "timeline")
+# (G103) selected_names / segment_selected / segments_selected = the run scope: the points selected in LAYERS
+# (BY NAME), whether an animal row is, and which animals (by name, G161); view.json keeps them as
+# selected_points / segment_selected / selected_animals
+VIEW_KEYS = ("selected", "selected_names", "segment_selected", "segments_selected", "zoom", "center_x", "center_y",
+             "user_zoomed", "timeline", "hidden_animals")
+# (G167, G154) "hidden_animals" = the animals whose LAYERS checkbox is off (silhouette not drawn): display state, so it
+# lives in view.json (and the view sidecar), never makes the project dirty, and is not in segment.json
 TRACK_COLS = ("frame", "point", "x", "y", "confidence", "visible", "hand_placed", "hidden", "radius")  # format 1
 LANDMARK_COLS = ("frame", "x", "y", "confidence", "visible", "hand_placed", "hidden", "radius")
 SILHOUETTE_COLS = ("frame", "area", "score", "centroid_x", "centroid_y", "x0", "y0", "x1", "y1")
 POINT3D_COLS = ("frame", "x", "y", "z", "residual", "n_cams")         # + one <camera>_px column per camera
 POINT_COLS = ("name", "color", "shown", "kind", "radius", "anchor", "source", "spec", "free", "shape", "outline",
-              "file", "tracker")
+              "file", "tracker", "animal")         # (G153) the animal it belongs to; "" = Scene
 EVENT_COLS = ("name", "start", "end", "color", "note", "author")
 NOTE_COLS = ("frame", "text", "author", "time")
 _ZIP_TIME = (1980, 1, 1, 0, 0, 0)          # fixed: the same project always gives the same bytes
@@ -371,7 +378,8 @@ def _point_row(p, file: str) -> list:
     inverse: the columns are declared once, here and there)."""
     return [p.name, _hex(p.color), int(p.display), p.kind, repr(float(p.radius)), int(p.anchor), p.source,
             p.spec, int(p.free), p.shape,
-            "" if not p.outline else " ".join(repr(float(v)) for xy in p.outline for v in xy), file, p.tracker]
+            "" if not p.outline else " ".join(repr(float(v)) for xy in p.outline for v in xy), file, p.tracker,
+            p.segment]
 
 
 def _put_arrays(files: dict, folder: str, arrays: dict, prefix: str) -> None:
@@ -480,6 +488,8 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
         scope["selected_points"] = [str(x) for x in (st.get("selected_names") or [])]
     if "segment_selected" in st:
         scope["segment_selected"] = bool(st.get("segment_selected"))
+    if isinstance(st.get("segments_selected"), list):           # (G161) WHICH animals, by name
+        scope["selected_animals"] = [str(x) for x in st.get("segments_selected") or []]
     files[f"{d}/view.json"] = _json(_clean_json({
         "current_frame": int(s.current_frame),
         "selected_point": s.points[sel].name if 0 <= sel < s.n_points else None,
@@ -487,6 +497,7 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
         "zoom": st.get("zoom", 0.0), "center_x": st.get("center_x", 0.0), "center_y": st.get("center_y", 0.0),
         "user_zoomed": bool(st.get("user_zoomed", False)),
         "timeline": st.get("timeline"),
+        "hidden_animals": [a.name for a in s.segments if not a.shown],      # (G154) display state
         "annotator": s.annotator, "counters": {"points": s._name_counter, "events": s._event_counter}}))
     lfiles = landmark_files([p.name for p in s.points])
     files[f"{d}/points.csv"] = ("points", [_point_row(p, "" if binary_tracks else lfiles[j])
@@ -509,16 +520,21 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
     spot = {p.name: dict(p.spot) for p in s.points if p.spot}
     if spot:            # the Moving spot settings the test found (I161)
         files[f"{d}/spots.json"] = _json(_clean_json(spot))
-    if s.skeleton:
-        files[f"{d}/skeleton.json"] = _json(_clean_json(s.skeleton))
-    if s.animal is not None:
-        files[f"{d}/segment.json"] = s.animal.to_json() + "\n"
-        if s.masks is not None:
-            m = s.masks.to_arrays("mask_")
-            if not binary_tracks:               # the per-frame numbers as a readable table (I145)
-                summ = {k: np.array(m.pop(f"mask_{k}"), copy=True) for k in ("bbox", "area", "centroid", "score")}
-                files[f"{d}/silhouette/summary.csv"] = ("sil", summ)
-            _put_arrays(files, f"{d}/silhouette", m, "mask_")
+    # (G153) no camera-level skeleton.json: each animal's skeleton and hold are in its segment.json
+    # (G149) the first segment where a one-segment project always had it; every further one in
+    # segments/<its name>/ with the same two parts (its order in segment.json)
+    extra = landmark_files([a.name for a in s.segments[1:]])
+    for k, (a, mt) in enumerate(zip(s.segments, s.seg_masks)):
+        base = d if k == 0 else f"{d}/segments/{extra[k - 1][:-4]}"
+        meta = json.loads(a.to_json())
+        if k:
+            meta["order"] = k
+        files[f"{base}/segment.json"] = json.dumps(meta) + "\n"
+        m = mt.to_arrays("mask_")
+        if not binary_tracks:               # the per-frame numbers as a readable table (I145)
+            summ = {kk: np.array(m.pop(f"mask_{kk}"), copy=True) for kk in ("bbox", "area", "centroid", "score")}
+            files[f"{base}/silhouette/summary.csv"] = ("sil", summ)
+        _put_arrays(files, f"{base}/silhouette", m, "mask_")
     if s.body is not None:
         _put_arrays(files, f"{d}/body", s.body.to_arrays("body_", mesh=False), "body_")
         _put_mesh(files, f"{d}/body", s.body)
@@ -748,10 +764,10 @@ _TOP_FILES = {META, "project.json", "state.json", "calibration.json", "lenses.js
 _CAM_FILES = {"view.json", "points.csv", "tracks.csv", "events.csv", "notes.csv", "ball_prompts.json", "spots.json",
               "skeleton.json", "segment.json", "tracks.npy", "confidence.npy", "visibility.npy", "manual.npy",
               "tracked.npy", "occluded.npy", "radius.npy"}
-_CAM_DIRS = ("tracks", "silhouette", "body")
+_CAM_DIRS = ("tracks", "silhouette", "body", "segments")
 # files an older layout left in a camera folder (format 1's tracks.csv, the recovery form's dense arrays): a save
 # removes them if they are there, besides what the previous save wrote (I164)
-_LEGACY_CAM_FILES = ("tracks.csv", "tracks.npy", "confidence.npy", "visibility.npy", "manual.npy", "tracked.npy",
+_LEGACY_CAM_FILES = ("skeleton.json", "tracks.csv", "tracks.npy", "confidence.npy", "visibility.npy", "manual.npy", "tracked.npy",
                      "occluded.npy", "radius.npy")
 _OWN_DOT = (CACHE_DIR, HISTORY_DIR, SAVING_DIR, ".lock")      # the dot entries Kinetrace itself makes
 
@@ -1029,6 +1045,7 @@ def _layout_rel(rel) -> bool:
 
 # the kinds of file a project's sub-folders hold: what a save may treat as its own when it has no record
 _OWN_SUFFIX = {"tracks": (".csv",), "silhouette": (".csv", ".npy", ".json"), "body": (".npy", ".json"),
+               "segments": (".csv", ".npy", ".json"),
                "reconstruction": (".csv", ".npy", ".json")}
 
 
@@ -1447,8 +1464,8 @@ def describe_changes(changed: list[str], removed: list[str], cameras: list[tuple
            "lenses.json": "the lens profiles"}
     part = {"points.csv": "the landmark list", "events.csv": "the events", "notes.csv": "the notes",
             "ball_prompts.json": "the ball markers' clicks", "spots.json": "the Moving spot settings",
-            "skeleton.json": "the skeleton",
-            "segment.json": "the segment's clicks"}
+            "skeleton.json": "the skeleton (an older project's)",
+            "segment.json": "the animal (its clicks, skeleton, hold)"}
     names = dict(cameras)
     lines, per_cam, rest = [], {}, []
 
@@ -1461,6 +1478,8 @@ def describe_changes(changed: list[str], removed: list[str], cameras: list[tuple
                 w = f"{landmarks.get(folder, {}).get(f, PurePosixPath(f).stem)} ({'removed' if gone else 'positions'})"
             elif what.startswith("silhouette/"):
                 w = "the silhouette"
+            elif what.startswith("segments/"):
+                w = f"the segment {what.split('/')[1]}"
             elif what.startswith("body/"):
                 w = "the body poses"
             else:
@@ -1924,7 +1943,8 @@ def _read_point(cols: dict, n: int, i: int, where: str):
             source if source in SOURCES else "track", g("spec"), g("free", "0") == "1",
             g("shape", "circle") or "circle",
             [[float(outline[j]), float(outline[j + 1])] for j in range(0, len(outline) - 1, 2)] or None,
-            tracker=g("tracker", "") if g("tracker", "") in TRACKERS else "")
+            tracker=g("tracker", "") if g("tracker", "") in TRACKERS else "",
+            segment=_clean_name(g("animal", "")) if g("animal", "") else "")
 
 
 def _read_camera(src: _Source, d: str, s) -> None:
@@ -2016,7 +2036,7 @@ def _read_events_notes(src: _Source, d: str, s) -> None:
 
 
 def _read_markers(src: _Source, d: str, s, index: dict) -> None:
-    """ball_prompts.json / spots.json (keyed by landmark name) and skeleton.json."""
+    """ball_prompts.json / spots.json (keyed by landmark name)."""
     rel = f"{d}/ball_prompts.json"
     if src.has(rel):
         raw = src.json(rel)
@@ -2035,10 +2055,6 @@ def _read_markers(src: _Source, d: str, s, index: dict) -> None:
             nm = _clean_name(nm)
             if nm in index and isinstance(st, dict):       # odd values fall back to automatic
                 s.points[index[nm]].spot = SpotSettings.from_dict(st).to_dict()
-    if src.has(f"{d}/skeleton.json"):
-        sk = src.json(f"{d}/skeleton.json")
-        if isinstance(sk, dict) and sk.get("landmarks"):
-            s.skeleton = sk
 
 
 def _read_segment_body(src: _Source, d: str, s) -> None:
@@ -2046,38 +2062,65 @@ def _read_segment_body(src: _Source, d: str, s) -> None:
     from kinetrace.segmenter import MIDLINE_SAMPLES, MaskTrack
     from kinetrace.session import AnimalMeta
     T = s.n_frames
-    if src.has(f"{d}/segment.json"):
-        with _parsing(f"{d}/segment.json"):
-            s.animal = AnimalMeta.from_json(src.text(f"{d}/segment.json"))
-        m = src.arrays(f"{d}/silhouette")
-        rel = f"{d}/silhouette/summary.csv"
-        if "bbox" not in m and src.has(rel):          # format 2: the per-frame numbers are a CSV
-            t = src.load_table(rel, _parse_silhouette, SILHOUETTE_COLS, _SIL_KINDS).data
-            _check_frames(t["frame"], T, rel)
-            f = t["frame"]
-            m["bbox"] = np.full((T, 4), -1, np.int32)
-            m["area"] = np.zeros(T, np.int32)
-            m["centroid"] = np.full((T, 2), np.nan, np.float32)
-            m["score"] = np.full(T, np.nan, np.float32)
-            m["area"][f], m["score"][f] = t["area"], t["score"]
-            m["centroid"][f, 0], m["centroid"][f, 1] = t["centroid_x"], t["centroid_y"]
-            for k, c in enumerate(("x0", "y0", "x1", "y1")):
-                m["bbox"][f, k] = t[c]
-            for k, v in (("cpts", np.zeros((0, 2), np.int32)), ("coff", np.zeros(1, np.int64)),
-                         ("cframe", np.zeros(0, np.int32)), ("mframe", np.zeros(0, np.int32)),
-                         ("mpts", np.zeros((0, MIDLINE_SAMPLES, 2), np.float32))):
-                m.setdefault(k, v)                 # a hand-written summary without outlines
-        with _parsing(f"{d}/silhouette"):
-            s.masks = MaskTrack.from_arrays("", m) if "bbox" in m else MaskTrack(T)
-        if s.masks.n_frames != T:
-            raise ProjectFileError(f"{d}/silhouette: {s.masks.n_frames} frames, the video has {T}")
-        s.masks.native_w, s.masks.native_h = s.width, s.height
+    # (G149) the first segment where a one-segment project had it, then segments/<name>/ in order
+    folders = [d] if src.has(f"{d}/segment.json") else []
+    extra = sorted({rest.split("/")[0] for rest, _n in src._under(f"{d}/segments")
+                    if rest.count("/") == 1 and rest.endswith("/segment.json")})
+    order = {}
+    for name in extra:
+        with _parsing(f"{d}/segments/{name}/segment.json"):
+            order[name] = int(json.loads(src.text(f"{d}/segments/{name}/segment.json")).get("order", 1_000_000))
+    folders += [f"{d}/segments/{name}" for name in sorted(extra, key=lambda n: (order[n], n))]
+    for base in folders:
+        _read_one_segment(src, base, s, T, AnimalMeta, MaskTrack, MIDLINE_SAMPLES)
+    s.active_seg = 0
     b = src.arrays(f"{d}/body")
     if b:
         with _parsing(f"{d}/body"):
             s.body = BodyTrack.from_arrays("", b)
         if s.body.n_frames != T:
             raise ProjectFileError(f"{d}/body: {s.body.n_frames} frames, the video has {T}")
+
+
+def _read_one_segment(src: "_Source", d: str, s, T: int, AnimalMeta, MaskTrack, MIDLINE_SAMPLES) -> None:
+    """One segment (its segment.json + silhouette/) appended to the session (G149)."""
+    with _parsing(f"{d}/segment.json"):
+        meta = AnimalMeta.from_json(src.text(f"{d}/segment.json"))
+    if meta.name in s.segment_names():
+        raise ProjectFileError(f"{d}/segment.json: a second segment named {meta.name!r}")
+    s.add_segment(meta.name, meta=meta)
+    m = src.arrays(f"{d}/silhouette")
+    rel = f"{d}/silhouette/summary.csv"
+    if "bbox" not in m and src.has(rel):          # format 2: the per-frame numbers are a CSV
+        t = src.load_table(rel, _parse_silhouette, SILHOUETTE_COLS, _SIL_KINDS).data
+        _check_frames(t["frame"], T, rel)
+        f = t["frame"]
+        m["bbox"] = np.full((T, 4), -1, np.int32)
+        m["area"] = np.zeros(T, np.int32)
+        m["centroid"] = np.full((T, 2), np.nan, np.float32)
+        m["score"] = np.full(T, np.nan, np.float32)
+        m["area"][f], m["score"][f] = t["area"], t["score"]
+        m["centroid"][f, 0], m["centroid"][f, 1] = t["centroid_x"], t["centroid_y"]
+        for k, c in enumerate(("x0", "y0", "x1", "y1")):
+            m["bbox"][f, k] = t[c]
+        for k, v in (("cpts", np.zeros((0, 2), np.int32)), ("coff", np.zeros(1, np.int64)),
+                     ("cframe", np.zeros(0, np.int32)), ("mframe", np.zeros(0, np.int32)),
+                     ("mpts", np.zeros((0, MIDLINE_SAMPLES, 2), np.float32))):
+            m.setdefault(k, v)                 # a hand-written summary without outlines
+    with _parsing(f"{d}/silhouette"):
+        s.masks = MaskTrack.from_arrays("", m) if "bbox" in m else MaskTrack(T)
+    if s.masks.n_frames != T:
+        raise ProjectFileError(f"{d}/silhouette: {s.masks.n_frames} frames, the video has {T}")
+    s.masks.native_w, s.masks.native_h = s.width, s.height
+
+
+def apply_hidden_animals(s) -> None:
+    """(G167) `ui_state["hidden_animals"]` (the view sidecar, `_sync_ui_state`) onto the animals' `shown`;
+    view.json itself is read straight onto them (`_read_view`)."""
+    hidden = s.ui_state.get("hidden_animals")
+    if isinstance(hidden, list):
+        for a in s.segments:
+            a.shown = a.name not in hidden
 
 
 def _read_view(src: _Source, d: str, s, index: dict) -> None:
@@ -2102,11 +2145,18 @@ def _read_view(src: _Source, d: str, s, index: dict) -> None:
         s.ui_state["selected_names"] = [x for x in names if isinstance(x, str)]
     if "segment_selected" in v:
         s.ui_state["segment_selected"] = bool(v.get("segment_selected"))
+    animals = v.get("selected_animals")                 # (G161) which animals, by name
+    if isinstance(animals, list):
+        s.ui_state["segments_selected"] = [x for x in animals if isinstance(x, str)]
     for k in ("zoom", "center_x", "center_y"):
         s.ui_state[k] = view_value(k, float, s.ui_state.get(k, 0.0))
     s.ui_state["user_zoomed"] = bool(v.get("user_zoomed", False))
     if v.get("timeline") is not None:
         s.ui_state["timeline"] = v["timeline"]
+    hidden = v.get("hidden_animals")                    # (G167) the animals whose silhouette is not drawn:
+    if isinstance(hidden, list):                        # onto the animals themselves (their `shown` is the state)
+        for a in s.segments:
+            a.shown = a.name not in hidden
     s.annotator = str(v.get("annotator", "") or "")
     c = v.get("counters") if isinstance(v.get("counters"), dict) else {}
     try:
@@ -2204,14 +2254,15 @@ What is where
                           marked events and notes on frames
   cameras/<camera>/view.json
                           where you were: frame, zoom, the selected points, timeline zoom
-  cameras/<camera>/segment.json, skeleton.json
-                          the segment (clicks, box, name) and the skeleton template
+  cameras/<camera>/segment.json, segments/<animal>/segment.json
+                          each animal: name, colour, the clicks and boxes of its silhouette,
+                          its skeleton (part names) and whether its points are held on it
   cameras/<camera>/spots.json, ball_prompts.json
                           Moving-spot settings per point; the clicks that start each ball marker
   reconstruction/meta.json
                           the 3D result's settings: first frame, unit, cameras
   cameras/<camera>/silhouette/summary.csv
-                          the segment per frame: frame,area,score,centroid_x,centroid_y,x0,y0,x1,y1
+                          the animal's silhouette per frame: frame,area,score,centroid_x,centroid_y,x0,y0,x1,y1
   cameras/<camera>/silhouette/*.npy, body/*.npy
                           outlines, midline and body poses (NumPy arrays)
   exports/                files for DeepLabCut, DLTdv or MATLAB, refreshed at every save

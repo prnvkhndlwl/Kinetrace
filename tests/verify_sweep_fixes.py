@@ -169,9 +169,11 @@ s7 = sess(20)
 s7.apply_skeleton({"name": "t", "landmarks": ["crown", "neck", "tail"], "bones": [["crown", "neck"], ["neck", "tail"]],
                    "head": "crown", "derived": {}})
 snap = s7.snapshot()
-s7.rename_point(s7.pid_by_name("crown"), "head_top")
+# (G153) the template went on a new animal: its points are "animal <part>", its skeleton in parts
+s7.rename_point(s7.pid_by_name("animal crown"), "head_top")
+assert s7.segments[0].skeleton["head"] == "head_top", s7.segments[0].skeleton
 s7.restore(snap)
-assert s7.points[0].name == "crown" and s7.skeleton["head"] == "crown", s7.skeleton
+assert s7.points[0].name == "animal crown" and s7.segments[0].skeleton["head"] == "crown", s7.segments[0].skeleton
 assert len(s7.bones()) == 2 and s7.head_pid() is not None
 print("undo restores the skeleton with the names it refers to (I22) OK")
 
@@ -471,7 +473,7 @@ sd = win.session
 sd.apply_skeleton({"name": "d", "landmarks": ["snoot", "tailtip"], "bones": [], "head": "snoot",
                    "derived": {"tailtip": "tip"}})
 win._refresh_point_list()
-dpid = sd.pid_by_name("tailtip")
+dpid = next(q for q in range(sd.n_points) if sd.part_name(q) == "tailtip")    # "<animal> tailtip" (G153)
 n_before = sd.n_points
 win._on_select(dpid)
 win.btn_add.setChecked(True)
@@ -496,7 +498,7 @@ assert win.session.n_points == n_now, "Ctrl+Z did not bring the deleted point ba
 print("deleting one point and Shift+X are one undo step each (I71) OK")
 
 # I70: the all-points question of Mark HIDDEN says what it does
-win.point_list.clearSelection()
+win.layers.clearSelection()
 ASK["asked"], ASK["answer"] = [], QMessageBox.No
 win._occlude_window(2, 4, None, True)
 assert ASK["asked"] and "hidden" in ASK["asked"][-1].lower() and "clear" not in ASK["asked"][-1].lower(), ASK["asked"]
@@ -590,15 +592,17 @@ calls = []
 orig_start, orig_seed, orig_aseed = win._start_tracking, s.seedable_at, s.animal_seedable_at
 win._start_tracking = lambda **k: calls.append(k)
 s.seedable_at = lambda f: []
-s.animal_seedable_at = lambda f: True
+s.animal_seedable_at = lambda f, i=None: True
 win._run_segment = lambda scope: True        # the segment's row is selected (G61)
+win._run_segments = lambda scope, s=None: [0]      # ... the first segment's (G149: any number)
 win._track_step()
 assert calls and calls[0].get("stop_after") == win.current + 1, calls
-s.animal_seedable_at = lambda f: False
+s.animal_seedable_at = lambda f, i=None: False
 calls.clear()
 win._track_step()
 assert not calls and win.statusBar().currentMessage()
 del win._run_segment
+del win._run_segments
 win._start_tracking = orig_start
 del s.seedable_at, s.animal_seedable_at
 print("a semi-automatic step runs with only a segment (I128) OK")
@@ -668,7 +672,7 @@ dp = s.add_point(0, 30.0, 30.0)
 s.points[dp].source = "silhouette"
 s.tracked[:, dp] = False
 win._refresh_point_list()
-win._on_list_select(dp)
+win.layers.setCurrentItem(win.layers.point_item(dp))      # clicking its LAYERS row (G154)
 assert "derived from the silhouette" in win.statusBar().currentMessage(), win.statusBar().currentMessage()
 s.remove_point(dp)
 win._refresh_point_list()

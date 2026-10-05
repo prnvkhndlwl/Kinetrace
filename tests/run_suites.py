@@ -29,7 +29,9 @@ GPU = ["audit_sweep", "verify_balls", "verify_animal", "verify_tracker", "verify
        "verify_keys_follow", "verify_semiauto_pan", "verify_alltracker", "verify_long", "verify_retrack",
        "verify_track_all", "verify_track_selection",
        # the 2026-10-02 code review's regression checks that need the GPU
-       "verify_review_tracking", "verify_review_app2", "verify_review_i185"]
+       "verify_review_tracking", "verify_review_app2", "verify_review_i185",
+       # two segments with the real segmentation model in one pass (G149)
+       "verify_segments_sam"]
 # verify_pythonw is in no group on purpose: it must be launched DETACHED (Start-Process,
 # no output redirect) or the stderr guard it checks cannot fail; see CLAUDE.md
 CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery", "verify_interop", "verify_shared_landmarks", "verify_multiview", "verify_loading", "verify_stress", "verify_3d", "verify_wand", "verify_lens", "verify_body",
@@ -41,7 +43,15 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        # the 2026-10-02 code review's regression checks (each fails on the code before its fixes)
        "verify_review_persist", "verify_review_data", "verify_review_3d", "verify_review_calib",
        "verify_review_body", "verify_review_infra", "verify_review_ui", "verify_review_app1", "verify_review_app3",
-       "verify_review_leftovers"]
+       "verify_review_leftovers",
+       # owner reports 2026-10-03: SAM taking another animal (I260), the open question (G143)
+       "verify_segment_identity", "verify_open_replace",
+       # GoPro footage (G144-G146) and the point tools (G147)
+       "verify_gopro", "verify_point_tools", "verify_lens_export",
+       # any number of segments (G149) and which segment each action takes (G150, G151)
+       "verify_segments", "verify_segment_targets",
+       # animal layers, the two zooms (G152-G160)
+       "verify_layers"]
 # the synthetic test videos are generated on demand (deterministic; not stored in the repo)
 TEST_VIDEOS = {
     "test600.mp4": ([], None),

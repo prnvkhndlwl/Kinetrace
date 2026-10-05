@@ -398,6 +398,57 @@ def summarize_mask(mask_work: np.ndarray, scale, score: float,
     return d
 
 
+IDENTITY_BODY_K = 2.0     # a silhouette back after a gap may lie this many body sizes from where the animal was heading
+IDENTITY_SPEED_K = 1.0    # ... plus this many times the distance its speed covers over the gap
+IDENTITY_JUMP_K = 4.0     # no gap: a one-frame jump beyond this x (body size + speed) is another object
+IDENTITY_HISTORY = 6      # present frames the speed and the body size are taken over
+
+
+class SegmentIdentity:
+    """(I260) Is this frame's silhouette still the animal the user clicked? SAM 3 (and SAM 2.1)
+    keep a tracked object alive through a loss by re-acquiring whatever looks most like it: on a
+    clip of several bats, the clicked bat left the picture, SAM found nothing for 12 frames and
+    then took another bat -- and again each time that one left -- under the animal-lost rule's 16
+    frames. Here a silhouette that comes back after a gap must lie near where the animal was
+    heading (`IDENTITY_BODY_K` body sizes + `IDENTITY_SPEED_K` x the distance its speed covers),
+    and a silhouette with no gap may not jump more than `IDENTITY_JUMP_K` x (body size + speed) in
+    one frame; anything else is ANOTHER object. Body size = the median bbox diagonal over the last
+    `IDENTITY_HISTORY` present frames (a frame where SAM merged two animals does not inflate it).
+    A frame the user prompted (a click / box) is trusted and starts the history afresh. Pure
+    geometry on `summarize_mask`'s native-px summaries."""
+
+    def __init__(self):
+        self._hist: list[tuple[int, float, float, float]] = []    # (frame, cx, cy, bbox diagonal)
+
+    def check(self, frame: int, summ: dict, prompted: bool = False) -> int | None:
+        """None = the same animal (or nothing to judge: an empty frame, the first one); else the
+        first frame that is no longer the animal -- the first empty frame of the gap it came back
+        after, or this frame."""
+        if summ["area"] <= 0:
+            return None
+        cx, cy = (float(v) for v in summ["centroid"])
+        x0, y0, x1, y1 = summ["bbox"]
+        size = float(np.hypot(x1 - x0 + 1, y1 - y0 + 1))
+        if not (np.isfinite(cx) and np.isfinite(cy)):
+            return None
+        if prompted or not self._hist:
+            self._hist = [(frame, cx, cy, size)]
+            return None
+        fl, lx, ly, _ = self._hist[-1]
+        f0, x0h, y0h, _ = self._hist[0]
+        vx, vy = ((lx - x0h) / (fl - f0), (ly - y0h) / (fl - f0)) if fl > f0 else (0.0, 0.0)
+        speed = float(np.hypot(vx, vy))
+        body = float(np.median([h[3] for h in self._hist]))
+        step = frame - fl                                   # 1 = no gap
+        dist = float(np.hypot(cx - (lx + vx * step), cy - (ly + vy * step)))
+        limit = (IDENTITY_JUMP_K * (body + speed) if step <= 1
+                 else IDENTITY_BODY_K * body + IDENTITY_SPEED_K * speed * step)
+        if dist > limit:
+            return fl + 1
+        self._hist = (self._hist + [(frame, cx, cy, size)])[-IDENTITY_HISTORY:]
+        return None
+
+
 class MaskTrack:
     """One object's silhouette over the whole video, stored compactly: outline
     polygons (not bitmaps), a 32-point midline, and per-frame bbox / area /

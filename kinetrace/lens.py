@@ -192,12 +192,26 @@ class LensProfile:
         chk = self.border_check()
         bend = chk["bend_px"]
         kind = "fisheye model" if self.fisheye else "standard model"
-        q = f", fit {self.rms:.2f} px over {self.n_views} views" if np.isfinite(self.rms) else ""
+        q = f", fit error {self.rms:.2f} px over {self.n_views} views" if np.isfinite(self.rms) else ""
+        # (G144) the curvature is the LENS's (how far an edge pixel sits from where a straight-line lens
+        # would put it), not an error: "bends the edges by 1076 px" beside "fit 0.90 px" read as one
         if chk["runaway"]:
             where = "at least " + f"{bend:.0f} px" if np.isfinite(bend) else "an unknown amount"
-            return (f"f = {self.f_square:.0f} px, bends the edges by {where} and RUNS AWAY in the "
-                    f"picture corners ({kind}{q})")
-        return f"f = {self.f_square:.0f} px, bends the edges by {bend:.0f} px ({kind}{q})"
+            return (f"f = {self.f_square:.0f} px, lens curvature at the picture edges {where}, and the model "
+                    f"RUNS AWAY in the picture corners ({kind}{q})")
+        return f"f = {self.f_square:.0f} px, lens curvature at the picture edges {bend:.0f} px ({kind}{q})"
+
+
+def lens_label(prof: LensProfile | None) -> str:
+    """A camera's lens profile in a few words (where it came from + its verdict), for lists and
+    questions: GoPro's nominal model, else the profile's source; "none" without a profile."""
+    if prof is None:
+        return "none"
+    rep = prof.report or {}
+    if rep.get("gopro_nominal"):
+        return "GoPro's lens model (nominal)"
+    v = rep.get("verdict")
+    return (prof.source or "lens profile") + (f", {str(v).upper()}" if v else "")
 
 
 def _parse_argus(path: str | Path) -> list[tuple[int, LensProfile]]:
@@ -822,7 +836,7 @@ def board_axes(corners: np.ndarray, pattern: tuple[int, int], square: float,
 
 
 def auto_select(corner_list: list[np.ndarray], pattern: tuple[int, int], square: float,
-                size: tuple[int, int], model: str = "auto", keep: int = MAX_VIEWS
+                size: tuple[int, int], model: str = "auto", keep: int = MAX_VIEWS, base: LensProfile | None = None
                 ) -> tuple[list[int], np.ndarray, str]:
     """Pick the views worth calibrating from, in two passes.
 
@@ -843,7 +857,7 @@ def auto_select(corner_list: list[np.ndarray], pattern: tuple[int, int], square:
     if n < 4:
         return spread, np.full(n, np.nan), f"only {n} boards found -- using all of them"
     try:
-        prof = calibrate_lens([corner_list[i] for i in spread], pattern, square, size, model)
+        prof = calibrate_lens([corner_list[i] for i in spread], pattern, square, size, model, base=base)
     except (ValueError, cv2.error) as exc:
         return spread, np.full(n, np.nan), f"a first fit was not possible ({exc}); using the spread"
     err = per_view_errors(corner_list, pattern, square, prof)
@@ -861,6 +875,121 @@ def auto_select(corner_list: list[np.ndarray], pattern: tuple[int, int], square:
     if dropped:
         why += f"; {dropped} dropped for reprojecting worse than {limit:.2f} px"
     return good, err, why
+
+
+CENTRE_SPLIT_FRAC = 0.003   # (G146) two halves of the boards may disagree on the centre by this x the long side
+CENTRE_SPLIT_MIN_PX = 4.0   # ... and never less than this
+
+
+def _fit_shape(corner_list, pattern, square, base: "LensProfile", fix: tuple = (False, False)):
+    """(G146) A lens with `base`'s CURVE held fixed (GoPro's own lens model: its fisheye
+    coefficients) and only the focal length -- one, the pixels are square -- and the centre fitted
+    to the boards; an axis in `fix` keeps `base`'s centre. Same returns as `_fit`. Sparse least
+    squares over (f, cx, cy) + six pose numbers per board; each board's pose starts from solvePnP
+    on its corners undistorted with `base`."""
+    from scipy.optimize import least_squares
+    from scipy.sparse import lil_matrix
+    obj = _object_points(pattern, square)
+    obj3 = obj.reshape(-1, 1, 3)
+    D = np.asarray(base.dist, np.float64).reshape(4, 1)
+    K0 = base.K_square()
+    imgs = [np.asarray(c, np.float64).reshape(-1, 2) for c in corner_list]
+    x0 = [K0[0, 0]] + ([] if fix[0] else [K0[0, 2]]) + ([] if fix[1] else [K0[1, 2]])
+    n_in = len(x0)
+    for c in imgs:
+        und = cv2.fisheye.undistortPoints(c.reshape(-1, 1, 2), K0, D).reshape(-1, 2)
+        _ok, rv, tv = cv2.solvePnP(obj, und, np.eye(3), None)
+        x0 += np.asarray(rv, np.float64).ravel().tolist() + np.asarray(tv, np.float64).ravel().tolist()
+    npt = obj.shape[0]
+
+    def K_of(x):
+        cx = K0[0, 2] if fix[0] else x[1]
+        cy = K0[1, 2] if fix[1] else x[1 + (0 if fix[0] else 1)]
+        return np.array([[x[0], 0.0, cx], [0.0, x[0], cy], [0.0, 0.0, 1.0]])
+
+    def res(x):
+        K = K_of(x)
+        out = []
+        for v, c in enumerate(imgs):
+            q = x[n_in + 6 * v:n_in + 6 * v + 6]
+            pr, _ = cv2.fisheye.projectPoints(obj3, q[:3], q[3:], K, D)
+            out.append((pr.reshape(-1, 2) - c).ravel())
+        return np.concatenate(out)
+    S = lil_matrix((2 * npt * len(imgs), len(x0)), dtype=int)
+    for v in range(len(imgs)):
+        rows = slice(2 * npt * v, 2 * npt * (v + 1))
+        S[rows, :n_in] = 1
+        S[rows, n_in + 6 * v:n_in + 6 * v + 6] = 1
+    sol = least_squares(res, np.asarray(x0, np.float64), jac_sparsity=S, x_scale="jac", method="trf")
+    K = K_of(sol.x)
+    r = sol.fun.reshape(-1, npt, 2)
+    per_view = [float(np.sqrt(np.mean(np.sum(rv ** 2, axis=1)))) for rv in r]
+    rms = float(np.sqrt(np.mean(np.sum(r.reshape(-1, 2) ** 2, axis=1))))
+    tilts = []
+    for v in range(len(imgs)):
+        R, _ = cv2.Rodrigues(sol.x[n_in + 6 * v:n_in + 6 * v + 3])
+        tilts.append(float(np.degrees(np.arccos(min(1.0, abs(float(R[2, 2])))))))
+    return rms, K, np.asarray(base.dist, np.float64).ravel(), per_view, tilts
+
+
+def _calibrate_on_curve(corner_list, pattern, square, size, base: "LensProfile", source: str,
+                        max_views: int) -> "LensProfile":
+    """(G146) `calibrate_lens(model="gopro")`: GoPro's curve, the focal length and centre from the
+    boards. The robust pass of the other models, then a stability check of the centre: the kept
+    boards are split into two interleaved halves and each fitted alone; an axis on which the two
+    disagree by more than CENTRE_SPLIT_FRAC x the long side is NOT pinned down by these boards
+    (measured on a real HERO12 video: two disjoint sets gave +10.6 and -5.0 px vertically) and
+    keeps GoPro's centre."""
+    if base is None or not base.fisheye:
+        raise ValueError("the GoPro lens model of the video is needed for this choice")
+    idx = select_diverse(corner_list, size, max_views)
+    use = [corner_list[i] for i in idx]
+    fit = _fit_shape(use, pattern, float(square), base)
+    used = list(idx)
+    pv = np.asarray(fit[3])
+    bad = pv > outlier_limit(pv, OUTLIER_FLOOR_FIT_PX)
+    dropped = 0
+    if bad.any() and (len(use) - int(bad.sum())) >= 8:
+        use = [c for c, b in zip(use, bad) if not b]
+        used = [i for i, b in zip(idx, bad) if not b]
+        dropped = int(bad.sum())
+        fit = _fit_shape(use, pattern, float(square), base)
+    fix = (False, False)
+    split = None
+    if len(use) >= 12:
+        fa = _fit_shape(use[0::2], pattern, float(square), base)
+        fb = _fit_shape(use[1::2], pattern, float(square), base)
+        lim = max(CENTRE_SPLIT_MIN_PX, CENTRE_SPLIT_FRAC * max(size))
+        dx, dy = abs(fa[1][0, 2] - fb[1][0, 2]), abs(fa[1][1, 2] - fb[1][1, 2])
+        fix = (bool(dx > lim), bool(dy > lim))
+        split = {"dx_px": float(dx), "dy_px": float(dy), "limit_px": float(lim)}
+        if any(fix):
+            fit = _fit_shape(use, pattern, float(square), base, fix)
+    rms, K, dist, per_view, tilts = fit
+    prof = LensProfile(int(size[0]), int(size[1]), K, dist, True, rms, len(per_view), source)
+    prof.report = lens_report(prof, use, per_view, tilts, {"gopro": rms}, {}, "gopro", curve_known=True)
+    prof.report["views_used"] = [int(i) for i in used]
+    f0 = float(base.f_square)
+    reasons = prof.report["verdict_reasons"]
+    reasons.insert(1, f"The lens curve is GoPro's own model of this lens, read from the video: it holds over the "
+                      f"whole picture, so the corners need no board. Only the focal length and the centre were "
+                      f"measured from the boards: focal length {K[0, 0]:.1f} px ({100 * (K[0, 0] / f0 - 1):+.1f} % "
+                      f"against GoPro's nominal {f0:.1f} px), centre {K[0, 2] - base.K[0, 2]:+.1f}, "
+                      f"{K[1, 2] - base.K[1, 2]:+.1f} px from the picture centre.")
+    if any(fix):
+        axes = " and ".join(a for a, f in zip(("left-right", "up-down"), fix) if f)
+        reasons.append(f"The {axes} position of the centre could not be pinned down by these boards (two halves of "
+                       f"them disagree by {max(split['dx_px'] if fix[0] else 0, split['dy_px'] if fix[1] else 0):.0f} px), "
+                       "so GoPro's (the picture centre) is kept there. Tilting the board more (left-right for one, "
+                       "up-down for the other) measures it.")
+    prof.report["centre_split"] = split
+    prof.report["centre_fixed"] = list(fix)
+    prof.report["gopro_focal_nominal_px"] = f0
+    if dropped:
+        prof.report["views_set_aside"] = dropped
+        reasons.append(f"{dropped} view(s) fitted far worse than the rest (blur or a mis-detected board) and were "
+                       "set aside before the final fit.")
+    return prof
 
 
 def _fisheye_flags() -> int:
@@ -915,16 +1044,20 @@ def _fit(corner_list, pattern, square, size, fisheye: bool):
 
 def calibrate_lens(corner_list: list[np.ndarray], pattern: tuple[int, int], square: float,
                    size: tuple[int, int], model: str = "auto", source: str = "checkerboard (Kinetrace)",
-                   max_views: int = MAX_VIEWS) -> LensProfile:
+                   max_views: int = MAX_VIEWS, base: LensProfile | None = None) -> LensProfile:
     """Fit the lens from detected boards. `model`: "standard" (pinhole +
     k1, k2), "fisheye" (Kannala-Brandt, wide-angle / action cameras) or
     "auto" (fit both, keep the clearly better one, prefer standard). A list
     longer than `max_views` is thinned to a diverse spread of that many (the
     review board passes the length of the boards the user ticked, so a hand-made
-    choice is fitted whole, G116)."""
+    choice is fitted whole, G116). `model="gopro"` (G146): `base`'s curve (GoPro's lens model from the
+    video, `gpmf.lens_profile`) with the focal length and centre fitted to the boards."""
     if len(corner_list) < 3:
         raise ValueError(f"only {len(corner_list)} usable views of the board; at least 3 are needed, "
                          "15 or more for a trustworthy result")
+    if model == "gopro":
+        return _calibrate_on_curve(corner_list, pattern, square, size, base,
+                                   "GoPro lens curve + checkerboard (focal length and centre)", max_views)
     idx = select_diverse(corner_list, size, max_views)
     use = [corner_list[i] for i in idx]
     fits = {}
@@ -1026,7 +1159,7 @@ def edge_reach_pct(corner_list: list[np.ndarray], size: tuple[int, int]) -> floa
 
 def lens_report(prof: LensProfile, views: list[np.ndarray], per_view: list[float], tilts: list[float],
                 rms_by_model: dict, errors: dict, model_requested: str,
-                fisheye_runaway: dict | None = None) -> dict:
+                fisheye_runaway: dict | None = None, curve_known: bool = False) -> dict:
     w, h = prof.width, prof.height
     scale = px_scale(w, h)                                  # (I250) by the longer side
     cov = coverage_pct(views, (w, h))
@@ -1065,7 +1198,17 @@ def lens_report(prof: LensProfile, views: list[np.ndarray], per_view: list[float
         good = ok = False
         reasons.append(f"Only {n} usable views{held}: not enough to pin the lens down. Film a longer, slower pass "
                        "with the board sharp in every frame.")
-    if cov >= 55.0 and reach >= 85.0:
+    if curve_known:
+        # (G146) the curve comes from the camera's own lens model: the boards only measure the focal length
+        # and the centre, which a spread over the middle of the picture does
+        if cov >= 20.0:
+            reasons.append(f"The board covered {cov:.0f}% of the picture and reached {reach:.0f}% of the way into "
+                           "the corners: enough for the focal length and the centre.")
+        else:
+            good = False
+            reasons.append(f"The board covered only {cov:.0f}% of the picture: move it around more (near and far, "
+                           "left and right) so the focal length and the centre are well measured.")
+    elif cov >= 55.0 and reach >= 85.0:
         reasons.append(f"The board covered {cov:.0f}% of the picture and reached {reach:.0f}% of the way "
                        "into the corners: the distortion is measured where it matters.")
     else:
@@ -1112,14 +1255,18 @@ def lens_report(prof: LensProfile, views: list[np.ndarray], per_view: list[float
                     "page), which is far less prone to this")
         reasons.append(msg + ".")
         if np.isfinite(bend):
-            reasons.append(f"Where the model does hold, this lens bends the edges by at least {bend:.0f} px.")
+            reasons.append(f"Where the model does hold, the lens curves the picture edges by at least {bend:.0f} px "
+                           "(the lens's own curvature, not an error).")
     elif np.isfinite(bend):
+        # (G144) a curvature, said as one: the fit error above is what measures the calibration
         if bend >= 8.0 * scale:
-            reasons.append(f"This lens bends the edges of the picture by up to {bend:.0f} px. Without this "
-                           "correction, anything tracked near the edges would be placed wrongly in 3D by a "
-                           "similar amount: attach this profile to the camera.")
+            reasons.append(f"This lens curves the edges of the picture by up to {bend:.0f} px: an edge pixel sits "
+                           "that far from where a straight-line lens would put it (the wide-angle look, not an "
+                           "error; the fit error above measures the calibration). Without this correction, "
+                           "anything tracked near the edges would be placed wrongly in 3D by a similar amount: "
+                           "attach this profile to the camera.")
         else:
-            reasons.append(f"This lens bends the edges by only {bend:.0f} px: a nearly ideal lens. The "
+            reasons.append(f"This lens curves the edges by only {bend:.0f} px: a nearly ideal lens. The "
                            "correction is small but free.")
     if np.isfinite(chk["fov_diag_deg"]):
         reasons.append(f"Hand check: the model implies a field of view of {chk['fov_diag_deg']:.0f} degrees "

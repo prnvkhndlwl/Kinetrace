@@ -421,8 +421,8 @@ def _g66():
         win._track_mode = "auto"
     # the selection survives a camera switch: ClearAndSelect on the landmark, the others added back
     win._on_select(1)
-    win.point_list.item(2).setSelected(True)
-    win.point_list.item(3).setSelected(True)
+    win.layers.point_item(2).setSelected(True)
+    win.layers.point_item(3).setSelected(True)
     before = sorted(win.session.points[q].name for q in win._selected_pids())
     win._set_active_view(1)
     after = sorted(win.session.points[q].name for q in win._selected_pids())
@@ -460,7 +460,7 @@ def _g103():
     try:
         assert open_project(w, path2)
         w._on_select(1)
-        w.point_list.item(2).setSelected(True)
+        w.layers.point_item(2).setSelected(True)
         want = sorted(w.session.points[q].name for q in w._selected_pids())
         w.project.dirty = True
         check(w._save_project(), "saved")
@@ -716,7 +716,8 @@ def _r15():
 @section("R16 the project README names every file it writes")
 def _r16():
     txt = projectfile._readme(["camA"], ["camA"])
-    for nm in ("view.json", "segment.json", "spots.json", "ball_prompts.json", "skeleton.json",
+    # (G153) no skeleton.json any more: each animal's skeleton is in its segment.json
+    for nm in ("view.json", "segment.json", "spots.json", "ball_prompts.json",
                "reconstruction/meta.json"):
         check(nm in txt, f"README names {nm}")
 

@@ -169,7 +169,7 @@ print(f"a point clicked in camera A is in camera B's list and B shows its line (
 click(B, W / 2, H / 2)
 assert p.active == 1, "a click on camera B makes it the working camera"
 assert win.selected == jb, f"the same landmark stays selected: {win.selected} vs {jb}"
-assert win.point_list.currentRow() == jb
+assert win.layers.current_pid() == jb
 assert len(win.canvas._guides.lines) == 1, "the working camera B shows the guide from A"
 assert "not placed" in win.statusBar().currentMessage(), win.statusBar().currentMessage()
 ub = truth(1, F)
@@ -242,7 +242,9 @@ win._apply_skeleton_template(template_by_name("Lizard / iguana"))
 pump(0.05)
 names_a, names_b = [q.name for q in sa.points], [q.name for q in sb.points]
 assert set(names_a) == set(names_b) and len(names_a) > 5, (len(names_a), len(names_b))
-assert sa.skeleton and sb.skeleton, "the camera without a skeleton adopts it"
+# (G153) a skeleton belongs to an animal: every camera has that animal, carrying the skeleton
+assert any(a.skeleton for a in sa.segments) and any(a.skeleton for a in sb.segments), \
+    "the camera without a skeleton adopts it"
 print(f"a skeleton applied in one camera gives every camera its {len(names_a)} landmarks OK")
 
 # ---- 9. a camera added later gets every landmark --------------------------------------------

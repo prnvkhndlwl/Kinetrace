@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout
                                QProgressBar, QPushButton, QRadioButton, QSizePolicy, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
-from kinetrace import audiosync, sync, theme
+from kinetrace import audiosync, gpmf, sync, theme
 from kinetrace.errors import plain_error
 
 VERDICT_WORDS = {"clear": "CLEAR - use it", "weak": "WEAK - check by eye first",
@@ -65,7 +65,7 @@ class _SyncThread(QThread):
 class SyncDialog(QDialog):
     """Pick a stretch of the reference camera, a search range, run, review, apply."""
 
-    def __init__(self, parent, project, paths: list[str], current_frame: int):
+    def __init__(self, parent, project, paths: list[str], current_frame: int, gopro: list | None = None):
         super().__init__(parent)
         self.setWindowTitle("Sync cameras")
         self.project = project
@@ -185,6 +185,11 @@ class SyncDialog(QDialog):
         # has to cover that second either way instead of tens of seconds.
         fps = [s.fps for s in project.sessions] if project is not None else 30.0
         self.prior = sync.offsets_from_filenames(self.paths, fps) if project is not None else None
+        # (G145) every camera GoPro footage with a timecode track: its start times are a closer prior than
+        # the file names' whole seconds (still only a search window: the camera clocks are set to ~1 s)
+        tc = gpmf.timecode_prior(gopro, fps) if (gopro and isinstance(fps, list) and len(gopro) == len(fps)) else None
+        if tc is not None:
+            self.prior = tc
         have_prior = self.prior is not None and any(v is not None for v in self.prior[1:])
         ref_fps = float(project.sessions[0].fps) if project is not None and project.sessions else 30.0
         self.search = QSpinBox()
@@ -204,9 +209,13 @@ class SyncDialog(QDialog):
                 if i == 0 or v is None:
                     continue
                 secs = -v / float(fps[i] if isinstance(fps, list) else fps)
-                bits.append(f"{project.name(i)} {abs(secs):.0f} s {'later' if secs > 0 else 'earlier'}")
-            self.prior_note.setText("The file names carry the recording clocks: " + ", ".join(bits)
-                                    + " than the reference (to the second). The search runs around those.")
+                bits.append(f"{project.name(i)} {abs(secs):.{1 if tc is not None else 0}f} s "
+                            f"{'later' if secs > 0 else 'earlier'}")
+            self.prior_note.setText(("The GoPro timecode tracks put the cameras' starts at: " if tc is not None else
+                                     "The file names carry the recording clocks: ") + ", ".join(bits)
+                                    + " than the reference" + (" (the camera clocks are set to about a second)"
+                                                               if tc is not None else " (to the second)")
+                                    + ". The search runs around those.")
         elif project is not None and project.n_views > 1:
             self.prior_note.setText("The file names carry no recording clock, so the search starts from "
                                     "the current offsets; widen it if the cameras started far apart.")

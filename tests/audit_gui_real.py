@@ -693,8 +693,11 @@ def canvas_drag(p0, p1, cv=None, steps=8):
     QTest.mouseRelease(cv.viewport(), Qt.LeftButton, Qt.NoModifier, b)
 
 
-def list_item_pos(lst: QListWidget, row: int) -> QPoint:
-    return lst.visualItemRect(lst.item(row)).center()
+def list_item_pos(lst, row) -> QPoint:
+    """The centre of a LAYERS row (G154): `row` = a point id, or ("animal", k)."""
+    item = lst.animal_item(row[1]) if isinstance(row, tuple) else lst.point_item(row)
+    lst.scrollToItem(item)
+    return lst.visualItemRect(item).center()
 
 
 def context_menu_at(w: QWidget, pos: QPoint, pick=None):
@@ -966,15 +969,15 @@ try:
         step("Add arrow -> circle region", lambda: click_button_arrow(win.btn_add, "circle"))
         rec("points_after_regions", n=win.session.n_points, kinds=[p.kind for p in win.session.points])
         if want("points"):
-            step("select point 0 in the list", lambda: click_widget(win.point_list.viewport(),
-                                                                     pos=list_item_pos(win.point_list, 0)))
+            step("select point 0 in the list", lambda: click_widget(win.layers.viewport(),
+                                                                     pos=list_item_pos(win.layers, 0)))
             step("right-click marker 0", lambda: context_menu_at(win.canvas.viewport(), canvas_pos(hx, hy)))
-            step("right-click list row 0", lambda: context_menu_at(win.point_list.viewport(),
-                                                                    list_item_pos(win.point_list, 0)))
+            step("right-click list row 0", lambda: context_menu_at(win.layers.viewport(),
+                                                                    list_item_pos(win.layers, 0)))
             POLICY["mode"] = "accept"
             step("rename by double-click + typing", lambda: (
-                QTest.mouseDClick(win.point_list.viewport(), Qt.LeftButton, Qt.NoModifier,
-                                  list_item_pos(win.point_list, 0)), pump(0.3),
+                QTest.mouseDClick(win.layers.viewport(), Qt.LeftButton, Qt.NoModifier,
+                                  list_item_pos(win.layers, 0)), pump(0.3),
                 QTest.keyClicks(QApplication.focusWidget(), "snout"), key(Qt.Key_Return)))
             rec("rename_result", name=win.session.points[0].name if win.session.n_points else None,
                 frame=win.current)
@@ -1004,7 +1007,7 @@ try:
                 "frame box": lambda: win.spin,
                 "step box": lambda: win.step_spin,
                 "marker box": lambda: win.marker_spin,
-                "point list": lambda: win.point_list,
+                "layers": lambda: win.layers,
                 "timeline": lambda: win.timeline,
                 "no focus": lambda: None,
             })
@@ -1038,16 +1041,16 @@ try:
         shot(win, "segment_preview")
         step("right-click the prompt click", lambda: context_menu_at(win.canvas.viewport(), canvas_pos(cx, cy)))
         step("Esc leaves the segment tool", lambda: key(Qt.Key_Escape, target=win.canvas.viewport()))
-        if win.animal_list.isVisible() and win.animal_list.count():
-            step("right-click the segment row", lambda: context_menu_at(win.animal_list.viewport(),
-                                                                         list_item_pos(win.animal_list, 0)))
+        if win.session.n_segments:
+            step("right-click the animal row", lambda: context_menu_at(win.layers.viewport(),
+                                                                        list_item_pos(win.layers, ("animal", 0))))
         check_controls("segment")
 
     # ---------------------------------------------------------------- tracking (GPU)
     if want("tracking") and not NO_GPU:
         new_state("tracking")
         win._goto(0)
-        win.point_list.clearSelection()
+        win.layers.clearSelection()
         pump(0.2)
         POLICY["mode"] = "accept"
         step("track T", lambda: key(Qt.Key_T, target=win.canvas.viewport()), settle=0.2)

@@ -1,4 +1,4 @@
-"""The segment's row in the right panel.
+"""An animal's row in LAYERS (G154; was the SEGMENT row).
 
 Offscreen, no GPU: a synthetic silhouette is written into a real session and
 the SEGMENT section of the panel is driven the way a user would — the row
@@ -53,9 +53,9 @@ win._open_video(VID)
 pump(lambda: win.state == READY, 20, "open")
 s = win.session
 
-# ---- no segment yet: no row ---------------------------------------------------
-assert not win.animal_list.isVisible() and win.animal_list.count() == 0
-assert "No segment yet" in win.animal_label.text()
+# ---- no animal yet: no row ---------------------------------------------------
+assert win._animal_item(0) is None and s.n_segments == 0
+assert "No animal yet" in win.animal_label.text()
 print("no segment: the row stays out of the way OK")
 
 # ---- a segment with silhouettes on frames 10..40 -------------------------------
@@ -67,36 +67,41 @@ for f in range(10, 41):
     s.masks.set(f, bitmap, 9.0)
 win._refresh_animal_panel()
 app.processEvents()
-assert win.animal_list.isVisible() and win.animal_list.count() == 1
-item = win.animal_list.item(0)
-assert item.text() == "segment", item.text()
-assert item.checkState() == Qt.Checked
-assert not item.icon().isNull(), "the segment row needs its colour swatch"
-assert "31 of 600" in item.toolTip(), item.toolTip()
+item = win._animal_item(0)
+assert item is not None and s.n_segments == 1
+assert item.text(0) == "animal", item.text(0)
+assert item.checkState(0) == Qt.Checked
+assert not item.icon(0).isNull(), "the animal row needs its colour swatch"
+assert "31 of 600" in item.toolTip(0), item.toolTip(0)
+# the line under LAYERS: the numbers of the selected (here: the only) animal, by name
 assert "silhouette on 31 of 600 frames" in win.animal_label.text(), win.animal_label.text()
-assert "<b>" not in win.animal_label.text(), "the name belongs to the row, not the status line"
 print("the row appears with the swatch, name, checkbox and counts OK")
 
 # ---- checkbox shows / hides the silhouette -------------------------------------
 win._goto(20)
 assert win.canvas._mask_item.isVisible(), "the silhouette should be drawn at frame 20"
-item.setCheckState(Qt.Unchecked)
+# (G154) the row's checkbox is THIS animal's silhouette; the toolbar's Mask hides them all
+item.setCheckState(0, Qt.Unchecked)
 app.processEvents()
-assert not win.btn_mask.isChecked() and not win.canvas._mask_item.isVisible()
-assert win.animal_list.item(0).checkState() == Qt.Unchecked
-win.btn_mask.setChecked(True)               # the toolbar toggle drives the row back
+assert not s.animal.shown and not win.canvas._mask_item.isVisible() and win.btn_mask.isChecked()
+win._animal_item(0).setCheckState(0, Qt.Checked)
 app.processEvents()
-assert win.animal_list.item(0).checkState() == Qt.Checked and win.canvas._mask_item.isVisible()
-print("checkbox <-> toolbar mask toggle stay in step OK")
+assert s.animal.shown and win.canvas._mask_item.isVisible()
+win.btn_mask.setChecked(False)
+app.processEvents()
+assert not win.canvas._mask_item.isVisible() and win._animal_item(0).checkState(0) == Qt.Checked
+win.btn_mask.setChecked(True)
+app.processEvents()
+print("the row's checkbox hides its own silhouette, Mask hides all OK")
 
 # ---- rename by editing the row ---------------------------------------------------
-win.animal_list.item(0).setText("iguana")
+win._animal_item(0).setText(0, "iguana")
 app.processEvents()
 assert s.animal.name == "iguana", s.animal.name
-assert win.animal_list.item(0).text() == "iguana"
+assert win._animal_item(0).text(0) == "iguana"
 win.timeline.repaint()
 app.processEvents()
-win.animal_list.item(0).setText("   ")           # blank falls back, never empties the name
+win._animal_item(0).setText(0, "   ")           # blank falls back, never empties the name
 app.processEvents()
 assert s.animal.name == "iguana", s.animal.name
 print("inline rename OK")
@@ -120,15 +125,18 @@ win.act_show_midline.setChecked(True)
 menu, acts = win._build_animal_menu()
 acts["show_mask"].setChecked(False)
 win._animal_menu_action(acts["show_mask"], acts)
-assert not win.btn_mask.isChecked() and win.animal_list.item(0).checkState() == Qt.Unchecked
-win.btn_mask.setChecked(True)
+assert not s.animal.shown and win._animal_item(0).checkState(0) == Qt.Unchecked
+menu, acts = win._build_animal_menu()
+acts["show_mask"].setChecked(True)
+win._animal_menu_action(acts["show_mask"], acts)
+assert s.animal.shown
 print("menu overlay toggles OK")
 
 # ---- context menu: rename through the dialog ---------------------------------------
 _typed["v"] = "lizard"
 menu, acts = win._build_animal_menu()
 win._animal_menu_action(acts["rename"], acts)
-assert s.animal.name == "lizard" and win.animal_list.item(0).text() == "lizard"
+assert s.animal.name == "lizard" and win._animal_item(0).text(0) == "lizard"
 
 # ---- context menu: clear this frame, undo ------------------------------------------
 win._goto(20)
@@ -136,7 +144,7 @@ menu, acts = win._build_animal_menu()
 assert acts["clear_here"].isEnabled()
 win._animal_menu_action(acts["clear_here"], acts)
 assert not s.masks.has(20) and s.masks.has(21) and s.masks.n_masked() == 30
-assert "30 of 600" in win.animal_list.item(0).toolTip()
+assert "30 of 600" in win._animal_item(0).toolTip(0)
 win._undo_run()
 win._refresh_animal_panel()
 assert s.masks.has(20) and s.masks.n_masked() == 31, "Ctrl+Z restores the silhouette"
@@ -162,7 +170,7 @@ menu, acts = win._build_animal_menu()
 win._animal_menu_action(acts["clear_all"], acts)
 assert s.masks.n_masked() == 0 and s.animal is not None, "the clicks must survive"
 assert s.animal.n_prompts() == 1
-assert win.animal_list.isVisible() and win.animal_list.count() == 1
+assert win._animal_item(0) is not None and s.n_segments == 1
 menu, acts = win._build_animal_menu()
 assert not acts["clear_all"].isEnabled() and not acts["first"].isEnabled()
 print("clear-all keeps the segment and its clicks OK")
@@ -170,10 +178,10 @@ print("clear-all keeps the segment and its clicks OK")
 # ---- the row is dead while tracking -----------------------------------------------------
 win.state = TRACKING
 win._apply_state()
-assert not win.animal_list.isEnabled()
+assert not win.layers.isEnabled()
 win.state = READY
 win._apply_state()
-assert win.animal_list.isEnabled()
+assert win.layers.isEnabled()
 
 # ---- project round trip of the name -------------------------------------------------------
 proj = os.path.join(SCRATCH, "segment_panel.kinetrace")
@@ -188,8 +196,8 @@ menu, acts = win._build_animal_menu()
 win._animal_menu_action(acts["remove"], acts)
 app.processEvents()
 assert s.animal is None and s.masks is None
-assert not win.animal_list.isVisible() and win.animal_list.count() == 0
-assert "No segment yet" in win.animal_label.text()
+assert win._animal_item(0) is None and s.n_segments == 0
+assert "No animal yet" in win.animal_label.text()
 print("remove-the-segment from the row OK")
 
 win._dev_probe.wait(30000)

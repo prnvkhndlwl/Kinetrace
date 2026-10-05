@@ -77,18 +77,20 @@ sf.update_event(1, name="@run")
 sf.apply_skeleton({"name": "t", "landmarks": ["=snout", "tail"], "bones": [["=snout", "tail"]], "head": "=snout"})
 names = [p.name for p in sf.points] + [e.name for e in sf.events]
 assert not any(n.strip()[:1] in "=+-@" for n in names), names
-assert "snout" in names and sf.skeleton["head"] == "snout" and ["snout", "tail"] in sf.skeleton["bones"], sf.skeleton
+sk = sf.segments[0].skeleton      # (G153) the skeleton is the animal's, in part names
+assert "animal snout" in names and sk["head"] == "snout" and ["snout", "tail"] in sk["bones"], sk
 assert [p.name for p in sf.points][:2] == ['HYPERLINK("http://x","y")', "cmd|' /C calc'!A0"], names
 pf_path = os.path.join(SCRATCH, "formula.kinetrace")
 projectfile.save(Project([sf]), pf_path)
 pcsv = os.path.join(pf_path, "cameras", "cam1", "points.csv")
 text = open(pcsv, encoding="utf-8").read()
-open(pcsv, "w", encoding="utf-8", newline="").write(text.replace("\ntail,", "\n=tail,", 1))
+open(pcsv, "w", encoding="utf-8", newline="").write(text.replace("\nanimal tail,", "\n=animal tail,", 1))
 back = projectfile.load(pf_path)
-assert "tail" in [p.name for p in back.sessions[0].points] and not any(
+assert "animal tail" in [p.name for p in back.sessions[0].points] and not any(
     p.name.startswith("=") for p in back.sessions[0].points), [p.name for p in back.sessions[0].points]
 pr = Project([sf])
-assert pr.rename_landmark("tail", "=tail2") == "tail2"
+# (G153) a point of an animal keeps the animal's prefix: "=tail2" typed = "animal tail2"
+assert pr.rename_landmark("animal tail", "=tail2") == "animal tail2"
 sf.export_csv(os.path.join(SCRATCH, "formula.csv"))
 sf.export_events_csv(os.path.join(SCRATCH, "formula_ev.csv"))
 for f in ("formula.csv", "formula_ev.csv"):

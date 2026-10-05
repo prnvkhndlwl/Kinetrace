@@ -95,9 +95,16 @@ print(f"all {len(win.findChildren(QMenu))} menus show their tooltips OK")
 full_w = win._controls_full_w
 assert win._controls.minimumWidth() < full_w - 150, (win._controls.minimumWidth(), full_w)
 w0 = win.width()
-win.resize(win.minimumSizeHint().width(), 900)
+# a window whose control bar is well under its full width (the bar lost the timeline's zoom buttons,
+# G152, so the window's own minimum no longer forces it to fold)
+target = (win._controls.minimumWidth() + full_w) // 2
+# offscreen has no fonts: the onboarding chips measure ~1670 px there and would set the window's
+# minimum above the bar's full width; the strip hides itself once anything is tracked anyway
+win.onboarding.hide()
 pump(0.3)
-assert win._controls.width() < full_w and win._controls_compact
+win.resize(max(win.minimumSizeHint().width(), win.width() - (win._controls.width() - target)), 900)
+pump(0.3)
+assert win._controls.width() < full_w and win._controls_compact, (win._controls.width(), full_w)
 assert win.btn_pan.toolButtonStyle() == Qt.ToolButtonIconOnly, "the least-needed label folds first"
 assert win.btn_track.text().startswith("Track"), "the Track button keeps its text"
 from PySide6.QtWidgets import QProgressBar  # noqa: E402
@@ -191,23 +198,23 @@ pump()
 pid = win.session.add_point(200, 320.0, 240.0)
 win._refresh_point_list()
 pump()
-win.point_list.setFocus()
-win.point_list.setCurrentRow(0)
+win.layers.setFocus()
+win.layers.setCurrentItem(win.layers.point_item(0))
 pump()
-QTest.keyClick(win.point_list, Qt.Key_F)
+QTest.keyClick(win.layers, Qt.Key_F)
 pump()
 assert win.current == 201, "F with the point list focused (type-ahead must not eat it)"
-QTest.keyClick(win.point_list, Qt.Key_N)
+QTest.keyClick(win.layers, Qt.Key_N)
 pump()
 assert win.btn_add.isChecked(), "N with the point list focused must arm placement"
-QTest.keyClick(win.point_list, Qt.Key_Escape)
+QTest.keyClick(win.layers, Qt.Key_Escape)
 pump()
 assert not win.btn_add.isChecked(), "Esc with the point list focused must cancel placement"
 print("hotkeys survive point-list focus OK")
 
 # ---- typing a NAME is never hijacked -----------------------------------------
-item = win.point_list.item(0)
-win.point_list.editItem(item)
+item = win.layers.point_item(0)
+win.layers.editItem(item, 0)
 pump()
 editor = app.focusWidget()
 assert isinstance(editor, QLineEdit), f"rename editor not focused: {editor}"
@@ -295,7 +302,7 @@ assert win.btn_pan.isChecked() != was_pan, "H with a spin box focused"
 QTest.keyClick(app.focusWidget() or win, Qt.Key_H)
 pump()
 # Delete INSIDE a spin box is an editing key: the selected point must survive
-win.point_list.setCurrentRow(0)
+win.layers.setCurrentItem(win.layers.point_item(0))
 win._select(0) if hasattr(win, "_select") else None
 n_pts = win.session.n_points
 win.marker_spin.setFocus()
@@ -304,10 +311,10 @@ pump()
 assert win.session.n_points == n_pts, "Delete typed into a spin box deleted a point"
 win.marker_spin.clearFocus()
 # Delete with the LIST focused deletes the selected point
-win.point_list.setFocus()
-win.point_list.setCurrentRow(0)
+win.layers.setFocus()
+win.layers.setCurrentItem(win.layers.point_item(0))
 pump()
-QTest.keyClick(win.point_list, Qt.Key_Delete)
+QTest.keyClick(win.layers, Qt.Key_Delete)
 pump()
 assert win.session.n_points == n_pts - 1, "Delete with the point list focused must delete the selected point"
 print("timeline focus, events, pan, delete OK")
@@ -331,12 +338,12 @@ print("3D window keeps the frame keys OK")
 # ---- I68: the Segment & Points panel floated: its focus still takes the hotkeys --
 win.dock.setFloating(True)
 pump(0.3)
-if win.point_list.count():
+if win.layers.n_point_rows():
     app.setActiveWindow(win.dock)
-    win.point_list.setFocus()
+    win.layers.setFocus()
     pump()
     f0 = win.current
-    QTest.keyClick(app.focusWidget() or win.point_list, Qt.Key_F)
+    QTest.keyClick(app.focusWidget() or win.layers, Qt.Key_F)
     pump()
     assert win.current == f0 + 1, "F with the floated panel focused must step the frame"
 win.dock.setFloating(False)
@@ -442,7 +449,7 @@ win._refresh_point_list()
 win._update_track_button()
 assert win._track_blocked is not None and "Select what to track" in win._track_blocked, \
     "a point that is not selected is not tracked (G61)"
-win.point_list.item(_pid).setSelected(True)
+win.layers.point_item(_pid).setSelected(True)
 win._update_track_button()
 assert win._track_blocked is None and win.btn_track.property("idle") is False, "a point here makes Track loud again"
 win.session.remove_point(_pid)
@@ -498,7 +505,7 @@ pump()
 QTest.keyClick(win, Qt.Key_Escape)
 pump()
 assert tools() == (False, False, False) and not c._pan_mode, "Esc left Pan on"
-for b in (win.btn_roi, win.btn_mask, win.btn_follow, win.btn_onbody, win.btn_autopause):
+for b in (win.btn_roi, win.btn_mask, win.btn_follow, win.btn_autopause):
     before = b.isChecked()
     QTest.keyClick(win, Qt.Key_H)
     QTest.keyClick(win, Qt.Key_S)

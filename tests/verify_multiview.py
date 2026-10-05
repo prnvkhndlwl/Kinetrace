@@ -162,7 +162,7 @@ assert sb.tracked[F, 0] and np.linalg.norm(sb.tracks[F, 0] - ub) < 1.5, "placed 
 assert not sa.tracked.any() and not sc.tracked.any(), "nowhere else"
 assert not win.btn_add.isChecked() and not A._place_mode and not B._place_mode, "one placement per arm"
 assert win._epi_probe is None and not B._guides.lines, "no look-here cross"
-assert win.point_list.count() == 1 and win.selected == 0
+assert win.layers.n_point_rows() == 1 and win.selected == 0
 print("G20: Add armed in one camera, a click on another camera's picture switches AND places the point there OK")
 
 # ---- 2. (I132) the lines in the other cameras run exactly to the picture's edges -------
@@ -365,7 +365,7 @@ cap = win.grid._cells[0].caption.text()
 assert "not following" in cap and f"frame {shown[0]}" in cap, cap
 win._last_goto_t = 0.0
 win._goto(F)                                         # back on the frame with data
-win.point_list.setCurrentRow(sc.pid_by_name(name))
+win.layers.setCurrentItem(win.layers.point_item(sc.pid_by_name(name)))
 pump(0.05)
 assert len(win.canvas._guides.lines) == 2, "the working camera keeps its guides (they need tracks, not pictures)"
 assert not A._guides.lines and not A._guides.preds and not A._guides.notes, "a veiled camera draws none"
@@ -411,7 +411,7 @@ pump(0.3)
 D = win.grid.canvas(3)
 assert win._guides_ready() and win._cal_cam(3) is None
 win._goto(F)
-win.point_list.setCurrentRow(win.session.pid_by_name(name))
+win.layers.setCurrentItem(win.layers.point_item(win.session.pid_by_name(name)))
 pump(0.1)
 assert win.canvas._guides.lines and not D._guides.lines and not D._guides.preds, \
     "the calibrated cameras keep their guides; the new one has none"

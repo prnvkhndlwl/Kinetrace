@@ -387,6 +387,7 @@ class BoardReview(QWidget):
         # fit still describes these corners (I74)
         self.corner_rev = 0
         self.model = "auto"          # the lens model "Best spread" fits with
+        self.base = None             # (G146) GoPro's lens curve for model "gopro"
         self._reader: _FrameReader | None = None
         self._reader_scan = None
         self._reading = -1           # the board whose full frame is being read
@@ -542,7 +543,8 @@ class BoardReview(QWidget):
 
         def work():
             # the lens model the user chose on the video page, not always "auto"
-            idx, err, why = lens.auto_select(corners, self.pattern, self.square, scan.size, self.model)
+            idx, err, why = lens.auto_select(corners, self.pattern, self.square, scan.size, self.model,
+                                             base=self.base)
             if prof is not None:
                 # the errors of the profile the tiles DRAW (its axes), not of the provisional fit
                 # auto_select made on its way (R19)

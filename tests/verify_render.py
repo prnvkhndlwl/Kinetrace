@@ -233,9 +233,10 @@ assert win.act_overlay.isEnabled(), "Export Overlay Video should be enabled with
 import kinetrace.render as _render                  # noqa: E402
 from PySide6.QtWidgets import QDialog                   # noqa: E402
 
-sess.skeleton = {"name": "t", "landmarks": [p.name for p in sess.points],
-                 "bones": [[sess.points[0].name, sess.points[1].name]], "head": sess.points[0].name}
-assert sess.bones() == [(0, 1)]
+# (G153, G157) a bone joins two points of one animal
+k = sess.add_segment()
+sess.move_points([0, 1], k)
+assert sess.connect_bone(0, 1) and sess.bones() == [(0, 1)], sess.bones()
 win.act_show_bones.setChecked(False)
 _real_dlg = _render.OverlayDialog
 out6 = os.path.join(SCRATCH, "overlay_app.mp4")

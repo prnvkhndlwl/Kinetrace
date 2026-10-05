@@ -357,13 +357,15 @@ def _():
 @check("G122 apply_skeleton writes the names the points really got, so bones follow a unique_name rename")
 def _():
     s = sess()
-    s.add_landmark("a_b")                                      # the sanitiser makes "a,b" collide with it
+    k = s.add_segment("animal")                                 # (G153) the skeleton goes on an animal
+    s.points[s.add_landmark("animal a_b")].segment = "animal"   # the sanitiser makes "a,b" collide with it
     t = {"name": "t", "head": "a,b", "landmarks": ["a,b", "c"], "bones": [["a,b", "c"]], "derived": {"c": "tip"},
          "note": ""}
-    new = s.apply_skeleton(t)
+    new = s.apply_skeleton(t, k)
     names = [q.name for q in s.points]
-    assert names == ["a_b", "a,b (2)", "c"], names
-    assert s.skeleton["landmarks"] == ["a,b (2)", "c"] and s.skeleton["head"] == "a,b (2)", s.skeleton
+    assert names == ["animal a_b", "animal a,b (2)", "animal c"], names
+    sk = s.segments[k].skeleton                                 # in part names
+    assert sk["landmarks"] == ["a,b (2)", "c"] and sk["head"] == "a,b (2)", sk
     assert s.bones() == [(1, 2)], s.bones()
     assert new == [1, 2]
 

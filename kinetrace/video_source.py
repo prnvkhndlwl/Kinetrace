@@ -136,6 +136,9 @@ class VideoInfo:
     # camera rate and sync offset hangs on this number, so anything but
     # "header" must be said to the user (`fps_note`).
     fps_source: str = "header"
+    # (G145) GoPro footage: the `gpmf.GoProInfo` read from the file (the flag that turns on the GoPro
+    # workflow -- its lens model, settings checks, sensors); None for every other camera
+    gopro: object = None
 
     @property
     def header_overcount(self) -> int:

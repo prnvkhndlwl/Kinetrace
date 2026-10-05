@@ -120,13 +120,13 @@ def new_window(video):
 
 
 def row_center(win, row):
-    return win.point_list.visualItemRect(win.point_list.item(row)).center()
+    return win.layers.visualItemRect(win.layers.point_item(row)).center()
 
 
 def select_rows(win, *rows):
-    win.point_list.clearSelection()
+    win.layers.clearSelection()
     for r in rows:
-        win.point_list.item(r).setSelected(True)
+        win.layers.point_item(r).setSelected(True)
     pump(0.05)
 
 
@@ -155,13 +155,13 @@ win._on_select(0)
 check("G66 a click on P1 with P2-P4 selected leaves just P1", win._selected_pids() == [0], win._selected_pids())
 check("G66 the Track button follows (T tracked the stale set)", "1 point" in win.btn_track.text(), win.btn_track.text())
 
-win.point_list.clearSelection()
+win.layers.clearSelection()
 pump(0.05)
-QTest.mouseClick(win.point_list.viewport(), Qt.LeftButton, Qt.NoModifier, row_center(win, 1))
-QTest.mouseClick(win.point_list.viewport(), Qt.LeftButton, Qt.ControlModifier, row_center(win, 2))
+QTest.mouseClick(win.layers.viewport(), Qt.LeftButton, Qt.NoModifier, row_center(win, 1))
+QTest.mouseClick(win.layers.viewport(), Qt.LeftButton, Qt.ControlModifier, row_center(win, 2))
 check("G80 real clicks: P2 + P3 selected, P3 current", win._selected_pids() == [1, 2] and win.selected == 2,
       (win._selected_pids(), win.selected))
-QTest.mouseClick(win.point_list.viewport(), Qt.LeftButton, Qt.ControlModifier, row_center(win, 2))
+QTest.mouseClick(win.layers.viewport(), Qt.LeftButton, Qt.ControlModifier, row_center(win, 2))
 check("G80 Ctrl+click-deselecting the current row moves it into the selection",
       win._selected_pids() == [1] and win.selected == 1, (win._selected_pids(), win.selected))
 
@@ -220,20 +220,20 @@ win._undo_run()
 check("G68 the anchor toggle is its own step", not s.points[pid].anchor and bool(s.manual[5, pid]))
 win._undo_run()
 win._on_annotate(153.0, 153.0)
-win.point_list.item(pid).setCheckState(Qt.Unchecked)
+win.layers.point_item(pid).setCheckState(0, Qt.Unchecked)
 check("G68 (display off)", not s.points[pid].display)
 win._undo_run()
 check("G68 the display checkbox is its own step", s.points[pid].display and bool(s.manual[5, pid]))
 win._undo_run()
 
 # ---- G126: rows after in-place edits
-it = win.point_list.item(pid)
-it.setText("")
+it = win.layers.point_item(pid)
+it.setText(0, "")
 pump(0.05)
-check("G126 an emptied name keeps the old one", it.text() == s.points[pid].name != "", it.text())
+check("G126 an emptied name keeps the old one", it.text(0) == s.part_name(pid) != "", it.text(0))
 q = s.add_empty_point()
 win._refresh_point_list()
-dim = lambda r: win.point_list.item(r).foreground().style() != Qt.NoBrush      # noqa: E731
+dim = lambda r: win.layers.point_item(r).foreground(0).style() != Qt.NoBrush      # noqa: E731
 check("G126 a point with no position is dimmed", dim(q))
 win._on_select(q)
 win._on_annotate(80.0, 80.0)
@@ -336,7 +336,7 @@ win._deselect()
 # ---- G103: the run scope is part of the saved working state
 select_rows(win, 1, 2)
 win._on_select(1)
-win.point_list.item(2).setSelected(True)
+win.layers.point_item(2).setSelected(True)
 pump(0.05)
 win._sync_ui_state()
 saved = list(s.ui_state.get("selected_names", []))
@@ -347,7 +347,7 @@ check("G103 and come back", [s.points[q].name for q in win._selected_pids()] == 
       win._selected_pids())
 win._deselect()
 s.masks.set(30, bitmap, 9.0)
-win.animal_list.item(0).setSelected(True)
+win._select_segments([0])
 win._sync_ui_state()
 win._deselect()
 win._apply_ui_state()
@@ -784,6 +784,7 @@ win._new_point()
 for sv in p.sessions:
     sv.points[sv.n_points - 1].source = "silhouette"
     sv.points[sv.n_points - 1].spec = "centroid"
+    sv.move_points([sv.n_points - 1], 0)             # (G153) a derived landmark belongs to its animal
 win._refresh_point_list()
 dname = p.sessions[0].points[-1].name
 win._set_active_view(0)
@@ -795,17 +796,19 @@ check("I184 every-camera runs that re-segment also fill the derived landmarks of
       bool(jobs) and all(dname in [p.sessions[j["view"]].points[q].name for q in j["pids"]] for j in jobs), jobs)
 win._deselect()
 win._on_select(pid0)
-check("I185 Body on: a selected on-body point brings the segment, its row not selected",
+# (G153, G156, G160) the point is the animal's, and the animal holds its points: then its silhouette comes
+s0 = p.sessions[0]
+s0.move_points([pid0], 0)
+check("G160 an animal's point alone runs alone (holding is opt-in)", not win._run_segment({pid0}))
+s0.segments[0].hold = True
+check("I185 the animal holds its points: a selected point of it brings its silhouette, its row not selected",
       not win._segment_selected() and win._run_segment({pid0}))
-win.btn_onbody.setChecked(False)
-check("I185 Body off: it does not", not win._run_segment({pid0}))
-win.btn_onbody.setChecked(True)
-p.sessions[0].points[pid0].free = True
-check("I185 a point marked 'may leave the segment' does not bring it", not win._run_segment({pid0}))
-p.sessions[0].points[pid0].free = False
+s0.points[pid0].free = True
+check("I185 a point marked 'may leave its silhouette' does not bring it", not win._run_segment({pid0}))
+s0.points[pid0].free = False
 win._update_track_button()
-check("I185 the Track button's tooltip says the segment rides along",
-      "Body is on, so the segment rides along" in win.btn_track.toolTip(), win.btn_track.toolTip())
+check("I185 the Track button's tooltip says the silhouette rides along",
+      "so the silhouette rides along" in win.btn_track.toolTip(), win.btn_track.toolTip())
 win._deselect()
 # the pass holding the head landmark goes first and carries the segment (I185)
 s0 = p.sessions[0]
@@ -815,16 +818,22 @@ win._on_add(300.0, 200.0)
 q_head = s0.n_points - 1
 s0.points[0].tracker = "alltracker"
 s0.points[q_head].tracker = "cotracker3"
-s0.skeleton = {"name": "t", "head": s0.points[q_head].name, "landmarks": [s0.points[0].name, s0.points[q_head].name],
-               "bones": [], "derived": {}}
+s0.move_points([q_head], 0)
+s0.set_head(q_head)                                     # (G157) the animal's head
 check("I185 (setup) the head is the CoTracker3 point", s0.head_pid() == q_head)
 groups = win._tracker_passes({0, q_head})
 check("I185 in a two-pass run the pass holding the head runs FIRST", groups[0] == [q_head] and groups[1] == [0],
       groups)
-s0.skeleton = None
+s0.clear_skeleton(0)
+s0.points[q_head].name = "q"                             # (no head by name either)
 groups = win._tracker_passes({0, q_head})
 check("I185 (no skeleton: AllTracker first as before)", groups[0] == [0] and groups[1] == [q_head], groups)
 win._deselect()
+# these edits mark the project changed (G153's move / head); the close must not save them into the shared
+# project file the next section opens
+for sv in win.project.sessions:
+    sv.dirty = False
+win.project.dirty = False
 close(win)
 
 # ---- I196 / I189: a real every-camera run (Moving spot: no model)

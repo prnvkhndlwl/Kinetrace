@@ -397,7 +397,7 @@ print(f"  25 clicks: {ascii(d.verdict.text()[:160])}...")
 assert d.winner.model == "spot" and d.winner.settings.cue == "bright" and d.winner.corrections == 0
 assert s.points[0].tracker == "spot" and win._tracker_of(0) == "spot", "Use gives THAT point its tracker (G62)"
 assert win._point_backend == default, "the project's default is not changed by the test"
-assert "Moving spot" in win.point_list.item(0).toolTip()
+assert "Moving spot" in win.layers.point_item(0).toolTip(0)
 assert s.points[0].spot and s.points[0].spot["cue"] == "bright"
 win._undo_run()
 pump(0.05)
@@ -500,7 +500,7 @@ for v, gt in ((1, GTB),):
     win._set_active_view(v)
     pump(0.2)
     j = p.sessions[v].pid_by_name(name)
-    win.point_list.setCurrentRow(j)
+    win.layers.setCurrentItem(win.layers.point_item(j))
     for f in (0, 1):
         win._goto(f, force=True)
         win._on_annotate(*gt[f])

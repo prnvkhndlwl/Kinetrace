@@ -97,9 +97,9 @@ assert "last frame with data" in msg, msg
 key(Qt.Key_Less, Qt.ShiftModifier)
 assert win.current == 20, win.current
 # through the application event filter (focus in the point list), like a real user
-win.point_list.setFocus()
+win.layers.setFocus()
 app.processEvents()
-QTest.keyClick(win.point_list, Qt.Key_Greater, Qt.ShiftModifier)
+QTest.keyClick(win.layers, Qt.Key_Greater, Qt.ShiftModifier)
 app.processEvents()
 assert win.current == 219, win.current
 print("Shift+< / Shift+> on a tracked point OK")

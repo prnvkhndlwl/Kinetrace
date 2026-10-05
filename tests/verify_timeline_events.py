@@ -275,11 +275,11 @@ print("gesture cancel on disable OK")
 _dialog_reply["text"] = s.points[0].name  # rename P2 to P1's name via dialog
 win._on_rename(1)
 assert s.points[1].name == f"{s.points[0].name} (2)", s.points[1].name
-item = win.point_list.item(1)
-item.setText(s.points[0].name)  # rename via the list editor to a taken name
+item = win.layers.point_item(1)
+item.setText(0, s.points[0].name)  # rename via the list editor to a taken name
 app.processEvents()
 assert s.points[1].name.endswith("(2)") and s.points[0].name != s.points[1].name
-assert win.point_list.item(1).text() == s.points[1].name, "list must show the applied name"
+assert win.layers.point_item(1).text(0) == s.points[1].name, "list must show the applied name"
 print("rename collision OK")
 
 # ---- circle gesture handler -> group point ----
@@ -404,8 +404,8 @@ tlp.select_event_window(0)   # "swing" = [120, 180]
 assert tlp.sel_range == (120, 180), "event window must be selectable for bulk ops"
 
 # ---- bulk clear: Delete blanks the window for the panel-selected points ----
-win.point_list.item(0).setSelected(True)
-win.point_list.item(1).setSelected(False)
+win.layers.point_item(0).setSelected(True)
+win.layers.point_item(1).setSelected(False)
 assert win._selected_pids() == [0]
 assert s.tracked[150, 0] and s.tracked[150, 1]
 key(Qt.Key_Delete)
@@ -421,8 +421,8 @@ print("frame-window bulk clear + undo OK")
 
 # ---- bulk point deletion: multi-select + Delete removes them, undo restores ----
 n0 = s.n_points
-win.point_list.item(0).setSelected(True)
-win.point_list.item(1).setSelected(True)
+win.layers.point_item(0).setSelected(True)
+win.layers.point_item(1).setSelected(True)
 assert win._selected_pids() == [0, 1]
 key(Qt.Key_Delete)   # QMessageBox.question monkeypatched -> Yes
 assert s.n_points == n0 - 2, "both selected points must be deleted"
@@ -516,7 +516,7 @@ seg_y = EVENTS_H + 2 + ANIMAL_H // 2
 row_y = [tlp._row_rect_y(r)[0] + LANE_H // 2 for r in range(3)]
 
 # 1. along the SEGMENT lane -> silhouettes only, points untouched
-win.point_list.clearSelection()          # the panel must not leak into this
+win.layers.clearSelection()          # the panel must not leak into this
 marquee(420, 440, seg_y, seg_y)
 assert tlp.sel_seg and tlp.sel_rows == [], \
     f"segment-lane drag must target the silhouettes alone: {tlp.sel_rows}, {tlp.sel_seg}"
@@ -530,7 +530,7 @@ win._undo_run()
 assert s.masks.n_masked() == 101, "Ctrl+Z must restore the silhouettes"
 
 # 2. along ONE point lane -> that point only, even though the panel says otherwise
-win.point_list.item(1).setSelected(True)   # panel selection must lose to the marquee
+win.layers.point_item(1).setSelected(True)   # panel selection must lose to the marquee
 marquee(420, 440, row_y[0], row_y[0])
 assert tlp.sel_rows == [0] and not tlp.sel_seg, f"point-lane drag: {tlp.sel_rows}"
 key(Qt.Key_Delete)
@@ -541,7 +541,7 @@ win._undo_run()
 assert s.tracked[430, 0], "Ctrl+Z must restore the cleared track"
 
 # 3. across BOTH lanes -> both cleared, and ONE undo brings both back
-win.point_list.clearSelection()
+win.layers.clearSelection()
 marquee(420, 440, seg_y, row_y[1])
 assert tlp.sel_seg and tlp.sel_rows == [0, 1], f"spanning drag: {tlp.sel_rows}"
 key(Qt.Key_Delete)
@@ -553,8 +553,8 @@ assert s.masks.has(430) and s.tracked[430, 0] and s.tracked[430, 1], \
     "one Ctrl+Z must restore points AND silhouettes"
 
 # 4. in the RULER -> lanes unspecified, so Delete falls back to the point panel
-win.point_list.item(0).setSelected(True)
-win.point_list.item(1).setSelected(False)
+win.layers.point_item(0).setSelected(True)
+win.layers.point_item(1).setSelected(False)
 marquee(420, 440, EVENTS_H / 2, EVENTS_H / 2)
 assert tlp.sel_rows is None and not tlp.sel_seg, "a ruler drag must not name lanes"
 key(Qt.Key_Delete)
@@ -576,7 +576,7 @@ assert tlp.sel_range is None
 
 # 6. the REAL key path: a drag leaves focus on the panel, so Delete must
 #    propagate from the panel up to the window (the panel keeps only its zoom keys)
-win.point_list.clearSelection()
+win.layers.clearSelection()
 tlp.setFocus()
 marquee(420, 440, seg_y, seg_y)
 app.sendEvent(tlp, QKeyEvent(QEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier))
@@ -584,7 +584,7 @@ app.processEvents()
 assert not s.masks.has(430), "Delete must reach the window while the panel has focus"
 win._undo_run()
 assert s.masks.has(430)
-win.point_list.clearSelection()
+win.layers.clearSelection()
 print("timeline lane marquee (segment / points / both) OK")
 
 # ---- timeline aggregation stays fast at 40k frames ----

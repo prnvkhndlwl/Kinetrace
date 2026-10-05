@@ -54,6 +54,11 @@ def section(fn):
     except Exception as e:      # noqa: BLE001
         FAILS.append(fn.__name__)
         print(f"FAIL  {fn.__name__}: raised {type(e).__name__}: {str(e)[:160]}")
+    # offscreen, every widget a section shows is a window at the same place: one left open takes the
+    # next section's mouse moves (the G85 loupe saw none once canvases had their zoom buttons, G152)
+    for w in QApplication.topLevelWidgets():
+        if w.isVisible():
+            w.close()
     return fn
 
 
