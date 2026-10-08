@@ -207,7 +207,9 @@ it has one) is in **part** names — the points themselves are named `<animal>
 How the program looked. `state.json` holds `tools` (every toggle: follow,
 auto-pause, ROI, marker size, trails, display filter, point model, …) and
 `layout` (window rectangle, side panel shown / floating, splitter sizes, solo
-mode, step size, the getting-started strip). `view.json` (per camera):
+mode, step size, the getting-started strip, and `views`: `order` = the camera
+views' arrangement on screen and `hidden` = the cameras whose view is hidden,
+both as camera NAMES; display only — the cameras' order is `project.json`'s). `view.json` (per camera):
 `current_frame`, `selected_point` (by name), `selected_points` (a list of names:
 every point selected in LAYERS, which is what Track will track; full names,
 never indices, so a reordered list still selects the right points) and

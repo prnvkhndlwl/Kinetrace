@@ -229,7 +229,8 @@ check(tl._view[1] - tl._view[0] < span0 and abs(win.canvas.transform().m11() - m
 QTest.mouseClick(win.btn_tz_fit, Qt.LeftButton)
 pump()
 cv = win.canvas
-check(cv._zoom_bar.isVisible() and cv._zoom_bar.parent() is cv.viewport(), "the video has its own zoom buttons")
+check(cv._zoom_bar.isVisible() and cv._zoom_bar.parent() is cv,
+      "the video has its own zoom buttons (on the view, not its scrolling viewport: G168)")
 QTest.mouseClick(cv.btn_zoom_in, Qt.LeftButton)
 pump()
 check(cv.transform().m11() > m0 * 1.1 and tl._view[1] - tl._view[0] == span0,

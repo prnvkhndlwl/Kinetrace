@@ -465,15 +465,16 @@ for _ in range(100):
     if len(dlg._headers) == 3:
         break
 assert len(dlg._headers) == 3 and dlg._headers[0][:2] == (W, H), dlg._headers
-assert dlg.table.item(0, 3).text() == f"{W} × {H}" and dlg.base_row() == 0
-dlg._base.button(1).setChecked(True)                 # base: cam2
+assert dlg.table.item(0, 3).text() == f"{W} × {H}" and dlg.table.item(0, 1).text() == "1 · reference"
+dlg.table.selectRow(1)                               # (G171) cam2 ...
+QTest.mouseClick(dlg.btn_up, Qt.LeftButton)          # ... one camera earlier: camera 1, the base
+assert dlg.order_names() == ["cam2.mp4", "cam1.MP4", "cam10.mp4"], dlg.order_names()
 dlg._ticks[2].setChecked(False)                      # leave cam10 out
 assert dlg.buttons.button(QDialogButtonBox.Ok).text() == "Import 2 videos"
-dlg._ticks[1].setChecked(False)                      # unticking the base hands it on
-assert dlg.base_row() == 0
-dlg._ticks[1].setChecked(True)
-dlg._base.button(1).setChecked(True)
-dlg._accept()
+dlg._ticks[0].setChecked(False)                      # unticking camera 1 hands the reference on
+assert dlg.order_names() == ["cam1.MP4"] and dlg.table.item(1, 1).text() == "1 · reference"
+dlg._ticks[0].setChecked(True)
+QTest.mouseClick(dlg.buttons.button(QDialogButtonBox.Ok), Qt.LeftButton)
 assert [os.path.basename(x) for x in dlg.result_paths] == ["cam2.mp4", "cam1.MP4"], dlg.result_paths
 assert dlg.result_project == str(default_project_path(FOLD)) and dlg.result_project.endswith("multiview_folder.kinetrace")
 if os.path.exists(dlg.result_project):          # a project folder (I145)
@@ -490,8 +491,9 @@ assert os.path.exists(dlg.result_project) and not q.dirty, "saved at once"
 back = Project.load(dlg.result_project)
 assert back.names == ["cam2", "cam1"] and [os.path.basename(x.video_path) for x in back.sessions] == \
     ["cam2.mp4", "cam1.MP4"], "the project file keeps the chosen videos and the base"
-print("G30: a folder's videos listed (natural order, headers read in the background), two ticked, the base "
-      "chosen, imported as one project named by file, the base = camera 1, saved at once and reopened OK")
+print("G30: a folder's videos listed (natural order, headers read in the background), two ticked, put in "
+      "camera order (G171), imported as one project named by file, camera 1 = the base, saved at once and "
+      "reopened OK")
 for x in list_videos(FOLD, recursive=True):
     forget_recovery(str(x))
 

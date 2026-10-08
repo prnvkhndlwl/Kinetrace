@@ -18,6 +18,13 @@ The active row is the camera being tracked; selecting another row switches to
 it (the playhead follows through the offsets, so the picture stays on the same
 instant).
 
+(G169) With many cameras every row is ONE compact line -- its disclosure ▶, its
+eye (show / hide the camera's view: a hidden view is not decoded, and the views
+left get the room), its number, name and offset -- so all of them fit; ▶ opens
+the row's controls (Align here, the offset box and its nudges, the frame rate,
+remove). The numbers are the cameras' ORDER (camera 1 = the reference), the
+order of calibrations, 3D and exports; Camera order... changes it.
+
 The panel is data-free: `MainWindow` rebuilds it from the `Project` and acts on
 its signals.
 """
@@ -28,12 +35,13 @@ from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from kinetrace import theme
+from kinetrace import icons, theme
 from kinetrace.project import REFERENCE_VIEW
 from kinetrace.widgets import ElidedLabel
 
 OFFSET_LIMIT = 10_000_000     # frames; far beyond any real clip
 OFFSET_DECIMALS = 3           # sub-frame sync is measured to ~0.01 frame; show a little more
+LIST_MAX_H = 330              # px: the CAMERAS list grows with its rows up to this, then scrolls (G169)
 
 
 def _dim_label(text: str = "") -> QLabel:
@@ -47,24 +55,57 @@ def _dim_label(text: str = "") -> QLabel:
 
 
 class _CameraRow(QWidget):
-    """Name + offset spin + nudge buttons + align, for one view."""
+    """One camera: a compact line -- disclosure, eye, number + name, offset (G169) -- and, opened,
+    its controls: Align here and remove on that line, the offset box with its nudges, the frame rate
+    and the status line."""
 
     offset_changed = Signal(int, float)   # (view index, new offset in this view's frames)
     align_requested = Signal(int)
     remove_requested = Signal(int)
     fps_requested = Signal(int)           # the frame-rate button (G38)
+    shown_toggled = Signal(int, bool)     # (G169) its eye: (view index, shown)
+    expand_toggled = Signal(int)          # (G169) its disclosure was clicked (the row's height changed)
 
     def __init__(self, index: int):
         super().__init__()
         self.index = index
+        self._offset_text = ""
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 4, 6, 4)
+        lay.setContentsMargins(4, 2, 6, 2)
         lay.setSpacing(2)
 
         top = QHBoxLayout()
-        top.setSpacing(4)
+        top.setSpacing(3)
+        # (G169) the disclosure and the eye lead the line: a glyph button and a drawn icon, never a QStyle
+        # icon (black on the dark theme)
+        # (G169) no taller than the text line: the theme's button min-height + padding made every camera
+        # row ~35 px, and ten cameras no longer fitted the list; the eye shows its state by its picture
+        # (open / struck through), not by the theme's checked-button fill
+        flat = ("QToolButton { min-height: 0px; min-width: 0px; padding: 0px; border: none; background: transparent; }"
+                f"QToolButton:hover {{ background: {theme.HAIRLINE}; border-radius: 3px; }}")
+        self.btn_expand = QToolButton()
+        self.btn_expand.setAutoRaise(True)
+        self.btn_expand.setFocusPolicy(Qt.NoFocus)
+        self.btn_expand.setStyleSheet(flat)
+        self.btn_expand.setFixedSize(18, 20)
+        self.btn_expand.clicked.connect(lambda: self.set_expanded(not self.expanded()))
+        top.addWidget(self.btn_expand)
+        self.btn_eye = QToolButton()
+        self.btn_eye.setAutoRaise(True)
+        self.btn_eye.setCheckable(True)
+        self.btn_eye.setChecked(True)
+        self.btn_eye.setFocusPolicy(Qt.NoFocus)
+        self.btn_eye.setStyleSheet(flat)
+        self.btn_eye.setIconSize(QSize(16, 16))
+        self.btn_eye.setFixedSize(22, 20)
+        self.btn_eye.toggled.connect(self._on_eye)
+        top.addWidget(self.btn_eye)
         self.name = _dim_label()
         top.addWidget(self.name, 1)
+        # the offset at a glance while the row is shut (the box shows it when open)
+        self.summary = ElidedLabel()
+        self.summary.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        top.addWidget(self.summary)
         # "Align here" sits on the name line: on the offset line it made the row
         # wider than the panel and was clipped with the x and the > (G3)
         self.btn_align = QToolButton()
@@ -81,6 +122,11 @@ class _CameraRow(QWidget):
         top.addWidget(self.btn_remove)
         lay.addLayout(top)
 
+        # what ▶ opens: the offset line and the frame-rate / status line
+        self.details = QWidget()
+        dl = QVBoxLayout(self.details)
+        dl.setContentsMargins(0, 0, 0, 2)
+        dl.setSpacing(2)
         row = QHBoxLayout()
         row.setSpacing(3)
         cap = QLabel("offset")                  # short: may size the row
@@ -116,7 +162,7 @@ class _CameraRow(QWidget):
                              "through the video at this rate.")
         row.addWidget(self.rate)
         row.addStretch(1)
-        lay.addLayout(row)
+        dl.addLayout(row)
 
         # the rate this camera recorded at, in front of the status line (the status
         # shortens with "…"; the name line and the offset line have no room to give,
@@ -132,16 +178,65 @@ class _CameraRow(QWidget):
         # no taller than the text line it shares, or every row grows and the list scrolls
         # (the theme's min-height + padding would make it 28 px)
         self.btn_fps.setStyleSheet("QToolButton { min-height: 0px; padding: 0px 6px; }")
-        lay.addLayout(bottom)
+        dl.addLayout(bottom)
+        lay.addWidget(self.details)
+        self._expanded = True             # so set_expanded(False) below takes effect
+        self.set_expanded(False)
+
+    # ------------------------------------------------------------- open / shut (G169)
+
+    def expanded(self) -> bool:
+        return self._expanded
+
+    def set_expanded(self, on: bool, emit: bool = True) -> None:
+        on = bool(on)
+        if on == self._expanded:
+            return
+        self._expanded = on
+        self.details.setVisible(on)
+        self.btn_align.setVisible(on)
+        self.btn_remove.setVisible(on)
+        self.summary.setVisible(not on and bool(self._offset_text))
+        self.btn_expand.setText("▼" if on else "▶")      # not the nudges' ◂ ▸ (one frame earlier / later)
+        self.btn_expand.setToolTip("Hide this camera's controls" if on else
+                                   "Show this camera's controls: Align here, its offset and nudges, its frame "
+                                   "rate, remove")
+        if emit:
+            self.expand_toggled.emit(self.index)
+
+    def _on_eye(self, on: bool) -> None:
+        self.btn_eye.setIcon(icons.eye() if on else icons.eye_off())
+        self.shown_toggled.emit(self.index, bool(on))
+
+    def set_shown(self, shown: bool, active: bool, solo: bool) -> None:
+        """The eye, without emitting: on = the view is on screen. The working camera is always
+        shown; with View -> Other cameras -> Only the working camera the eyes rest (G169)."""
+        self.btn_eye.blockSignals(True)
+        self.btn_eye.setChecked(bool(shown or active))
+        self.btn_eye.blockSignals(False)
+        self.btn_eye.setIcon(icons.eye() if (shown or active) else icons.eye_off())
+        self.btn_eye.setEnabled(not active and not solo)
+        self.btn_eye.setToolTip(
+            "The working camera is always shown" if active else
+            "Only the working camera is shown (View → Other cameras → Only the working camera, Ctrl+2): "
+            "untick that to choose the cameras here" if solo else
+            "Shown: click to hide this camera's view. A hidden view is not read from its video (faster) and "
+            "the other views get its room; its tracks still count for 3D and the guides." if shown else
+            "Hidden: click to show this camera's view again")
 
     def update_row(self, name: str, offset: float, active: bool, status: str,
                    removable: bool, reference: bool = False, rate: float = 1.0,
-                   fps: float | None = None, file_fps: float | None = None) -> None:
+                   fps: float | None = None, file_fps: float | None = None, number: int | None = None) -> None:
         weight = "600" if active else "400"
         color = theme.TEXT if active else theme.TEXT_DIM
         tag = "  (reference)" if reference else ""
-        self.name.setText(name + tag)
+        # (G169) its number = its place in the camera ORDER (calibration, 3D, exports)
+        self.name.setText((f"{number}  " if number is not None else "") + name + tag)
         self.name.setStyleSheet(f"color: {color}; font-weight: {weight};")
+        off = f"{float(offset):+.3f}".rstrip("0").rstrip(".")
+        self._offset_text = "" if reference else (f"offset {off}" + ("" if abs(rate - 1.0) < 1e-9 else f" · ×{rate:g}"))
+        self.summary.setText(self._offset_text)
+        self.summary.setVisible(not self._expanded and bool(self._offset_text))
         if abs(self.spin.value() - float(offset)) > 0.5 * 10 ** -OFFSET_DECIMALS:
             self.spin.blockSignals(True)
             self.spin.setValue(float(offset))
@@ -204,6 +299,9 @@ class CameraPanel(QWidget):
     add_requested = Signal()
     fps_requested = Signal(int)          # a row's frame-rate button (G38)
     sync_toggled = Signal(bool)          # Sync all views (True) / Active view only (False), G24
+    shown_toggled = Signal(int, bool)    # (G169) a row's eye: (view index, shown)
+    show_all_requested = Signal()        # (G169) Show all: every hidden view back
+    order_requested = Signal()           # (G172) Camera order...
 
     def __init__(self):
         super().__init__()
@@ -241,7 +339,10 @@ class CameraPanel(QWidget):
 
         self.list = QListWidget()
         self.list.setSelectionMode(QListWidget.SingleSelection)
-        self.list.setToolTip("The camera being tracked. Click another to switch to it.")
+        self.list.setToolTip("The cameras, in their ORDER (camera 1 = the reference clock; the order of\n"
+                             "calibrations, 3D and exports). The highlighted one is being tracked: click\n"
+                             "another to switch to it. The eye shows / hides a camera's view; ▶ opens its\n"
+                             "controls (Align here, offset, frame rate).")
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # re-lay the rows out when the viewport changes width (a vertical scroll
         # bar appearing, the panel resized): the default Fixed mode keeps the old
@@ -252,6 +353,26 @@ class CameraPanel(QWidget):
         self.list.viewport().installEventFilter(self)
         self.list.currentRowChanged.connect(self._on_row)
         lay.addWidget(self.list, 1)
+        # (G169, G172) under the list, only with several cameras: every hidden view back (only while
+        # some are hidden: it says how many), and the cameras' order
+        foot = QHBoxLayout()
+        foot.setSpacing(4)
+        self.btn_show_all = QToolButton()
+        self.btn_show_all.setFocusPolicy(Qt.NoFocus)
+        self.btn_show_all.clicked.connect(self.show_all_requested)
+        foot.addWidget(self.btn_show_all)
+        foot.addStretch(1)
+        self.btn_order = QToolButton()
+        self.btn_order.setText("Camera order…")
+        self.btn_order.setFocusPolicy(Qt.NoFocus)
+        self.btn_order.setToolTip(
+            "Put the cameras in another order: camera 1 is the reference clock, and the order is the order\n"
+            "of the cameras in calibrations, 3D and exports (keep it the same as your calibration's).\n"
+            "Each camera keeps its points, offset, frame rate, lens and calibration. Dragging a view's title\n"
+            "bar only moves it on screen.")
+        self.btn_order.clicked.connect(self.order_requested)
+        foot.addWidget(self.btn_order)
+        lay.addLayout(foot)
         self.note = QLabel()                  # wraps (several lines), so it is not elided
         self.note.setStyleSheet(f"color: {theme.TEXT_DIM};")
         self.note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -259,6 +380,8 @@ class CameraPanel(QWidget):
         lay.addWidget(self.note)
         self._rows: list[_CameraRow] = []
         self._suppress = False
+        self.btn_show_all.setVisible(False)
+        self.btn_order.setVisible(False)
 
     def eventFilter(self, obj, ev):             # noqa: N802 - Qt name
         if obj is self.list.viewport() and ev.type() == QEvent.Resize:
@@ -271,12 +394,15 @@ class CameraPanel(QWidget):
 
     def rebuild(self, n: int) -> None:
         """Make the list hold exactly `n` rows, keeping existing widgets."""
+        changed = False
         while len(self._rows) < n:
             row = _CameraRow(len(self._rows))
             row.offset_changed.connect(self.offset_changed)
             row.align_requested.connect(self.align_requested)
             row.remove_requested.connect(self.remove_requested)
             row.fps_requested.connect(self.fps_requested)
+            row.shown_toggled.connect(self.shown_toggled)
+            row.expand_toggled.connect(self._fit_row)
             item = QListWidgetItem()          # NOT QListWidgetItem(self.list):
             # that inserts it, and addItem would again. Height from the row; width
             # left to the list, which stretches rows to its viewport (a natural-width
@@ -285,27 +411,57 @@ class CameraPanel(QWidget):
             self.list.addItem(item)
             self.list.setItemWidget(item, row)
             self._rows.append(row)
+            changed = True
         while len(self._rows) > n:
             self._rows.pop()
             self.list.takeItem(self.list.count() - 1)
+            changed = True
+        if changed:
+            self._fit_height()
+
+    def _fit_row(self, i: int) -> None:
+        """Row `i` was opened / shut (G169): its item takes the row's new height, and the list its rows'."""
+        if not (0 <= i < len(self._rows)):
+            return
+        row = self._rows[i]
+        row.layout().activate()
+        self.list.item(i).setSizeHint(QSize(1, row.sizeHint().height()))
+        self.list.doItemsLayout()
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        """(G169) The list is as tall as its rows (all of them visible at once, one compact line each),
+        up to LIST_MAX_H; past that it scrolls."""
+        rows_h = sum(self.list.item(k).sizeHint().height() for k in range(self.list.count()))
+        self.list.setFixedHeight(max(28, min(LIST_MAX_H, rows_h + 2 * self.list.frameWidth() + 2)))
 
     def update_rows(self, names: list[str], offsets: list[float], active: int,
                     statuses: list[str], note: str = "",
                     rates: list[float] | None = None, fps: list[float] | None = None,
-                    file_fps: list[float] | None = None) -> None:
+                    file_fps: list[float] | None = None, shown: list[bool] | None = None,
+                    solo: bool = False) -> None:
         self.rebuild(len(names))
+        several = len(names) > 1
         for i, row in enumerate(self._rows):
             row.update_row(names[i], offsets[i], i == active, statuses[i],
-                           len(names) > 1, reference=(i == REFERENCE_VIEW),
+                           several, reference=(i == REFERENCE_VIEW),
                            rate=(rates[i] if rates and i < len(rates) else 1.0),
                            fps=(fps[i] if fps and i < len(fps) else None),
-                           file_fps=(file_fps[i] if file_fps and i < len(file_fps) else None))
+                           file_fps=(file_fps[i] if file_fps and i < len(file_fps) else None),
+                           number=(i + 1) if several else None)
+            row.set_shown(bool(shown[i]) if shown and i < len(shown) else True, i == active, solo)
+            row.btn_eye.setVisible(several)          # one camera: nothing to show or hide
         self._suppress = True            # programmatic selection must not re-emit
         self.list.setCurrentRow(active)
         self._suppress = False
         self.note.setText(note)
         self.note.setVisible(bool(note))
-        self.btn_sync.setVisible(len(names) > 1)
+        self.btn_sync.setVisible(several)
+        n_hidden = sum(1 for i, s in enumerate(shown or []) if not s and i != active) if not solo else 0
+        self.btn_show_all.setText(f"Show all ({n_hidden} hidden)")
+        self.btn_show_all.setToolTip("Show every camera's view again (each eye in the list shows / hides one)")
+        self.btn_show_all.setVisible(several and n_hidden > 0)
+        self.btn_order.setVisible(several)
 
     def set_sync(self, on: bool) -> None:
         """Mirror the app's choice without emitting `sync_toggled` back."""

@@ -211,6 +211,33 @@ def panel() -> QIcon:
     return _icon(d)
 
 
+def _eye_outline(p):
+    path = QPainterPath(QPointF(2.5, 10))
+    path.quadTo(QPointF(10, 2.5), QPointF(17.5, 10))
+    path.quadTo(QPointF(10, 17.5), QPointF(2.5, 10))
+    p.drawPath(path)
+
+
+@lru_cache(maxsize=None)
+def eye() -> QIcon:
+    """(G169) A camera's view is shown: an open eye."""
+    def d(p, c):
+        _eye_outline(p)
+        p.setBrush(QBrush(c))
+        p.drawEllipse(QRectF(7.75, 7.75, 4.5, 4.5))
+        p.setBrush(Qt.NoBrush)
+    return _icon(d)
+
+
+@lru_cache(maxsize=None)
+def eye_off() -> QIcon:
+    """(G169) A camera's view is hidden: the eye struck through, dimmed."""
+    def d(p, c):
+        _eye_outline(p)
+        p.drawLine(QPointF(4, 16), QPointF(16, 4))
+    return _icon(d, theme.TEXT_DIM)
+
+
 @lru_cache(maxsize=None)
 def check() -> QIcon:
     """A done tick, in the accent colour."""

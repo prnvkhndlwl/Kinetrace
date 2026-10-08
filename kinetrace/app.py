@@ -162,11 +162,12 @@ HOTKEYS_HTML = f"""
 </table>
 <h3>Several cameras</h3><table>
 <tr><td class=k>＋ Add video</td><td>CAMERAS panel (top of the right dock): put every camera of the same event in one project. Each view shows its own points and silhouette; up to 15</td></tr>
-<tr><td class=k>File → Open Folder of Videos</td><td>every video of a folder listed: tick the ones to import, choose the <b>base</b> camera (camera 1, the reference clock), and they open as one project — saved at once as &lt;folder&gt;.kinetrace unless you untick it</td></tr>
+<tr><td class=k>File → Open Folder of Videos</td><td>every video of a folder listed: tick the ones to import, put them in <b>camera order</b> (Move up / Move down; camera 1 = the reference clock; the order of calibrations, 3D and exports), and they open as one project — saved at once as &lt;folder&gt;.kinetrace unless you untick it. <b>＋ Add video</b> asks the order of the cameras added; <b>Camera order…</b> under the CAMERAS list changes it any time</td></tr>
 <tr><td class=k>offset  ◂ ▸</td><td><b>the frame this camera shows when camera 1 (the reference) is at its frame 0</b>: a camera switched on 12 frames after the reference has offset −12, one switched on earlier a positive offset. The first camera loaded is the reference: its offset is 0 by definition and locked, so every other number is measured against it and stays put when you switch cameras. Scrub to something every camera saw (a flash, a clap, first contact) and nudge until it lines up — or press <b>Align here</b> to take what you see as the match. The panel then reports the overlap window</td></tr>
 <tr><td class=k>click a view</td><td>switch to that camera. Every camera has the same list of points (in the same order); their positions, the silhouette, events and the timeline are always the <i>working</i> camera's; the playhead keeps the same instant and the selected point stays selected. With <b>N (Add) armed</b> the click switches AND places the point in the camera clicked; otherwise it only switches. Switching puts the segment tool down, drops a half-marked event and forgets the undo step; the tool toggles (Auto-pause, ROI, Body, Follow, the point model…) stay as you set them</td></tr>
 <tr><td class=k>guides &amp; ◇</td><td>with a calibration: the selected point's <b>dashed line</b> from every other camera that has it, run to the picture's edges (dotted where a lens model is only guessing). Once <b>two cameras</b> have it, every camera's lines turn faint and each camera that has it shows its <b>3D rmse</b> beside it (the reconstruction residual in px — green good, amber usable, red poor; also in the status bar). Once two <i>other</i> cameras have it, a <b>◇</b> shows where they put it (the lines fade; A or a click on it places it); in a camera that already has it, the ◇ shows how many px its placement is from the others'. No ◇ when those cameras disagree or see it along one line — the line's label says why. A camera added after calibrating gets none; the others keep theirs</td></tr>
 <tr><td class=k>View → Other cameras</td><td><b>Sync all views</b> (the default: every camera follows the playhead; a single step shows every camera's new picture at once) · <b>Active view only</b> (Ctrl+Shift+2, or untick <i>Sync all</i> in the CAMERAS panel: only the working camera reads its video; the others stay on the picture they last showed, veiled, until you tick Sync all again or click one to work in it — its guides still come from the others' tracks) ·<b>Only the working camera</b> (Ctrl+2: the others are hidden and stop decoding)</td></tr>
+<tr><td class=k>eye / title bar</td><td>the <b>eye</b> on a camera's line in CAMERAS shows / hides its view (hidden = not decoded; the others get the room); <b>drag a view's title bar</b> onto another view to move it there (only the screen changes, the cameras keep their numbers); right-click a title bar: hide it, show every camera, views back in camera order. <b>▶</b> on a camera's line opens its controls (Align here, offset, frame rate). With Track ▾ → Every camera, a <b>hidden camera is tracked too</b>, without being drawn: Track says "(n hidden)" and a warning names them</td></tr>
 <tr><td class=k>Ctrl+E</td><td><b>ALL CAMERAS — DLTdv8 xypts</b> writes one file for 3D reconstruction: row k = frame k of the reference camera (from 0), every camera sampled through its offset, landmarks matched across cameras <i>by name</i>, NaN where a camera has no data; top-left origin, first pixel = 1</td></tr>
 <tr><td class=k>3D menu</td><td><b>Sync Cameras (Sound / Motion)</b> (whole-frame offsets from the sound tracks or the pictures, with a noise filter) · <b>Calibrate a Lens (checkerboard)</b> (how a wide-angle lens bends the picture; opens with or without a video — with nothing open, save the lens file and attach it later) · <b>Calibrate Cameras with a Wand</b> · <b>Import Calibration</b> (a Kinetrace .kcal.json, DLT coefficients from DLTdv / easyWand / Argus, K + R/t, or a DLTdv8 project with its lens undistortion) · <b>Export Calibration</b> · <b>Estimate Sub-frame Offsets</b> (fractional sync from the tracks) · <b>Re-track Disagreeing Stretches</b> (a camera's landmark put back on the other cameras' rays and re-tracked, before / after verdict) · <b>Export Mesh of This Frame</b>. Entries that need more (a video, a second camera, a calibration) open anyway and say what is missing</td></tr>
 <tr><td class=k>Ctrl+3</td><td>reconstruct the 3D landmarks (matched by name across cameras) and open the 3D view</td></tr>
@@ -197,7 +198,7 @@ HOTKEYS_HTML = f"""
 </table>
 <h3>Files</h3><table>
 <tr><td class=k>Ctrl+O / Ctrl+Shift+O</td><td>open video / project</td></tr>
-<tr><td class=k>Ctrl+S / Ctrl+Shift+S</td><td>save project / save as (projects restore the exact working state)</td></tr>
+<tr><td class=k>Ctrl+S / Ctrl+Shift+S</td><td>save project / save as (projects restore the exact working state). Ctrl+S during a run: saved as soon as the run stops</td></tr>
 <tr><td class=k>Ctrl+Q</td><td>quit (File → Quit; asks first when there are unsaved changes)</td></tr>
 <tr><td class=k>Ctrl+E</td><td>export tracks (CSV / TSV / MATLAB; events included)</td></tr>
 <tr><td class=k>Ctrl+,</td><td>Settings: segmentation model, access token, silhouette opacity (also the last entry of the Segment ▾ menu)</td></tr>
@@ -733,6 +734,8 @@ class MainWindow(QMainWindow):
         self._saved_at: str | None = None
         self._save_worker: _SaveWorker | None = None
         self._saving = False
+        # (I265) Save pressed while a run is going: saved the moment the run is over (it used to do nothing)
+        self._save_after_run = False
         # an older single-file project the user chose to keep as one file (I145)
         self._keep_single_file = False
         self._video_dirs: list[Path] = []          # where a project's videos are looked for by name
@@ -881,6 +884,9 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         self.grid = ViewGrid()
         self.grid.view_activated.connect(self._set_active_view)
+        # (G169, G170) a view hidden / moved from its title bar: decode, guides and the eyes follow
+        self.grid.arrangement_changed.connect(self._on_views_arranged)
+        self.grid.name_of = lambda i: self.project.name(i) if self.project is not None else ""
         self._wire_canvas(self.grid.canvases[0])
         self.toast = Toast(self.grid)   # important notices float over the video
         self._build_ui_rest()
@@ -1315,6 +1321,9 @@ class MainWindow(QMainWindow):
         """The centre: the video grid above the timeline in a vertical splitter, the onboarding strip over
         the video, the control bar under the timeline."""
         self.timeline = TimelinePanel()
+        # (G173) where the other cameras have the working camera's landmarks (a thin line in its lanes)
+        self.timeline.elsewhere = self._landmarks_elsewhere
+        self.timeline.elsewhere_names = self._landmark_cameras_at
         # (G152) the time zoom buttons are the timeline's own, in the corner left of its ruler
         self.btn_tz_out, self.btn_tz_in, self.btn_tz_fit = (
             self.timeline.btn_zoom_out, self.timeline.btn_zoom_in, self.timeline.btn_zoom_fit)
@@ -1385,6 +1394,9 @@ class MainWindow(QMainWindow):
         self.cameras.remove_requested.connect(self._remove_view)
         self.cameras.fps_requested.connect(self._set_camera_fps)
         self.cameras.sync_toggled.connect(lambda on: self._set_sync_mode("all" if on else "active"))
+        self.cameras.shown_toggled.connect(self._set_view_shown)            # (G169) a row's eye
+        self.cameras.show_all_requested.connect(self._show_all_views)
+        self.cameras.order_requested.connect(self._camera_order_dialog)     # (G172)
         pl.addWidget(self.cameras)
         sep0 = QWidget()
         sep0.setFixedHeight(1)
@@ -1582,6 +1594,16 @@ class MainWindow(QMainWindow):
         self.act_sync_all.toggled.connect(lambda on: self._on_sync_action("all", on))
         self.act_sync_active.toggled.connect(lambda on: self._on_sync_action("active", on))
         self.act_solo.toggled.connect(self._on_solo_toggled)
+        # (G169, G170) which views and where: also the eyes in CAMERAS and each view's title bar
+        m_others.addSeparator()
+        self.act_show_all_views = QAction("Show &every camera", self, triggered=lambda _=False: self._show_all_views())
+        self.act_show_all_views.setToolTip("Every camera's view on screen again (the eye in CAMERAS hides one)")
+        self.act_views_in_order = QAction("&Arrange the views in camera order", self,
+                                          triggered=lambda _=False: self._views_in_camera_order())
+        self.act_views_in_order.setToolTip("Undo the views' arrangement (dragged by their title bars): camera 1 "
+                                           "first, then 2, 3, ...")
+        for a in (self.act_show_all_views, self.act_views_in_order):
+            m_others.addAction(a)
         m_others.setEnabled(False)
         self.act_solo.setEnabled(False)
         m_view.addSeparator()
@@ -2043,7 +2065,9 @@ class MainWindow(QMainWindow):
         self.act_body_joints.setEnabled(has_body and not tracking)
         self.act_body_angles.setEnabled(has_body and not tracking)
         self.act_body_clear.setEnabled(has_body and not tracking)
-        self.act_save.setEnabled(has_video and not tracking)
+        # (I265) Save stays available during a run: it is done when the run is over (`_save_project`);
+        # greyed out, Ctrl+S did nothing at all and said nothing
+        self.act_save.setEnabled(has_video)
         self.act_save_as.setEnabled(has_video and not tracking)
         self.act_export_one.setEnabled(has_video and not tracking)
         self.act_exports.setEnabled(has_video and not tracking)
@@ -2362,9 +2386,15 @@ class MainWindow(QMainWindow):
         self.btn_track.setText(f"{label} · {' + '.join(what_sel)}" + (f" ({n_pass} passes)" if n_pass > 1 else "")
                                + (" ▶  (F)" if semi else " ▶") if what_sel else (f"{label} ▶  (F)" if semi
                                                                                  else f"{label} ▶"))
-        n_cams = len(self._multi_jobs(semi)) if self.act_track_all.isChecked() and self.state == READY else 0
+        jobs = self._multi_jobs(semi) if self.act_track_all.isChecked() and self.state == READY else []
+        n_cams = len(jobs)
+        # (G174, owner 2026-10-08) cameras whose view is hidden are tracked too, without being drawn: the
+        # button says so before the press
+        shown_v = set(self.grid.visible_indices())
+        hidden_cams = [j["view"] for j in jobs if j["view"] not in shown_v] if n_cams > 1 else []
         if n_cams > 1:
-            self.btn_track.setText(self.btn_track.text() + f" · {n_cams} cams")   # Track ▾ → Every camera (G29)
+            self.btn_track.setText(self.btn_track.text() + f" · {n_cams} cams"   # Track ▾ → Every camera (G29)
+                                   + (f" ({len(hidden_cams)} hidden)" if hidden_cams else ""))
         pids_here, animal_ok = self._startable_here(scope, seg, segs)
         n = len(pids_here)
         # Nothing to start from: the button stays ENABLED, only drawn quiet, because Qt
@@ -2429,7 +2459,10 @@ class MainWindow(QMainWindow):
             if n_cams > 1:
                 self.btn_track.setToolTip(
                     self.btn_track.toolTip() + f" — in each of the {n_cams} cameras that have them here, all at "
-                    "the same time (Track ▾ → Every camera; X stops them all; one Ctrl+Z undoes all)")
+                    "the same time (Track ▾ → Every camera; X stops them all; one Ctrl+Z undoes all)"
+                    + (f".\nHIDDEN: {self._hidden_cams_text(hidden_cams)} — tracked too, but not drawn while "
+                       "hidden, so you cannot watch it there. Show them with their eye in CAMERAS (or Show all) "
+                       "to watch every camera." if hidden_cams else ""))
         self._fit_track_label()
 
     def _set_track_blocked(self, reason: str | None):
@@ -3254,17 +3287,59 @@ class MainWindow(QMainWindow):
         paths, _ = QFileDialog.getOpenFileNames(self, "Add camera video(s)", "", VIDEO_FILTER)
         if not paths:
             return
-        infos = self._probe_many(paths, f"Adding {len(paths)} camera{'s' if len(paths) != 1 else ''}",
-                                 self._open_hint(paths[0], "cameras"))
-        added = [p for p in paths if self._add_view(p, infos.get(str(p)))]
-        if added:
-            self._refresh_cameras()
-            self._refresh_companions()
-            self.toast.show_message(
-                f"Added {len(added)} camera(s). Line them up in time: <b>3D → Sync Cameras (Sound / "
-                "Motion)</b> does it from the sound tracks or the pictures, or scrub to a shared event and nudge each "
-                "camera's <b>offset</b> (or press <b>Align here</b>).",
-                "info", 10000)
+        # (G172) the cameras' order is the user's, not the file dialog's (whose order is not even the
+        # order the files were picked in): the project's cameras and the new ones, the new ones last
+        from kinetrace.cameraorder import CameraOrderDialog
+        from kinetrace.folderimport import _natural_key
+        p = self.project
+        paths = sorted(paths, key=lambda x: _natural_key(Path(x)))
+        room = MAX_VIEWS - p.n_views
+        if len(paths) > room:
+            QMessageBox.information(self, "Too many cameras",
+                                    f"A project holds up to {MAX_VIEWS} cameras: the first {room} of these are "
+                                    "added.")
+            paths = paths[:room]
+        entries = ([(("cam", i), p.name(i), "") for i in range(p.n_views)]
+                   + [(("new", x), Path(x).name, "new") for x in paths])
+
+        def problem(keys):
+            # a calibration of the first cameras must keep them first (Project.order_problem)
+            cal = p.calibration
+            k = len(cal) if cal is not None else 0
+            if 0 < k <= p.n_views and sorted(key[1] for key in keys[:k] if key[0] == "cam") != list(range(k)):
+                return (f"the calibration covers cameras 1-{k} only, so they must stay the first {k} cameras; "
+                        "put the new videos after them")
+            return None
+        dlg = CameraOrderDialog(self, entries, f"Add {len(paths)} camera{'s' if len(paths) != 1 else ''}: their order",
+                                consequence="The new cameras are marked “new”. Each camera keeps its points and offset; "
+                                            "if another camera becomes camera 1, the offsets are re-measured from it.",
+                                problem=problem)
+        ok = dlg.exec() == QDialog.Accepted
+        keys = list(dlg.order)
+        dlg.deleteLater()
+        if not ok:
+            return
+        new_paths = [key[1] for key in keys if key[0] == "new"]
+        infos = self._probe_many(new_paths, f"Adding {len(new_paths)} camera{'s' if len(new_paths) != 1 else ''}",
+                                 self._open_hint(new_paths[0], "cameras"))
+        n0 = p.n_views
+        added = [x for x in new_paths if self._add_view(x, infos.get(str(x)))]
+        if not added:
+            return
+        index_of = {("cam", i): i for i in range(n0)}
+        index_of.update({("new", x): n0 + k for k, x in enumerate(added)})
+        final = [index_of[key] for key in keys if key in index_of]      # a file that could not be added is left out
+        if final != list(range(p.n_views)):
+            self._reorder_cameras(final)
+        self._refresh_cameras()
+        self._refresh_companions()
+        self.toast.show_message(
+            f"Added {len(added)} camera(s) — the order: "
+            + ", ".join(f"{k + 1} {p.name(k)}" for k in range(p.n_views))
+            + ". Line them up in time: <b>3D → Sync Cameras (Sound / "
+            "Motion)</b> does it from the sound tracks or the pictures, or scrub to a shared event and nudge each "
+            "camera's <b>offset</b> (or press <b>Align here</b>).",
+            "info", 12000)
 
     def _add_view(self, path: str, probed=None, name: str | None = None) -> bool:
         """Probe `path` and append it as a view. `probed`: its VideoInfo (or error
@@ -3350,6 +3425,7 @@ class MainWindow(QMainWindow):
         del self._views[i]
         p.remove_view(i)
         self._rebudget_caches()
+        self.grid.drop_view(i)             # (G170) the cameras after it move down one, on screen too
         self.grid.set_count(p.n_views)
         for k, rt in enumerate(self._views):          # tiles after i now show another camera
             cv = self.grid.canvas(k)
@@ -3360,6 +3436,80 @@ class MainWindow(QMainWindow):
         self._apply_active_view(target if target is not None else p.session.current_frame)
         self._enter_camera_tools(add_on)
         self._drop_reconstruction("a camera was removed", had=had_3d, had_hull=had_hull)       # (I206)
+
+    # ------------------------------------------------------- the cameras' order (G172)
+
+    def _order_consequence(self) -> str:
+        """What reordering an open project does, in words (the order dialog's footnote)."""
+        p = self.project
+        bits = ["Each camera keeps its points, tracks, offset, frame rate and lens"]
+        if p is not None and p.calibration is not None and len(p.calibration):
+            bits[0] += " and its calibration (no need to calibrate again)"
+        text = bits[0] + ". If another camera becomes camera 1, the offsets are re-measured from it (the cameras stay " \
+                         "in sync)."
+        if p is not None and p.reconstruction is not None:
+            text += " The 3D result is dropped: Reconstruct again."
+        return text
+
+    def _camera_order_dialog(self) -> None:
+        """CAMERAS -> Camera order...: the open project's cameras in another order (G172)."""
+        p = self.project
+        if p is None or p.n_views < 2 or self.state != READY:
+            return
+        from kinetrace.cameraorder import CameraOrderDialog
+        entries = [(i, p.name(i), Path(p.sessions[i].video_path).name) for i in range(p.n_views)]
+        dlg = CameraOrderDialog(self, entries, "Camera order", consequence=self._order_consequence(),
+                                problem=p.order_problem)
+        ok = dlg.exec() == QDialog.Accepted
+        order = list(dlg.order)
+        dlg.deleteLater()
+        if ok:
+            self._reorder_cameras(order)
+
+    def _reorder_cameras(self, order) -> bool:
+        """Put the open project's cameras in `order` (`order[k]` = the camera that becomes camera k + 1),
+        G172. Everything indexed by camera follows: the project's lists (`Project.reorder_views`), the
+        decode runtimes, the tiles (each shows its camera's video at the new index) and the views'
+        arrangement, so every camera stays where it was on screen. The working camera stays the
+        working camera at the same frame; the 3D result is dropped (the project does it)."""
+        p = self.project
+        if p is None or self.state != READY:
+            return False
+        order = [int(k) for k in order]
+        why = p.order_problem(order)
+        if why:
+            QMessageBox.warning(self, "Camera order", f"This order cannot be used: {why}.")
+            return False
+        if order == list(range(p.n_views)):
+            return False
+        had_3d, had_hull = p.reconstruction is not None, bool(self._hull_cache)
+        add_on = self._leave_camera_tools()      # the same tool housekeeping as a view switch (G92)
+        before = [p.name(i) for i in range(p.n_views)]
+        p.reorder_views(order)
+        self._views = [self._views[k] for k in order]
+        self.grid.remap({old: new for new, old in enumerate(order)})
+        self._epi_probe = None
+        self._lock = None                        # a step's collected pictures are keyed by the old numbers
+        self._wand_result = (None, None)         # the last wand run's report names the old numbers (I33)
+        self._undo_snap = None                   # an undo step spans cameras by their number (G19)
+        self.act_undo.setEnabled(False)
+        for k, rt in enumerate(self._views):     # each tile now shows the camera at its index
+            cv = self.grid.canvas(k)
+            if cv is not None:
+                cv.set_video_size(rt.info.width, rt.info.height)
+            rt.want_frame = None
+        self.grid.set_active(p.active)
+        self.grid.set_arrangement()              # lay the tiles out again with the remapped order
+        self._apply_active_view(self.current)    # the same camera, the same frame
+        self._enter_camera_tools(add_on)
+        self._refresh_companions()
+        self._refresh_cameras()
+        self._drop_reconstruction("the camera order changed", had=had_3d, had_hull=had_hull)
+        now = [p.name(i) for i in range(p.n_views)]
+        self.statusBar().showMessage(
+            "Camera order: " + ", ".join(f"{k + 1} {n}" for k, n in enumerate(now))
+            + (f" — {now[0]} is now the reference (camera 1)" if now[0] != before[0] else ""), 12000)
+        return True
 
     def _set_active_view(self, i: int):
         """Switch the camera being worked on. The playhead follows through the
@@ -3485,6 +3635,7 @@ class MainWindow(QMainWindow):
             self._set_sync_mode(self._sync_mode)
         self._refresh_companions()
         self._refresh_guides()
+        self._refresh_cameras()                  # the eyes rest while only the working camera is shown (G169)
 
     def _on_view_offset(self, i: int, offset: float):
         if self.project is None:
@@ -3556,9 +3707,98 @@ class MainWindow(QMainWindow):
                          "reference frame (their offsets are in their own frames).")
             if p.has_fractional_offsets():
                 note += "  Sub-frame offsets are set — the 3D layer interpolates at them."
+        hidden = self.grid.hidden()
         self.cameras.update_rows(list(p.names), list(p.offsets), p.active, statuses, note,
                                  rates=list(p.rates), fps=[s.fps for s in p.sessions],
-                                 file_fps=[getattr(s, "file_fps", s.fps) for s in p.sessions])
+                                 file_fps=[getattr(s, "file_fps", s.fps) for s in p.sessions],
+                                 shown=[i not in hidden for i in range(p.n_views)],
+                                 solo=self.act_solo.isChecked())
+        self.act_show_all_views.setEnabled(bool(hidden - {p.active}))
+        self.act_views_in_order.setEnabled(self.grid.display_order() != list(range(p.n_views)))
+
+    # ------------------------------------------- which views are on screen, where (G169, G170)
+
+    def _set_view_shown(self, i: int, shown: bool) -> None:
+        """A camera's eye in CAMERAS: its view on screen or not. Display state only (never unsaved);
+        a hidden view is not decoded and the others get its room."""
+        p = self.project
+        if p is None or not (0 <= i < p.n_views):
+            return
+        if not shown and i == p.active:
+            self._refresh_cameras()            # the working camera is always shown: the eye goes back
+            return
+        self.grid.set_hidden(i, not shown)     # -> _on_views_arranged
+
+    def _landmarks_elsewhere(self):
+        """(G173) Where the OTHER cameras have each of the working camera's landmarks tracked at the same
+        instant: (key, (T, N) bool) for the timeline -- its lanes are the working camera's, and a point
+        tracked only in another view showed an empty lane (owner 2026-10-07: "the point P1 is tracked in
+        the top right frame but it is not showing up in the timeline of P1"). Frames are matched through
+        the offsets and rates (`Project.local_index`). Cached until a camera's data, its timing or the
+        working camera changes; (None, None) with one camera."""
+        p, s = self.project, self.session
+        if p is None or s is None or p.n_views < 2 or s.n_points == 0:
+            return None, None
+        key = (id(p), p.active, tuple(x.data_version for x in p.sessions), tuple(p.offsets), tuple(p.rates),
+               tuple(m.name for m in s.points))
+        cache = getattr(self, "_else_cache", None)
+        if cache is not None and cache[0] == key:
+            return key, cache[1]
+        out = np.zeros((s.n_frames, s.n_points), bool)
+        t = (np.arange(s.n_frames, dtype=np.float64) - p.offsets[p.active]) / p.rates[p.active]
+        for v in p.others():
+            sv = p.sessions[v]
+            pairs = [(j, sv.pid_by_name(m.name)) for j, m in enumerate(s.points)]
+            pairs = [(j, q) for j, q in pairs if q is not None]
+            if not pairs or sv.n_frames == 0:
+                continue
+            fv = p.local_index(v, t)
+            inside = (fv >= 0) & (fv < sv.n_frames)
+            idx = np.clip(fv, 0, sv.n_frames - 1)
+            js, qs = [j for j, _ in pairs], [q for _, q in pairs]
+            out[:, js] |= sv.tracked[idx][:, qs] & inside[:, None]
+        self._else_cache = (key, out)
+        return key, out
+
+    def _landmark_cameras_at(self, pid: int, frame: int) -> list[str]:
+        """(G173) The other cameras that have the working camera's landmark `pid` tracked at the instant of
+        `frame` (the timeline's tooltip on its thin line)."""
+        p, s = self.project, self.session
+        if p is None or s is None or p.n_views < 2 or not (0 <= pid < s.n_points):
+            return []
+        name = s.points[pid].name
+        t = p.reference_time(p.active, frame)
+        out = []
+        for v in p.others():
+            sv = p.sessions[v]
+            q = sv.pid_by_name(name)
+            if q is None:
+                continue
+            fv = p.local_index(v, t)
+            if 0 <= fv < sv.n_frames and sv.tracked[fv, q]:
+                out.append(p.name(v))
+        return out
+
+    def _show_all_views(self) -> None:
+        if self.project is None or not self.grid.hidden():
+            return
+        self.grid.set_arrangement(hidden=set())
+        self._on_views_arranged()
+
+    def _views_in_camera_order(self) -> None:
+        if self.project is None:
+            return
+        self.grid.set_arrangement(order=list(range(self.project.n_views)))
+        self._on_views_arranged()
+
+    def _on_views_arranged(self) -> None:
+        """The views on screen changed (an eye, a drag, a menu): the shown ones decode and draw again,
+        the hidden ones give their decoder back (`_refresh_companions`), the guides and the eyes follow."""
+        if self.project is None:
+            return
+        self._refresh_companions()
+        self._refresh_guides()
+        self._refresh_cameras()
 
     def _set_camera_fps(self, i: int) -> None:
         """A camera's fps button (G38): the rate it REALLY recorded at, when its
@@ -3753,6 +3993,9 @@ class MainWindow(QMainWindow):
                 if QApplication.activeWindow() in (self, *self._other_app_windows()):
                     if ev.key() == Qt.Key_Escape and self._busy_cancel_cb() is not None:
                         self.overlay._on_cancel()
+                    elif (ev.key() == Qt.Key_S and ev.modifiers() == Qt.ControlModifier
+                          and self.project is not None and self._run_in_progress()):
+                        self._save_project()            # (I265) kept for the run's end, said so
                     return True
             elif isinstance(obj, QWidget) and obj.window() in self._other_app_windows():
                 return True             # the card only covers the main window: those clicks are held back here
@@ -7885,6 +8128,44 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Tracking in {len(order)} cameras at the same time: "
             + ", ".join(p.name(v) for v, _w, _f in order) + " — X stops them all", 8000)
+        self._warn_hidden_tracked([v for v, _w, _f in order], step)
+
+    def _hidden_cams_text(self, views) -> str:
+        p = self.project
+        names = [p.name(v) for v in views] if p is not None else []
+        return (", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+                + (" is hidden" if len(names) == 1 else " are hidden"))
+
+    def _warn_hidden_tracked(self, views, step: bool = False) -> None:
+        """(G174, owner 2026-10-08: "give a clear warning to the user that tracking will continue even for
+        hidden cameras in every-camera run") An every-camera run tracks EVERY camera that has the points --
+        a camera whose view is hidden (its eye, or Only the working camera) too, but it is not drawn: the
+        user cannot watch it or pause it on a mistake there. Said at the start of each run; a
+        semi-automatic step says it again only when the hidden cameras changed (F after F would repeat it)."""
+        shown_v = set(self.grid.visible_indices())
+        hidden = [v for v in views if v not in shown_v]
+        if not hidden:
+            self._hidden_warned = None
+            return
+        key = tuple(sorted(hidden))
+        if step and getattr(self, "_hidden_warned", None) == key:
+            return
+        self._hidden_warned = key
+        self.toast.show_message(
+            f"Tracking in {len(views)} cameras — {self._hidden_cams_text(hidden)}, and "
+            f"{'it is' if len(hidden) == 1 else 'they are'} <b>tracked too</b>, without being drawn: you cannot "
+            "watch the tracking there. <b>Click here</b> to show them (or their eye in CAMERAS) and watch every "
+            "camera; <b>X</b> stops the run.", "warn", 15000, on_click=self._show_tracked_views)
+
+    def _show_tracked_views(self) -> None:
+        """(G174) The hidden-camera notice clicked: every camera on screen (Only the working camera off too),
+        so a run in every camera can be watched -- the side runs draw the views that come back."""
+        if self.act_solo.isChecked():
+            self.act_solo.setChecked(False)
+        if self.grid.hidden():
+            self.grid.set_arrangement(hidden=set())
+        self._refresh_cameras()
+        self._update_track_button()
 
     def _mask_layers(self, s, f: int, midline: bool = True) -> list:
         """Every segment's silhouette on frame f, each in its colour, with its midline when shown
@@ -9178,7 +9459,27 @@ class MainWindow(QMainWindow):
             "dock_visible": self.dock.isVisible(), "dock_floating": self.dock.isFloating(),
             "splitter": [int(v) for v in self._split.sizes()], "solo": self.act_solo.isChecked(),
             "sync": self._sync_mode,
-            "step": int(self.step_spin.value()), "onboarding": self.act_onboarding.isChecked()}}
+            "step": int(self.step_spin.value()), "onboarding": self.act_onboarding.isChecked(),
+            "views": self._views_layout()}}
+
+    def _views_layout(self) -> dict:
+        """(G169, G170) The views' arrangement and the hidden cameras, BY NAME (so a camera removed or
+        renumbered later cannot shift them onto another one): layout state, never unsaved work."""
+        p = self.project
+        if p is None or p.n_views < 2:
+            return {}
+        return {"order": [p.name(i) for i in self.grid.display_order()],
+                "hidden": [p.name(i) for i in sorted(self.grid.hidden())]}
+
+    def _apply_views_layout(self, views) -> None:
+        p = self.project
+        if p is None or p.n_views < 2 or not isinstance(views, dict):
+            return
+        at = {n: i for i, n in enumerate(p.names)}
+        order = [at[str(n)] for n in (views.get("order") or []) if str(n) in at]
+        hidden = {at[str(n)] for n in (views.get("hidden") or []) if str(n) in at} - {p.active}
+        self.grid.set_arrangement(order=order, hidden=hidden)
+        self._on_views_arranged()
 
     def _apply_layout(self, layout: dict | None) -> None:
         """The panels and window as they were saved; a window rectangle that
@@ -9204,6 +9505,7 @@ class MainWindow(QMainWindow):
             if self.act_solo.isEnabled():
                 self._set_sync_mode("active" if layout.get("sync") == "active" else "all")    # (G24)
                 self.act_solo.setChecked(bool(layout.get("solo", False)))
+                self._apply_views_layout(layout.get("views"))                                  # (G169, G170)
             self.step_spin.setValue(int(layout.get("step", self.step_spin.value())))
             self.act_onboarding.setChecked(bool(layout.get("onboarding", True)))
         except (TypeError, ValueError):
@@ -9318,7 +9620,25 @@ class MainWindow(QMainWindow):
         p = self.project_path
         return "zip" if p is not None and p.is_file() and self._keep_single_file else "folder"
 
+    def _run_in_progress(self) -> bool:
+        """A Track press is not over yet: a run is going, or what follows it is still to come -- the
+        second pass of a two-pass run, the next camera of an every-camera run, the next re-track
+        stretch (each starts from a timer once the one before has ended)."""
+        return (self.state == TRACKING or self._passes is not None or self._multi is not None
+                or self._retrack is not None)
+
     def _save_project(self) -> bool:
+        if self.project is not None and self._run_in_progress():
+            # (I265) the data is still being written: the save is done the moment the run is over
+            # (a Save pressed during a run used to do nothing at all, so the work seemed saved and was not)
+            first = not self._save_after_run
+            self._save_after_run = True
+            self.toast.show_message("Tracking is still running: the project is saved as soon as it stops "
+                                    "(<b>X</b> stops it now).", "info", 8000)
+            self.statusBar().showMessage("Save: as soon as this run stops", 8000)
+            if first:
+                QTimer.singleShot(300, self._save_when_run_over)
+            return False
         if self.project_path is None:
             return self._save_project_as()
         if self.project is None or self._saving:
@@ -9388,6 +9708,20 @@ class MainWindow(QMainWindow):
         if folder and self.project.exports:
             self._refresh_exports()
         return True
+
+    def _save_when_run_over(self) -> None:
+        """(I265) The save asked for during a run, once the whole Track press is over (every pass,
+        camera and re-track stretch) and no question or loading card is up."""
+        if not self._save_after_run:
+            return
+        if self.project is None:
+            self._save_after_run = False
+            return
+        if self._run_in_progress() or self._loading or QApplication.activeModalWidget() is not None:
+            QTimer.singleShot(300, self._save_when_run_over)
+            return
+        self._save_after_run = False
+        self._save_project()
 
     def _changes_text(self, most: int = 8) -> str:
         """For the close question (G44): what differs from
@@ -10161,6 +10495,7 @@ class MainWindow(QMainWindow):
         self._rebudget_caches()
         for cv in self.grid.set_count(proj.n_views):
             self._wire_canvas(cv)
+        self.grid.reset_arrangement()      # (G170) the views as saved come with the project's layout
         for i, rt in enumerate(self._views):
             cv = self.grid.canvas(i)
             cv.set_video_size(rt.info.width, rt.info.height)

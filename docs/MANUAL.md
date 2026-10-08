@@ -426,14 +426,18 @@ to bring the names back. The Track button always keeps its words.
 
 **The right panel** (titled *Layers*) has two sections:
 
-- **CAMERAS** — one row per video. The top line of a row is the camera's name
-  (the first video is `cam1`, marked **(reference)**) with **Align here** and
-  **×** (remove this camera) at its right. The line below holds its
-  **offset** — the frame this camera shows when the reference camera is at
-  its frame 0 — with **◂ ▸** to nudge it a frame at a time, and **×2** beside
-  it for a camera filming at twice the reference rate. A last line counts its
-  points and tracked frames. With one video there is a single row and nothing
-  to set; **＋ Add video** adds another camera of the same event (section 10).
+- **CAMERAS** — one compact line per camera, so ten or fifteen fit at once:
+  **▶** (open the row), the **eye** (show / hide this camera's view), its
+  **number** and name (camera 1 is marked **(reference)**) and its offset. The
+  number is the camera's place in the **camera order** — the order of
+  calibrations, 3D and exports (*Camera order…* under the list changes it).
+  **▶** opens the row: **Align here** and **×** (remove this camera) on its
+  first line, its **offset** — the frame this camera shows when the reference
+  camera is at its frame 0 — with **◂ ▸** to nudge it a frame at a time (and
+  **×2** for a camera filming at twice the reference rate), then its frame rate
+  and a count of its points and tracked frames. With one video there is a
+  single row and nothing to set; **＋ Add video** adds another camera of the
+  same event (section 10).
 - **LAYERS** — everything you track, as a tree. Each **animal** (one
   individual animal, or any object you follow) is a row with its points
   underneath; then a **Scene** row holds the points that belong to no animal —
@@ -1212,6 +1216,11 @@ of a row to select that body part; the selected part's row is drawn brighter.
   is off).
 - **A gap** — no data there. Either not tracked yet, or deliberately empty
   because the part was out of the picture.
+- **A thin line along the middle of a row** (several cameras only): this camera
+  has no data there, but **another camera** has this body part at that instant.
+  The rows are always the **working camera's** — the one outlined in blue, bold
+  in CAMERAS. Hover the line to see which cameras have it; click that camera's
+  view to work in it, and its track becomes the solid bar.
 - **A red tint** — tracked, but the program was *unsure*. **Look at these
   stretches.** Red is not necessarily wrong, but it is where errors live. On
   the silhouette row, red means the outlining model was unsure the animal was
@@ -1351,12 +1360,16 @@ the numbers just get measured from the new starting point.
 1. **All the cameras' videos in one folder?** Use **File → Open Folder of
    Videos…** and pick the folder. Every video in it is listed with its picture
    size, frame rate and length. Tick the ones that belong to this event (*Include
-   subfolders* looks deeper), and choose the **base** camera with the round
-   button in its row: it becomes camera 1, the reference that every other
-   camera's offset is measured against. The base must be one of the ticked
-   videos. Leave *Save the project now as* ticked and the project is saved at
-   once as a file named after the folder, inside it — the file remembers which
-   videos you chose and which one is the base. If a project of that name is
+   subfolders* looks deeper), and put them in **camera order**: select a
+   video and press **Move up** / **Move down** (or Alt+Up / Alt+Down); **Sort
+   by name** goes back to the folder's order. The **Camera** column numbers the
+   ticked videos: **camera 1 is the reference** that every other camera's offset
+   is measured against, and the order is the order of the cameras in
+   calibrations, 3D and every export — keep it the same as your calibration's
+   (a DLTdv, easyWand or Argus file lists its cameras in order). Leave *Save the
+   project now as* ticked and the project is saved at once as a file named after
+   the folder, inside it — the file remembers which videos you chose and their
+   order. If a project of that name is
    already there, the program asks before it saves over it (**No** leaves your
    cameras open and unsaved, and *Save Project As…* lets you choose another
    place). Each camera is named after its file; when files share a name (a
@@ -1369,7 +1382,15 @@ the numbers just get measured from the new starting point.
    against, load that one first.
 2. In the **CAMERAS** panel at the top of the right panel, click
    **＋ Add video** and choose the others. You can add several at once, up to 15
-   cameras in total. Each appears as its own view in a grid above the timeline.
+   cameras in total. A short list then shows the project's cameras and the new
+   ones (marked *new*, in name order — not the file window's order): put them in
+   their **camera order** (Move up / Move down, or drag a row) and press OK.
+   Each appears as its own view in a grid above the timeline. Got the order
+   wrong? **Camera order…** under the CAMERAS list changes it at any time: each
+   camera keeps its points, offset, frame rate, lens and calibration (if another
+   camera becomes camera 1 the offsets are re-measured from it — the cameras
+   stay in sync); only a 3D result is dropped (Reconstruct again). With a
+   calibration of the first cameras only, those must stay first.
 3. **Line them up.** The quick way: **3D → Sync Cameras (Sound / Motion)…**.
    It offers two methods and a verdict for each camera; both need no tracking
    and no calibration.
@@ -1468,11 +1489,12 @@ camera, click another camera, and *snout* is selected there, ready to be
 clicked. The one thing a switch forgets is the undo step — **Ctrl+Z** only
 reaches back to what you did since you last switched.
 
-Each camera's row in the CAMERAS panel shows its name with **Align here** and
-**×** on the first line, and the offset box with **◂ ▸** (and ×2 for a camera
-recording at twice the reference rate) underneath. **×** removes that camera
-from the project; it asks first when the camera has tracked frames, and its
-tracks go with it.
+Each camera's row in the CAMERAS panel is one line — its number, name and
+offset — so all of them fit; **▶** opens it: **Align here** and **×** on the
+first line, and the offset box with **◂ ▸** (and ×2 for a camera recording at
+twice the reference rate) underneath. **×** removes that camera from the
+project; it asks first when the camera has tracked frames, and its tracks go
+with it.
 
 **Every camera has the same list of body parts, in the same order.** A point you
 add in one camera appears in LAYERS in every other camera straight
@@ -1507,6 +1529,28 @@ them by name.
 - **Only the working camera** (**Ctrl+2**): the others are hidden and give the
   whole window to the camera you are working on.
 
+**Which cameras are on screen, and where.** With many cameras every view is
+small; show only the ones you need — two or three to check that a flash lines
+up, say — and they get the room:
+
+- the **eye** on a camera's line in CAMERAS shows / hides its view. A hidden
+  camera is not read from its video (scrubbing is faster), but its tracks still
+  count for 3D, the dashed lines and the ◇. The camera you are working in is
+  always shown: clicking a hidden camera's line works in it, and it hides again
+  when you go back to another camera (its eye stays off). With **Track ▾ → Every
+  camera**, hidden cameras are tracked too, without being drawn — Track and a
+  warning say so.
+  **Show all (n hidden)** under the list (or *View → Other cameras → Show every
+  camera*) brings them all back.
+- **drag a view by its title bar** onto another view to put it there; the views
+  between shift along, as in a video call. This only moves the pictures on
+  screen — the cameras keep their numbers. Right-click a view's title bar to
+  hide it, show every camera, or **arrange the views in camera order** again
+  (also in *View → Other cameras*).
+
+Which views are shown and where is kept with the project (it never counts as an
+unsaved change).
+
 **Tracking the same points in every camera.** When a body part (or a ball
 marker) is placed in several cameras, you do not have to track it camera by
 camera: tick **Track ▾ → Every camera** and the Track button says how many
@@ -1515,6 +1559,11 @@ selected points (**Ctrl+A** selects all of them) are tracked in each camera that
 has them at this instant, **all cameras at the same time**, each one moving on live
 in its own view; a camera where a point was not placed is simply skipped for
 that point (with *View → Trails* on, each camera draws its trail as it goes).
+**A hidden camera is tracked too** — one whose eye is off in CAMERAS, or every
+other camera with *Only the working camera* on — but it is not drawn, so you
+cannot watch the tracking there or stop it on a mistake you see. The Track button
+says so before you press it ("· 5 cams (2 hidden)"), and a warning names the
+hidden cameras when the run starts; click the warning to show them all.
 The Track ▾ menu stays open while you tick, so the run mode
 (Automatic / Semi-automatic), **Every camera** and the point model (AllTracker /
 CoTracker3) can all be chosen in one visit; they combine. If only the camera you
@@ -2208,7 +2257,9 @@ speed, a height) is along your axes.
 
 ## 11. Saving and coming back later
 
-**Your project changes only when you save it.** Press **Ctrl+S**. The first
+**Your project changes only when you save it.** Press **Ctrl+S** (pressed while
+a run is still tracking, it says so and saves the moment the run stops — **X**
+stops it at once). The first
 time, it asks where to put the project and what to call it: the program makes a
 **folder** of that name ending in `.kinetrace` — that folder *is* your project;
 **Ctrl+Shift+S** saves it under a new name. If you choose a project folder that
@@ -3425,8 +3476,8 @@ view keys work. Hover over any button or menu entry to see what it does.
 | Key | Does |
 |---|---|
 | **Ctrl+O** / **Ctrl+Shift+O** | open a video / a project |
-| **File → Open Folder of Videos…** | several cameras in one folder: tick which to import, choose the base camera |
-| **Ctrl+S** / **Ctrl+Shift+S** | save the project / save it under a new name |
+| **File → Open Folder of Videos…** | several cameras in one folder: tick which to import, put them in camera order (camera 1 = the reference) |
+| **Ctrl+S** / **Ctrl+Shift+S** | save the project / save it under a new name (Ctrl+S during a run: saved as soon as the run stops) |
 | **Ctrl+Q** | quit (File → Quit); asks first when there are unsaved changes |
 | **Ctrl+E** | export your results |
 | **Ctrl+,** | settings (also the last entry of the **Segment ▾** dropdown) |

@@ -381,6 +381,55 @@ class Project:
             self.active -= 1
         self.dirty = True
 
+    def order_problem(self, order) -> str | None:
+        """Why the cameras cannot take `order` (a sentence), None when they can (G172)."""
+        n = self.n_views
+        order = list(order)
+        if sorted(order) != list(range(n)):
+            return "a camera order must name every camera exactly once"
+        cal = self.calibration
+        k = len(cal) if cal is not None else 0
+        if 0 < k < n and sorted(order[:k]) != list(range(k)):
+            # a calibration of the first k cameras cannot have a gap: an uncalibrated camera among them
+            # would take a calibrated one's place
+            return (f"the calibration covers cameras 1-{k} only, so they must stay the first {k} cameras "
+                    f"(in any order among themselves); calibrate every camera to order them freely")
+        return None
+
+    def reorder_views(self, order) -> bool:
+        """(G172) Put the cameras in `order`: `order[k]` = the camera (its index now) that becomes camera
+        k + 1. Each camera keeps its tracks, name, lens profile and calibration -- they all move with
+        it. Camera 1 is the reference clock: when another camera becomes camera 1 the offsets and rates
+        are re-based on it (as `remove_view` does when the reference goes), which changes no frame
+        mapping. The 3D result is dropped (its per-camera errors and reference frames are in the old
+        order). True when the order changed; ValueError for an order `order_problem` refuses."""
+        order = [int(k) for k in order]
+        why = self.order_problem(order)
+        if why:
+            raise ValueError(why)
+        if order == list(range(self.n_views)):
+            return False
+        n = self.n_views
+
+        def perm(xs):
+            return [xs[k] for k in order]
+        self.sessions, self.names = perm(self.sessions), perm(self.names)
+        self.offsets, self.rates = perm(self.offsets), perm(self.rates)
+        self.lenses = perm((list(self.lenses) + [None] * n)[:n])
+        cal = self.calibration
+        if cal is not None and len(cal):
+            k = min(len(cal), n)
+            cal.cameras = [cal.cameras[i] for i in order[:k]] + list(cal.cameras[k:])
+        r0 = self.rates[REFERENCE_VIEW]
+        if r0 > 0 and abs(r0 - 1.0) > 1e-12:
+            self.rates = [r / r0 for r in self.rates]
+            self.rates[REFERENCE_VIEW] = 1.0
+        self._normalize()
+        self.active = order.index(self.active)
+        self.reconstruction = None
+        self.dirty = True
+        return True
+
     # ------------------------------------------- one landmark list (G19)
     # Every camera is digitized separately, but 3D, the wand calibration and the
     # all-cameras export join cameras BY LANDMARK NAME. A point made in one camera

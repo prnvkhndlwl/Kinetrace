@@ -1,6 +1,8 @@
 """File → Open Folder of Videos… (G30): pick a folder, see every
-video in it, tick the ones to import, pick the BASE (reference) camera, and they
-become one multi-camera project -- saved at once if asked.
+video in it, tick the ones to import, put them in CAMERA ORDER (G171: camera 1,
+the reference clock, is the first ticked video; the order is the order of the
+cameras in calibrations, 3D and exports), and they become one multi-camera
+project -- saved at once if asked.
 
 `list_videos` is pure (no Qt), so the scan is testable on its own. The dialog
 reads each file's header (picture size, frame rate, frame count) on a
@@ -13,9 +15,10 @@ import re
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QPushButton, QRadioButton, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
+                               QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from kinetrace import theme
 from kinetrace.errors import plain_error
@@ -97,13 +100,13 @@ class _HeaderProbe(QThread):
 
 
 class VideoFolderDialog(QDialog):
-    """Every video of a folder, a tick per file (import it) and a round button
-    per file (it is the BASE camera: camera 1, the reference clock every other
-    camera's offset is measured against). OK: `result_paths` (the base first,
-    then the others in the listed order) and `result_project` (the .kinetrace
-    to save to at once, or None)."""
+    """Every video of a folder, a tick per file (import it), in CAMERA ORDER (G171): Move up / Move down
+    (Alt+Up / Alt+Down) put the selected video earlier / later, Sort by name restores the folder's
+    order; the first ticked video is camera 1, the reference clock every other camera's offset is
+    measured against. OK: `result_paths` (the ticked videos in that order) and `result_project` (the
+    .kinetrace to save to at once, or None)."""
 
-    COLS = ("Import", "Base", "Video", "Picture", "Frame rate", "Frames", "Size")
+    COLS = ("Import", "Camera", "Video", "Picture", "Frame rate", "Frames", "Size")
 
     def __init__(self, parent, folder: str):
         super().__init__(parent)
@@ -111,18 +114,19 @@ class VideoFolderDialog(QDialog):
         self.folder = Path(folder)
         self.result_paths: list[str] = []
         self.result_project: str | None = None
-        self._paths: list[Path] = []
-        self._ticks: list[QCheckBox] = []
+        self._paths: list[Path] = []          # the scan, in the folder's (natural) order; never reordered
+        self._rows: list[int] = []            # the table's rows = indices into _paths, in CAMERA order
+        self._ticked: set[int] = set()        # indices into _paths
+        self._ticks: list[QCheckBox] = []     # the tick of each table row
         self._probe: _HeaderProbe | None = None
-        self._headers: dict[int, object] = {}
-        self._base = QButtonGroup(self)
-        self._base.setExclusive(True)
-        self._base.idToggled.connect(lambda _i, _on: self._update())
+        self._headers: dict[int, object] = {}     # index into _paths -> header (or a sentence)
         lay = QVBoxLayout(self)
         intro = QLabel(
             f"<b>{self.folder}</b><br>Tick the videos to put in one project (each is a camera of the same "
-            "event) and choose the <b>base</b> camera: it is camera 1, the reference clock — every other "
-            "camera's offset says how many frames it is from it. The base must be one of the ticked videos.")
+            "event) and put them in <b>camera order</b> with Move up / Move down: the first ticked video is "
+            "<b>camera 1, the reference clock</b> — every other camera's offset says how many frames it is from "
+            "it. The order is also the order of the cameras in calibrations, in 3D and in every export: keep it the "
+            "same as your calibration's.")
         intro.setWordWrap(True)
         lay.addWidget(intro)
         row = QHBoxLayout()
@@ -136,15 +140,37 @@ class VideoFolderDialog(QDialog):
             b.clicked.connect(lambda _=False, v=on: self._tick_all(v))
             row.addWidget(b)
         lay.addLayout(row)
+        mid = QHBoxLayout()
         self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(list(self.COLS))
         self.table.verticalHeader().setVisible(False)
-        self.table.setSelectionMode(QTableWidget.NoSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.currentCellChanged.connect(lambda *_: self._update_moves())
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(2, QHeaderView.Stretch)
-        lay.addWidget(self.table, 1)
+        mid.addWidget(self.table, 1)
+        side = QVBoxLayout()
+        self.btn_up = QPushButton("Move up")
+        self.btn_down = QPushButton("Move down")
+        self.btn_sort = QPushButton("Sort by name")
+        self.btn_up.setToolTip("The selected video one camera earlier (Alt+Up)")
+        self.btn_down.setToolTip("The selected video one camera later (Alt+Down)")
+        self.btn_sort.setToolTip("Back to the folder's order (cam2 before cam10)")
+        for b, d in ((self.btn_up, -1), (self.btn_down, +1)):
+            b.setAutoDefault(False)
+            b.clicked.connect(lambda _=False, dd=d: self.move_current(dd))
+            side.addWidget(b)
+        self.btn_sort.setAutoDefault(False)
+        self.btn_sort.clicked.connect(self.sort_by_name)
+        side.addWidget(self.btn_sort)
+        side.addStretch(1)
+        mid.addLayout(side)
+        lay.addLayout(mid, 1)
+        QShortcut(QKeySequence("Alt+Up"), self, activated=lambda: self.move_current(-1))
+        QShortcut(QKeySequence("Alt+Down"), self, activated=lambda: self.move_current(+1))
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setStyleSheet(f"color: {theme.TEXT_DIM};")
@@ -152,7 +178,7 @@ class VideoFolderDialog(QDialog):
         prow = QHBoxLayout()
         self.chk_save = QCheckBox("Save the project now as")
         self.chk_save.setChecked(True)
-        self.chk_save.setToolTip("The project file keeps the videos (by path), which one is the base, and "
+        self.chk_save.setToolTip("The project file keeps the videos (by path), their order, and "
                                  "later everything you track. Untick to decide later (Ctrl+S).")
         self.edit_proj = QLineEdit(str(default_project_path(self.folder)))
         self.chk_save.toggled.connect(self.edit_proj.setEnabled)
@@ -167,7 +193,7 @@ class VideoFolderDialog(QDialog):
         self.buttons.accepted.connect(self._accept)
         self.buttons.rejected.connect(self.reject)
         lay.addWidget(self.buttons)
-        self.resize(820, 520)
+        self.resize(860, 540)
         self._rescan()
 
     # ------------------------------------------------------------------ table
@@ -176,35 +202,64 @@ class VideoFolderDialog(QDialog):
         self.stop_probe()
         self._paths = list_videos(self.folder, self.chk_sub.isChecked())
         self._headers = {}
+        self._rows = list(range(len(self._paths)))
+        self._ticked = {k for k in self._rows if k < MAX_VIEWS}
+        self._fill()
+        if self._paths:
+            self.table.selectRow(0)
+            self._probe = _HeaderProbe(self._paths)
+            self._probe.got.connect(self._on_header)
+            self._probe.start()
+        self._update()
+
+    def _fill(self) -> None:
+        """The table from the state: one row per video, in camera order."""
+        self.table.setRowCount(len(self._rows))
         self._ticks = []
-        for b in self._base.buttons():
-            self._base.removeButton(b)
-        self.table.setRowCount(len(self._paths))
-        for r, p in enumerate(self._paths):
+        for r, k in enumerate(self._rows):
+            p = self._paths[k]
             tick = QCheckBox()
-            tick.setChecked(r < MAX_VIEWS)
-            tick.toggled.connect(lambda _on, row=r: self._on_tick(row))
+            tick.setChecked(k in self._ticked)
+            tick.toggled.connect(lambda on, kk=k: self._on_tick(kk, on))
             self._ticks.append(tick)
             self.table.setCellWidget(r, 0, self._centred(tick))
-            radio = QRadioButton()
-            radio.setToolTip("The base camera: camera 1, the reference clock")
-            self._base.addButton(radio, r)
-            self.table.setCellWidget(r, 1, self._centred(radio))
+            self.table.setItem(r, 1, QTableWidgetItem(""))
             rel = p.relative_to(self.folder) if self.chk_sub.isChecked() else Path(p.name)
             self.table.setItem(r, 2, QTableWidgetItem(str(rel)))
-            for c in (3, 4, 5):
-                self.table.setItem(r, c, QTableWidgetItem("…"))
+            self._show_header(r, k)
             try:
                 size = f"{p.stat().st_size / 1024 ** 2:,.0f} MB"
             except OSError:
                 size = "?"
             self.table.setItem(r, 6, QTableWidgetItem(size))
-        if self._paths:
-            self._base.button(0).setChecked(True)
-            self._probe = _HeaderProbe(self._paths)
-            self._probe.got.connect(self._on_header)
-            self._probe.start()
-        self._update()
+        self._number()
+
+    def _number(self) -> None:
+        """The Camera column: each ticked video's number in the order; camera 1 is the reference."""
+        n = 0
+        for r, k in enumerate(self._rows):
+            text = ""
+            if k in self._ticked:
+                n += 1
+                text = "1 · reference" if n == 1 else str(n)
+            it = self.table.item(r, 1)
+            if it is not None and it.text() != text:
+                it.setText(text)
+
+    def _show_header(self, r: int, k: int) -> None:
+        info = self._headers.get(k)
+        if info is None:
+            for c in (3, 4, 5):
+                self.table.setItem(r, c, QTableWidgetItem("…"))
+        elif isinstance(info, str):
+            self.table.setItem(r, 3, QTableWidgetItem(info))
+            self.table.setItem(r, 4, QTableWidgetItem(""))
+            self.table.setItem(r, 5, QTableWidgetItem(""))
+        else:
+            w, h, fps, n = info
+            self.table.setItem(r, 3, QTableWidgetItem(f"{w} × {h}"))
+            self.table.setItem(r, 4, QTableWidgetItem(f"{fps:.3f}".rstrip("0").rstrip(".") + " fps"))
+            self.table.setItem(r, 5, QTableWidgetItem(f"{n:,}"))
 
     @staticmethod
     def _centred(w) -> QWidget:
@@ -216,43 +271,61 @@ class VideoFolderDialog(QDialog):
         h.addStretch(1)
         return box
 
-    def _on_header(self, row: int, info) -> None:
-        if not (0 <= row < self.table.rowCount()):
+    def _on_header(self, k: int, info) -> None:
+        """A header read off the GUI thread: `k` = the file's index in the scan (its row may have moved)."""
+        if not (0 <= k < len(self._paths)):
             return
-        self._headers[row] = info
-        if isinstance(info, str):
-            self.table.setItem(row, 3, QTableWidgetItem(info))
-            self.table.setItem(row, 4, QTableWidgetItem(""))
-            self.table.setItem(row, 5, QTableWidgetItem(""))
-        else:
-            w, h, fps, n = info
-            self.table.setItem(row, 3, QTableWidgetItem(f"{w} × {h}"))
-            self.table.setItem(row, 4, QTableWidgetItem(f"{fps:.3f}".rstrip("0").rstrip(".") + " fps"))
-            self.table.setItem(row, 5, QTableWidgetItem(f"{n:,}"))
+        self._headers[k] = info
+        if k in self._rows:
+            self._show_header(self._rows.index(k), k)
         self._update()
 
     def _tick_all(self, on: bool) -> None:
         for r, t in enumerate(self._ticks):
             t.setChecked(on and r < MAX_VIEWS)
 
-    def _on_tick(self, _row: int) -> None:
-        # the base must be imported: an unticked base goes to the first ticked row
-        b = self._base.checkedId()
-        if b < 0 or not self._ticks[b].isChecked():
-            first = next((r for r, t in enumerate(self._ticks) if t.isChecked()), None)
-            if first is not None:
-                self._base.button(first).setChecked(True)
+    def _on_tick(self, k: int, on: bool) -> None:
+        (self._ticked.add if on else self._ticked.discard)(k)
+        self._number()
+        self._update()
+
+    def move_current(self, delta: int) -> None:
+        """The selected video one place earlier (-1) or later (+1) in the camera order (G171)."""
+        r = self.table.currentRow()
+        to = r + int(delta)
+        if r < 0 or not (0 <= to < len(self._rows)):
+            return
+        self._rows[r], self._rows[to] = self._rows[to], self._rows[r]
+        self._fill()
+        self.table.selectRow(to)
+        self._update()
+
+    def sort_by_name(self) -> None:
+        """Back to the folder's (natural) order."""
+        r = self.table.currentRow()
+        k = self._rows[r] if 0 <= r < len(self._rows) else None
+        self._rows = list(range(len(self._paths)))
+        self._fill()
+        if k is not None:
+            self.table.selectRow(self._rows.index(k))
         self._update()
 
     def ticked(self) -> list[int]:
-        return [r for r, t in enumerate(self._ticks) if t.isChecked()]
+        """The ticked videos (indices into the scan) in camera order: the first is camera 1."""
+        return [k for k in self._rows if k in self._ticked]
 
-    def base_row(self) -> int:
-        return self._base.checkedId()
+    def order_names(self) -> list[str]:
+        """The ticked videos' file names in camera order."""
+        return [self._paths[k].name for k in self.ticked()]
+
+    def _update_moves(self) -> None:
+        r = self.table.currentRow()
+        self.btn_up.setEnabled(r > 0)
+        self.btn_down.setEnabled(0 <= r < len(self._rows) - 1)
+        self.btn_sort.setEnabled(self._rows != list(range(len(self._paths))))
 
     def _update(self) -> None:
         rows = self.ticked()
-        base = self.base_row()
         ok_btn = self.buttons.button(QDialogButtonBox.Ok)
         problems = []
         if not self._paths:
@@ -262,23 +335,22 @@ class VideoFolderDialog(QDialog):
             problems.append("Tick at least one video.")
         elif len(rows) > MAX_VIEWS:
             problems.append(f"A project holds up to {MAX_VIEWS} cameras: untick {len(rows) - MAX_VIEWS}.")
-        elif base not in rows:
-            problems.append("Choose the base camera among the ticked videos.")
-        bad = [self._paths[r].name for r in rows if isinstance(self._headers.get(r), str)]
+        bad = [self._paths[k].name for k in rows if isinstance(self._headers.get(k), str)]
         if bad:
             problems.append(f"Cannot be opened: {', '.join(bad)} — untick {'it' if len(bad) == 1 else 'them'}.")
-        fps = sorted({round(self._headers[r][2], 3) for r in rows if isinstance(self._headers.get(r), tuple)})
+        fps = sorted({round(self._headers[k][2], 3) for k in rows if isinstance(self._headers.get(k), tuple)})
         info = ""
         if len(fps) > 1:
             info = (f"Frame rates differ ({', '.join(f'{f:g}' for f in fps)} fps): that is fine — each camera "
-                    "keeps its own rate against the base (×2 for a camera twice as fast).")
-        if rows and base in rows and not problems:
-            info = (f"{len(rows)} camera(s); base: <b>{self._paths[base].name}</b>. After importing, line them "
-                    "up in time with 3D → Sync Cameras (Sound / Motion). " + info)
+                    "keeps its own rate against camera 1 (×2 for a camera twice as fast).")
+        if rows and not problems:
+            info = (f"{len(rows)} camera(s); camera 1 (the reference): <b>{self._paths[rows[0]].name}</b>. After "
+                    "importing, line them up in time with 3D → Sync Cameras (Sound / Motion). " + info)
         self.note.setText(" ".join(problems) if problems else info)
         self.note.setStyleSheet(f"color: {theme.AMBER if problems else theme.TEXT_DIM};")
         ok_btn.setEnabled(not problems)
         ok_btn.setText(f"Import {len(rows)} video{'s' if len(rows) != 1 else ''}" if rows else "Import")
+        self._update_moves()
 
     def _browse(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Save the project as", self.edit_proj.text(),
@@ -287,11 +359,10 @@ class VideoFolderDialog(QDialog):
             self.edit_proj.setText(path if path.endswith(".kinetrace") else path + ".kinetrace")
 
     def _accept(self) -> None:
-        rows, base = self.ticked(), self.base_row()
-        if not rows or base not in rows or len(rows) > MAX_VIEWS:
+        rows = self.ticked()
+        if not rows or len(rows) > MAX_VIEWS:
             return
-        order = [base] + [r for r in rows if r != base]
-        self.result_paths = [str(self._paths[r]) for r in order]
+        self.result_paths = [str(self._paths[k]) for k in rows]          # camera order (G171)
         proj = self.edit_proj.text().strip()
         self.result_project = (proj if proj.endswith(".kinetrace") else proj + ".kinetrace") \
             if (self.chk_save.isChecked() and proj) else None

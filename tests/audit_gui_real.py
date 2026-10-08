@@ -1097,7 +1097,9 @@ try:
     if want("twocams"):
         new_state("twocams")
         STUB["open"] = VID_B
+        mode_was, POLICY["mode"] = POLICY["mode"], "accept"     # (G172) the cameras' order dialog: OK as listed
         step("camera panel + Add video", lambda: click_widget(win.cameras.btn_add))
+        POLICY["mode"] = mode_was
         STUB["open"] = ""
         wait(lambda: win.project is not None and win.project.n_views == 2, 60, "second camera")
         pump(0.8)

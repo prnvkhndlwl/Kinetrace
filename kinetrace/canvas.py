@@ -579,7 +579,10 @@ class VideoCanvas(QGraphicsView):
         +/− and R had no buttons, and the timeline's zoom buttons beside play / pause were taken
         for these. Zooms about the middle of the view (the pointer is on the button)."""
         from kinetrace import icons
-        bar = QWidget(self.viewport())
+        # (G168) a child of the VIEW, not of its viewport: a viewport's children scroll with the picture
+        # (QWidget.scroll moves them), so a zoomed view that was panned took the buttons out of the
+        # corner and out of reach until Fit scrolled them back
+        bar = QWidget(self)
         bar.setObjectName("video_zoom")
         bar.setAttribute(Qt.WA_StyledBackground, True)
         bar.setStyleSheet("#video_zoom { background: rgba(20, 20, 24, 150); border-radius: 5px; }")
@@ -605,7 +608,7 @@ class VideoCanvas(QGraphicsView):
 
     def _place_zoom_bar(self) -> None:
         bar = self._zoom_bar
-        vp = self.viewport().rect()
+        vp = self.viewport().geometry()           # in the view's coordinates (the bar's parent)
         bar.move(vp.right() - bar.width() - 6, vp.bottom() - bar.height() - 6)
         bar.setVisible(self._native_size is not None)
         bar.raise_()

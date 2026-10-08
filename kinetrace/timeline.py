@@ -124,6 +124,13 @@ class TimelinePanel(QWidget):
         self._conf_col = None                  # (W, N) float32, min conf in column
         self._man_col = None                   # (W, N) uint8, any hand-placed frame in column
         self._occ_col = None                   # (W, N) uint8, any hand-marked hidden cell in column
+        # (G173) several cameras: where the OTHER cameras have each landmark tracked at the same instant.
+        # The lanes are the working camera's; a landmark tracked only in another camera used to show an
+        # empty lane, so its track looked lost. `elsewhere()` -> (key, (T, N) bool or None) and
+        # `elsewhere_names(pid, frame)` -> [camera names] come from the app (it maps the frames)
+        self.elsewhere = None
+        self.elsewhere_names = None
+        self._else_col = None                  # (W, N) uint8, another camera has it in column
         # 3D disagreement: per cell, THIS camera's reprojection error against the
         # others' (from the last reconstruction, mapped by the app), NaN = no 3D
         self._disagree: np.ndarray | None = None      # (T, N) float32
@@ -573,7 +580,8 @@ class TimelinePanel(QWidget):
         s = self.session
         w = self._lane_w()
         v0, v1 = self._view
-        key = (id(s), s.data_version, w, s.n_points, v0, v1, len(getattr(s, "segments", [])))
+        ek, earr = self.elsewhere() if self.elsewhere is not None else (None, None)
+        key = (id(s), s.data_version, w, s.n_points, v0, v1, len(getattr(s, "segments", [])), ek)
         if key == self._cache_key:
             return
         N = s.n_points
@@ -595,6 +603,7 @@ class TimelinePanel(QWidget):
             self._conf_col = np.ones((w, 0), np.float32)
             self._man_col = np.zeros((w, 0), np.uint8)
             self._occ_col = np.zeros((w, 0), np.uint8)
+            self._else_col = None
             self._cache_key = key
             return
         trk = s.tracked[v0:v1 + 1]
@@ -605,6 +614,10 @@ class TimelinePanel(QWidget):
         self._man_col = np.maximum.reduceat(man, bounds, axis=0)
         occ = s.occluded[v0:v1 + 1].astype(np.uint8)
         self._occ_col = np.maximum.reduceat(occ, bounds, axis=0)
+        if earr is not None and earr.shape == (s.n_frames, N):                # (G173)
+            self._else_col = np.maximum.reduceat(earr[v0:v1 + 1].astype(np.uint8), bounds, axis=0)
+        else:
+            self._else_col = None
         d = self._disagree
         if d is not None and d.shape == (s.n_frames, N):
             dd = np.nan_to_num(d[v0:v1 + 1], nan=0.0).astype(np.float32)
@@ -755,6 +768,12 @@ class TimelinePanel(QWidget):
             by, bh = (y + 1, LANE_H - 3) if row == self.selected else (y + 2, LANE_H - 5)
             for c0, c1 in self._runs(trk):
                 p.fillRect(QRectF(GUTTER_W + c0, by, max(c1 - c0, 1), bh), col)
+            # (G173) where only ANOTHER camera has this landmark: a thin line along the lane's middle, so a
+            # point tracked in another view does not look lost here (hover names the cameras)
+            if self._else_col is not None and row < self._else_col.shape[1]:
+                ecol = QColor(*meta.color, 170 if meta.display else 70)
+                for c0, c1 in self._runs(self._else_col[:, row].astype(bool) & ~trk):
+                    p.fillRect(QRectF(GUTTER_W + c0, by + bh / 2 - 1, max(c1 - c0, 1), 2), ecol)
             low = trk & (self._conf_col[:, row] < LOW_CONF)
             for c0, c1 in self._runs(low):
                 p.fillRect(QRectF(GUTTER_W + c0, by, max(c1 - c0, 1), bh),
@@ -964,6 +983,13 @@ class TimelinePanel(QWidget):
             return (f"frame {f}{ts} · {self.session.points[row].name}{src} "
                     f"· conf {c:.2f}{hand}{dis}" + ("" if dis.startswith("\n") else
                     " — Shift+drag along this lane + Delete removes its track there"))
+        if row is not None and self.elsewhere_names is not None:
+            names = self.elsewhere_names(row, f)            # (G173) the thin line
+            if names:
+                cams = ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+                return (f"frame {f}{ts} · {self.session.points[row].name}: not tracked in this camera here, "
+                        f"but tracked in {cams} (the thin line). The lanes are the working camera's: click "
+                        "another camera's view to work in it and see its track here.")
         return (f"frame {f}{ts} · Shift+drag across frames AND lanes: "
                 "select, then Delete clears those lanes there "
                 "· Shift+± / Ctrl+wheel: zoom time")

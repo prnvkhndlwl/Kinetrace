@@ -67,6 +67,11 @@ from _clean import forget_recovery  # noqa: E402
 forget_recovery(PATH_A, PATH_B)
 from kinetrace.app import MainWindow, READY
 from kinetrace.project import Project
+from kinetrace import cameraorder  # noqa: E402
+from PySide6.QtWidgets import QDialogButtonBox  # noqa: E402
+
+# (G172) Add video asks the cameras' order: the user presses OK as listed (the new ones last)
+cameraorder.CameraOrderDialog.exec = lambda self: (self.buttons.button(QDialogButtonBox.Ok).click(), self.result())[1]
 
 win = MainWindow()
 win.resize(1280, 860)
@@ -119,6 +124,12 @@ for _ in range(10):
     QApplication.processEvents()
     time.sleep(0.02)
 _lst = win.cameras.list
+from PySide6.QtTest import QTest as _QT  # noqa: E402
+from PySide6.QtCore import Qt as _Q  # noqa: E402
+for _row in win.cameras._rows:                 # (G169) the controls are behind each row's disclosure
+    if not _row.expanded():
+        _QT.mouseClick(_row.btn_expand, _Q.LeftButton)
+settle()
 _vw = _lst.viewport().width()
 assert not _lst.horizontalScrollBar().isVisible(), "a camera row must not need a horizontal scroll bar"
 for _i, _row in enumerate(win.cameras._rows):
@@ -449,6 +460,11 @@ win._refresh_cameras()
 app.processEvents()
 _rows = win.cameras._rows
 assert len(_rows) >= 2
+for _row in _rows[:2]:                          # (G169) open: Align here, the offset box, the frame rate
+    if not _row.expanded():
+        _QT.mouseClick(_row.btn_expand, _Q.LeftButton)
+app.processEvents()
+assert _rows[1].btn_align.isVisible() and _rows[1].spin.isVisible(), "an open row shows its controls"
 assert not _rows[0].spin.isEnabled(), "the reference camera's offset must not be editable"
 assert "reference" in _rows[0].name.text(), \
     f"the reference row must say so: {_rows[0].name.text()!r}"

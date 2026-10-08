@@ -51,7 +51,9 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        # any number of segments (G149) and which segment each action takes (G150, G151)
        "verify_segments", "verify_segment_targets",
        # animal layers, the two zooms (G152-G160)
-       "verify_layers"]
+       "verify_layers",
+       # (G168-G172) many cameras on screen and their order; (I265) Save during a run
+       "verify_camera_views", "verify_save_during_run"]
 # the synthetic test videos are generated on demand (deterministic; not stored in the repo)
 TEST_VIDEOS = {
     "test600.mp4": ([], None),
