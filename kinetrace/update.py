@@ -439,7 +439,13 @@ def relaunch(root: Path = ROOT) -> None:
         subprocess.Popen(f'cmd /c ""{root / "run.bat"}""', cwd=str(root),
                          creationflags=subprocess.CREATE_NEW_CONSOLE)
     elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(root / "Kinetrace.command")], cwd=str(root))
+        # Kinetrace.app when run.sh made it (X27): no Terminal window, and it opens Terminal by itself
+        # when the update asked for an install step; -n: a NEW instance, not the one that is quitting
+        app = root / "Kinetrace.app"
+        if app.is_dir():
+            subprocess.Popen(["open", "-n", str(app)], cwd=str(root))
+        else:
+            subprocess.Popen(["open", str(root / "Kinetrace.command")], cwd=str(root))
     else:
         log = root / "logs"
         log.mkdir(exist_ok=True)

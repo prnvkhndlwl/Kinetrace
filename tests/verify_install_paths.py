@@ -20,7 +20,10 @@ sys.path.insert(0, str(ROOT))
 PY = sys.executable
 
 # ---- [1] the CLI, as the launchers run it (not offscreen: the real folders) ----
-env = {k: v for k, v in os.environ.items() if k != "QT_QPA_PLATFORM"}
+# without the overrides run_suites.py sets (the recovery / log folders of the tests), so the
+# install's own folders are what is listed
+env = {k: v for k, v in os.environ.items()
+       if k not in ("QT_QPA_PLATFORM", "KINETRACE_RECOVERY_DIR", "KINETRACE_LOG_DIR")}
 r = subprocess.run([PY, "-m", "kinetrace", "--paths"], cwd=ROOT, env=env, capture_output=True,
                    text=True, timeout=120)
 out = r.stdout
@@ -201,6 +204,21 @@ else:
     r = launch()
     log = (fake / "logs" / "launcher.log").read_text()
     assert r.returncode == 0 and "RAN clip.mp4" in log, (r, log)
+    # Help -> Check for Updates -> Restart now on a Mac: a NEW instance of the app, not Terminal
+    import types  # noqa: E402
+    from kinetrace import update  # noqa: E402
+    started = []
+    real_sys, real_popen = update.sys, update.subprocess.Popen
+    update.sys = types.SimpleNamespace(platform="darwin")
+    update.subprocess.Popen = lambda cmd, **kw: started.append(cmd)
+    try:
+        update.relaunch(fake)
+        shutil.rmtree(app_dir)
+        update.relaunch(fake)
+    finally:
+        update.sys, update.subprocess.Popen = real_sys, real_popen
+    assert started[0] == ["open", "-n", str(app_dir)], started
+    assert started[1] == ["open", str(fake / "Kinetrace.command")], started
     shutil.rmtree(tmp, ignore_errors=True)
     print("[5] Kinetrace.app: plist, rebuild when stale, launcher runs run.sh from its folder (output in "
           "logs/), Terminal for an install still to do: OK")
