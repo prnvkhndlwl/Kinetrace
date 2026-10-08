@@ -1838,6 +1838,12 @@ class MainWindow(QMainWindow):
             "The errors Kinetrace recorded while running (kinetrace.log in the Kinetrace folder's logs "
             "folder) and the System Check, ready to copy into a bug report. Nothing is sent anywhere.")
         m_help.addAction(self.act_error_report)
+        self.act_folders = QAction("Kinetrace's &Folders… (where everything is kept)", self,
+                                   triggered=self._show_folders)
+        self.act_folders.setToolTip(
+            "Every folder Kinetrace reads or writes, with its size, and a button to open it -- what "
+            "deleting the Kinetrace folder removes, and what it leaves (your projects and exports)")
+        m_help.addAction(self.act_folders)
         m_help.addAction(QAction("&Keyboard && Mouse Reference…", self,
                                  triggered=self._show_hotkeys))
         m_help.addSeparator()
@@ -2650,6 +2656,65 @@ class MainWindow(QMainWindow):
         show.clicked.connect(_open)
         btns.rejected.connect(dlg.reject)
         btns.accepted.connect(dlg.accept)
+        lay.addWidget(btns)
+        dlg.exec()
+        dlg.deleteLater()
+
+    def _show_folders(self):
+        """Help → Kinetrace's Folders…: `paths.places()` with sizes (measured in the background:
+        .venv holds tens of thousands of files) and Show for the selected one (Mac install audit P1)."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem
+        from kinetrace import paths
+        places = paths.places()
+        sizes = self._in_background("Measuring Kinetrace's folders",
+                                    lambda: [paths.size_bytes(p.path) if "registry" not in p.note else None
+                                             for p in places],
+                                    detail="Adding up the environment and the models…")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Kinetrace's folders")
+        dlg.setMinimumSize(760, 420)
+        lay = QVBoxLayout(dlg)
+        note = QLabel("Deleting the Kinetrace folder removes everything listed inside it. Your projects, "
+                      "exports and calibration files are saved where you chose them and are never deleted "
+                      "by an update or by uninstalling.")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        lst = QListWidget()
+        for inside in (True, False):
+            group = [(p, n) for p, n in zip(places, sizes) if p.inside == inside]
+            head = QListWidgetItem("Inside the Kinetrace folder" if inside else
+                                   "Outside the Kinetrace folder" + ("" if group else ": nothing"))
+            head.setFlags(Qt.NoItemFlags)
+            lst.addItem(head)
+            for p, n in group:
+                size = "" if p.what.startswith("Kinetrace folder") or "registry" in p.note \
+                    else f"   [{paths.human(n)}]"
+                it = QListWidgetItem(f"   {p.what}: {p.path}{size}" + (f"   ({p.note})" if p.note else ""))
+                it.setData(Qt.UserRole, str(p.path) if "registry" not in p.note else "")
+                lst.addItem(it)
+        lay.addWidget(lst)
+        btns = QDialogButtonBox(QDialogButtonBox.Close)
+        show = btns.addButton("Show in " + ("Finder" if sys.platform == "darwin" else "the file manager"),
+                              QDialogButtonBox.ActionRole)
+        copy = btns.addButton("Copy", QDialogButtonBox.ActionRole)
+
+        def _show():
+            it = lst.currentItem()
+            target = Path(it.data(Qt.UserRole)) if it is not None and it.data(Qt.UserRole) else None
+            if target is None:
+                self.statusBar().showMessage("Select a folder in the list first.", 5000)
+                return
+            while not target.exists() and target != target.parent:     # a file / folder not made yet
+                target = target.parent
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(target if target.is_dir() else target.parent)))
+
+        show.clicked.connect(_show)
+        lst.itemDoubleClicked.connect(lambda _it: _show())
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(
+            "\n".join(lst.item(i).text().strip() for i in range(lst.count()))))
+        btns.rejected.connect(dlg.reject)
         lay.addWidget(btns)
         dlg.exec()
         dlg.deleteLater()
@@ -12328,6 +12393,11 @@ def main():
         # of an install and what a support request asks for
         from kinetrace.device import cli
         sys.exit(cli())
+    if "--paths" in sys.argv[1:]:
+        # `python -m kinetrace --paths` (run.sh / run.bat --paths): every folder Kinetrace reads
+        # or writes, with sizes, no window (Mac install audit P2-7)
+        from kinetrace.paths import cli as paths_cli
+        sys.exit(paths_cli())
     # Under pythonw.exe / GUI-mode launches there is no console and
     # sys.stdout/sys.stderr are None — but torch.hub, tqdm, and warnings all
     # write there. Give them a safe sink so a Track click can't crash.
