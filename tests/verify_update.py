@@ -72,7 +72,7 @@ V2 = {"kinetrace/__init__.py": 'APP_VERSION = "1.1.0"\n', "install.py": "# insta
       "kinetrace/new_module.py": "x = 2\n", "docs/MANUAL.md": "# manual v2\n",
       "models/evil.bin": "must never be written", ".venv/kinetrace-install.json": "{}",
       "recovery/x.kinetrace": "no", "skeletons/lizard.json": "no"}
-SERVED = {"latest": None, "zip": make_release_zip(V2)}
+SERVED = {"latest": None, "repo": True, "zip": make_release_zip(V2)}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -80,7 +80,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):  # noqa: N802
-        if self.path == "/api/releases/latest" and SERVED["latest"] is not None:
+        if self.path == "/api" and SERVED["repo"]:       # the repository itself (public)
+            body, ctype = b"{}", "application/json"
+        elif self.path == "/api/releases/latest" and SERVED["latest"] is not None:
             body = json.dumps(SERVED["latest"]).encode()
             ctype = "application/json"
         elif self.path == "/zip":
@@ -113,7 +115,15 @@ try:
     update.check("1.0.0")
     raise AssertionError("a 404 must raise")
 except update.UpdateError as e:
-    check("no published version" in str(e) and "not public" in str(e), e)
+    check("no published version" in str(e) and "no release" in str(e) and "private" not in str(e), e)
+SERVED["repo"] = False          # a private repository: GitHub answers 404 for the repository too (P0-3)
+try:
+    update.check("1.0.0")
+    raise AssertionError("a 404 must raise")
+except update.UpdateError as e:
+    check("private" in str(e) and "no published version" not in str(e), e)
+SERVED["repo"] = True
+print("  no release / private repository said apart OK")
 SERVED["latest"] = {"tag_name": "v1.1.0", "name": "Kinetrace 1.1.0", "body": "* Faster tracking\n* A fix",
                     "zipball_url": BASE + "/zip", "html_url": BASE + "/page", "published_at": "2026-10-01T10:00:00Z"}
 s = socket.socket()
