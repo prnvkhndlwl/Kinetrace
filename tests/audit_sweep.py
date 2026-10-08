@@ -55,8 +55,22 @@ def _hook(tp, val, tb):
 
 
 sys.excepthook = _hook
-# a blocked run (an unstubbed modal dialog) prints its Python stack every 90 s
-faulthandler.dump_traceback_later(90, repeat=True)
+# a blocked run (an unstubbed modal dialog) prints the main thread's Python stack every 90 s -- from
+# a Python thread, under the GIL: faulthandler.dump_traceback_later(repeat=True) walks the frames from
+# a C thread while they change and segfaulted the sweep on a Mac (2026-10-08)
+def _hang_watch():
+    import threading
+    main = threading.main_thread().ident
+    while True:
+        time.sleep(90)
+        frame = sys._current_frames().get(main)
+        if frame is not None:
+            sys.stderr.write("---- the main thread now (every 90 s) ----\n"
+                             + "".join(traceback.format_stack(frame)) + "\n")
+            sys.stderr.flush()
+
+
+__import__("threading").Thread(target=_hang_watch, daemon=True).start()
 
 # ------------------------------------------------------------ dialog stubs
 SAVE_TARGETS = {"csv": os.path.join(SCRATCH, "audit_out.csv"), "tsv": os.path.join(SCRATCH, "audit_out.tsv"),

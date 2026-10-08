@@ -241,6 +241,21 @@ from kinetrace.app import MainWindow, READY
 from kinetrace.syncdialog import SyncDialog
 
 win = MainWindow()
+
+
+def _close_window_at_exit():
+    # a failed assertion must stay a failure: without this the window's threads were still running at
+    # exit and Qt aborted the process (Mac report 2026-10-08)
+    try:
+        win.close()
+        QApplication.processEvents()
+        win._dev_probe.wait(30000)
+    except Exception:      # noqa: BLE001 - best effort while exiting
+        pass
+
+
+import atexit  # noqa: E402
+atexit.register(_close_window_at_exit)
 win.show()
 
 

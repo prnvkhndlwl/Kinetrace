@@ -20,6 +20,14 @@ from kinetrace.video_source import FrameCache, probe_video, VideoSource
 
 
 def rss_mb() -> float:
+    if sys.platform != "win32":
+        # the CURRENT resident size from ps (macOS / Linux; ru_maxrss would be the peak) (Mac report)
+        import subprocess
+        out = subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True).stdout
+        kb = int(out.split()[0])
+        assert kb > 0, "RSS probe failed — memory guard inactive"
+        return kb / 1024
+
     class PMC(ctypes.Structure):
         _fields_ = [("cb", wt.DWORD), ("PageFaultCount", wt.DWORD),
                     ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
