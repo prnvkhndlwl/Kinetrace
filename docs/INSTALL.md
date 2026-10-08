@@ -16,6 +16,7 @@ you what your computer can run. This page is in the folder you downloaded
 - [Uninstalling](#uninstalling)
 - [Updating](#updating)
 - [When something goes wrong](#when-something-goes-wrong)
+- [How it works underneath](#how-it-works-underneath)
 - [Words used on this page](#words-used-on-this-page)
 - [Choices for experts](#choices-for-experts)
 
@@ -283,6 +284,59 @@ looks).
   Attach the Error Report, or for an install problem the newest
   `logs/install-*.log`. Read it first: it contains folder names from your
   computer.
+
+## How it works underneath
+
+**Without a GPU** everything works; the models are several times slower (a 4K
+video takes hours rather than minutes) and **SAM 3D Body is switched off**,
+because Meta's code runs only on an NVIDIA card — the Body dialog greys it out
+and says so; the 2D model (ViTPose) is offered instead. For silhouettes, SAM 2.1
+base+ is the practical choice on a CPU. AllTracker works on a smaller picture on
+computers with little memory (the system check says which size). **The GPU is used whenever it is faster.** The first start times a small
+workload shaped like the models' inner loops on the GPU and on the CPU (a few
+seconds, remembered in `models/device_benchmark.json`), and the faster one does
+the work — on a normal machine the GPU wins by a wide margin, and a GPU that
+cannot run the workload (a broken driver) is simply not used (and tried again at
+the next start — there is no file to delete). The status bar
+shows a coloured badge: green **● GPU** with the card's name, or amber **● CPU**
+(with "(… available)" when a GPU exists but lost the comparison). Hover over
+it for the measured times and what runs slower or is off here; while tracking,
+the speed readout also starts with GPU or CPU. **Help → System Check…** has the
+full report (with a **Copy** button for support requests). The same report
+prints from a terminal with `run.bat --check` / `./run.sh --check`, which also
+installs first if needed and never opens a window.
+
+**When something goes wrong**, Kinetrace writes it down: every error (with
+where in the program it happened and what you were doing), Qt's own warnings,
+and — when the program dies of a native crash — the stack of every thread, go
+to `kinetrace.log` and `kinetrace-crash.log` in the `logs/` folder inside the
+Kinetrace folder (the per-user data folder when the Kinetrace folder is
+read-only). A red notice says so on screen (at most once every ten seconds).
+**Help → Error Report…** shows the recent errors plus the System Check, with
+**Copy** for a bug report and **Open the log folder** to attach the files (two
+Kinetrace windows open at once share the log safely); a
+session marked "did NOT end normally" is one that closed by itself. Nothing is
+ever sent anywhere.
+
+**Models** are downloaded the first time a feature needs them, into `models/`
+inside the folder: the AllTracker point model (66 MB on the first Track),
+CoTracker3 (~100 MB + its code, only if you switch to it), SAM 2.1 for
+silhouettes (~620 MB), ViTPose + RT-DETR for human poses (~500 MB). A window
+shows what is downloading, how far it has got and about how long is left, with
+**Cancel** (the next try carries on); a connection cut half way resumes where it
+stopped, a stalled connection gives up after 30 s with a sentence instead of
+hanging, and a full disk is reported as a full disk. **Every download is pinned and checked**:
+each file is the one of a fixed upstream version (a commit), its checksum is
+compared before use, and a file that differs is deleted, never run; model
+weights are read as plain numbers (`weights_only`), never as code. Once a model
+is in `models/`, loading it asks nothing of the internet. An internet
+connection is needed only for these first downloads.
+
+A new version is published by changing `APP_VERSION` in
+`kinetrace/__init__.py` and pushing it to main: the *Release* workflow
+(`.github/workflows/release.yml`) tags that commit `vX.Y.Z` and publishes a
+GitHub Release with notes written from the commits. Pushes that leave the
+version alone are not offered to anyone.
 
 ## Words used on this page
 
