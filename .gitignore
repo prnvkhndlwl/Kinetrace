@@ -35,6 +35,9 @@ skeletons/
 /update/
 .kinetrace-release.json
 
+# Finder's folder settings (macOS)
+.DS_Store
+
 # editor / assistant settings
 .claude/
 .vscode/

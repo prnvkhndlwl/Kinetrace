@@ -60,6 +60,7 @@ IMPORTS = "import PySide6.QtWidgets, cv2, numpy, scipy, torch, torchvision, tran
 AGAIN = ("run the launcher again: what is already installed is kept and the install goes on from "
          "there (a package cut off half-way downloads again).")
 ISSUES = "https://github.com/prnvkhndlwl/Kinetrace/issues"
+KEEP_INSTALL_LOGS = 3
 
 
 def _new_log() -> str | None:
@@ -69,6 +70,13 @@ def _new_log() -> str | None:
     try:
         d = os.path.join(HERE, "logs")
         os.makedirs(d, exist_ok=True)
+        # the newest few only: each holds pip's full log, about 13 MB (Mac report 2026-10-08)
+        old = sorted(f for f in os.listdir(d) if f.startswith("install-") and f.endswith(".log"))
+        for f in old[:-(KEEP_INSTALL_LOGS - 1)]:
+            try:
+                os.remove(os.path.join(d, f))
+            except OSError:
+                pass
         path = os.path.join(d, time.strftime("install-%Y-%m-%d-%H%M%S.log"))
         with open(path, "a", encoding="utf-8"):
             pass
@@ -227,8 +235,13 @@ config.json and model.safetensors; these are the files it reads (sam3.pt, 3.45 G
     model.safetensors        3.44 GB
     config.json, processor_config.json, tokenizer.json, tokenizer_config.json,
     special_tokens_map.json, vocab.json, merges.txt          (small)
-From a Terminal in the Kinetrace folder (Windows: .venv\\Scripts\\python.exe instead of .venv/bin/python):
-    .venv/bin/python -m huggingface_hub.cli.hf download facebook/sam3 --revision {rev} --exclude "sam3.pt" --local-dir models/sam3 --token YOUR_READ_TOKEN
+From a Terminal in the Kinetrace folder (Mac / Ubuntu; on Windows see docs/INSTALL.md):
+    export HF_HOME="$PWD/models/hf" HF_HUB_DISABLE_UPDATE_CHECK=1
+    .venv/bin/python -m huggingface_hub.cli.hf auth login
+    .venv/bin/python -m huggingface_hub.cli.hf download facebook/sam3 --revision {rev} --exclude "sam3.pt" --local-dir models/sam3
+The first line keeps Hugging Face's files inside the Kinetrace folder and stops its update check;
+"auth login" asks for the Read token without showing it and keeps it in models/hf/token (where
+Kinetrace's Settings keeps it too), so it never lands in the Terminal's history.
 """
 
 S3DB_NOTE = """\
@@ -240,8 +253,10 @@ Two things are needed, both from Meta:
      then put these files HERE (this folder, models/sam-3d-body-dinov3):
          model.ckpt                2.1 GB
          assets/mhr_model.pt       0.7 GB   (in the sub-folder assets - easy to miss)
-     From a Terminal in the Kinetrace folder (Windows: .venv\\Scripts\\python.exe):
-         .venv/bin/python -m huggingface_hub.cli.hf download facebook/sam-3d-body-dinov3 model.ckpt assets/mhr_model.pt --local-dir models/sam-3d-body-dinov3 --token YOUR_READ_TOKEN
+     From a Terminal in the Kinetrace folder (Ubuntu; on Windows see docs/INSTALL.md):
+         export HF_HOME="$PWD/models/hf" HF_HUB_DISABLE_UPDATE_CHECK=1
+         .venv/bin/python -m huggingface_hub.cli.hf auth login
+         .venv/bin/python -m huggingface_hub.cli.hf download facebook/sam-3d-body-dinov3 model.ckpt assets/mhr_model.pt --local-dir models/sam-3d-body-dinov3
   2. Meta's inference code, cloned into models/sam-3d-body (a NEW folder; it must contain
      sam_3d_body/):
          git clone https://github.com/facebookresearch/sam-3d-body models/sam-3d-body

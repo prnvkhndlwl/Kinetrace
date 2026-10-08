@@ -29,7 +29,7 @@ r = subprocess.run([PY, "-m", "kinetrace", "--paths"], cwd=ROOT, env=env, captur
 out = r.stdout
 assert r.returncode == 0, (r.returncode, r.stderr[-2000:])
 inside, _, outside = out.partition("Outside the Kinetrace folder:")
-for what, path in (("Environment", ROOT / ".venv"), ("Models", ROOT / "models"), ("Error log", ROOT / "logs"),
+for what, path in (("Environment", ROOT / ".venv"), ("Models", ROOT / "models"), ("Logs", ROOT / "logs"),
                    ("recovery copies", ROOT / "recovery"), ("Settings", ROOT / "settings.ini"),
                    ("skeletons", ROOT / "skeletons")):
     line = next((ln for ln in inside.splitlines() if what in ln), "")
@@ -95,11 +95,15 @@ else:
     tmp = Path(tempfile.mkdtemp(prefix="kt_uninstall_"))
     home = tmp / "home"
     fake = tmp / "Kinetrace novice"
-    (fake / "kinetrace").mkdir(parents=True)
-    (fake / "kinetrace" / "__init__.py").write_text("")
-    (fake / "run.sh").write_text("")
-    (fake / ".venv").mkdir()
-    shutil.copy(ROOT / "uninstall.sh", fake / "uninstall.sh")
+
+    def make_fake():
+        (fake / "kinetrace").mkdir(parents=True)
+        (fake / "kinetrace" / "__init__.py").write_text("")
+        (fake / "run.sh").write_text("")
+        (fake / ".venv").mkdir()
+        shutil.copy(ROOT / "uninstall.sh", fake / "uninstall.sh")
+
+    make_fake()
     data = home / ".local" / "share" / "kinetrace"          # the Linux / Git Bash fallback folder
     plist = home / "Library" / "Preferences" / "com.kinetrace.Kinetrace.plist"
     for p in (data / "recovery", plist.parent):
@@ -108,8 +112,8 @@ else:
     keep = home / "Documents" / "trial.kinetrace"
     keep.mkdir(parents=True)
 
-    def uninstall(answer):
-        e = dict(env, HOME=str(home), KINETRACE_UNINSTALL_ANSWER=answer)
+    def uninstall(answer, shared=""):
+        e = dict(env, HOME=str(home), KINETRACE_UNINSTALL_ANSWER=answer, KINETRACE_UNINSTALL_SHARED=shared)
         e.pop("XDG_DATA_HOME", None)
         e.pop("XDG_CONFIG_HOME", None)
         return subprocess.run([bash, "uninstall.sh"], cwd=fake, env=e, capture_output=True, text=True,
@@ -121,15 +125,20 @@ else:
     (fake / "my.kinetrace").rmdir()
     r = uninstall("no")
     assert r.returncode == 0 and "nothing was deleted" in r.stdout and fake.exists(), r.stdout
-    r = uninstall("DELETE")
-    assert r.returncode == 0, (r.stdout, r.stderr)
     mac = sys.platform == "darwin"
-    assert not fake.exists(), "the folder must be gone"
-    assert (not plist.exists()) if mac else (not data.exists()), "the outside folder must be gone"
+    outside = plist if mac else data
+    # the folders outside are SHARED by every copy (Mac report): kept unless asked for
+    r = uninstall("DELETE", shared="no")
+    assert r.returncode == 0 and "shared by every Kinetrace copy" in r.stdout, (r.stdout, r.stderr)
+    assert not fake.exists() and outside.exists(), "the folder goes; the shared outside folder stays"
+    make_fake()
+    r = uninstall("DELETE", shared="yes")
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    assert not fake.exists() and not outside.exists(), "both gone when asked"
     assert keep.exists(), "a project elsewhere must never be touched"
     shutil.rmtree(tmp, ignore_errors=True)
-    print("[3] uninstall.sh: refuses with a project inside, asks, removes folder + outside traces, "
-          "keeps projects: OK")
+    print("[3] uninstall.sh: refuses with a project inside, asks, removes the folder; the shared outside "
+          "traces only when asked; keeps projects: OK")
 # ---- [4] the gated models' folders, as install.py leaves them (Mac install audit P1) ----
 import importlib.util  # noqa: E402
 spec = importlib.util.spec_from_file_location("kt_install", ROOT / "install.py")
@@ -145,6 +154,9 @@ try:
     sam3 = (tmp / "sam3" / "PUT_FILES_HERE.txt").read_text(encoding="utf-8")
     assert "model.safetensors" in sam3 and downloads.HF_REVISIONS["facebook/sam3"] in sam3, sam3
     assert '--exclude "sam3.pt"' in sam3 and "Settings" in sam3, sam3
+    # the CLI stays inside the folder and offline; no token on a command line (Mac report)
+    assert 'HF_HOME="$PWD/models/hf"' in sam3 and "HF_HUB_DISABLE_UPDATE_CHECK=1" in sam3, sam3
+    assert "--token" not in sam3 and "auth login" in sam3, sam3
     s3db = tmp / "sam-3d-body-dinov3" / "PUT_FILES_HERE.txt"
     if sys.platform == "darwin":
         assert not s3db.exists(), "SAM 3D Body cannot run on a Mac: no folder inviting its 2.8 GB"
@@ -158,7 +170,23 @@ try:
 finally:
     downloads.MODELS_DIR, segmenter.MODELS_DIR, bodypose.MODELS_DIR = real
     shutil.rmtree(tmp, ignore_errors=True)
-print("[4] install.py: models/sam3 (+ SAM 3D Body's off a Mac) with PUT_FILES_HERE.txt; "
+# the install logs: only the newest few are kept (each holds pip's full log, ~13 MB; Mac report)
+logs_tmp = Path(tempfile.mkdtemp(prefix="kt_logs_"))
+(logs_tmp / "logs").mkdir()
+for i in range(5):
+    (logs_tmp / "logs" / f"install-2026-01-0{i + 1}-000000.log").write_text("x")
+(logs_tmp / "logs" / "kinetrace.log").write_text("errors")
+real_here = inst.HERE
+try:
+    inst.HERE = str(logs_tmp)
+    newest = inst._new_log()
+finally:
+    inst.HERE = real_here
+left = sorted(f.name for f in (logs_tmp / "logs").iterdir())
+assert newest and len([f for f in left if f.startswith("install-")]) == inst.KEEP_INSTALL_LOGS, left
+assert "kinetrace.log" in left and "install-2026-01-05-000000.log" in left, left
+shutil.rmtree(logs_tmp, ignore_errors=True)
+print("[4] install.py: models/sam3 (+ SAM 3D Body's off a Mac) with PUT_FILES_HERE.txt; the newest install logs; "
       "a note alone is not a model: OK")
 # ---- [5] Kinetrace.app (macOS; built and its launcher run on a stand-in folder anywhere) ----
 import plistlib  # noqa: E402
@@ -178,18 +206,22 @@ else:
     (stub / "open").write_text(f'#!/bin/bash\necho "$*" > "{(tmp / "opened.txt").as_posix()}"\n',
                                encoding="utf-8", newline="\n")
     (stub / "open").chmod(0o755)
-    real_app, real_stamp = macapp.APP, macapp.STAMP
     app_dir = macapp.build(fake)
     info = plistlib.loads((app_dir / "Contents" / "Info.plist").read_bytes())
     assert info["CFBundleName"] == "Kinetrace" and info["CFBundleExecutable"] == "Kinetrace", info
     assert info["CFBundleShortVersionString"] == APP_VERSION and info["LSMinimumSystemVersion"] == "14.0"
     exe = app_dir / "Contents" / "MacOS" / "Kinetrace"
     assert subprocess.run([bash, "-n", str(exe)]).returncode == 0
-    macapp.STAMP = app_dir / "Contents" / "kinetrace-bundle-version"
-    assert not macapp.is_stale(), "a fresh app is not stale"
-    macapp.STAMP.write_text("0", encoding="utf-8")
-    assert macapp.is_stale(), "a changed launcher must rebuild the app"
-    macapp.APP, macapp.STAMP = real_app, real_stamp
+    stamp = app_dir / "Contents" / "kinetrace-bundle-version"
+    assert macapp.stale_reason(fake) == "", "a fresh app is not stale"
+    # the folder moved (Mac report: the fallback path still named the old folder): the launcher only
+    stamp.write_text(stamp.read_text(encoding="utf-8").replace(str(fake), str(tmp / "old name")),
+                     encoding="utf-8")
+    assert macapp.stale_reason(fake) == "moved"
+    macapp._write_launcher(app_dir, fake)
+    assert macapp.stale_reason(fake) == "" and str(fake) in exe.read_text(encoding="utf-8")
+    stamp.write_text("0\n" + str(fake), encoding="utf-8")
+    assert macapp.stale_reason(fake) == "version", "a changed launcher must rebuild the app"
     run_env = dict(env, PATH=str(stub) + os.pathsep + env.get("PATH", ""))
 
     def launch():

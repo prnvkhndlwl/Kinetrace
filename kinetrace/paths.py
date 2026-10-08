@@ -46,6 +46,26 @@ def _legacy_settings() -> Place | None:
     return Place("Old settings (Kinetrace 0.4.1 and earlier)", p, False, "safe to delete") if p.exists() else None
 
 
+def _qt_settings() -> Place | None:
+    """Qt's own settings, which its file dialogs write whatever the program (the last folder you
+    browsed, the dialog's view): one place for EVERY Qt program, so never deleted by an uninstall
+    (Mac report 2026-10-08)."""
+    note = "Qt's file-dialog history (the last folder you browsed); shared by every Qt program"
+    if sys.platform == "darwin":
+        p = Path.home() / "Library" / "Preferences" / "com.qtproject.plist"
+        return Place("Qt's settings", p, False, note) if p.exists() else None
+    if sys.platform == "win32":
+        try:
+            import winreg
+            winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\QtProject"))
+        except OSError:
+            return None
+        return Place("Qt's settings", Path(r"HKEY_CURRENT_USER\Software\QtProject"), False,
+                     note + "; a registry key")
+    p = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "QtProject.conf"
+    return Place("Qt's settings", p, False, note) if p.exists() else None
+
+
 def places() -> list[Place]:
     from kinetrace import crashlog, recovery
     rec, rec_fallback = recovery.folder()
@@ -53,7 +73,7 @@ def places() -> list[Place]:
         Place("Kinetrace folder (the app)", ROOT, True, "deleting it uninstalls Kinetrace"),
         Place("Environment (Python + packages)", ROOT / ".venv", True),
         Place("Models", ROOT / "models", True, "downloaded once; kept by updates"),
-        Place("Error log", crashlog.folder(), crashlog.folder().is_relative_to(ROOT)),
+        Place("Logs (errors; the last installs)", crashlog.folder(), crashlog.folder().is_relative_to(ROOT)),
         Place("Unsaved-work recovery copies", rec, not rec_fallback,
               "the Kinetrace folder could not be written" if rec_fallback else ""),
         Place("Settings (your name for notes)", recovery.settings_path(),
@@ -67,6 +87,9 @@ def places() -> list[Place]:
     legacy = _legacy_settings()
     if legacy is not None:
         out.append(legacy)
+    qt = _qt_settings()
+    if qt is not None:
+        out.append(qt)
     try:
         import getpass
         inductor = Path(tempfile.gettempdir()) / f"torchinductor_{getpass.getuser()}"

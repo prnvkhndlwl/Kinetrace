@@ -35,7 +35,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "Kinetrace.app"
 BUNDLE_VERSION = "1"          # bump when the launcher / plist below change: run.sh rebuilds the app
-STAMP = APP / "Contents" / "kinetrace-bundle-version"
 ICON_SIZES = (16, 32, 128, 256, 512)
 
 LAUNCHER = """#!/bin/bash
@@ -68,11 +67,34 @@ def info_plist(version: str) -> dict:
     }
 
 
-def is_stale() -> bool:
+def _stamp_text(root: Path) -> str:
+    return f"{BUNDLE_VERSION}\n{root}"
+
+
+def stale_reason(root: Path = ROOT) -> str:
+    """'' (up to date), 'moved' (only the folder it bakes in as a fallback changed: the launcher is
+    rewritten in place, Mac report 2026-10-08) or 'version' (rebuild)."""
     try:
-        return STAMP.read_text(encoding="utf-8").strip() != BUNDLE_VERSION
+        version, _, baked = (root / "Kinetrace.app" / "Contents" / "kinetrace-bundle-version") \
+            .read_text(encoding="utf-8").partition("\n")
     except OSError:
-        return True
+        return "version"
+    if version.strip() != BUNDLE_VERSION:
+        return "version"
+    return "" if baked.strip() == str(root) else "moved"
+
+
+def is_stale(root: Path = ROOT) -> bool:
+    return stale_reason(root) != ""
+
+
+def _write_launcher(app: Path, root: Path) -> None:
+    exe = app / "Contents" / "MacOS" / "Kinetrace"
+    tmp = exe.with_name("Kinetrace.new")
+    tmp.write_text(LAUNCHER.format(baked=shlex.quote(str(root))), encoding="utf-8", newline="\n")
+    tmp.chmod(0o755)
+    os.replace(tmp, exe)                      # in place: the app may be the one starting right now
+    (app / "Contents" / "kinetrace-bundle-version").write_text(_stamp_text(root), encoding="utf-8")
 
 
 def _icns(dest: Path) -> bool:
@@ -104,11 +126,8 @@ def build(root: Path = ROOT) -> Path:
     (tmp / "Contents" / "Resources").mkdir()
     with open(tmp / "Contents" / "Info.plist", "wb") as fh:
         plistlib.dump(info_plist(APP_VERSION), fh)
-    exe = tmp / "Contents" / "MacOS" / "Kinetrace"
-    exe.write_text(LAUNCHER.format(baked=shlex.quote(str(root))), encoding="utf-8", newline="\n")
-    exe.chmod(0o755)
+    _write_launcher(tmp, root)
     _icns(tmp / "Contents" / "Resources" / "Kinetrace.icns")      # no icon is not worth failing over
-    (tmp / "Contents" / "kinetrace-bundle-version").write_text(BUNDLE_VERSION, encoding="utf-8")
     shutil.rmtree(app, ignore_errors=True)
     tmp.rename(app)
     if shutil.which("codesign"):
@@ -121,7 +140,11 @@ def main(argv: list[str]) -> int:
     if sys.platform != "darwin" and "--any-os" not in argv:
         print("Kinetrace.app is for macOS.")
         return 0
-    if "--if-stale" in argv and not is_stale():
+    reason = stale_reason(ROOT)
+    if "--if-stale" in argv and reason == "":
+        return 0
+    if "--if-stale" in argv and reason == "moved":
+        _write_launcher(APP, ROOT)            # the folder moved: only the baked fallback path changes
         return 0
     app = build()
     print(f"Made {app.name} in this folder: double-click it to start Kinetrace (no Terminal needed); "

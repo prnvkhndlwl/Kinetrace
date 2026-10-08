@@ -3,10 +3,11 @@
 #  Kinetrace uninstaller for macOS and Linux.        bash uninstall.sh
 #
 #  Removes this Kinetrace folder (the app, its environment, its models, logs,
-#  recovery copies and settings) and the few things Kinetrace may have written
-#  OUTSIDE it: the per-user fallback folder (used only when this folder could
-#  not be written) and the settings of Kinetrace 0.4.1 and earlier. It lists
-#  everything first and asks you to type DELETE. Your projects, exports and
+#  recovery copies and settings) after you type DELETE. Then, only if you say
+#  yes, the few things Kinetrace may have written OUTSIDE it, which every
+#  Kinetrace copy on the computer shares: the per-user fallback folder (used
+#  only when a Kinetrace folder could not be written) and the settings of
+#  Kinetrace 0.4.1 and earlier. Your projects, exports and
 #  calibration files are saved where you chose them and are NOT touched; if one
 #  is saved INSIDE this folder, it stops and names it so you can move it first.
 #  Windows: delete the Kinetrace folder and %LOCALAPPDATA%\Kinetrace (if it is there).
@@ -31,7 +32,7 @@ if [ -n "$inside" ]; then
     exit 1
 fi
 
-targets=("$HERE")
+shared=()
 if [ "$(uname -s)" = "Darwin" ]; then
     outside=("$HOME/Library/Application Support/Kinetrace"
              "$HOME/Library/Preferences/com.kinetrace.Kinetrace.plist")
@@ -40,19 +41,17 @@ else
              "${XDG_CONFIG_HOME:-$HOME/.config}/Kinetrace")
 fi
 for p in "${outside[@]}"; do
-    if [ -e "$p" ]; then targets+=("$p"); fi
+    if [ -e "$p" ]; then shared+=("$p"); fi
 done
+size=$(du -sh "$HERE" 2>/dev/null | cut -f1)
 say "This removes Kinetrace completely:"
-for p in "${targets[@]}"; do
-    size=$(du -sh "$p" 2>/dev/null | cut -f1)
-    say "    $p   ${size:+($size)}"
-done
+say "    $HERE   ${size:+($size)}"
 say ""
 say "Your projects, exports and calibration files are NOT touched (they are where you saved them)."
 if [ -n "${KINETRACE_UNINSTALL_ANSWER:-}" ]; then       # the test suite's answer (verify_install_paths)
     answer="$KINETRACE_UNINSTALL_ANSWER"
 else
-    printf 'Type DELETE to remove the folders above, anything else to stop: '
+    printf 'Type DELETE to remove the folder above, anything else to stop: '
     read -r answer < /dev/tty || answer=""
 fi
 if [ "$answer" != "DELETE" ]; then
@@ -60,11 +59,33 @@ if [ "$answer" != "DELETE" ]; then
     exit 0
 fi
 
-[ "$(uname -s)" = "Darwin" ] && defaults delete com.kinetrace.Kinetrace >/dev/null 2>&1 || true
-for p in "${targets[@]}"; do
-    [ "$p" = "$HERE" ] && continue
-    rm -rf "$p"
-done
+# Outside the folder: SHARED by every Kinetrace copy on this computer (unsaved-work copies of a copy
+# whose folder could not be written; the settings of 0.4.1 and earlier). Asked apart, default keep:
+# another copy may still need them (Mac report 2026-10-08)
+if [ ${#shared[@]} -gt 0 ]; then
+    say ""
+    say "Kinetrace also left these OUTSIDE its folder. They are shared by every Kinetrace copy on"
+    say "this computer (unsaved work of a copy that could not write its own folder, old settings):"
+    for p in "${shared[@]}"; do
+        s=$(du -sh "$p" 2>/dev/null | cut -f1)
+        say "    $p   ${s:+($s)}"
+    done
+    if [ -n "${KINETRACE_UNINSTALL_SHARED:-}" ]; then   # the test suite's answer
+        also="$KINETRACE_UNINSTALL_SHARED"
+    else
+        printf 'Remove these too? Only if no other Kinetrace copy is left. Type yes, or Enter to keep them: '
+        read -r also < /dev/tty || also=""
+    fi
+    if [ "$also" = "yes" ]; then
+        [ "$(uname -s)" = "Darwin" ] && { defaults delete com.kinetrace.Kinetrace >/dev/null 2>&1 || true; }
+        for p in "${shared[@]}"; do
+            rm -rf "$p"
+        done
+        say "Removed them."
+    else
+        say "Kept them."
+    fi
+fi
 cd /
 rm -rf "$HERE"
 say "Kinetrace was removed."

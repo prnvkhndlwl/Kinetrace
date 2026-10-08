@@ -69,7 +69,11 @@ bootstrap_python() {
         *) say "No private Python build exists for $OS on $ARCH."; return 1 ;;
     esac
     URL="https://github.com/astral-sh/python-build-standalone/releases/download/$TAG/cpython-$VER+$TAG-$TRIPLE-install_only_stripped.tar.gz"
-    say "No usable Python found on this computer - downloading a private copy (about 30 MB) into .venv/base ..."
+    if [ "$OS" = "Darwin" ] || [ "${KINETRACE_BOOTSTRAP_PYTHON:-}" = "1" ]; then
+        say "Downloading Kinetrace's own Python (about 25 MB) into .venv/base - nothing is installed into the system ..."
+    else
+        say "No usable Python found on this computer - downloading a private copy (about 25 MB) into .venv/base ..."
+    fi
     rm -rf .venv/base .venv/_python_dl
     mkdir -p .venv/_python_dl
     download "$URL" .venv/_python_dl/python.tar.gz || { rm -rf .venv/_python_dl; return 1; }
@@ -116,7 +120,11 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
         say "Kinetrace - checking the environment in .venv ..."
     else
         say "============================================================"
-        say " Kinetrace - first run: setting up a self-contained environment in .venv"
+        if [ "${KINETRACE_REBUILT:-}" = "1" ]; then
+            say " Kinetrace - rebuilding its environment in .venv (models and projects are kept)"
+        else
+            say " Kinetrace - first run: setting up a self-contained environment in .venv"
+        fi
         if [ "$OS" = "Darwin" ]; then
             say " This takes a few minutes and about 1.5 GB of disk. Keep this window open"
             say " until it says it is done. Everything installs INSIDE this folder -"
