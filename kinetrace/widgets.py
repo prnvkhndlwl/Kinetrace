@@ -551,6 +551,9 @@ class ManualDialog(QDialog):
         btn = QPushButton("Find")
         btn.clicked.connect(self._find_next)
         find_row.addWidget(btn)
+        # Ctrl+F (Cmd+F on a Mac) goes to the find box, as in every reader (Mac report 2026-10-08)
+        from PySide6.QtGui import QKeySequence, QShortcut
+        QShortcut(QKeySequence.Find, self, activated=lambda: (self.find.setFocus(), self.find.selectAll()))
         right.addLayout(find_row)
 
         self.view = QTextBrowser()

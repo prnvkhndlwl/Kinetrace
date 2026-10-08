@@ -1522,7 +1522,7 @@ class MainWindow(QMainWindow):
 
     def _build_edit_menu(self) -> None:
         """Edit menu."""
-        m_edit = self.menuBar().addMenu("&Edit")
+        m_edit = self.m_edit = self.menuBar().addMenu("&Edit")
         self.act_undo = QAction("&Undo Last Run / Edit", self,
                                 shortcut=QKeySequence("Ctrl+Z"),
                                 triggered=self._undo_run, enabled=False)
@@ -1616,6 +1616,12 @@ class MainWindow(QMainWindow):
                                     shortcut=QKeySequence("Ctrl+,"), triggered=self._show_settings)
         # the Segment ▾ menu ends with the full Settings dialog (token, opacity)
         self._seg_menu.addAction(self.act_settings)
+        # and Edit ends with it, as the Preferences entry: on a Mac Qt moves it to the application
+        # menu (Kinetrace -> Settings..., Cmd+,), where every Mac app has it (Mac report 2026-10-08:
+        # it was in no menu-bar menu, so a Mac user could not find it)
+        self.act_settings.setMenuRole(QAction.PreferencesRole)
+        self.m_edit.addSeparator()
+        self.m_edit.addAction(self.act_settings)
         self._refresh_seg_menu()
         m_view.addAction(self.act_show_midline)
         m_view.addAction(self.act_show_bones)

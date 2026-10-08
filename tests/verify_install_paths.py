@@ -232,4 +232,27 @@ for text in (HOTKEYS_HTML, manual):
     assert native_keys(text, "win32") == text and native_keys(text, "linux") == text
 assert native_keys("Alternatively Alt+click", "darwin") == "Alternatively ⌥+click"
 print("[6] on a Mac the key reference and the manual say Cmd / Option (Windows / Linux unchanged): OK")
+
+# ---- [7] Settings in a menu-bar menu as Preferences (Qt puts it in Kinetrace's app menu on a Mac),
+# and Ctrl+F / Cmd+F in the manual goes to its find box (Mac report 2026-10-08) ----
+from PySide6.QtGui import QAction as _QAction  # noqa: E402
+win2 = MainWindow()
+win2.show()
+edit_menu = next(m for m in win2.findChildren(QMenu) if m.title() == "&Edit")
+edit_actions = edit_menu.actions()             # kept referenced (PySide6 harness pitfall)
+assert win2.act_settings in edit_actions, "Settings must be in a menu-bar menu"
+assert win2.act_settings.menuRole() == _QAction.PreferencesRole
+win2._show_manual()
+app.processEvents()
+dlg = win2._manual_dlg
+dlg.activateWindow()
+dlg.view.setFocus()
+app.processEvents()
+QTest.keyClick(dlg.view, Qt.Key_F, Qt.ControlModifier)
+app.processEvents()
+assert dlg.find.hasFocus(), "Ctrl+F must put the cursor in the manual's find box"
+dlg.close()
+win2._dev_probe.wait(30000)
+win2.close()
+print("[7] Settings in Edit with the Preferences role; Ctrl+F reaches the manual's find box: OK")
 print("verify_install_paths PASSED")
