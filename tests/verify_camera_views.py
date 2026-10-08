@@ -159,6 +159,17 @@ check(rows[0].name.text().startswith("1  ") and "reference" in rows[0].name.text
       "each row says its number in the camera order; camera 1 says it is the reference", rows[0].name.text())
 check(rows[1].summary.isVisible() and rows[1].summary.text().startswith("offset"),
       "a shut row still shows its offset", rows[1].summary.text())
+
+
+def row_heights(k):
+    """(G175) (item height, row widget height, name label height, the name's font height)."""
+    return (lst.visualItemRect(lst.item(k)).height(), rows[k].height(), rows[k].name.height(),
+            rows[k].name.fontMetrics().height())
+
+
+check(all(row_heights(k)[1] == row_heights(k)[0] and row_heights(k)[2] >= row_heights(k)[3] for k in range(4)),
+      "every row gets its item's whole height and its name the font's (G175: the theme's item padding "
+      "squeezed the row and cut the name's descenders and underscores)", [row_heights(k) for k in range(4)])
 check(not rows[p.active].btn_eye.isEnabled() and rows[1].btn_eye.isEnabled(),
       "the working camera's eye is off-limits (it is always shown); the others' can be clicked")
 win._goto(10, force=True)
@@ -189,6 +200,8 @@ check(rows[1].expanded() and rows[1].details.isVisible() and rows[1].btn_align.i
       "its disclosure opens the row: Align here, the offset box, the frame rate (the row grows)",
       (h0, lst.visualItemRect(lst.item(1)).height()))
 check(not rows[1].summary.isVisible(), "an open row shows its offset in the box, not twice")
+check(row_heights(1)[1] == row_heights(1)[0] and row_heights(1)[2] >= row_heights(1)[3],
+      "an open row gets its item's whole height too (G175)", row_heights(1))
 QTest.mouseClick(rows[1].btn_expand, Qt.LeftButton)
 pump(0.2)
 check(not rows[1].details.isVisible() and lst.visualItemRect(lst.item(1)).height() == h0, "and shuts it again")

@@ -344,6 +344,10 @@ class CameraPanel(QWidget):
                              "another to switch to it. The eye shows / hides a camera's view; ▶ opens its\n"
                              "controls (Align here, offset, frame rate).")
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # (G175) no vertical item padding: an item is exactly its row's height (`_fit_row`), and the
+        # theme's 4 px above and below squeezed the 23 px row to 15 px -- the name lost its descenders
+        # and underscores on real fonts
+        self.list.setStyleSheet("QListWidget::item { padding: 0px 2px; }")
         # re-lay the rows out when the viewport changes width (a vertical scroll
         # bar appearing, the panel resized): the default Fixed mode keeps the old
         # width and clips the row's right-hand buttons
