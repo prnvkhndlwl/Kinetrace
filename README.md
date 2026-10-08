@@ -36,7 +36,7 @@ with the mouse, and export the tracks to the tools you already use.
 
    | Windows | Mac (Apple Silicon, macOS 14+) | Ubuntu 22.04+ |
    |---|---|---|
-   | double-click `run.bat` | double-click `Kinetrace.command`; the first time, allow it in **System Settings → Privacy & Security → Open Anyway** | `./run.sh` |
+   | double-click `run.bat` | double-click `Kinetrace.command`; the first time, macOS refuses it: click **Done** (not *Move to Trash*, the default), then allow it in **System Settings → Privacy & Security → Open Anyway** | `./run.sh` |
 
 3. **Wait once.** The first start sets everything up inside the folder
    without asking anything (about 4 GB with an NVIDIA GPU, mostly PyTorch;
@@ -58,10 +58,11 @@ Hugging Face first, then a token pasted in Settings —
 Mac users skip it** (2D joints with ViTPose work everywhere). Everything else
 downloads by itself.
 
-**On a Mac** (measured on an M4 Max): CoTracker3, SAM 2.1 and ViTPose run on
-the Mac's GPU; AllTracker, the default point model, failed on it in 0.4.1 and
-is fixed after it (if Track fails, pick CoTracker3 in **Track ▾**); SAM 3D Body
-cannot run. Where the manual says **Ctrl**, press **⌘**.
+**On a Mac** (measured on an M4 Max): AllTracker (the default point model; it
+failed in 0.4.1), CoTracker3, SAM 2.1 and ViTPose run on the Mac's GPU —
+AllTracker with the same coordinates as on the CPU, 0.74 px on 4K. Ball markers
+are faster on the CPU there for now. SAM 3D Body cannot run. Where the manual
+says **Ctrl**, press **⌘**.
 [All models, every system](docs/INSTALL.md#which-models-run-on-which-computer).
 
 New to tracking? The **[user manual](docs/MANUAL.md)** (also **F1** in the app)
@@ -128,5 +129,5 @@ check for updates. Everything Kinetrace installs lives in its folder (the
 environment, the models, logs, settings); your projects and exports are saved
 where you choose and are never deleted with it. **Help → Kinetrace's Folders…**
 lists every place it uses, and [uninstalling](docs/INSTALL.md#uninstalling) is
-deleting the folder (`bash uninstall.sh` on a Mac or Ubuntu also removes the
-few traces it can leave outside).
+deleting the folder (`bash uninstall.sh` on a Mac or Ubuntu also offers to
+remove the few traces it can leave outside).

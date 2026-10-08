@@ -70,8 +70,9 @@ Notepad to read it.
    Trash*.
    - **macOS 15 and newer:** open **System Settings → Privacy & Security**,
      scroll down to the line about `Kinetrace.command`, click **Open Anyway**
-     and confirm with your password or Touch ID. Then double-click
-     `Kinetrace.command` again and click **Open**.
+     and confirm with your password or Touch ID. Kinetrace then starts (on
+     some macOS versions you double-click `Kinetrace.command` once more and
+     click **Open**).
    - **macOS 14:** right-click (or Control-click) `Kinetrace.command`, choose
      **Open**, and confirm.
    - Or, in Terminal, once (adjust the path to where you put the folder):
@@ -112,7 +113,7 @@ password; when it cannot ask, it prints the exact `sudo apt-get install …` lin
 
 The steps are numbered (`==== Step 2 of 4 …`); the many lines in between are
 the package installer's own messages. Everything is also written to
-`logs/install-<date>.log` in the folder. If the download is interrupted, start
+`logs/install-<date>.log` in the folder (the newest three are kept). If the download is interrupted, start
 the launcher again: what is already installed is kept and it goes on from there.
 
 ## 3. You are done: starting it again
@@ -134,27 +135,35 @@ works offline.
 
 **Keys on a Mac:** where this documentation says **Ctrl**, press **⌘ (Cmd)**;
 **Alt** is **⌥ (Option)**. Kinetrace's own key reference and its manual (F1)
-already show them that way on a Mac. Settings is **⌘,**; macOS moves it into
-the application menu (the one left of **File**), as on every Mac app.
+already show them that way on a Mac. Settings is **⌘,**, or **Kinetrace →
+Settings…** in the menu bar, as on every Mac app (**Edit → Settings…** on
+Windows and Ubuntu).
 
 ## Which models run on which computer
 
 | Model | What for | Size on disk | NVIDIA GPU (Windows / Ubuntu) | Mac (Apple GPU) | No GPU |
 |---|---|---|---|---|---|
-| AllTracker | points (the default) | 66 MB + 1 MB code | ✅ | failed in 0.4.1; fixed after it (the one step Apple's GPU cannot do now runs on the CPU), not yet confirmed on a Mac. If Track fails, choose CoTracker3 in **Track ▾** | ✅ slower; works on a smaller picture with little memory |
-| CoTracker3 | points (faster on sharp markers) | 102 MB + 36 MB code | ✅ | ✅ (0.5 – 1.1 px mean error, measured on an M4 Max) | ✅ slower |
+| AllTracker | points (the default) | 66 MB + 1 MB code | ✅ | ✅ (failed in 0.4.1; measured on an M4 Max since the fix: the same coordinates as the CPU at every picture size, 0.74 px on 4K) | ✅ slower (17× on that Mac); works on a smaller picture with little memory |
+| CoTracker3 | points (faster on sharp markers) | 102 MB + 36 MB code | ✅ | ✅ (0.5 – 1.1 px mean error; 33 frames/s on a 5000-frame 1080p video, 1.02 px; M4 Max) | ✅ slower |
 | SAM 2.1 base+ | silhouettes (the default) | 617 MB | ✅ | ✅ (2.3 frames/s at 1280×720 on an M4 Max) | ✅ the practical choice |
 | SAM 2.1 large | silhouettes | 1.7 GB | ✅ | not tested yet (the same code as base+) | slow |
 | SAM 3 (needs Meta's permission) | the best silhouettes | 3.4 GB | ✅ | not tested yet; 32 GB of memory suggested | very slow |
 | ViTPose + RT-DETR | human joints in 2D | 425 + 81 MB | ✅ | ✅ | ✅ slower |
 | SAM 3D Body (needs Meta's permission) | human joints in 3D | 2.8 GB (2.1 + 0.7) | ✅ | ❌ **NVIDIA only**: Meta's code cannot run on a Mac | ❌ |
 
+**Ball markers on a Mac** (wand calibration, the SAM circle per ball) are slow on
+the Apple GPU: 0.2 frames/s on an M4 Max, slower than its CPU (0.6 frames/s),
+with the same accuracy. Until that is fixed, start Kinetrace with the CPU for a
+ball-marker run: in Terminal, in the Kinetrace folder,
+`KINETRACE_DEVICE=cpu ./run.sh`.
+
 ## Optional models that need Meta's permission (SAM 3, SAM 3D Body)
 
 Neither is needed to track animals: without them Kinetrace uses SAM 2.1 for
 outlines and ViTPose for human joints. Meta releases them only on request, so
 they cannot be fetched automatically. The install makes the folders they go in,
-each with a `PUT_FILES_HERE.txt` naming the exact files.
+each with a `PUT_FILES_HERE.txt` naming the exact files (on a Mac only
+`models/sam3`, since SAM 3D Body cannot run there).
 
 ### SAM 3 (the best silhouettes, 3.4 GB)
 
@@ -171,12 +180,28 @@ The easy way, without Terminal:
 4. The first outline downloads SAM 3 (3.4 GB) with a progress window. From then
    on it works offline, and it becomes the default.
 
-Or, from a Terminal opened in the Kinetrace folder (on Windows write
-`.venv\Scripts\python.exe` instead of `.venv/bin/python`):
+Or, from a Terminal opened in the Kinetrace folder (Mac / Ubuntu):
 
 ```bash
-.venv/bin/python -m huggingface_hub.cli.hf download facebook/sam3 --revision 3c879f39826c281e95690f02c7821c4de09afae7 --exclude "sam3.pt" --local-dir models/sam3 --token YOUR_READ_TOKEN
+export HF_HOME="$PWD/models/hf" HF_HUB_DISABLE_UPDATE_CHECK=1
+.venv/bin/python -m huggingface_hub.cli.hf auth login
+.venv/bin/python -m huggingface_hub.cli.hf download facebook/sam3 --revision 3c879f39826c281e95690f02c7821c4de09afae7 --exclude "sam3.pt" --local-dir models/sam3
 ```
+
+On Windows, in a Command Prompt in the Kinetrace folder:
+
+```bat
+set HF_HOME=%CD%\models\hf
+set HF_HUB_DISABLE_UPDATE_CHECK=1
+.venv\Scripts\python.exe -m huggingface_hub.cli.hf auth login
+.venv\Scripts\python.exe -m huggingface_hub.cli.hf download facebook/sam3 --revision 3c879f39826c281e95690f02c7821c4de09afae7 --exclude "sam3.pt" --local-dir models\sam3
+```
+
+The first lines keep Hugging Face's own files inside the Kinetrace folder and
+stop its check for a newer version. `auth login` asks for the Read token
+without showing it and keeps it in `models/hf/token`, the same file
+Kinetrace's Settings uses, so the token never ends up in the Terminal's
+history. (It may offer to save it as a git credential: answer no.)
 
 The `--exclude "sam3.pt"` leaves out a second 3.45 GB copy of the weights that
 Kinetrace does not use (a plain download is 6.9 GB). The `--revision` is the
@@ -188,11 +213,14 @@ version Kinetrace was tested with.
 NVIDIA graphics card; the Body dialog offers ViTPose (2D joints) there.
 
 1. Request access at [huggingface.co/facebook/sam-3d-body-dinov3](https://huggingface.co/facebook/sam-3d-body-dinov3).
-2. Download its two files into `models/sam-3d-body-dinov3` (from a Terminal in
-   the Kinetrace folder):
+2. Download its two files into `models/sam-3d-body-dinov3`, from a Terminal in
+   the Kinetrace folder (on Windows: the `set` lines and `.venv\Scripts\python.exe`
+   as for SAM 3 above):
 
    ```bash
-   .venv/bin/python -m huggingface_hub.cli.hf download facebook/sam-3d-body-dinov3 model.ckpt assets/mhr_model.pt --local-dir models/sam-3d-body-dinov3 --token YOUR_READ_TOKEN
+   export HF_HOME="$PWD/models/hf" HF_HUB_DISABLE_UPDATE_CHECK=1
+   .venv/bin/python -m huggingface_hub.cli.hf auth login
+   .venv/bin/python -m huggingface_hub.cli.hf download facebook/sam-3d-body-dinov3 model.ckpt assets/mhr_model.pt --local-dir models/sam-3d-body-dinov3
    ```
 
    `model.ckpt` is 2.1 GB; `assets/mhr_model.pt` (0.7 GB) sits in a
@@ -228,9 +256,13 @@ the environment (`.venv`), the models (`models/`), the error and install logs
   folder instead.
 - PyTorch may make an empty `torchinductor_<you>` folder in the system's
   temporary folder; the system clears it.
-- If you set a Hugging Face token up with Hugging Face's own `hf auth login`
-  command (instead of Kinetrace's Settings), Hugging Face stores it in
-  `~/.cache/huggingface`.
+- Hugging Face's own `hf` command, when run WITHOUT the `HF_HOME` line shown
+  above, keeps its token and a few small files in `~/.cache/huggingface`.
+- Qt, the toolkit Kinetrace's windows are made with, remembers the last folder
+  you browsed in its file dialogs: `~/Library/Preferences/com.qtproject.plist`
+  (Mac), `~/.config/QtProject.conf` (Ubuntu) or the registry key
+  `HKEY_CURRENT_USER\Software\QtProject` (Windows). Every program built with
+  Qt shares it, so uninstalling Kinetrace leaves it alone.
 - macOS remembers that you allowed `Kinetrace.command` and Terminal's access to
   the folder (System Settings → Privacy & Security).
 
@@ -241,8 +273,10 @@ Folders…** (each one opens with **Show in Finder** / the file manager), or
 ## Uninstalling
 
 **Mac / Ubuntu:** in a Terminal, `bash uninstall.sh` in the Kinetrace folder.
-It lists what it will delete (the folder, and the outside folders above if
-they exist) and asks you to type `DELETE`. It stops without deleting anything
+It shows the folder and asks you to type `DELETE`. Then, if Kinetrace left
+anything in the shared folders outside it (see above), it lists them and
+removes them only if you answer `yes`: another Kinetrace copy on the same
+computer may still use them. It stops without deleting anything
 if a project is saved inside the Kinetrace folder, and names it so you can move
 it first. To do it by hand on a Mac:
 
