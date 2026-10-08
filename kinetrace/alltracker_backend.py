@@ -29,6 +29,7 @@ are for that choice.
 """
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -52,6 +53,56 @@ def is_cached() -> bool:
     return CHECKPOINT.exists()
 
 
+def _area_divisible(in_sizes, size, scale_factor) -> bool:
+    """Every input side of an area interpolation is a multiple of its output side
+    (output = floor(side * scale), torch's rule when the size is not given)."""
+    n = len(in_sizes)
+    if size is not None:
+        out = [size] * n if isinstance(size, int) else list(size)
+    else:
+        sf = list(scale_factor) if isinstance(scale_factor, (tuple, list)) else [scale_factor] * n
+        out = [math.floor(s * f) for s, f in zip(in_sizes, sf)]
+    return all(o > 0 and s % o == 0 for s, o in zip(in_sizes, out))
+
+
+class AreaPoolOffDevice:
+    """`nets.blocks`' view of torch.nn.functional on an Apple GPU (Mac install audit P0-1).
+
+    CorrBlock halves the second feature map five times with
+    F.interpolate(mode='area'), an adaptive average pool. Metal implements that
+    pool only when every input side is a multiple of the output side; the 1/8
+    feature map of a frame padded to a multiple of 64 is only a multiple of 8, so
+    a 640-wide frame (80 -> 40 -> 20 -> 10 -> 5 -> 2) raised "Adaptive pool MPS:
+    input sizes must be divisible by output sizes" on the first Track press of
+    every Mac (PYTORCH_ENABLE_MPS_FALLBACK does not catch it: the kernel exists).
+    Such a call runs on the CPU and its result goes back to the device; every
+    other call is passed through untouched, and the vendored file stays
+    byte-identical to its pinned commit. `native` / `device_type` exist for the
+    test, which emulates Metal's rule on the CPU (verify_alltracker_mps)."""
+
+    def __init__(self, functional, device_type: str = "mps", native=None):
+        self._F = functional
+        self._device_type = device_type
+        self._native = native or functional.interpolate
+
+    def __getattr__(self, name):
+        return getattr(self._F, name)
+
+    def interpolate(self, input, size=None, scale_factor=None, mode="nearest", *args, **kw):
+        if (mode == "area" and input.device.type == self._device_type
+                and not _area_divisible(input.shape[2:], size, scale_factor)):
+            return self._F.interpolate(input.cpu(), size, scale_factor, mode, *args, **kw).to(input.device)
+        return self._native(input, size, scale_factor, mode, *args, **kw)
+
+
+def _install_area_pool_fix(device) -> None:
+    if str(device) != "mps":
+        return
+    import nets.blocks as blocks     # noqa: E402  (vendored repo, already on sys.path)
+    if not isinstance(blocks.F, AreaPoolOffDevice):
+        blocks.F = AreaPoolOffDevice(blocks.F)
+
+
 def get_alltracker(progress=None, cancel=lambda: False):
     """Process-wide singleton (model, device). Downloads the 66 MB checkpoint once
     (and the code, when install.py could not), both pinned and checked; the
@@ -67,6 +118,7 @@ def get_alltracker(progress=None, cancel=lambda: False):
     from nets.alltracker import Net  # noqa: E402  (vendored repo)
     from kinetrace.device import pick_device
     device = pick_device()[0]            # CUDA, else Apple's GPU, else the CPU (one rule for every model)
+    _install_area_pool_fix(device)
     torch.hub.set_dir(str(MODELS_DIR))   # nothing may be written outside the tool folder
     state = downloads.load_weights(downloads.ensure_file("alltracker", progress, cancel))
     # init_weights=False: the constructor would otherwise download ImageNet
