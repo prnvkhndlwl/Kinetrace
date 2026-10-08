@@ -129,13 +129,21 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
     if [ ! -x ".venv/bin/python" ]; then
         # KINETRACE_BOOTSTRAP_PYTHON=1 skips the search and always uses a private
         # Python (a broken system Python; the CI's bootstrap job)
-        if [ "${KINETRACE_BOOTSTRAP_PYTHON:-}" = "1" ]; then
+        # macOS always takes the private Python too (Mac install audit P2-2): a venv made on
+        # Homebrew's Python breaks at the next "brew upgrade" / "brew cleanup", and the private
+        # one is checksummed, relocatable and inside the folder
+        if [ "${KINETRACE_BOOTSTRAP_PYTHON:-}" = "1" ] || [ "$OS" = "Darwin" ]; then
             PY=""
         else
             PY="$(pick_python)" || PY=""
         fi
         if [ -z "$PY" ]; then
-            bootstrap_python || {
+            if bootstrap_python; then
+                PY=".venv/base/bin/python3"
+            elif [ "$OS" = "Darwin" ] && [ "${KINETRACE_BOOTSTRAP_PYTHON:-}" != "1" ] && PY="$(pick_python)"; then
+                say "Using $PY instead. The environment depends on it: if it is upgraded or removed,"
+                say "./run.sh rebuilds the environment (the packages download again)."
+            else
                 say ""
                 say "ERROR: could not download Python. Check the internet connection and run ./run.sh again."
                 if [ "$OS" = "Darwin" ]; then
@@ -144,8 +152,7 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
                     say "Or:  sudo apt install python3 python3-venv   and run it again."
                 fi
                 exit 1
-            }
-            PY=".venv/base/bin/python3"
+            fi
         fi
         say "Creating the environment with $PY ..."
         "$PY" -m venv .venv || {
@@ -175,6 +182,19 @@ fi
 # The private interpreter (if any) lives inside the folder. A moved or renamed
 # folder leaves .venv/bin/python pointing at the old path: re-link it in place
 # (python -m venv on an existing venv only rewrites the links and pyvenv.cfg).
+# A venv made on a Python OUTSIDE the folder (Homebrew, python.org) breaks when that Python is
+# upgraded or removed: rebuild it once (Mac install audit P2-2; models and projects are kept).
+if ! .venv/bin/python -c "pass" >/dev/null 2>&1 && [ ! -x ".venv/base/bin/python3" ]; then
+    if [ "${KINETRACE_REBUILT:-}" = "1" ]; then
+        say "ERROR: the rebuilt environment in .venv does not start either. Delete the .venv folder and"
+        say "run ./run.sh again; if it fails twice, send the lines above with your question."
+        exit 1
+    fi
+    say "The Python this environment was made with is gone (upgraded, moved or removed)."
+    say "Rebuilding .venv - the packages download again; models and projects are kept."
+    rm -rf .venv
+    KINETRACE_REBUILT=1 exec bash ./run.sh "$@"      # the folder is the working directory (cd above)
+fi
 if ! .venv/bin/python -c "pass" >/dev/null 2>&1 && [ -x ".venv/base/bin/python3" ]; then
     say "Folder was moved - relinking .venv"
     # the venv's python links are ABSOLUTE links into the old .venv/base: venv finds them
