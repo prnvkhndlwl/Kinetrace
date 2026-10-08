@@ -204,4 +204,14 @@ else:
     shutil.rmtree(tmp, ignore_errors=True)
     print("[5] Kinetrace.app: plist, rebuild when stale, launcher runs run.sh from its folder (output in "
           "logs/), Terminal for an install still to do: OK")
+# ---- [6] key names on a Mac: the reference and the manual say what to press (P2-7) ----
+from kinetrace.app import HOTKEYS_HTML  # noqa: E402
+from kinetrace.widgets import native_keys  # noqa: E402
+manual = (ROOT / "docs" / "MANUAL.md").read_text(encoding="utf-8")
+for text in (HOTKEYS_HTML, manual):
+    mac = native_keys(text, "darwin")
+    assert "Ctrl" not in mac and "⌘+," in mac and "⌘+click" in mac, "Ctrl left in the Mac text"
+    assert native_keys(text, "win32") == text and native_keys(text, "linux") == text
+assert native_keys("Alternatively Alt+click", "darwin") == "Alternatively ⌥+click"
+print("[6] on a Mac the key reference and the manual say Cmd / Option (Windows / Linux unchanged): OK")
 print("verify_install_paths PASSED")

@@ -49,7 +49,7 @@ from kinetrace.theme import apply_theme
 from kinetrace.timeline import TIME_ZOOM_STEP, TimelinePanel
 from kinetrace.video_source import DEFAULT_CACHE_BYTES, FrameCache, SeekService, VideoInfo, probe_video
 from kinetrace import icons
-from kinetrace.widgets import LoadingOverlay, ManualDialog, OnboardingStrip, SettingsDialog, Toast
+from kinetrace.widgets import LoadingOverlay, ManualDialog, OnboardingStrip, SettingsDialog, Toast, native_keys
 
 PROJECT_SUFFIX = projectfile.SUFFIX
 # the manual heading Help / Track ▾ open at (R11: it was spelled out three times)
@@ -2784,7 +2784,7 @@ class MainWindow(QMainWindow):
             dlg.setWindowTitle("Keyboard & mouse reference")
             lay = QVBoxLayout(dlg)
             tb = QTextBrowser()
-            tb.setHtml(HOTKEYS_HTML)
+            tb.setHtml(native_keys(HOTKEYS_HTML))         # ⌘ / ⌥ on a Mac
             tb.setOpenExternalLinks(False)
             lay.addWidget(tb)
             dlg.resize(620, 680)

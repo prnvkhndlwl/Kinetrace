@@ -507,6 +507,16 @@ def _slug(text: str) -> str:
     return "".join(out).strip("-")
 
 
+def native_keys(text: str, platform: str | None = None) -> str:
+    """Key names as this computer's keyboard has them (Mac install audit P2-7): on a Mac Qt
+    turns Ctrl into Command and Alt into Option -- shortcuts and clicks alike (a real
+    Control-click is a right-click there) -- so the reference and the manual say ⌘ / ⌥."""
+    import sys
+    if (platform or sys.platform) != "darwin":
+        return text
+    return re.sub(r"\bAlt\b", "⌥", re.sub(r"\bCtrl\b", "⌘", text))
+
+
 class ManualDialog(QDialog):
     """The user manual, in the app.
 
@@ -561,7 +571,7 @@ class ManualDialog(QDialog):
                 f"The manual file could not be read:\n{MANUAL_PATH}\n\n"
                 "It ships in the docs folder next to the program.")
             return
-        self.view.setMarkdown(text)
+        self.view.setMarkdown(native_keys(text))
         self._index_headings()
 
     def _index_headings(self) -> None:
