@@ -177,6 +177,10 @@ fi
 # (python -m venv on an existing venv only rewrites the links and pyvenv.cfg).
 if ! .venv/bin/python -c "pass" >/dev/null 2>&1 && [ -x ".venv/base/bin/python3" ]; then
     say "Folder was moved - relinking .venv"
+    # the venv's python links are ABSOLUTE links into the old .venv/base: venv finds them
+    # dangling, falls back to copying and copies through the dead link, on every retry
+    # (Mac install audit P0-2). Without them it makes fresh links.
+    rm -f .venv/bin/python .venv/bin/python3 .venv/bin/python3.*
     .venv/base/bin/python3 -m venv .venv
 fi
 

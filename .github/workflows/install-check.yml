@@ -134,3 +134,19 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
           "$PY" -c "import kinetrace.app, kinetrace.device; print('import OK')"
           "$PY" tests/run_suites.py verify_portable verify_core verify_stress
+
+      - name: A moved / renamed folder still starts (Linux / macOS)
+        # the private Python's venv links are absolute (Mac install audit P0-2): rename the
+        # checkout, start again, rename it back and start again. Last step: it moves the workspace.
+        if: runner.os != 'Windows'
+        run: |
+          here="$(basename "$GITHUB_WORKSPACE")"
+          cd ..
+          mv "$here" "Kinetrace moved"
+          cd "Kinetrace moved"
+          ./run.sh --check
+          .venv/bin/python -c "import sys; assert 'Kinetrace moved' in sys.base_prefix, sys.base_prefix; print('relinked:', sys.base_prefix)"
+          cd ..
+          mv "Kinetrace moved" "$here"
+          cd "$here"
+          ./run.sh --check
