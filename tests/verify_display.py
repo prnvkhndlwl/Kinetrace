@@ -216,6 +216,16 @@ app.processEvents()
 print("hidden flag + exports OK")
 
 # ---- notes + annotator ----------------------------------------------------------
+# the name goes to settings.ini (inside the folder; a temp file offscreen), never the registry /
+# a macOS plist (Mac install audit P1): deleting the folder must remove it
+from PySide6.QtCore import QSettings  # noqa: E402
+from kinetrace import recovery  # noqa: E402
+_native_before = QSettings("Kinetrace", "Kinetrace").value("annotator", None)
+win._apply_annotator("PK-ini-check")
+assert QSettings("Kinetrace", "Kinetrace").value("annotator", None) == _native_before, \
+    "the annotator was written to the registry / plist"
+assert "PK-ini-check" in recovery.settings_path().read_text(encoding="utf-8")
+assert win._default_annotator() == "PK-ini-check"
 win._apply_annotator("PK")
 assert s.annotator == "PK"
 win._goto(33)

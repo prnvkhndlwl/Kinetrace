@@ -25,8 +25,9 @@ tests/out/
 recovery/
 logs/
 
-# skeletons a user saves from the app
+# skeletons a user saves from the app; the app's settings (the annotator's name)
 skeletons/
+/settings.ini
 
 # Help -> Check for Updates: the download folder and the list of installed files
 /update/

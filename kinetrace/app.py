@@ -5465,16 +5465,25 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------ notes + annotator
 
+    @staticmethod
+    def _settings() -> QSettings:
+        """settings.ini in the Kinetrace folder (`recovery.settings_path`), never the registry
+        or a plist: deleting the folder removes it (Mac install audit P1)."""
+        from kinetrace import recovery
+        return QSettings(str(recovery.settings_path()), QSettings.IniFormat)
+
     def _default_annotator(self) -> str:
         try:
-            return str(QSettings("Kinetrace", "Kinetrace").value("annotator", "") or "")
+            return str(self._settings().value("annotator", "") or "")
         except Exception:      # noqa: BLE001
             return ""
 
     def _apply_annotator(self, name: str):
         name = (name or "").strip()
         try:
-            QSettings("Kinetrace", "Kinetrace").setValue("annotator", name)
+            st = self._settings()
+            st.setValue("annotator", name)
+            st.sync()
         except Exception:      # noqa: BLE001
             pass
         # every camera's events and notes are marked by the same person (I233)

@@ -51,7 +51,7 @@ MANIFEST = ".kinetrace-release.json"      # the files the installed release put 
 STAGING = "update"                         # download + unpack folder, inside the install
 # top-level folders (and files) an update never writes or removes: each user's own
 PROTECTED = (".venv", "models", "recovery", "logs", "skeletons", "test_videos", "tests/out",
-             ".git", STAGING, MANIFEST)
+             ".git", STAGING, MANIFEST, "settings.ini")
 # a changed one of these means the environment may need something new (I142)
 INSTALL_INPUTS = ("requirements.txt", "install.py")
 MARKER = Path(".venv") / "kinetrace-install.json"
