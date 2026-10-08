@@ -101,7 +101,10 @@ window always shows which processor is in use.
 **Nothing else — not even Python.** Everything the program needs lives inside
 its own folder; the first start fetches whatever is missing, without asking
 you anything. It does not install anything into your operating system.
-Deleting the folder removes it completely.
+Deleting the folder removes it completely; your projects and exports are saved
+where you choose and stay. **Help → Kinetrace's Folders…** lists every place
+the program uses, and `docs/INSTALL.md` in the folder has the full installation
+steps and how to uninstall.
 
 ---
 
@@ -111,9 +114,17 @@ Deleting the folder removes it completely.
 *"Windows protected your PC"*, click *More info*, then *Run anyway*.)
 
 **Mac:** double-click `Kinetrace.command` in the program folder. The first
-time, the Mac may say it *cannot be opened because it is from an unidentified
-developer*: right-click (or hold Control and click) the file, choose **Open**,
-and confirm once.
+time, the Mac refuses it because it came from the internet and is not signed
+by Apple: click **Done**, not *Move to Trash*. On macOS 15 or newer, open
+**System Settings → Privacy & Security**, scroll down to the line about
+`Kinetrace.command`, click **Open Anyway** and confirm, then double-click it
+again and click **Open**. On macOS 14: right-click the file, choose **Open**,
+and confirm. A Terminal window opens: leave it open until the program's window
+appears (if the Mac asks whether Terminal may access your Documents, Desktop
+or Downloads folder, allow it). That first run makes **`Kinetrace.app`** in the
+folder: from then on, double-click that instead — no Terminal window, and you
+can drag it to the Dock. Put the program folder in your home folder rather than
+on an iCloud-synced Desktop or Documents.
 
 **Ubuntu:** double-click `run.sh` in the program folder and choose *Run in
 Terminal* — or open a terminal in the folder and type `./run.sh`. If the window
@@ -128,7 +139,7 @@ graphics card or not, Mac or PC, Python already there or not — and fetches the
 matching version of its supporting software. Nothing is asked.
 
 **The very first launch takes a long time** — it downloads up to about 4 GB of
-supporting software into its own folder (and, if the computer has no Python of
+supporting software into its own folder (about 1.5 GB on a Mac) (and, if the computer has no Python of
 its own, a private copy of that too, about 20 MB). That happens once, and it
 ends by printing a **system check**: what it found and what your computer can
 run. If the connection drops, just start it again — it keeps what it already
@@ -169,15 +180,16 @@ outlines and **ViTPose** for human joints.
 4. Choose **SAM 3** in the **Segment ▾** menu. The first outline downloads it
    (3.4 GB, with a progress window); after that it works offline.
 
-Or, without a token in the program: download the whole `facebook/sam3` repository
-on a computer that has access (for example `hf download facebook/sam3 --local-dir
-models/sam3`) and put it in the program's folder as `models/sam3/`. A copy there
-is used first, and SAM 3 becomes the default.
+Or, without a token in the program: download it on a computer that has access
+and put it in the program's folder as `models/sam3/` — the exact files and a
+copy-paste command are in `models/sam3/PUT_FILES_HERE.txt` and in
+`docs/INSTALL.md`. Leave out `sam3.pt`: it is a second 3.45 GB copy the program
+does not use. A copy there is used first, and SAM 3 becomes the default.
 
 **SAM 3D Body** — joints of a person in 3D from one camera (section 13): ask for
 access at `huggingface.co/facebook/sam-3d-body-dinov3` the same way, then
 follow the three steps in section 13, *The two models, and which to pick*. It
-needs an NVIDIA graphics card.
+needs an NVIDIA graphics card: **on a Mac, or a computer without one, skip it**.
 
 **Body → Find People & Measure Joints…** and the **Segment ▾** menu say for each model whether it is
 ready, needs downloading, or still needs access or a token.

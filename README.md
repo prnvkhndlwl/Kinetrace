@@ -28,23 +28,41 @@ with the mouse, and export the tracks to the tools you already use.
 
 ## Get started
 
-1. **Download** — *Code → Download ZIP* (or `git clone`), and unzip it anywhere.
+1. **Download** — *Code → Download ZIP* (or `git clone`) and unzip it. The
+   folder is called `Kinetrace-main`; rename it if you like. Put it in your
+   own folder, **not** one synced to iCloud / OneDrive / Dropbox (on a Mac:
+   your home folder, not an iCloud-synced Desktop or Documents).
 2. **Start** it:
 
    | Windows | Mac (Apple Silicon, macOS 14+) | Ubuntu 22.04+ |
    |---|---|---|
-   | double-click `run.bat` | double-click `Kinetrace.command` | `./run.sh` |
+   | double-click `run.bat` | double-click `Kinetrace.command`; the first time, allow it in **System Settings → Privacy & Security → Open Anyway** | `./run.sh` |
 
-3. **Wait once.** The first start sets everything up inside the folder (about
-   4 GB, mostly PyTorch) without asking anything, and ends with a system check
-   of what your computer can run. After that it starts in seconds; the first
-   Track and the first outline each download one model (66 MB / 617 MB, with a
-   progress window), and from then on it works offline.
+3. **Wait once.** The first start sets everything up inside the folder
+   without asking anything (about 4 GB with an NVIDIA GPU, mostly PyTorch;
+   about 1.5 GB on a Mac; a few minutes), and ends with a system check of what
+   your computer can run. After that it starts in seconds — on a Mac with
+   **`Kinetrace.app`**, which the first start makes in the folder (no Terminal
+   needed). The first Track and the first outline each download one model
+   (66 MB / 617 MB, with a progress window); from then on it works offline.
 
-**Optional:** the best outlines (**SAM 3**) and 3D human joints (**SAM 3D
-Body**) need Meta's permission on Hugging Face first — the
-[install page](https://github.com/prnvkhndlwl/Kinetrace/wiki/Install-and-Run#optional-models-that-need-metas-permission-sam-3-sam-3d-body)
-has the steps. Everything else downloads by itself.
+**The full steps, for every system and for someone who has never used a
+Terminal, are in [docs/INSTALL.md](docs/INSTALL.md)** (also in the folder you
+download): where to put the folder, what each message means, which model runs
+on which computer, uninstalling.
+
+**Optional:** the best outlines (**SAM 3**, 3.4 GB) need Meta's permission on
+Hugging Face first, then a token pasted in Settings —
+[the steps](docs/INSTALL.md#optional-models-that-need-metas-permission-sam-3-sam-3d-body).
+3D human joints (**SAM 3D Body**) need that too **and an NVIDIA graphics card:
+Mac users skip it** (2D joints with ViTPose work everywhere). Everything else
+downloads by itself.
+
+**On a Mac** (measured on an M4 Max): CoTracker3, SAM 2.1 and ViTPose run on
+the Mac's GPU; AllTracker, the default point model, failed on it in 0.4.1 and
+is fixed after it (if Track fails, pick CoTracker3 in **Track ▾**); SAM 3D Body
+cannot run. Where the manual says **Ctrl**, press **⌘**.
+[All models, every system](docs/INSTALL.md#which-models-run-on-which-computer).
 
 New to tracking? The **[user manual](docs/MANUAL.md)** (also **F1** in the app)
 walks you through your first session.
@@ -79,7 +97,7 @@ More in [Accuracy](https://github.com/prnvkhndlwl/Kinetrace/wiki/Accuracy) and
 
 ## Learn more
 
-[Install & run](https://github.com/prnvkhndlwl/Kinetrace/wiki/Install-and-Run) ·
+[Install & run](docs/INSTALL.md) ·
 [Your first tracking](https://github.com/prnvkhndlwl/Kinetrace/wiki/Workflow) ·
 [Small, fast targets](https://github.com/prnvkhndlwl/Kinetrace/wiki/Small-Fast-Targets) ·
 [Silhouettes & skeletons](https://github.com/prnvkhndlwl/Kinetrace/wiki/Segments-Silhouettes-and-Skeletons) ·
@@ -106,5 +124,9 @@ Built on [AllTracker](https://github.com/aharley/alltracker),
 
 **Nothing leaves your computer.** Kinetrace sends no usage data; it goes online
 only to download a model the first time it is needed and when you ask it to
-check for updates. Everything lives in its folder — delete the folder and it is
-gone.
+check for updates. Everything Kinetrace installs lives in its folder (the
+environment, the models, logs, settings); your projects and exports are saved
+where you choose and are never deleted with it. **Help → Kinetrace's Folders…**
+lists every place it uses, and [uninstalling](docs/INSTALL.md#uninstalling) is
+deleting the folder (`bash uninstall.sh` on a Mac or Ubuntu also removes the
+few traces it can leave outside).
