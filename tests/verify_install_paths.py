@@ -127,4 +127,34 @@ else:
     shutil.rmtree(tmp, ignore_errors=True)
     print("[3] uninstall.sh: refuses with a project inside, asks, removes folder + outside traces, "
           "keeps projects: OK")
+# ---- [4] the gated models' folders, as install.py leaves them (Mac install audit P1) ----
+import importlib.util  # noqa: E402
+spec = importlib.util.spec_from_file_location("kt_install", ROOT / "install.py")
+inst = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(inst)
+from kinetrace import bodypose, downloads, segmenter  # noqa: E402
+tmp = Path(tempfile.mkdtemp(prefix="kt_gated_"))
+real = downloads.MODELS_DIR, segmenter.MODELS_DIR, bodypose.MODELS_DIR
+try:
+    downloads.MODELS_DIR = segmenter.MODELS_DIR = bodypose.MODELS_DIR = tmp
+    inst.gated_model_folders()
+    inst.gated_model_folders()                               # twice: an install that resumes
+    sam3 = (tmp / "sam3" / "PUT_FILES_HERE.txt").read_text(encoding="utf-8")
+    assert "model.safetensors" in sam3 and downloads.HF_REVISIONS["facebook/sam3"] in sam3, sam3
+    assert '--exclude "sam3.pt"' in sam3 and "Settings" in sam3, sam3
+    s3db = tmp / "sam-3d-body-dinov3" / "PUT_FILES_HERE.txt"
+    if sys.platform == "darwin":
+        assert not s3db.exists(), "SAM 3D Body cannot run on a Mac: no folder inviting its 2.8 GB"
+    else:
+        t = s3db.read_text(encoding="utf-8")
+        assert "model.ckpt" in t and "assets/mhr_model.pt" in t and "NVIDIA" in t, t
+    assert not (tmp / "sam-3d-body").exists(), "git clone needs models/sam-3d-body absent or empty"
+    # a note alone is not a model: nothing in the app changes until the weights are there
+    assert segmenter.local_dir("sam3") is None and segmenter.preferred_backend() == segmenter.DEFAULT_BACKEND
+    assert bodypose.local_dir("sam-3d-body-dinov3") is None
+finally:
+    downloads.MODELS_DIR, segmenter.MODELS_DIR, bodypose.MODELS_DIR = real
+    shutil.rmtree(tmp, ignore_errors=True)
+print("[4] install.py: models/sam3 (+ SAM 3D Body's off a Mac) with PUT_FILES_HERE.txt; "
+      "a note alone is not a model: OK")
 print("verify_install_paths PASSED")

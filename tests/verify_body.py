@@ -585,8 +585,15 @@ finally:
 _saved_path = list(sys.path)
 try:
     bodypose.MODELS_DIR, bodypose.S3DB_REPO = WEIGHTS, STAND
-    check(bodypose.backend_status("sam-3d-body-dinov3")[0] == "ready",
+    # the files decide 'ready'; the person detector is a separate download (G135). On a machine
+    # that has not fetched it yet the same files say 'download' -- the Mac install audit's fresh
+    # machine failed the old check for that reason (not the GPU: the gate is lifted above)
+    check(bodypose.backend_status("sam-3d-body-dinov3", use_detector=False)[0] == "ready",
           "with code and weights present it reports ready")
+    _st, _why = bodypose.backend_status("sam-3d-body-dinov3")
+    check(_st == "ready" if bodypose.detector_cached() else
+          (_st == "download" and bodypose.DETECTOR_LABEL in _why),
+          "and, with person boxes, 'download' only while the detector is not here", _st)
     check(bodypose.preferred_backend() == "sam-3d-body-dinov3",
           "and becomes the preferred backend (it is the only 3D one)")
     est = bodypose.make_estimator("sam-3d-body-dinov3", device="cpu", use_detector=False)

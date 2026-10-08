@@ -169,6 +169,64 @@ def fetch_alltracker() -> None:
         shutil.rmtree(ALLTRACKER_DIR, ignore_errors=True)
 
 
+SAM3_NOTE = """\
+SAM 3 - the best silhouettes (optional). Its weights are GATED: Meta must say yes first.
+
+The easy way (no Terminal):
+  1. Make a free account at https://huggingface.co and open https://huggingface.co/facebook/sam3 :
+     "Agree and access repository", then wait until that page says you have access.
+  2. Make a READ token: https://huggingface.co/settings/tokens -> Create new token -> Read.
+     (A token is a password for downloads only; keep it to yourself.)
+  3. In Kinetrace: Settings (Ctrl+, ; Cmd+, on a Mac) -> Hugging Face token: paste it, Save token;
+     Segmentation model: SAM 3. The first outline downloads it (3.4 GB) into models/hf with a
+     progress window; it stays inside the Kinetrace folder.
+
+Or put the files HERE yourself (this folder, models/sam3). Kinetrace uses it once it holds
+config.json and model.safetensors; these are the files it reads (sam3.pt, 3.45 GB, is NOT needed):
+    model.safetensors        3.44 GB
+    config.json, processor_config.json, tokenizer.json, tokenizer_config.json,
+    special_tokens_map.json, vocab.json, merges.txt          (small)
+From a Terminal in the Kinetrace folder (Windows: .venv\\Scripts\\python.exe instead of .venv/bin/python):
+    .venv/bin/python -m huggingface_hub.cli.hf download facebook/sam3 --revision {rev} --exclude "sam3.pt" --local-dir models/sam3 --token YOUR_READ_TOKEN
+"""
+
+S3DB_NOTE = """\
+SAM 3D Body - 3D human joints and a body mesh (optional). It runs ONLY on an NVIDIA graphics card
+(Meta's code is CUDA-only); on any other computer use ViTPose (2D joints), which needs nothing.
+
+Two things are needed, both from Meta:
+  1. The weights (GATED): request access at https://huggingface.co/facebook/sam-3d-body-dinov3 ,
+     then put these files HERE (this folder, models/sam-3d-body-dinov3):
+         model.ckpt                2.1 GB
+         assets/mhr_model.pt       0.7 GB   (in the sub-folder assets - easy to miss)
+     From a Terminal in the Kinetrace folder (Windows: .venv\\Scripts\\python.exe):
+         .venv/bin/python -m huggingface_hub.cli.hf download facebook/sam-3d-body-dinov3 model.ckpt assets/mhr_model.pt --local-dir models/sam-3d-body-dinov3 --token YOUR_READ_TOKEN
+  2. Meta's inference code, cloned into models/sam-3d-body (a NEW folder; it must contain
+     sam_3d_body/):
+         git clone https://github.com/facebookresearch/sam-3d-body models/sam-3d-body
+Body -> 3D body checks both and says what is still missing.
+"""
+
+
+def gated_model_folders() -> None:
+    """The folders the gated models go into, each with PUT_FILES_HERE.txt naming the exact files,
+    their sizes and the commands (Mac install audit P1: the user had to create them with exact
+    names, and a typo was ignored without a word). SAM 3D Body's only where it can run (not on a
+    Mac). Never models/sam-3d-body itself: git clone refuses a folder that is not empty. A model
+    folder counts only once it holds the weights, so these notes change nothing in the app."""
+    notes = {"sam3": SAM3_NOTE.format(rev=downloads.HF_REVISIONS["facebook/sam3"])}
+    if sys.platform != "darwin":
+        notes["sam-3d-body-dinov3"] = S3DB_NOTE
+    for name, text in notes.items():
+        try:
+            d = os.path.join(downloads.MODELS_DIR, name)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "PUT_FILES_HERE.txt"), "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+        except OSError as e:          # a read-only models/ must not fail the install
+            say(f"(could not write models/{name}/PUT_FILES_HERE.txt: {e})")
+
+
 def hardware_report() -> None:
     """The same text as `python -m kinetrace --check` (no Qt is imported)."""
     try:
@@ -204,6 +262,7 @@ def main(force: bool = False) -> int:
             # "every package imports"
             pip("-r", os.path.join(HERE, "requirements.txt"))
             fetch_alltracker()
+            gated_model_folders()
             write_marker(choice)
             say("Kinetrace install: already complete (every package imports). "
                 "Run with --force to reinstall the packages.")
@@ -240,6 +299,7 @@ def main(force: bool = False) -> int:
     pip(*(["--upgrade"] if force else []), "-r", os.path.join(HERE, "requirements.txt"))
     say("Step 4 of 4: AllTracker's code (about 1 MB)")
     fetch_alltracker()
+    gated_model_folders()
 
     ok, why = imports_ok()
     if not ok:

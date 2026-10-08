@@ -103,10 +103,28 @@ for key, c in dl.CODE.items():
     if dl.code_present(key):
         check(dl.code_digest(c.dest) == c.digest, f"{key}: the code in models/ has the pinned digest")
 from kinetrace import bodypose, segmenter  # noqa: E402
-repos = [v[0] for k, v in segmenter.BACKENDS.items() if v[1] != "sam3"] + [bodypose.DETECTOR_REPO] + \
+# SAM 3 too (Mac install audit P1: it was the one unpinned download); SAM 3D Body loads from
+# local folders only
+repos = [v[0] for v in segmenter.BACKENDS.values()] + [bodypose.DETECTOR_REPO] + \
         [s.repo for s in bodypose.BACKENDS.values() if s.kind != "sam3d_body"]
 unpinned = [r for r in repos if not dl.hf_revision(r)]
-check(not unpinned, f"every ungated Hugging Face model has a pinned commit ({unpinned})")
+check(not unpinned, f"every Hugging Face model the app downloads has a pinned commit ({unpinned})")
+# a SAM 3 snapshot fetches only what transformers reads: not Meta's 3.45 GB sam3.pt (6.9 GB -> 3.4 GB)
+import fnmatch  # noqa: E402
+import huggingface_hub  # noqa: E402
+_real_snap, _real_cached, asked = huggingface_hub.snapshot_download, dl.hf_cached, {}
+huggingface_hub.snapshot_download = lambda repo, **kw: asked.update(repo=repo, **kw)
+dl.hf_cached = lambda repo: False
+try:
+    dl.hf_snapshot("facebook/sam3", "SAM 3")
+finally:
+    huggingface_hub.snapshot_download, dl.hf_cached = _real_snap, _real_cached
+pats = asked.get("allow_patterns") or ["*"]
+fetched = [f for f in ("model.safetensors", "config.json", "processor_config.json", "tokenizer.json",
+                       "vocab.json", "merges.txt", "sam3.pt", "LICENSE") if any(fnmatch.fnmatch(f, p) for p in pats)]
+check(asked.get("revision") == dl.hf_revision("facebook/sam3") and "sam3.pt" not in fetched
+      and "model.safetensors" in fetched and "processor_config.json" in fetched and "merges.txt" in fetched,
+      f"SAM 3: pinned commit, sam3.pt left out ({fetched})")
 for r in repos:
     if dl.hf_cached(r):
         a = dl.hf_load_args(r)
