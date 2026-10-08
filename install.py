@@ -59,10 +59,49 @@ IMPORTS = "import PySide6.QtWidgets, cv2, numpy, scipy, torch, torchvision, tran
 
 AGAIN = ("run the launcher again: what is already installed is kept and the install goes on from "
          "there (a package cut off half-way downloads again).")
+ISSUES = "https://github.com/prnvkhndlwl/Kinetrace/issues"
+
+
+def _new_log() -> str | None:
+    """logs/install-<date>.log: everything this run says plus pip's own full log (pip --log), one
+    file a support request can ask for (Mac install audit P2-8 / P2-11). None if logs/ cannot be
+    written: the install goes on without it."""
+    try:
+        d = os.path.join(HERE, "logs")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, time.strftime("install-%Y-%m-%d-%H%M%S.log"))
+        with open(path, "a", encoding="utf-8"):
+            pass
+        return path
+    except OSError:
+        return None
+
+
+LOG = None if __name__ != "__main__" else _new_log()
 
 
 def say(msg: str) -> None:
     print(msg, flush=True)
+    if LOG:
+        try:
+            with open(LOG, "a", encoding="utf-8") as fh:
+                fh.write(msg + "\n")
+        except OSError:
+            pass
+
+
+def step(msg: str) -> None:
+    """A step line, set apart from pip's output so it is not buried."""
+    say("")
+    say("==== " + msg)
+
+
+def where_to_ask() -> str:
+    try:
+        log = f" and attach {os.path.relpath(LOG, HERE)}" if LOG else ""
+    except ValueError:                  # another drive (Windows): the full path then
+        log = f" and attach {LOG}"
+    return f"If it happens twice, open an issue at {ISSUES}{log}."
 
 
 nvidia_driver = device.nvidia_driver        # (driver version text, major) or None without an NVIDIA driver
@@ -87,6 +126,8 @@ def pip(*args: str) -> None:
     cmd = [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--retries", "5",
            "--timeout", "90", *args]
     say("+ " + " ".join(cmd))
+    if LOG:
+        cmd += ["--log", LOG]       # pip's full log goes to the file; the console keeps its progress bars
     subprocess.check_call(cmd)
 
 
@@ -281,13 +322,13 @@ def main(force: bool = False) -> int:
         say("")
     if sys.platform == "win32" and platform.machine().upper() in ("ARM64", "AARCH64"):
         say("Note: Windows on ARM - PyTorch and Qt for this machine come from PyPI (CPU only).")
-    say("Step 1 of 4: the package installer (pip)")
+    step("Step 1 of 4: the package installer (pip)")
     pip("--upgrade", "pip")
     wheels = [f"torch=={TORCH}", f"torchvision=={TORCHVISION}"]
     # --force must really reinstall: pip treats "==2.12.1" as met by an installed 2.12.1+cpu, so the
     # wrong build (CPU on a GPU machine) would stay without --force-reinstall (I238)
     again = ["--force-reinstall"] if force else []
-    say("Step 2 of 4: PyTorch, the deep-learning engine (" + ("about 3 GB with the CUDA libraries: the longest "
+    step("Step 2 of 4: PyTorch, the deep-learning engine (" + ("about 3 GB with the CUDA libraries: the longest "
         "step" if choice == "cuda" else "a few hundred MB") + ")")
     if choice == "cuda":
         pip(*wheels, *again, "--index-url", "https://download.pytorch.org/whl/cu130")
@@ -295,9 +336,9 @@ def main(force: bool = False) -> int:
         pip(*wheels, *again, "--index-url", "https://download.pytorch.org/whl/cpu")
     else:
         pip(*wheels, *again)
-    say("Step 3 of 4: the other packages (Qt for the window, OpenCV, transformers, ...: about 500 MB)")
+    step("Step 3 of 4: the other packages (Qt for the window, OpenCV, transformers, ...: about 500 MB)")
     pip(*(["--upgrade"] if force else []), "-r", os.path.join(HERE, "requirements.txt"))
-    say("Step 4 of 4: AllTracker's code (about 1 MB)")
+    step("Step 4 of 4: AllTracker's code (about 1 MB)")
     fetch_alltracker()
     gated_model_folders()
 
@@ -309,8 +350,7 @@ def main(force: bool = False) -> int:
         if hint:                                    # (G98) a missing Linux library, not a broken environment
             say(hint)
             return EXIT_SYSTEM_LIBS
-        say("Delete the .venv folder and start the launcher again; if it happens twice, send the lines above "
-            "with your question.")
+        say("Delete the .venv folder and start the launcher again. " + where_to_ask())
         return 1
     write_marker(choice)
     say("Kinetrace install: done. The tracking and segmentation models (66 MB - 620 MB each) are downloaded "
@@ -326,7 +366,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main(force="--force" in sys.argv))
     except subprocess.CalledProcessError as e:
-        say(f"\nInstallation failed ({e}). Check the internet connection and " + AGAIN)
+        say(f"\nInstallation failed ({e}). Check the internet connection and " + AGAIN + " " + where_to_ask())
         sys.exit(1)
     except KeyboardInterrupt:
         say("\nInstallation interrupted. To finish it, " + AGAIN)

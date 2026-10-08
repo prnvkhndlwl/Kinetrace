@@ -117,9 +117,15 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
     else
         say "============================================================"
         say " Kinetrace - first run: setting up a self-contained environment in .venv"
-        say " This downloads 1-4 GB (PyTorch; the CUDA build with an NVIDIA graphics"
-        say " card is the largest) and can take a while. Everything installs INSIDE"
-        say " this folder - deleting the folder removes the tool completely."
+        if [ "$OS" = "Darwin" ]; then
+            say " This takes a few minutes and about 1.5 GB of disk. Keep this window open"
+            say " until it says it is done. Everything installs INSIDE this folder -"
+            say " deleting the folder removes the tool completely."
+        else
+            say " This downloads 1-4 GB (PyTorch; the CUDA build with an NVIDIA graphics"
+            say " card is the largest) and can take a while. Everything installs INSIDE"
+            say " this folder - deleting the folder removes the tool completely."
+        fi
         say "============================================================"
     fi
     if [ "$OS" = "Darwin" ] && [ "$ARCH" != "arm64" ]; then
@@ -171,7 +177,8 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
             say "Everything is installed except the system libraries named above. Install them and run ./run.sh again."
         else
             say "ERROR: the installation did not finish. Check your internet connection and run ./run.sh"
-            say "again (it resumes). If it fails twice, send the lines above with your question."
+            say "again (it resumes). If it fails twice, open an issue at"
+            say "https://github.com/prnvkhndlwl/Kinetrace/issues and attach the newest logs/install-*.log."
         fi
         exit 1
     }
@@ -206,4 +213,13 @@ fi
 
 [ -f models/alltracker/nets/alltracker.py ] || .venv/bin/python install.py --alltracker-only
 
+if [ "$OS" = "Darwin" ]; then
+    # Kinetrace.app in this folder: double-click it from now on, no Terminal (Mac install
+    # audit P2-3); made here, on this Mac, so it carries no download quarantine
+    .venv/bin/python -m kinetrace.macapp --if-stale || true
+    # the menu bar, the Dock and Cmd-Tab name an unbundled process by its file name ("Python"
+    # before, P2-6): start Python through a link called Kinetrace (relative: survives a move)
+    [ -L .venv/bin/Kinetrace ] || ln -s python .venv/bin/Kinetrace 2>/dev/null || true
+    [ -x .venv/bin/Kinetrace ] && exec .venv/bin/Kinetrace -m kinetrace "$@"
+fi
 exec .venv/bin/python -m kinetrace "$@"

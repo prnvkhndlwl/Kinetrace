@@ -28,6 +28,8 @@ logs/
 # skeletons a user saves from the app; the app's settings (the annotator's name)
 skeletons/
 /settings.ini
+# Kinetrace.app, written on a Mac by run.sh (kinetrace/macapp.py)
+/Kinetrace.app/
 
 # Help -> Check for Updates: the download folder and the list of installed files
 /update/

@@ -95,8 +95,8 @@ rem .venv\kinetrace-install.json. Safe to re-run: it resumes where it stopped.
 if errorlevel 1 (
     echo.
     echo ERROR: the installation did not finish. Check your internet connection
-    echo and double-click run.bat again ^(it resumes^). If it fails twice, send
-    echo the lines above with your question.
+    echo and double-click run.bat again ^(it resumes^). If it fails twice, open an issue at
+    echo https://github.com/prnvkhndlwl/Kinetrace/issues and attach the newest logs\install-*.log.
     pause
     exit /b 1
 )

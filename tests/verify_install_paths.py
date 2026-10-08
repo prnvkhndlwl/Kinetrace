@@ -157,4 +157,51 @@ finally:
     shutil.rmtree(tmp, ignore_errors=True)
 print("[4] install.py: models/sam3 (+ SAM 3D Body's off a Mac) with PUT_FILES_HERE.txt; "
       "a note alone is not a model: OK")
+# ---- [5] Kinetrace.app (macOS; built and its launcher run on a stand-in folder anywhere) ----
+import plistlib  # noqa: E402
+from kinetrace import APP_VERSION, macapp  # noqa: E402
+if bash is None:
+    print("[5] skipped: no bash on this machine")
+else:
+    tmp = Path(tempfile.mkdtemp(prefix="kt_app_"))
+    fake = tmp / "Kinetrace moved"
+    (fake / ".venv" / "bin").mkdir(parents=True)
+    (fake / "run.sh").write_text('echo "RAN $*"\n', encoding="utf-8", newline="\n")
+    py = fake / ".venv" / "bin" / "python"
+    py.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8", newline="\n")
+    py.chmod(0o755)
+    stub = tmp / "stubs"
+    stub.mkdir()
+    (stub / "open").write_text(f'#!/bin/bash\necho "$*" > "{(tmp / "opened.txt").as_posix()}"\n',
+                               encoding="utf-8", newline="\n")
+    (stub / "open").chmod(0o755)
+    real_app, real_stamp = macapp.APP, macapp.STAMP
+    app_dir = macapp.build(fake)
+    info = plistlib.loads((app_dir / "Contents" / "Info.plist").read_bytes())
+    assert info["CFBundleName"] == "Kinetrace" and info["CFBundleExecutable"] == "Kinetrace", info
+    assert info["CFBundleShortVersionString"] == APP_VERSION and info["LSMinimumSystemVersion"] == "14.0"
+    exe = app_dir / "Contents" / "MacOS" / "Kinetrace"
+    assert subprocess.run([bash, "-n", str(exe)]).returncode == 0
+    macapp.STAMP = app_dir / "Contents" / "kinetrace-bundle-version"
+    assert not macapp.is_stale(), "a fresh app is not stale"
+    macapp.STAMP.write_text("0", encoding="utf-8")
+    assert macapp.is_stale(), "a changed launcher must rebuild the app"
+    macapp.APP, macapp.STAMP = real_app, real_stamp
+    run_env = dict(env, PATH=str(stub) + os.pathsep + env.get("PATH", ""))
+
+    def launch():
+        return subprocess.run([bash, str(exe), "clip.mp4"], env=run_env, capture_output=True, text=True,
+                              timeout=60)
+
+    # an install still to do: it talks, so Terminal opens Kinetrace.command and nothing runs hidden
+    r = launch()
+    assert r.returncode == 0 and "Kinetrace.command" in (tmp / "opened.txt").read_text(), r
+    assert not (fake / "logs" / "launcher.log").exists()
+    (fake / ".venv" / "kinetrace-install.json").write_text("{}")
+    r = launch()
+    log = (fake / "logs" / "launcher.log").read_text()
+    assert r.returncode == 0 and "RAN clip.mp4" in log, (r, log)
+    shutil.rmtree(tmp, ignore_errors=True)
+    print("[5] Kinetrace.app: plist, rebuild when stale, launcher runs run.sh from its folder (output in "
+          "logs/), Terminal for an install still to do: OK")
 print("verify_install_paths PASSED")
