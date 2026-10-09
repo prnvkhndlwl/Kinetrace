@@ -29,6 +29,7 @@ on:
       - kinetrace/device.py
       - kinetrace/downloads.py
       - kinetrace/alltracker_backend.py
+      - tests/run_suites.py
       - .github/workflows/install-check.yml
 
 permissions:
