@@ -407,9 +407,9 @@ IDENTITY_HISTORY = 6      # present frames the speed and the body size are taken
 class SegmentIdentity:
     """(I260) Is this frame's silhouette still the animal the user clicked? SAM 3 (and SAM 2.1)
     keep a tracked object alive through a loss by re-acquiring whatever looks most like it: on a
-    clip of several bats, the clicked bat left the picture, SAM found nothing for 12 frames and
-    then took another bat -- and again each time that one left -- under the animal-lost rule's 16
-    frames. Here a silhouette that comes back after a gap must lie near where the animal was
+    clip of several animals of one kind, the clicked one left the picture, SAM found nothing for 12
+    frames and then took another -- and again each time that one left -- under the animal-lost
+    rule's 16 frames. Here a silhouette that comes back after a gap must lie near where the animal was
     heading (`IDENTITY_BODY_K` body sizes + `IDENTITY_SPEED_K` x the distance its speed covers),
     and a silhouette with no gap may not jump more than `IDENTITY_JUMP_K` x (body size + speed) in
     one frame; anything else is ANOTHER object. Body size = the median bbox diagonal over the last

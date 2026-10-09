@@ -1,7 +1,6 @@
-"""(I260) The segment must not turn into ANOTHER animal (owner report 2026-10-03: on a clip of
-several bats, SAM 3 lost the clicked bat behind a railing / at the picture edge and, under the
-16-frame animal-lost rule, picked up another bat each time -- the run went on as if nothing
-happened).
+"""(I260) The segment must not turn into ANOTHER animal (on a clip of several animals of one kind,
+SAM 3 lost the clicked one behind an obstacle / at the picture edge and, under the 16-frame
+animal-lost rule, picked up another each time -- the run went on as if nothing happened).
 
   [1] `segmenter.SegmentIdentity` on summaries: a gap and a return far from where the animal was
       heading = another object (the first frame of the gap is where it ends); a return near the

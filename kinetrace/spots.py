@@ -66,12 +66,12 @@ AMBIG_RATIO = 0.85             # a second candidate this strong = two equally li
 MERGE_RATIO = 1.8              # a spot suddenly this much stronger = two on top of each other (or a
                                # glint on it): where it is cannot be told, stop
 AUTO_MIN_CONTRAST = 4.0        # "automatic" picks bright / dark only when the seed stands out this much
-# unusual change: each pixel against its own usual change (the bat prototype)
+# unusual change: each pixel against its own usual change (for a turning animal over moving water)
 HIST_FRAMES = 30               # the background = the frames up to this far back ...
 HIST_STEP = 2                  # ... every 2nd of them (15 frames)
 MIN_HIST = 5
 HIST_GAP = 3                   # frames this close to the current one are not background: the
-                               # target's own wake (an 11 px bat at 10 px / frame overlaps itself)
+                               # target's own wake (an 11 px target at 10 px / frame overlaps itself)
 CHANGE_K = 2.5                 # unusual = |frame - median| beyond 2.5 x that pixel's usual change ...
 CHANGE_FLOOR = 6.0             # ... + 6 grey levels
 CHANGE_BLUR = 1.5
