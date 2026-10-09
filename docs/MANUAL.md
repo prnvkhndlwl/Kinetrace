@@ -119,12 +119,15 @@ by Apple: click **Done**, not *Move to Trash*. On macOS 15 or newer, open
 **System Settings → Privacy & Security**, scroll down to the line about
 `Kinetrace.command`, click **Open Anyway** and confirm, then double-click it
 again and click **Open**. On macOS 14: right-click the file, choose **Open**,
-and confirm. A Terminal window opens: leave it open until the program's window
-appears (if the Mac asks whether Terminal may access your Documents, Desktop
-or Downloads folder, allow it). That first run makes **`Kinetrace.app`** in the
-folder: from then on, double-click that instead — no Terminal window, and you
-can drag it to the Dock. Put the program folder in your home folder rather than
-on an iCloud-synced Desktop or Documents.
+and confirm. A Terminal window opens: leave it open until it says Kinetrace
+is installed and ready. That first run makes **`Kinetrace.app`** in the folder
+and opens the program with it; the Terminal window can then be closed (it does
+not close the program). From then on, double-click `Kinetrace.app` — no
+Terminal window, and you can drag it to the Dock. Put the program folder in
+your home folder, **not** in Documents, Desktop or Downloads: macOS lets an app
+read those only with permission, and `Kinetrace.app` may then not open (it says
+so). The first time the program opens after an install, a window says it is
+installed, how to start it next time and what to keep in its folder.
 
 **Ubuntu:** double-click `run.sh` in the program folder and choose *Run in
 Terminal* — or open a terminal in the folder and type `./run.sh`. If the window
@@ -198,7 +201,9 @@ ready, needs downloading, or still needs access or a token.
 
 Open **Help → Check for Updates…**. The program asks GitHub whether a newer
 version has been published. It sends nothing about you or your computer, and
-it never checks unless you ask. If there is one, you see what is new, and
+it never checks unless you ask. When you have not checked for 30 days, a note at
+start reminds you (click it to check now; it comes back at most once a week
+until you do) — the reminder only counts days, it does not go online. If there is one, you see what is new, and
 **Update now** installs it (a download cut off by a lost connection resumes where it
 stopped, and a full disk is named as such). Only the program's own files are replaced: your
 projects, downloaded models, unsaved-work copies, saved skeletons and settings

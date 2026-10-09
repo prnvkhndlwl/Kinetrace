@@ -28,8 +28,10 @@ with the mouse, and export the tracks to the tools you already use.
 
 ## Get started
 
-1. **Download** — *Code → Download ZIP* (or `git clone`) and unzip it. The
-   folder is called `Kinetrace-main`; rename it if you like. Put it in your
+1. **Download** — *Code → Download ZIP* and unzip it (the folder is called
+   `Kinetrace-main`; rename it if you like), or
+   `git clone https://github.com/prnvkhndlwl/Kinetrace.git` (the folder is
+   called `Kinetrace`). Put it in your
    own folder, **not** one synced to iCloud / OneDrive / Dropbox (on a Mac:
    your home folder, not an iCloud-synced Desktop or Documents).
 2. **Start** it:
@@ -111,7 +113,7 @@ More in [Accuracy](https://github.com/prnvkhndlwl/Kinetrace/wiki/Accuracy) and
 [The whole wiki](https://github.com/prnvkhndlwl/Kinetrace/wiki)
 
 **Updating:** *Help → Check for Updates…* installs a newer version and keeps
-your projects and models.
+your projects and models; after 30 days without a check, a note at start reminds you.
 
 **Found a bug or have a question?** [Open an issue](https://github.com/prnvkhndlwl/Kinetrace/issues/new/choose)
 — [contributing](CONTRIBUTING.md) says what helps, and the [code of conduct](CODE_OF_CONDUCT.md)

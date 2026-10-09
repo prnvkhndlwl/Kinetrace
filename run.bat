@@ -101,6 +101,8 @@ if errorlevel 1 (
     exit /b 1
 )
 if "%~1"=="--check" goto :done
+rem installed in THIS run: what to keep / close / delete, and the app's one-time pop-up (kinetrace\welcome.py)
+".venv\Scripts\python.exe" -m kinetrace.welcome console
 
 :launch
 rem AllTracker (the default point model) is fetched at install; retry if that was missed

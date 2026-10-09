@@ -54,6 +54,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_lens_attach",
        # (G177) the cameras at a glance: lens badges, Cameras Overview
        "verify_camera_overview",
+       # (G178, X37) after an install: the closing words, the one-time pop-up, the Mac hand-over
+       "verify_welcome",
        # any number of segments (G149) and which segment each action takes (G150, G151)
        "verify_segments", "verify_segment_targets",
        # animal layers, the two zooms (G152-G160)

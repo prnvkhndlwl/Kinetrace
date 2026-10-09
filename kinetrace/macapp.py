@@ -34,20 +34,43 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "Kinetrace.app"
-BUNDLE_VERSION = "1"          # bump when the launcher / plist below change: run.sh rebuilds the app
+BUNDLE_VERSION = "2"          # bump when the launcher / plist below change: run.sh rebuilds the app
 ICON_SIZES = (16, 32, 128, 256, 512)
 
 LAUNCHER = """#!/bin/bash
 # Kinetrace.app's launcher, written by kinetrace/macapp.py: starts Kinetrace from the folder
-# this app sits in, without a Terminal window (output: logs/launcher.log).
+# this app sits in, without a Terminal window (output: logs/launcher.log). It never stops in
+# silence (owner report 2026-10-09: in ~/Documents the app only flashed in the Dock): what it
+# cannot do is said in a dialog. run.sh is started with exec, so the Dock keeps the app's name.
+tell() {{
+    /usr/bin/osascript -e 'on run argv' \\
+        -e 'display dialog (item 1 of argv) with title "Kinetrace" buttons {{"OK"}} default button 1 with icon caution' \\
+        -e 'end run' "$1" >/dev/null 2>&1
+}}
+WHERE="Move the Kinetrace folder to your home folder (in Finder: Go > Home) and start Kinetrace.app from \\
+there, or allow it in System Settings > Privacy & Security > Files and Folders."
 DIR="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 [ -f "$DIR/run.sh" ] || DIR={baked}        # the app was moved out of its folder
-cd "$DIR" || exit 1
+# READ a file: macOS's privacy rules for Documents / Desktop / Downloads refuse the read itself
+if ! cd "$DIR" 2>/dev/null || ! head -c 1 run.sh >/dev/null 2>&1; then
+    tell "Kinetrace cannot open its folder:
+$DIR
+
+macOS lets an app read the Documents, Desktop or Downloads folder only with your permission. $WHERE"
+    exit 1
+fi
 if [ ! -f .venv/kinetrace-install.json ] || ! .venv/bin/python -c pass >/dev/null 2>&1; then
     # an install or repair step is due: it talks and takes minutes, so it runs in Terminal
+    # (Kinetrace.command hands back to this app when it is done)
     exec open -a Terminal "$DIR/Kinetrace.command"
 fi
-mkdir -p logs
+if ! mkdir -p logs 2>/dev/null || ! ( : >> logs/launcher.log ) 2>/dev/null; then
+    tell "Kinetrace cannot write in its folder:
+$DIR/logs
+
+$WHERE"
+    exit 1
+fi
 exec /bin/bash ./run.sh "$@" >> logs/launcher.log 2>&1
 """
 

@@ -302,7 +302,7 @@ assert re.search(r"\$want = '[0-9a-f]{128}'", bat) and "Get-FileHash $zip -Algor
     "run.bat checks the NuGet Python's SHA-512"
 assert "xcode-select" in sh, "the macOS python3 stub must not be poked without the developer tools"
 assert "libxcb-cursor0" in sh and "apt-get" in sh, "Ubuntu's Qt libraries"
-assert "exec ./run.sh" in cmd
+assert "KINETRACE_VIA=command exec ./run.sh" in cmd, "Kinetrace.command marks a Terminal start (hand-over)"
 assert "windows-2022" in ci and "macos-14" in ci and "ubuntu-22.04" in ci
 if os.name != "nt":
     r = subprocess.run(["bash", "-n", os.path.join(ROOT, "run.sh")], capture_output=True, text=True)
