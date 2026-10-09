@@ -9,8 +9,8 @@
       to the middle of the picture; an unsettled centre keeps GoPro's and says so; the curvature is worded
       as the lens's, not an error (G144).
   [3] the window (offscreen, real clicks): the flag set at open, a GoPro problem said once in a notice, other
-      footage gets nothing; 3D -> GoPro Cameras… table, its lens button attaches GoPro's lens, a Moved cell
-      goes to that camera and frame; Sync's search starts from the timecode; the lens wizard shows the GoPro
+      footage gets nothing; 3D -> Cameras Overview… (G177, it took over the GoPro table): GoPro columns only
+      with GoPro footage, its lens button attaches GoPro's lens, a Moved cell goes to that camera and frame; Sync's search starts from the timecode; the lens wizard shows the GoPro
       choices only for GoPro footage and "Use GoPro's lens without boards" gives the nominal profile.
 
 .venv\\Scripts\\python.exe tests\\verify_gopro.py
@@ -155,7 +155,7 @@ QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 app = QApplication.instance() or QApplication([])
 from kinetrace.app import READY, MainWindow  # noqa: E402
-from kinetrace.goprodialog import GoProDialog  # noqa: E402
+from kinetrace.cameraoverview import GOPRO_COLUMNS, MOVED_COL, CamerasOverview  # noqa: E402
 
 
 def pump(sec=0.2):
@@ -183,8 +183,12 @@ w.show()
 app.setActiveWindow(w)
 w._open_video(PLAIN)
 settle(w)
-check(w._views[0].info.gopro is None and not w.act_gopro.isEnabled() and "GoPro" not in notices(w),
-      "other footage: no flag, no GoPro entry, no GoPro notice")
+check(w._views[0].info.gopro is None and "GoPro" not in notices(w), "other footage: no flag, no GoPro notice")
+w._apply_state()
+plain = CamerasOverview(w, w._camera_facts)
+check(w.act_cameras.isEnabled() and not plain.has_gopro and plain.table.columnCount() == 4
+      and plain.btn_lens.isHidden(), "other footage: Cameras Overview has no GoPro columns and no GoPro lens button")
+plain.deleteLater()
 w._open_video(GA)
 settle(w)
 pump(0.3)
@@ -198,7 +202,7 @@ t = notices(w)
 check("stabilisation was ON" in t and "shutter speeds differ" in t and t.count("moved at frame 105") == 1,
       "the second camera's stabilisation and the rig's shutters are said, the first camera's move not again", t[:400])
 w._apply_state()
-check(w.act_gopro.isEnabled(), "3D -> GoPro Cameras… is enabled")
+check(w.act_cameras.isEnabled(), "3D -> Cameras Overview… is enabled")
 
 DRV = {}
 
@@ -217,21 +221,23 @@ def drive(steps):
     QTimer.singleShot(30, tick)
 
 
-def GoProDialog_steps(dlg):
+def CamerasOverview_steps(dlg):
     DRV["rows"] = dlg.table.rowCount()
-    DRV["footage"] = [dlg.table.item(r, 1).text() for r in range(dlg.table.rowCount())]
+    DRV["footage"] = [dlg.table.item(r, 4).text() for r in range(dlg.table.rowCount())]
+    DRV["header"] = [dlg.table.horizontalHeaderItem(c).text() for c in range(dlg.table.columnCount())]
     QTest.mouseClick(dlg.btn_lens, Qt.LeftButton)
     pump(0.1)
-    DRV["lens_cells"] = [dlg.table.item(r, 7).text() for r in range(dlg.table.rowCount())]
-    rect = dlg.table.visualItemRect(dlg.table.item(0, 6))
+    DRV["lens_cells"] = [dlg.table.item(r, 2).text() for r in range(dlg.table.rowCount())]
+    dlg.table.scrollToItem(dlg.table.item(0, MOVED_COL))
+    rect = dlg.table.visualItemRect(dlg.table.item(0, MOVED_COL))
     QTest.mouseClick(dlg.table.viewport(), Qt.LeftButton, Qt.NoModifier, rect.center())
 
 
-drive(GoProDialog_steps)
-w.act_gopro.trigger()
+drive(CamerasOverview_steps)
+w.act_cameras.trigger()
 pump(0.5)
-check(DRV.get("rows") == 2 and all("HERO12 Black" in f for f in DRV.get("footage", [])), "the table: one row per camera",
-      DRV)
+check(DRV.get("rows") == 2 and all("HERO12 Black" in f for f in DRV.get("footage", []))
+      and DRV.get("header", [])[4:] == list(GOPRO_COLUMNS), "the table: one row per camera, the GoPro columns", DRV)
 p = w.project
 check(all(p.lenses[v] is not None and p.lenses[v].report.get("gopro_nominal") for v in range(2))
       and all("GoPro's lens model" in c for c in DRV.get("lens_cells", [])),

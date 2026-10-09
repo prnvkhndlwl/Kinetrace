@@ -1505,8 +1505,14 @@ camera, click another camera, and *snout* is selected there, ready to be
 clicked. The one thing a switch forgets is the undo step — **Ctrl+Z** only
 reaches back to what you did since you last switched.
 
-Each camera's row in the CAMERAS panel is one line — its number, name and
-offset — so all of them fit; **▶** opens it: **Align here** and **×** on the
+Each camera's row in the CAMERAS panel is one line — its number, name,
+offset and lens badge — so all of them fit. The badge says at a glance whether
+the camera has a lens profile: **lens ✓** (attached and used), **lens ✗**
+(attached but NOT used: another picture size, or a turn that is not known) or
+**no lens**. Hover it for what the camera records (picture size, frame rate, a
+video that plays turned), its lens and whether the 3D calibration covers it;
+click it for **3D → Cameras Overview…**, the same for every camera in one
+table (with GoPro footage also the camera's own report, below). **▶** opens it: **Align here** and **×** on the
 first line, and the offset box with **◂ ▸** (and ×2 for a camera recording at
 twice the reference rate) underneath. **×** removes that camera from the
 project; it asks first when the camera has tracked frames, and its tracks go
@@ -1800,16 +1806,18 @@ It warns you, once, about what can spoil 3D:
 - **Settings that differ between cameras:** lens mode, frame rate or shutter
   speed (a fast animal blurs differently in each camera).
 
-Click the notice, or use **3D → GoPro Cameras…**, for a table with every
-camera: settings, tilt, dropped frames and when it moved (click a *Moved* cell
-to go to that camera and frame).
+Click the notice, or use **3D → Cameras Overview…**, for a table with every
+camera: what it records and its lens profile, and for GoPro footage its
+settings, tilt, dropped frames and when it moved (click a *Moved* cell to go to
+that camera and frame). Cameras that are not GoPros are listed too; nothing is
+read from their files beyond the picture size and frame rate.
 
 **GoPro's lens model.** Every GoPro video carries the maker's own model of how
 its lens bends the picture, for the exact mode it was recorded in, over the
 whole picture including the corners. Kinetrace uses it in two ways:
 
-- **Without a checkerboard:** 3D → GoPro Cameras… → *Use GoPro's lens model for
-  the cameras without a lens profile*, or *Use GoPro's lens without boards* in
+- **Without a checkerboard:** 3D → Cameras Overview… → *Use GoPro's lens model
+  for the GoPro cameras without a lens profile*, or *Use GoPro's lens without boards* in
   3D → Calibrate a Lens. This is the lens *design*: each camera differs from it
   by about 1 % in focal length and up to about 10 px in where the centre of the
   lens is. The wand calibration fine-tunes the focal length.

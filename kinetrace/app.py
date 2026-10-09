@@ -1399,6 +1399,7 @@ class MainWindow(QMainWindow):
         self.cameras.align_requested.connect(self._align_view_here)
         self.cameras.remove_requested.connect(self._remove_view)
         self.cameras.fps_requested.connect(self._set_camera_fps)
+        self.cameras.overview_requested.connect(self._cameras_overview)      # a row's lens badge (G177)
         self.cameras.sync_toggled.connect(lambda on: self._set_sync_mode("all" if on else "active"))
         self.cameras.shown_toggled.connect(self._set_view_shown)            # (G169) a row's eye
         self.cameras.show_all_requested.connect(self._show_all_views)
@@ -1787,15 +1788,17 @@ class MainWindow(QMainWindow):
         self.act_export_mesh = QAction("Export &Mesh of This Frame…", self, triggered=self._export_mesh)
         self.act_export_mesh.setToolTip("Writes the volume carved at this frame (Carve Volume, Ctrl+4) as an OBJ / PLY\n"
                                         "mesh. Carve a volume at this frame first.")
-        self.act_gopro = QAction("&GoPro Cameras…", self, triggered=self._gopro_dialog)       # (G145)
-        self.act_gopro.setToolTip("For GoPro footage only: each camera's recording settings, its tilt from the\n"
-                                  "gravity sensor, dropped frames, when it moved, and GoPro's own lens model\n"
-                                  "(for the cameras that have no lens profile yet)")
+        # (G177) every camera at a glance; it took over the GoPro-only table (G145)
+        self.act_cameras = QAction("Cameras &Overview…", self, triggered=self._cameras_overview)
+        self.act_cameras.setToolTip("Every camera in one table: what it records (size, frame rate, a video that\n"
+                                    "plays turned), its lens profile and whether it is used, whether the 3D\n"
+                                    "calibration covers it; for GoPro footage also its settings, tilt, dropped\n"
+                                    "frames, when it moved, and GoPro's own lens model")
         # the 3D menu's entry, also under File -> Import (its own action: "Import" is the submenu's word)
         self.act_import_calib = QAction("&Calibration…", self, triggered=self._import_calibration)
         self.act_import_calib.setToolTip(self.act_calib.toolTip())
         self._m_import.insertAction(self.act_import_xyz, self.act_import_calib)
-        for a in (self.act_sync, self.act_gopro, None, self.act_lens, self.act_load_lens, self.act_export_lens,
+        for a in (self.act_sync, self.act_cameras, None, self.act_lens, self.act_load_lens, self.act_export_lens,
                   self.act_wand, self.act_calib, self.act_export_cal,
                   self.act_offsets3d, None, self.act_recon, self.act_set_axes, self.act_retrack, self.act_hull, None,
                   self.act_view3d,
@@ -2074,7 +2077,7 @@ class MainWindow(QMainWindow):
         self.act_sync.setEnabled(live3d)
         self.act_recon.setEnabled(live3d)
         self.act_set_axes.setEnabled(live3d)        # clickable like the others; it explains what it needs
-        self.act_gopro.setEnabled(live3d and bool(self._gopro_infos()))          # (G145) GoPro footage only
+        self.act_cameras.setEnabled(live3d)                                      # (G177) any camera
         has_rec = bool(has_cal and self.project is not None and self.project.reconstruction is not None
                        and self.project.reconstruction.per_cam is not None)
         self.act_retrack.setEnabled(has_rec and not tracking)
@@ -3989,11 +3992,13 @@ class MainWindow(QMainWindow):
             if p.has_fractional_offsets():
                 note += "  Sub-frame offsets are set — the 3D layer interpolates at them."
         hidden = self.grid.hidden()
+        from kinetrace.cameraoverview import badge, facts_tooltip
+        lenses = [badge(f) + (facts_tooltip(f),) for f in self._camera_facts()]     # (G177)
         self.cameras.update_rows(list(p.names), list(p.offsets), p.active, statuses, note,
                                  rates=list(p.rates), fps=[s.fps for s in p.sessions],
                                  file_fps=[getattr(s, "file_fps", s.fps) for s in p.sessions],
                                  shown=[i not in hidden for i in range(p.n_views)],
-                                 solo=self.act_solo.isChecked())
+                                 solo=self.act_solo.isChecked(), lenses=lenses)
         self.act_show_all_views.setEnabled(bool(hidden - {p.active}))
         self.act_views_in_order.setEnabled(self.grid.display_order() != list(range(p.n_views)))
 
@@ -10907,7 +10912,7 @@ class MainWindow(QMainWindow):
                 self, "No lens profile yet",
                 "No camera of this project has a lens profile yet.\n\nMake one with 3D → Calibrate a Lens "
                 "(checkerboard), load one with 3D → Load a Lens Profile for Cameras…"
-                + (", or give the GoPro cameras GoPro's lens model in 3D → GoPro Cameras…" if self._gopro_infos() else "")
+                + (", or give the GoPro cameras GoPro's lens model in 3D → Cameras Overview…" if self._gopro_infos() else "")
                 + ". Then export it here.")
             return
         v = p.active if p.active in have else have[0]
@@ -11037,6 +11042,7 @@ class MainWindow(QMainWindow):
             p.lenses[v] = prof
         if by_view:
             p.dirty = True
+            self._refresh_cameras()                # the CAMERAS lens badges (G177)
 
     def _wand_wizard(self):
         """3D → Calibrate Cameras with a Wand: the native easyWand replacement,
@@ -11065,7 +11071,9 @@ class MainWindow(QMainWindow):
             return
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
         wiz = WandWizard(self, p, start)
-        if wiz.exec() != QDialog.Accepted or wiz.result_calibration is None:
+        accepted = wiz.exec() == QDialog.Accepted
+        self._refresh_cameras()          # its lens rows may have changed the lenses, accepted or not (G177)
+        if not accepted or wiz.result_calibration is None:
             return
         p.calibration = wiz.result_calibration
         self._wand_result = (wiz.result, wiz.gravity)
@@ -11208,27 +11216,34 @@ class MainWindow(QMainWindow):
             if ("rig", s) not in said:
                 said.add(("rig", s))
                 lines.append(s)
-        self._apply_state()                      # the GoPro entry lights up
+        self._apply_state()
         if lines:
-            self.toast.show_message("GoPro footage: " + " ".join(lines) + " (Click for 3D → GoPro Cameras…)",
-                                    "warn", 25000, on_click=self._gopro_dialog)
+            self.toast.show_message("GoPro footage: " + " ".join(lines) + " (Click for 3D → Cameras Overview…)",
+                                    "warn", 25000, on_click=self._cameras_overview)
         else:
             labels = sorted({i.label for i in infos.values()})
             self.statusBar().showMessage(f"GoPro footage ({'; '.join(labels)}): stabilisation off, no dropped frames, "
-                                         "no camera moved. 3D → GoPro Cameras… shows the details and GoPro's lens "
+                                         "no camera moved. 3D → Cameras Overview… shows the details and GoPro's lens "
                                          "model.", 9000)
 
-    def _gopro_dialog(self) -> None:
-        """3D → GoPro Cameras…: the settings / sensors table and GoPro's lens for the cameras without one."""
-        from kinetrace.goprodialog import GoProDialog
+    def _camera_facts(self) -> list:
+        """(G177) `cameraoverview.camera_facts` for this project: the overview's rows, the CAMERAS badges."""
+        from kinetrace.cameraoverview import camera_facts
         p = self.project
-        if p is None or self.state != READY or not self._gopro_infos():
+        if p is None:
+            return []
+        return camera_facts(p, [rt.info for rt in getattr(self, "_views", [])])
+
+    def _cameras_overview(self, *_) -> None:
+        """3D → Cameras Overview… (G177; also a CAMERAS row's lens badge, the GoPro notice): every camera's
+        recording, lens profile and calibration; GoPro footage's own report and GoPro's lens (G145)."""
+        from kinetrace.cameraoverview import CamerasOverview
+        p = self.project
+        if p is None or self.state != READY:
             return
-        infos = [getattr(rt.info, "gopro", None) for rt in self._views]
-        dlg = GoProDialog(self, [p.name(v) for v in range(p.n_views)], infos,
-                          lambda: [p.lenses[v] if v < len(p.lenses) else None for v in range(p.n_views)],
-                          on_use_lenses=self._use_gopro_lenses,
-                          on_goto=lambda v, f: (dlg.accept(), self._goto_camera_frame(v, f)))
+        dlg = CamerasOverview(self, self._camera_facts, on_use_gopro_lenses=self._use_gopro_lenses,
+                              on_load_lens=self._load_lens_profile,
+                              on_goto=lambda v, f: (dlg.accept(), self._goto_camera_frame(v, f)))
         dlg.exec()
         dlg.deleteLater()
 

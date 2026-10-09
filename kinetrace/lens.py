@@ -382,6 +382,11 @@ _TURNED = {0: "as the camera stored them", 90: "turned 90° clockwise from how t
 _TURN = {90: "90° clockwise", 180: "upside down", 270: "90° counter-clockwise"}
 
 
+def turn_words(cw: int | None) -> str:
+    """A video's turn (`video_source.applied_rotation`) in words: "" for none (0) or not known (None)."""
+    return _TURN.get(int(cw) % 360, "") if cw is not None else ""
+
+
 def turn_needed(size: tuple[int, int], rotation: int | None, cam_size: tuple[int, int], cam_rotation: int | None,
                 cam_name: str = "this camera", what: str = "This lens profile was measured on"
                 ) -> tuple[int | None, str | None]:

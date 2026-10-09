@@ -65,6 +65,7 @@ class _CameraRow(QWidget):
     fps_requested = Signal(int)           # the frame-rate button (G38)
     shown_toggled = Signal(int, bool)     # (G169) its eye: (view index, shown)
     expand_toggled = Signal(int)          # (G169) its disclosure was clicked (the row's height changed)
+    overview_requested = Signal(int)      # (G177) its lens badge was clicked
 
     def __init__(self, index: int):
         super().__init__()
@@ -106,6 +107,14 @@ class _CameraRow(QWidget):
         self.summary = ElidedLabel()
         self.summary.setStyleSheet(f"color: {theme.TEXT_DIM};")
         top.addWidget(self.summary)
+        # (G177) the lens at a glance: "lens ✓" / "lens ✗" (attached, not used) / "no lens"; its tooltip says
+        # what the camera records, its lens and its calibration; a click opens 3D -> Cameras Overview
+        self.lens_badge = QToolButton()
+        self.lens_badge.setAutoRaise(True)
+        self.lens_badge.setFocusPolicy(Qt.NoFocus)
+        self.lens_badge.clicked.connect(lambda: self.overview_requested.emit(self.index))
+        self.lens_badge.setVisible(False)
+        top.addWidget(self.lens_badge)
         # "Align here" sits on the name line: on the offset line it made the row
         # wider than the panel and was clipped with the x and the > (G3)
         self.btn_align = QToolButton()
@@ -224,10 +233,25 @@ class _CameraRow(QWidget):
             "the other views get its room; its tracks still count for 3D and the guides." if shown else
             "Hidden: click to show this camera's view again")
 
+    def set_lens(self, lens: tuple[str, str, str] | None) -> None:
+        """(G177) The lens badge: (text, colour, tooltip), or None to hide it."""
+        self.lens_badge.setVisible(lens is not None)
+        if lens is None:
+            return
+        text, color, tip = lens
+        self.lens_badge.setText(text)
+        # as tall as the text line (the theme's button min-height would grow every row, G169)
+        self.lens_badge.setStyleSheet(
+            f"QToolButton {{ min-height: 0px; min-width: 0px; padding: 0px 4px; border: none; background: transparent;"
+            f" color: {color}; }} QToolButton:hover {{ background: {theme.HAIRLINE}; border-radius: 3px; }}")
+        self.lens_badge.setToolTip(tip)
+
     def update_row(self, name: str, offset: float, active: bool, status: str,
                    removable: bool, reference: bool = False, rate: float = 1.0,
-                   fps: float | None = None, file_fps: float | None = None, number: int | None = None) -> None:
+                   fps: float | None = None, file_fps: float | None = None, number: int | None = None,
+                   lens: tuple[str, str, str] | None = None) -> None:
         weight = "600" if active else "400"
+        self.set_lens(lens)
         color = theme.TEXT if active else theme.TEXT_DIM
         tag = "  (reference)" if reference else ""
         # (G169) its number = its place in the camera ORDER (calibration, 3D, exports)
@@ -298,6 +322,7 @@ class CameraPanel(QWidget):
     remove_requested = Signal(int)
     add_requested = Signal()
     fps_requested = Signal(int)          # a row's frame-rate button (G38)
+    overview_requested = Signal(int)     # (G177) a row's lens badge
     sync_toggled = Signal(bool)          # Sync all views (True) / Active view only (False), G24
     shown_toggled = Signal(int, bool)    # (G169) a row's eye: (view index, shown)
     show_all_requested = Signal()        # (G169) Show all: every hidden view back
@@ -407,6 +432,7 @@ class CameraPanel(QWidget):
             row.fps_requested.connect(self.fps_requested)
             row.shown_toggled.connect(self.shown_toggled)
             row.expand_toggled.connect(self._fit_row)
+            row.overview_requested.connect(self.overview_requested)
             item = QListWidgetItem()          # NOT QListWidgetItem(self.list):
             # that inserts it, and addItem would again. Height from the row; width
             # left to the list, which stretches rows to its viewport (a natural-width
@@ -443,7 +469,7 @@ class CameraPanel(QWidget):
                     statuses: list[str], note: str = "",
                     rates: list[float] | None = None, fps: list[float] | None = None,
                     file_fps: list[float] | None = None, shown: list[bool] | None = None,
-                    solo: bool = False) -> None:
+                    solo: bool = False, lenses: list | None = None) -> None:
         self.rebuild(len(names))
         several = len(names) > 1
         for i, row in enumerate(self._rows):
@@ -452,7 +478,8 @@ class CameraPanel(QWidget):
                            rate=(rates[i] if rates and i < len(rates) else 1.0),
                            fps=(fps[i] if fps and i < len(fps) else None),
                            file_fps=(file_fps[i] if file_fps and i < len(file_fps) else None),
-                           number=(i + 1) if several else None)
+                           number=(i + 1) if several else None,
+                           lens=(lenses[i] if lenses and i < len(lenses) else None))
             row.set_shown(bool(shown[i]) if shown and i < len(shown) else True, i == active, solo)
             row.btn_eye.setVisible(several)          # one camera: nothing to show or hide
         self._suppress = True            # programmatic selection must not re-emit
