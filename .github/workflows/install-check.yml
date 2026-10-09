@@ -7,13 +7,29 @@
 #   * "bootstrap": the launcher is told there is no usable Python
 #     (KINETRACE_BOOTSTRAP_PYTHON=1, the same branch a machine without one
 #     takes) and must download its private copy into .venv/base - the path a
-#     novice's computer takes.
-# Started by hand (Actions tab -> "Install check" -> Run workflow) so it costs
-# no build minutes unless asked for; macOS minutes count 10x on private repos.
+#     novice's computer takes. (macOS always takes the private Python now, in
+#     both flavours: run.sh never builds a venv on Homebrew's Python there.)
+# Runs on a push that changes how Kinetrace installs or starts (Mac install audit:
+# the Mac breakages were all in these files), and by hand (Actions tab ->
+# "Install check" -> Run workflow). macOS minutes count 10x on private repos.
 name: Install check (Ubuntu / macOS / Windows)
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - run.sh
+      - run.bat
+      - Kinetrace.command
+      - uninstall.sh
+      - install.py
+      - requirements.txt
+      - kinetrace/macapp.py
+      - kinetrace/paths.py
+      - kinetrace/device.py
+      - kinetrace/downloads.py
+      - kinetrace/alltracker_backend.py
+      - .github/workflows/install-check.yml
 
 permissions:
   contents: read
@@ -65,6 +81,29 @@ jobs:
         if: runner.os != 'Windows'
         run: ./run.sh --check
 
+      - name: Size of the environment (the docs quote it)
+        shell: bash
+        run: du -sh .venv models
+
+      - name: Kinetrace.app and the "Kinetrace" process name (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          test -x Kinetrace.app/Contents/MacOS/Kinetrace
+          plutil -p Kinetrace.app/Contents/Info.plist | grep -q '"CFBundleName" => "Kinetrace"'
+          ls -la Kinetrace.app/Contents/Resources/
+          test -L .venv/bin/Kinetrace
+          .venv/bin/Kinetrace -c "import sys, kinetrace; assert sys.prefix.endswith('.venv'), sys.prefix; print('runs as', sys.executable)"
+          bash -n uninstall.sh
+
+      - name: AllTracker on the Apple GPU (macOS, when the runner has one)
+        if: runner.os == 'macOS'
+        run: |
+          if .venv/bin/python -c "import sys, torch; sys.exit(0 if torch.backends.mps.is_available() else 1)"; then
+            .venv/bin/python tests/verify_alltracker.py --sizes
+          else
+            echo "This runner has no Apple GPU (MPS): verify_alltracker.py --sizes needs a real Mac."
+          fi
+
       - name: The app imports
         shell: bash
         run: |
@@ -80,7 +119,8 @@ jobs:
           "$PY" tests/run_suites.py \
             verify_portable verify_core verify_projectfile verify_recovery verify_interop verify_stress verify_3d \
             verify_wand verify_lens verify_body verify_onbody_rules verify_sync verify_timeline_events \
-            verify_ui_focus verify_display verify_multicam verify_3d_gui verify_sweep_fixes
+            verify_ui_focus verify_display verify_multicam verify_3d_gui verify_sweep_fixes \
+            verify_alltracker_mps verify_install_paths verify_downloads verify_update
 
       - name: Keep the logs of failing suites
         if: failure()
@@ -134,3 +174,19 @@ jobs:
           if [ "$RUNNER_OS" = "Windows" ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
           "$PY" -c "import kinetrace.app, kinetrace.device; print('import OK')"
           "$PY" tests/run_suites.py verify_portable verify_core verify_stress
+
+      - name: A moved / renamed folder still starts (Linux / macOS)
+        # the private Python's venv links are absolute (Mac install audit P0-2): rename the
+        # checkout, start again, rename it back and start again. Last step: it moves the workspace.
+        if: runner.os != 'Windows'
+        run: |
+          here="$(basename "$GITHUB_WORKSPACE")"
+          cd ..
+          mv "$here" "Kinetrace moved"
+          cd "Kinetrace moved"
+          ./run.sh --check
+          .venv/bin/python -c "import sys; assert 'Kinetrace moved' in sys.base_prefix, sys.base_prefix; print('relinked:', sys.base_prefix)"
+          cd ..
+          mv "Kinetrace moved" "$here"
+          cd "$here"
+          ./run.sh --check

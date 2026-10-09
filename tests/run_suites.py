@@ -39,7 +39,7 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_timeline_events", "verify_scrub", "verify_multicam", "verify_3d_gui", "verify_ui_focus",
        "verify_annotate", "verify_display", "verify_render", "verify_segment_panel", "verify_point_menu",
        "verify_wand_gui", "verify_lens_gui", "verify_body_gui", "verify_sweep_fixes", "verify_crashlog", "verify_update", "verify_downloads",
-       "verify_spots",
+       "verify_spots", "verify_alltracker_mps", "verify_install_paths",
        # the 2026-10-02 code review's regression checks (each fails on the code before its fixes)
        "verify_review_persist", "verify_review_data", "verify_review_3d", "verify_review_calib",
        "verify_review_body", "verify_review_infra", "verify_review_ui", "verify_review_app1", "verify_review_app3",
@@ -95,6 +95,7 @@ def main(argv):
     bad = 0
     for name in names:
         path = os.path.join(ROOT, "tests", name + ".py")
+        print(f"{name:28s} running ...", flush=True)
         t0 = time.time()
         clean()
         try:
@@ -112,6 +113,11 @@ def main(argv):
         print(line, flush=True)
         log.write(line + "\n")
         log.flush()
+        if ok:
+            try:
+                os.remove(os.path.join(OUT, f"suite_{name}.log"))   # an older failure's log, now stale
+            except OSError:
+                pass
         if not ok:
             with open(os.path.join(OUT, f"suite_{name}.log"), "w", encoding="utf-8") as fh:
                 fh.write(r.stdout if code != -1 else "")

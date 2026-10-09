@@ -59,10 +59,57 @@ IMPORTS = "import PySide6.QtWidgets, cv2, numpy, scipy, torch, torchvision, tran
 
 AGAIN = ("run the launcher again: what is already installed is kept and the install goes on from "
          "there (a package cut off half-way downloads again).")
+ISSUES = "https://github.com/prnvkhndlwl/Kinetrace/issues"
+KEEP_INSTALL_LOGS = 3
+
+
+def _new_log() -> str | None:
+    """logs/install-<date>.log: everything this run says plus pip's own full log (pip --log), one
+    file a support request can ask for (Mac install audit P2-8 / P2-11). None if logs/ cannot be
+    written: the install goes on without it."""
+    try:
+        d = os.path.join(HERE, "logs")
+        os.makedirs(d, exist_ok=True)
+        # the newest few only: each holds pip's full log, about 13 MB (Mac report 2026-10-08)
+        old = sorted(f for f in os.listdir(d) if f.startswith("install-") and f.endswith(".log"))
+        for f in old[:-(KEEP_INSTALL_LOGS - 1)]:
+            try:
+                os.remove(os.path.join(d, f))
+            except OSError:
+                pass
+        path = os.path.join(d, time.strftime("install-%Y-%m-%d-%H%M%S.log"))
+        with open(path, "a", encoding="utf-8"):
+            pass
+        return path
+    except OSError:
+        return None
+
+
+LOG = None if __name__ != "__main__" else _new_log()
 
 
 def say(msg: str) -> None:
     print(msg, flush=True)
+    if LOG:
+        try:
+            with open(LOG, "a", encoding="utf-8") as fh:
+                fh.write(msg + "\n")
+        except OSError:
+            pass
+
+
+def step(msg: str) -> None:
+    """A step line, set apart from pip's output so it is not buried."""
+    say("")
+    say("==== " + msg)
+
+
+def where_to_ask() -> str:
+    try:
+        log = f" and attach {os.path.relpath(LOG, HERE)}" if LOG else ""
+    except ValueError:                  # another drive (Windows): the full path then
+        log = f" and attach {LOG}"
+    return f"If it happens twice, open an issue at {ISSUES}{log}."
 
 
 nvidia_driver = device.nvidia_driver        # (driver version text, major) or None without an NVIDIA driver
@@ -87,6 +134,8 @@ def pip(*args: str) -> None:
     cmd = [sys.executable, "-m", "pip", "install", "--no-cache-dir", "--retries", "5",
            "--timeout", "90", *args]
     say("+ " + " ".join(cmd))
+    if LOG:
+        cmd += ["--log", LOG]       # pip's full log goes to the file; the console keeps its progress bars
     subprocess.check_call(cmd)
 
 
@@ -169,6 +218,71 @@ def fetch_alltracker() -> None:
         shutil.rmtree(ALLTRACKER_DIR, ignore_errors=True)
 
 
+SAM3_NOTE = """\
+SAM 3 - the best silhouettes (optional). Its weights are GATED: Meta must say yes first.
+
+The easy way (no Terminal):
+  1. Make a free account at https://huggingface.co and open https://huggingface.co/facebook/sam3 :
+     "Agree and access repository", then wait until that page says you have access.
+  2. Make a READ token: https://huggingface.co/settings/tokens -> Create new token -> Read.
+     (A token is a password for downloads only; keep it to yourself.)
+  3. In Kinetrace: Settings (Ctrl+, ; Cmd+, on a Mac) -> Hugging Face token: paste it, Save token;
+     Segmentation model: SAM 3. The first outline downloads it (3.4 GB) into models/hf with a
+     progress window; it stays inside the Kinetrace folder.
+
+Or put the files HERE yourself (this folder, models/sam3). Kinetrace uses it once it holds
+config.json and model.safetensors; these are the files it reads (sam3.pt, 3.45 GB, is NOT needed):
+    model.safetensors        3.44 GB
+    config.json, processor_config.json, tokenizer.json, tokenizer_config.json,
+    special_tokens_map.json, vocab.json, merges.txt          (small)
+From a Terminal in the Kinetrace folder (Mac / Ubuntu; on Windows see docs/INSTALL.md):
+    export HF_HOME="$PWD/models/hf" HF_HUB_DISABLE_UPDATE_CHECK=1
+    .venv/bin/python -m huggingface_hub.cli.hf auth login
+    .venv/bin/python -m huggingface_hub.cli.hf download facebook/sam3 --revision {rev} --exclude "sam3.pt" --local-dir models/sam3
+The first line keeps Hugging Face's files inside the Kinetrace folder and stops its update check;
+"auth login" asks for the Read token without showing it and keeps it in models/hf/token (where
+Kinetrace's Settings keeps it too), so it never lands in the Terminal's history.
+"""
+
+S3DB_NOTE = """\
+SAM 3D Body - 3D human joints and a body mesh (optional). It runs ONLY on an NVIDIA graphics card
+(Meta's code is CUDA-only); on any other computer use ViTPose (2D joints), which needs nothing.
+
+Two things are needed, both from Meta:
+  1. The weights (GATED): request access at https://huggingface.co/facebook/sam-3d-body-dinov3 ,
+     then put these files HERE (this folder, models/sam-3d-body-dinov3):
+         model.ckpt                2.1 GB
+         assets/mhr_model.pt       0.7 GB   (in the sub-folder assets - easy to miss)
+     From a Terminal in the Kinetrace folder (Ubuntu; on Windows see docs/INSTALL.md):
+         export HF_HOME="$PWD/models/hf" HF_HUB_DISABLE_UPDATE_CHECK=1
+         .venv/bin/python -m huggingface_hub.cli.hf auth login
+         .venv/bin/python -m huggingface_hub.cli.hf download facebook/sam-3d-body-dinov3 model.ckpt assets/mhr_model.pt --local-dir models/sam-3d-body-dinov3
+  2. Meta's inference code, cloned into models/sam-3d-body (a NEW folder; it must contain
+     sam_3d_body/):
+         git clone https://github.com/facebookresearch/sam-3d-body models/sam-3d-body
+Body -> 3D body checks both and says what is still missing.
+"""
+
+
+def gated_model_folders() -> None:
+    """The folders the gated models go into, each with PUT_FILES_HERE.txt naming the exact files,
+    their sizes and the commands (Mac install audit P1: the user had to create them with exact
+    names, and a typo was ignored without a word). SAM 3D Body's only where it can run (not on a
+    Mac). Never models/sam-3d-body itself: git clone refuses a folder that is not empty. A model
+    folder counts only once it holds the weights, so these notes change nothing in the app."""
+    notes = {"sam3": SAM3_NOTE.format(rev=downloads.HF_REVISIONS["facebook/sam3"])}
+    if sys.platform != "darwin":
+        notes["sam-3d-body-dinov3"] = S3DB_NOTE
+    for name, text in notes.items():
+        try:
+            d = os.path.join(downloads.MODELS_DIR, name)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "PUT_FILES_HERE.txt"), "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+        except OSError as e:          # a read-only models/ must not fail the install
+            say(f"(could not write models/{name}/PUT_FILES_HERE.txt: {e})")
+
+
 def hardware_report() -> None:
     """The same text as `python -m kinetrace --check` (no Qt is imported)."""
     try:
@@ -204,6 +318,7 @@ def main(force: bool = False) -> int:
             # "every package imports"
             pip("-r", os.path.join(HERE, "requirements.txt"))
             fetch_alltracker()
+            gated_model_folders()
             write_marker(choice)
             say("Kinetrace install: already complete (every package imports). "
                 "Run with --force to reinstall the packages.")
@@ -222,13 +337,13 @@ def main(force: bool = False) -> int:
         say("")
     if sys.platform == "win32" and platform.machine().upper() in ("ARM64", "AARCH64"):
         say("Note: Windows on ARM - PyTorch and Qt for this machine come from PyPI (CPU only).")
-    say("Step 1 of 4: the package installer (pip)")
+    step("Step 1 of 4: the package installer (pip)")
     pip("--upgrade", "pip")
     wheels = [f"torch=={TORCH}", f"torchvision=={TORCHVISION}"]
     # --force must really reinstall: pip treats "==2.12.1" as met by an installed 2.12.1+cpu, so the
     # wrong build (CPU on a GPU machine) would stay without --force-reinstall (I238)
     again = ["--force-reinstall"] if force else []
-    say("Step 2 of 4: PyTorch, the deep-learning engine (" + ("about 3 GB with the CUDA libraries: the longest "
+    step("Step 2 of 4: PyTorch, the deep-learning engine (" + ("about 3 GB with the CUDA libraries: the longest "
         "step" if choice == "cuda" else "a few hundred MB") + ")")
     if choice == "cuda":
         pip(*wheels, *again, "--index-url", "https://download.pytorch.org/whl/cu130")
@@ -236,10 +351,11 @@ def main(force: bool = False) -> int:
         pip(*wheels, *again, "--index-url", "https://download.pytorch.org/whl/cpu")
     else:
         pip(*wheels, *again)
-    say("Step 3 of 4: the other packages (Qt for the window, OpenCV, transformers, ...: about 500 MB)")
+    step("Step 3 of 4: the other packages (Qt for the window, OpenCV, transformers, ...: about 500 MB)")
     pip(*(["--upgrade"] if force else []), "-r", os.path.join(HERE, "requirements.txt"))
-    say("Step 4 of 4: AllTracker's code (about 1 MB)")
+    step("Step 4 of 4: AllTracker's code (about 1 MB)")
     fetch_alltracker()
+    gated_model_folders()
 
     ok, why = imports_ok()
     if not ok:
@@ -249,8 +365,7 @@ def main(force: bool = False) -> int:
         if hint:                                    # (G98) a missing Linux library, not a broken environment
             say(hint)
             return EXIT_SYSTEM_LIBS
-        say("Delete the .venv folder and start the launcher again; if it happens twice, send the lines above "
-            "with your question.")
+        say("Delete the .venv folder and start the launcher again. " + where_to_ask())
         return 1
     write_marker(choice)
     say("Kinetrace install: done. The tracking and segmentation models (66 MB - 620 MB each) are downloaded "
@@ -266,7 +381,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main(force="--force" in sys.argv))
     except subprocess.CalledProcessError as e:
-        say(f"\nInstallation failed ({e}). Check the internet connection and " + AGAIN)
+        say(f"\nInstallation failed ({e}). Check the internet connection and " + AGAIN + " " + where_to_ask())
         sys.exit(1)
     except KeyboardInterrupt:
         say("\nInstallation interrupted. To finish it, " + AGAIN)

@@ -69,7 +69,11 @@ bootstrap_python() {
         *) say "No private Python build exists for $OS on $ARCH."; return 1 ;;
     esac
     URL="https://github.com/astral-sh/python-build-standalone/releases/download/$TAG/cpython-$VER+$TAG-$TRIPLE-install_only_stripped.tar.gz"
-    say "No usable Python found on this computer - downloading a private copy (about 30 MB) into .venv/base ..."
+    if [ "$OS" = "Darwin" ] || [ "${KINETRACE_BOOTSTRAP_PYTHON:-}" = "1" ]; then
+        say "Downloading Kinetrace's own Python (about 25 MB) into .venv/base - nothing is installed into the system ..."
+    else
+        say "No usable Python found on this computer - downloading a private copy (about 25 MB) into .venv/base ..."
+    fi
     rm -rf .venv/base .venv/_python_dl
     mkdir -p .venv/_python_dl
     download "$URL" .venv/_python_dl/python.tar.gz || { rm -rf .venv/_python_dl; return 1; }
@@ -116,10 +120,20 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
         say "Kinetrace - checking the environment in .venv ..."
     else
         say "============================================================"
-        say " Kinetrace - first run: setting up a self-contained environment in .venv"
-        say " This downloads 1-4 GB (PyTorch; the CUDA build with an NVIDIA graphics"
-        say " card is the largest) and can take a while. Everything installs INSIDE"
-        say " this folder - deleting the folder removes the tool completely."
+        if [ "${KINETRACE_REBUILT:-}" = "1" ]; then
+            say " Kinetrace - rebuilding its environment in .venv (models and projects are kept)"
+        else
+            say " Kinetrace - first run: setting up a self-contained environment in .venv"
+        fi
+        if [ "$OS" = "Darwin" ]; then
+            say " This takes a few minutes and about 1.5 GB of disk. Keep this window open"
+            say " until it says it is done. Everything installs INSIDE this folder -"
+            say " deleting the folder removes the tool completely."
+        else
+            say " This downloads 1-4 GB (PyTorch; the CUDA build with an NVIDIA graphics"
+            say " card is the largest) and can take a while. Everything installs INSIDE"
+            say " this folder - deleting the folder removes the tool completely."
+        fi
         say "============================================================"
     fi
     if [ "$OS" = "Darwin" ] && [ "$ARCH" != "arm64" ]; then
@@ -129,13 +143,21 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
     if [ ! -x ".venv/bin/python" ]; then
         # KINETRACE_BOOTSTRAP_PYTHON=1 skips the search and always uses a private
         # Python (a broken system Python; the CI's bootstrap job)
-        if [ "${KINETRACE_BOOTSTRAP_PYTHON:-}" = "1" ]; then
+        # macOS always takes the private Python too (Mac install audit P2-2): a venv made on
+        # Homebrew's Python breaks at the next "brew upgrade" / "brew cleanup", and the private
+        # one is checksummed, relocatable and inside the folder
+        if [ "${KINETRACE_BOOTSTRAP_PYTHON:-}" = "1" ] || [ "$OS" = "Darwin" ]; then
             PY=""
         else
             PY="$(pick_python)" || PY=""
         fi
         if [ -z "$PY" ]; then
-            bootstrap_python || {
+            if bootstrap_python; then
+                PY=".venv/base/bin/python3"
+            elif [ "$OS" = "Darwin" ] && [ "${KINETRACE_BOOTSTRAP_PYTHON:-}" != "1" ] && PY="$(pick_python)"; then
+                say "Using $PY instead. The environment depends on it: if it is upgraded or removed,"
+                say "./run.sh rebuilds the environment (the packages download again)."
+            else
                 say ""
                 say "ERROR: could not download Python. Check the internet connection and run ./run.sh again."
                 if [ "$OS" = "Darwin" ]; then
@@ -144,8 +166,7 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
                     say "Or:  sudo apt install python3 python3-venv   and run it again."
                 fi
                 exit 1
-            }
-            PY=".venv/base/bin/python3"
+            fi
         fi
         say "Creating the environment with $PY ..."
         "$PY" -m venv .venv || {
@@ -164,7 +185,8 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
             say "Everything is installed except the system libraries named above. Install them and run ./run.sh again."
         else
             say "ERROR: the installation did not finish. Check your internet connection and run ./run.sh"
-            say "again (it resumes). If it fails twice, send the lines above with your question."
+            say "again (it resumes). If it fails twice, open an issue at"
+            say "https://github.com/prnvkhndlwl/Kinetrace/issues and attach the newest logs/install-*.log."
         fi
         exit 1
     }
@@ -175,11 +197,37 @@ fi
 # The private interpreter (if any) lives inside the folder. A moved or renamed
 # folder leaves .venv/bin/python pointing at the old path: re-link it in place
 # (python -m venv on an existing venv only rewrites the links and pyvenv.cfg).
+# A venv made on a Python OUTSIDE the folder (Homebrew, python.org) breaks when that Python is
+# upgraded or removed: rebuild it once (Mac install audit P2-2; models and projects are kept).
+if ! .venv/bin/python -c "pass" >/dev/null 2>&1 && [ ! -x ".venv/base/bin/python3" ]; then
+    if [ "${KINETRACE_REBUILT:-}" = "1" ]; then
+        say "ERROR: the rebuilt environment in .venv does not start either. Delete the .venv folder and"
+        say "run ./run.sh again; if it fails twice, send the lines above with your question."
+        exit 1
+    fi
+    say "The Python this environment was made with is gone (upgraded, moved or removed)."
+    say "Rebuilding .venv - the packages download again; models and projects are kept."
+    rm -rf .venv
+    KINETRACE_REBUILT=1 exec bash ./run.sh "$@"      # the folder is the working directory (cd above)
+fi
 if ! .venv/bin/python -c "pass" >/dev/null 2>&1 && [ -x ".venv/base/bin/python3" ]; then
     say "Folder was moved - relinking .venv"
+    # the venv's python links are ABSOLUTE links into the old .venv/base: venv finds them
+    # dangling, falls back to copying and copies through the dead link, on every retry
+    # (Mac install audit P0-2). Without them it makes fresh links.
+    rm -f .venv/bin/python .venv/bin/python3 .venv/bin/python3.*
     .venv/base/bin/python3 -m venv .venv
 fi
 
 [ -f models/alltracker/nets/alltracker.py ] || .venv/bin/python install.py --alltracker-only
 
+if [ "$OS" = "Darwin" ]; then
+    # Kinetrace.app in this folder: double-click it from now on, no Terminal (Mac install
+    # audit P2-3); made here, on this Mac, so it carries no download quarantine
+    .venv/bin/python -m kinetrace.macapp --if-stale || true
+    # the menu bar, the Dock and Cmd-Tab name an unbundled process by its file name ("Python"
+    # before, P2-6): start Python through a link called Kinetrace (relative: survives a move)
+    [ -L .venv/bin/Kinetrace ] || ln -s python .venv/bin/Kinetrace 2>/dev/null || true
+    [ -x .venv/bin/Kinetrace ] && exec .venv/bin/Kinetrace -m kinetrace "$@"
+fi
 exec .venv/bin/python -m kinetrace "$@"

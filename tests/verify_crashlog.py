@@ -240,8 +240,9 @@ r = child("segfault", d)
 crash, log = read(os.path.join(d, crashlog.CRASH_NAME)), read(os.path.join(d, crashlog.LOG_NAME))
 assert r.returncode != 0 and "most recent call first" in crash, (r.returncode, crash)
 assert "started" in log and "ended normally" not in log, "a session that died has no end line"
-r2 = child("handled", d)                          # same folder: a later session with a handled fault
-assert r2.returncode == 0 and "handled by ctypes" in r2.stdout, (r2.stdout, r2.stderr[-500:])
+if sys.platform == "win32":                       # a null read is an OSError only on Windows (SEH);
+    r2 = child("handled", d)                      # on macOS / Linux it is a real SIGSEGV (Mac report)
+    assert r2.returncode == 0 and "handled by ctypes" in r2.stdout, (r2.stdout, r2.stderr[-500:])
 rep = child("report", d).stdout                   # the next start opens Help -> Error Report
 rep = rep[rep.index("REPORT<<"):rep.index(">>REPORT")]
 secs = rep.split("\n==== Kinetrace child started")

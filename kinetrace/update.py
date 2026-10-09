@@ -51,7 +51,7 @@ MANIFEST = ".kinetrace-release.json"      # the files the installed release put 
 STAGING = "update"                         # download + unpack folder, inside the install
 # top-level folders (and files) an update never writes or removes: each user's own
 PROTECTED = (".venv", "models", "recovery", "logs", "skeletons", "test_videos", "tests/out",
-             ".git", STAGING, MANIFEST)
+             ".git", STAGING, MANIFEST, "settings.ini")
 # a changed one of these means the environment may need something new (I142)
 INSTALL_INPUTS = ("requirements.txt", "install.py")
 MARKER = Path(".venv") / "kinetrace-install.json"
@@ -125,9 +125,7 @@ def _open(url: str, timeout: float = TIMEOUT_S):
         return urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            raise UpdateError(
-                "GitHub has no published version of Kinetrace to offer (no release yet, or the "
-                f"repository is not public). The project page is {PAGE}.") from None
+            raise _NotFound(url) from None
         if e.code in (403, 429):
             raise UpdateError(
                 "GitHub is limiting how often it can be asked from this internet connection "
@@ -140,8 +138,28 @@ def _open(url: str, timeout: float = TIMEOUT_S):
             f"(a proxy or firewall can block it too). Details: {why}") from None
 
 
+class _NotFound(UpdateError):
+    """GitHub answered 404 for this URL (said in words by `latest_release`)."""
+
+
 def latest_release(timeout: float = TIMEOUT_S) -> Release:
-    with _open(api_base() + "/releases/latest", timeout) as r:
+    try:
+        r = _open(api_base() + "/releases/latest", timeout)
+    except _NotFound:
+        # GitHub answers 404 both for a repository without a release and for one it will not
+        # show this computer (private): ask for the repository itself to tell them apart
+        # (Mac install audit P0-3; "no release yet" was said for a private repository)
+        try:
+            _open(api_base(), timeout).close()
+        except _NotFound:
+            raise UpdateError(
+                "GitHub does not show the Kinetrace repository to this computer: it is private (or "
+                "was moved), so updates cannot be looked up or downloaded without an account that "
+                f"was given access. Ask the person who shared Kinetrace with you. Project page: {PAGE}") from None
+        raise UpdateError(
+            "GitHub has no published version of Kinetrace to offer yet (the repository has no "
+            f"release). The project page is {PAGE}.") from None
+    with r:
         try:
             data = json.loads(r.read().decode("utf-8"))
         except ValueError:
@@ -421,7 +439,13 @@ def relaunch(root: Path = ROOT) -> None:
         subprocess.Popen(f'cmd /c ""{root / "run.bat"}""', cwd=str(root),
                          creationflags=subprocess.CREATE_NEW_CONSOLE)
     elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(root / "Kinetrace.command")], cwd=str(root))
+        # Kinetrace.app when run.sh made it (X27): no Terminal window, and it opens Terminal by itself
+        # when the update asked for an install step; -n: a NEW instance, not the one that is quitting
+        app = root / "Kinetrace.app"
+        if app.is_dir():
+            subprocess.Popen(["open", "-n", str(app)], cwd=str(root))
+        else:
+            subprocess.Popen(["open", str(root / "Kinetrace.command")], cwd=str(root))
     else:
         log = root / "logs"
         log.mkdir(exist_ok=True)

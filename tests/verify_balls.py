@@ -278,6 +278,10 @@ for k in range(N):
         got[obj][k] = (f.x, f.y, f.r, f.quality, f.confidence)
 cap.release()
 dt = time.time() - t0
+from kinetrace.device import pick_device  # noqa: E402
+# the device in the line: a slow run on one machine (0.2 fps once on a Mac, 2.1 fps the next day) must
+# say where it ran (Mac report 2026-10-08)
+print(f"BallTracker on {pick_device()[1]}")
 print(f"BallTracker: {N} frames in {dt:.1f}s ({N / dt:.1f} fps), {trk.n_restarts} crops, "
       f"frames per ball {[len(got[o]) for o in (1, 2, 3)]}")
 for obj, col in ((1, 0), (2, 1), (3, 2)):

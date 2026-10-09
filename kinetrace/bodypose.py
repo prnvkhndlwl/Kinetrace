@@ -92,7 +92,7 @@ class BackendSpec:
 BACKENDS: dict[str, BackendSpec] = {
     "sam-3d-body-dinov3": BackendSpec(
         "sam-3d-body-dinov3", "SAM 3D Body - DINOv3-H+ (best, 840M)", "sam3d_body",
-        "facebook/sam-3d-body-dinov3", "mhr70", "3.4 GB", gated=True, needs_code=True,
+        "facebook/sam-3d-body-dinov3", "mhr70", "2.8 GB", gated=True, needs_code=True,
         note="Meta's single-image 3D human mesh model. Real 3D joints and joint angles "
              "from one camera."),
     "sam-3d-body-vith": BackendSpec(
@@ -243,7 +243,7 @@ def backend_status(key: str, device: str | None = None,
                              f"{ckpt.parent}).")
         if ckpt is not None and mhr is None:
             # By far the likeliest half-installed state: model.ckpt is 2 GB and
-            # obvious, the rig asset is small and sits in a subfolder.
+            # obvious, the rig asset (0.7 GB) sits in a subfolder.
             return ("needs-weights",
                     f"{spec.label}: model.ckpt is here but the Momentum Human Rig asset "
                     f"is not. The model cannot be built without it -- it is the part that "

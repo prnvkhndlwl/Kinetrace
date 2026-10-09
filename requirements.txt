@@ -5,7 +5,10 @@
 #     <venv python> install.py
 numpy
 opencv-python
-PySide6
+# Qt for the window: the app uses QtCore, QtGui, QtWidgets and QtTest only, all in
+# PySide6-Essentials; the full PySide6 adds ~900 MB (QtWebEngine alone 645 MB) that
+# nothing here imports (Mac install audit)
+PySide6-Essentials
 scipy
 # Segmentation layer (SAM 2.1 / SAM 3 via Hugging Face transformers, pure Python —
 # no CUDA extension build). Weights download into models/hf on first use.
@@ -33,10 +36,12 @@ tomli>=2; python_version < "3.11"
 # NOT the 25-package list in Meta's INSTALL.md, because Kinetrace supplies its
 # own detector and visualiser. None of them pull torch, so the pin above
 # survives — check with `pip install --dry-run` before adding to this block.
-omegaconf
-yacs
-roma
-braceexpand
-timm
-pytorch-lightning
-termcolor
+# Not on macOS: SAM 3D Body runs only on an NVIDIA GPU (device.supports_sam3d_body), and
+# omegaconf alone made pip build antlr4 from source there (Mac install audit).
+omegaconf; sys_platform != "darwin"
+yacs; sys_platform != "darwin"
+roma; sys_platform != "darwin"
+braceexpand; sys_platform != "darwin"
+timm; sys_platform != "darwin"
+pytorch-lightning; sys_platform != "darwin"
+termcolor; sys_platform != "darwin"

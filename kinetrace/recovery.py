@@ -48,6 +48,18 @@ def _writable(d: Path) -> bool:
         return False
 
 
+def settings_path() -> Path:
+    """The app's own settings file (an INI the app reads with QSettings): inside the Kinetrace
+    folder, never the registry or a macOS plist, so that deleting the folder removes it (Mac
+    install audit P1); the per-user data folder when the folder cannot be written; a temporary
+    one for the offscreen test suites (they must not change the user's settings)."""
+    if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        import tempfile
+        return Path(tempfile.gettempdir()) / "kinetrace-test-settings.ini"
+    root = _INSTALL.parent
+    return root / "settings.ini" if _writable(root) else _user_dir().parent / "settings.ini"
+
+
 def folder() -> tuple[Path, bool]:
     """(recovery folder, True if it is the per-user fallback)."""
     global _cached

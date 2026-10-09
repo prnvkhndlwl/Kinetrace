@@ -96,6 +96,15 @@ HF_REVISIONS = {
     "facebook/sam2.1-hiera-large": "665f8e2ad61cf5f53d65644ff27c8ee525124610",
     "usyd-community/vitpose-base-simple": "a93ac0c67e0b7e2c55287d21d4c460c8f3c54d45",
     "PekingU/rtdetr_v2_r18vd": "5650961749fa93567c0d46fc7f43ea4f9e914107",
+    # gated; pinned 2026-10-08 (Mac install audit P1): the copy every SAM 3 test ran on equals this
+    # commit -- each small file's git blob, and the weights' LFS pointer rebuilt from their sha256
+    # (6d06f0a5f84e435071fe6603e61d0b4cc7b40e0d39d487cfd4d67d8cc11cc14a)
+    "facebook/sam3": "3c879f39826c281e95690f02c7821c4de09afae7",
+}
+# what a snapshot of a repo fetches when not everything (the default): facebook/sam3 also holds
+# sam3.pt, Meta's own 3.45 GB checkpoint that transformers never reads -- 6.9 GB instead of 3.4
+HF_ALLOW = {
+    "facebook/sam3": ["*.json", "*.txt", "*.safetensors", "LICENSE*"],
 }
 
 
@@ -410,6 +419,8 @@ def hf_snapshot(repo: str, label: str, progress=None, cancel=lambda: False) -> N
     if tok:
         kw["token"] = tok
     try:
+        if repo in HF_ALLOW:
+            kw["allow_patterns"] = HF_ALLOW[repo]
         snapshot_download(repo, revision=hf_revision(repo), tqdm_class=_Bar, cache_dir=hf_cache_dir(), **kw)
     except DownloadCancelled:
         raise

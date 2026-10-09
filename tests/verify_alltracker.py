@@ -65,6 +65,32 @@ def report(name, tracks, gt, start, end):
     return float(np.nanmean(e)), float(np.nanmax(e)), int(ok.sum())
 
 
+# ---- 7. every picture size of the Mac install audit (P0-1: the Apple GPU failed at 640x480) ----
+# the worker's own working size (alltracker_max_dim) decides what AllTracker sees; run it with
+# KINETRACE_DEVICE=cpu as well to compare a GPU's numbers with the CPU's
+def check_sizes():
+    from kinetrace.device import pick_device  # noqa: E402
+    print("device:", pick_device()[1])
+    OUT = os.path.join(ROOT, "tests", "out")
+    os.makedirs(OUT, exist_ok=True)
+    for (sw, sh) in ((640, 480), (1280, 720), (1920, 1080), (2704, 1520)):
+        vid = os.path.join(OUT, f"at_size_{sw}x{sh}.mp4")
+        if not os.path.exists(vid + ".gt.npz"):
+            subprocess.run([sys.executable, os.path.join(ROOT, "make_test_video.py"), vid, "--frames", "40",
+                            "--size", f"{sw}x{sh}", "--dots", "4", "--seed", "3"], check=True)
+        gts = np.load(vid + ".gt.npz")["gt"]
+        trs, _, evs = run_segment(vid, 0, gts[0], 40, refine=True, roi=False)
+        assert evs["finished"] == (39, False) and np.isfinite(trs[:, :, 0]).all(), f"{sw}x{sh} coverage"
+        ms, _, _ = report(f"size {sw}x{sh} (40f, refined)", trs, gts, 0, 40)
+        assert ms < 2.5, f"accuracy at {sw}x{sh}"
+
+
+if "--sizes" in sys.argv:          # only section 7 (e.g. KINETRACE_DEVICE=cpu for the comparison)
+    check_sizes()
+    print("ALL ALLTRACKER SIZE CHECKS PASSED")
+    sys.exit(0)
+
+
 # ---- 1. full run from frame 0 ----
 tr, cf, ev = run_segment(VID, 0, GT[0], T, refine=False)
 assert ev["finished"] == (T - 1, False), ev["finished"]
@@ -113,4 +139,5 @@ print(f"refinement + ROI delta at 4K: {m4r - m4:+.2f} px (positive = they help)"
 trc, _, evc = run_segment(VID, 0, GT[0], 120, refine=False, backend="cotracker3")
 mc, _, _ = report("cotracker3 (backend switch sanity, 120f)", trc, GT, 0, 120)
 assert mc < 3.0
+check_sizes()
 print("ALL ALLTRACKER CHECKS PASSED")

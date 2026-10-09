@@ -43,6 +43,14 @@ while t < N_WORLD:
     t += n
 
 
+# The mover must be big enough for sync's motion measure (the 99th percentile of |change| over a
+# 160-px-wide thumbnail sees a frame only when > 1 % of the thumbnail changes): with the old 9-px dot it
+# saw NONE of the moving frames, and the test passed or failed on the codec's 1-level rounding noise,
+# which differs between OpenCV builds (Windows clear, macOS "none"; Mac report 2026-10-08). Radius 30 is
+# seen on ~72 % of the moving frames of the raw clip. Small movers are a known limit of the measure (AUDIT).
+DOT_R = 30
+
+
 def write_clip(path, start, n, rate=1, view_shift=(0, 0), tint=0):
     """Frames world[start + k / rate]: a camera that started `start` world frames
     in; rate 2 = two frames per world frame (duplicated), a different viewpoint
@@ -55,7 +63,7 @@ def write_clip(path, start, n, rate=1, view_shift=(0, 0), tint=0):
             break
         img = np.full((H, W, 3), 40 + tint, np.uint8)
         x, y = pos[i] + np.array(view_shift)
-        cv2.circle(img, (int(x), int(y)), 9, (230, 230, 230), -1)
+        cv2.circle(img, (int(x), int(y)), DOT_R, (230, 230, 230), -1)
         cv2.rectangle(img, (5, 5), (60, 30), (90, 90, 90), -1)
         vw.write(img)
     vw.release()
@@ -73,6 +81,12 @@ sa = sync.motion_signal(A, 0, 600)
 print(f"motion signal: 600 frames in {time.time() - t0:.2f}s, "
       f"{int((sa > np.nanmedian(sa) + 1e-6).sum())} moving frames")
 assert len(sa) == 600 and np.isfinite(sa).all()
+# the signal must come from the dot's motion, not from codec noise (a 1-2 level rounding difference):
+# most frames where the dot really moves show a large change
+_moves = np.r_[False, np.any(np.diff(pos[:600].astype(int), axis=0) != 0, axis=1)]
+_seen = float((sa[_moves] > 5).mean())
+print(f"  moving frames the measure sees (> 5 levels): {_seen:.0%}")
+assert _seen > 0.5, f"the motion measure sees only {_seen:.0%} of the moving frames: the test clip is codec noise"
 
 # ---- B: same rate, 37 frames later --------------------------------------------------
 # B's frame k shows world frame 37 + k; A's frame t shows world t. local_B = t + offset -> offset = -37
@@ -241,6 +255,21 @@ from kinetrace.app import MainWindow, READY
 from kinetrace.syncdialog import SyncDialog
 
 win = MainWindow()
+
+
+def _close_window_at_exit():
+    # a failed assertion must stay a failure: without this the window's threads were still running at
+    # exit and Qt aborted the process (Mac report 2026-10-08)
+    try:
+        win.close()
+        QApplication.processEvents()
+        win._dev_probe.wait(30000)
+    except Exception:      # noqa: BLE001 - best effort while exiting
+        pass
+
+
+import atexit  # noqa: E402
+atexit.register(_close_window_at_exit)
 win.show()
 
 

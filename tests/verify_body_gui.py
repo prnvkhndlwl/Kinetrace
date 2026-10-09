@@ -32,7 +32,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 import _synth_human as sh                                          # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox   # noqa: E402
-from PySide6.QtCore import Qt                                      # noqa: E402
+from PySide6.QtCore import QPoint, Qt                                      # noqa: E402
 from PySide6.QtTest import QTest                                   # noqa: E402
 
 fails: list[str] = []
@@ -124,7 +124,11 @@ dlg4 = bodyview.BodyRunDialog(win, win.n_frames, 3, (2, 9), True)
 chosen = [r for r in (dlg4.rb_all, dlg4.rb_sel, dlg4.rb_here) if r.isChecked()]
 check(chosen == [dlg4.rb_sel], "only the timeline selection is chosen by default (G7)",
       str([r.text() for r in chosen]))
-QTest.mouseClick(dlg4.rb_all, Qt.LeftButton)
+# click the radio's circle, in a shown (laid-out) dialog: a radio button reacts only on its circle and
+# label, and the widget's centre was empty space on one machine and outside it on another (Mac report)
+dlg4.show()
+QTest.qWaitForWindowExposed(dlg4)
+QTest.mouseClick(dlg4.rb_all, Qt.LeftButton, Qt.NoModifier, QPoint(8, dlg4.rb_all.height() // 2))
 check(dlg4.rb_all.isChecked() and not dlg4.rb_sel.isChecked(), "clicking 'The whole video' selects it (G7)")
 dlg4._accept()
 ro = dlg4.result_options
