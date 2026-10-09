@@ -1,0 +1,59 @@
+name: Bug report
+description: Something does not work, gives a wrong result, or Kinetrace closed by itself.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. Security problems go through a private report instead
+        (Security tab -> Report a vulnerability). Please do not attach footage you are not
+        allowed to share.
+  - type: input
+    id: version
+    attributes:
+      label: Kinetrace version
+      description: Help -> About Kinetrace
+      placeholder: "0.5.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS (Apple Silicon)
+        - Ubuntu / Linux
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did (the steps), what you expected, and what happened instead.
+      placeholder: |
+        1. Opened a 4K video, added 3 points, pressed Track
+        2. Expected: ...
+        3. Instead: ...
+    validations:
+      required: true
+  - type: textarea
+    id: video
+    attributes:
+      label: The video (if it matters)
+      description: Picture size, frame rate, camera and codec. Describe it; do not attach it unless you may share it.
+  - type: textarea
+    id: report
+    attributes:
+      label: Error report
+      description: |
+        Help -> Error Report... -> Copy, then paste here. It contains the recent errors and the
+        System Check. It can contain file and folder names: remove anything private first.
+      render: text
+  - type: checkboxes
+    id: latest
+    attributes:
+      label: Latest version
+      options:
+        - label: I checked Help -> Check for Updates... (only the latest version gets fixes)

@@ -1,0 +1,22 @@
+name: Question
+description: How do I ...? Which point model fits my animal? Is this result right?
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The [manual](https://github.com/prnvkhndlwl/Kinetrace/blob/main/docs/MANUAL.md) (F1 in the app)
+        and the [wiki](https://github.com/prnvkhndlwl/Kinetrace/wiki) may already answer it.
+        Questions from beginners are welcome.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What you are trying to do, and what you tried.
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup (if it matters)
+      description: Kinetrace version, operating system, the animal and the camera(s).

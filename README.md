@@ -113,6 +113,10 @@ More in [Accuracy](https://github.com/prnvkhndlwl/Kinetrace/wiki/Accuracy) and
 **Updating:** *Help → Check for Updates…* installs a newer version and keeps
 your projects and models.
 
+**Found a bug or have a question?** [Open an issue](https://github.com/prnvkhndlwl/Kinetrace/issues/new/choose)
+— [contributing](CONTRIBUTING.md) says what helps, and the [code of conduct](CODE_OF_CONDUCT.md)
+applies. Security problems: report them privately ([SECURITY.md](SECURITY.md)).
+
 ## Licence & privacy
 
 Free for any **non-commercial** use under the
