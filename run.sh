@@ -140,6 +140,18 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
         say "ERROR: Kinetrace needs a Mac with Apple Silicon (M1 or later); PyTorch no longer builds for Intel Macs."
         exit 1
     fi
+    if [ "$OS" = "Darwin" ]; then
+        # macOS guards these three folders: Kinetrace.app started from Finder may not read its own
+        # folder there (owner report 2026-10-09: it only flashed in the Dock)
+        case "$PWD/" in
+            "$HOME/Documents/"*|"$HOME/Desktop/"*|"$HOME/Downloads/"*)
+                say ""
+                say "NOTE: this folder is inside Documents, Desktop or Downloads. macOS asks for permission"
+                say "before an app may read those, and Kinetrace.app can fail to start there. Better: move"
+                say "the Kinetrace folder to your home folder (Finder: Go > Home) - it repairs itself."
+                say "" ;;
+        esac
+    fi
     if [ ! -x ".venv/bin/python" ]; then
         # KINETRACE_BOOTSTRAP_PYTHON=1 skips the search and always uses a private
         # Python (a broken system Python; the CI's bootstrap job)
@@ -192,6 +204,7 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
     }
     [ "$OS" = "Linux" ] && linux_libs
     [ "$1" = "--check" ] && exit 0
+    JUST_INSTALLED=1            # the closing words and the app's one-time pop-up (kinetrace/welcome.py)
 fi
 
 # The private interpreter (if any) lives inside the folder. A moved or renamed
@@ -228,6 +241,21 @@ if [ "$OS" = "Darwin" ]; then
     # the menu bar, the Dock and Cmd-Tab name an unbundled process by its file name ("Python"
     # before, P2-6): start Python through a link called Kinetrace (relative: survives a move)
     [ -L .venv/bin/Kinetrace ] || ln -s python .venv/bin/Kinetrace 2>/dev/null || true
+    if [ "${KINETRACE_VIA:-}" = "command" ] && [ -d Kinetrace.app ]; then
+        # started from Kinetrace.command (a Terminal window: the first install, a repair after a
+        # move, a double-click): hand over to Kinetrace.app, so closing this window does not close
+        # Kinetrace (owner report 2026-10-09)
+        if [ "${JUST_INSTALLED:-}" = "1" ]; then
+            .venv/bin/python -m kinetrace.welcome mac-app
+        else
+            say "Kinetrace is opening in its own window. You can close this Terminal window."
+        fi
+        open Kinetrace.app --args "$@" && exit 0
+        say "Could not open Kinetrace.app: starting Kinetrace here instead - keep this window open while you use it."
+    elif [ "${JUST_INSTALLED:-}" = "1" ]; then
+        .venv/bin/python -m kinetrace.welcome console
+    fi
     [ -x .venv/bin/Kinetrace ] && exec .venv/bin/Kinetrace -m kinetrace "$@"
 fi
+[ "${JUST_INSTALLED:-}" = "1" ] && [ "$OS" != "Darwin" ] && .venv/bin/python -m kinetrace.welcome console
 exec .venv/bin/python -m kinetrace "$@"

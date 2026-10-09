@@ -34,21 +34,26 @@ you what your computer can run. This page is in the folder you downloaded
 
 ## 1. Get the folder and put it somewhere sensible
 
-Download it from the project page with **Code → Download ZIP** and unzip it
-(or `git clone` the repository). The unzipped folder is called
-**`Kinetrace-main`**. Rename it to `Kinetrace` if you like: the name and the
-place do not matter, and the folder can be moved or renamed later (the
-launcher repairs itself).
+Download it from the project page with **Code → Download ZIP** and unzip it:
+the folder is called **`Kinetrace-main`** (rename it to `Kinetrace` if you
+like). Or clone it with git,
+`git clone https://github.com/prnvkhndlwl/Kinetrace.git`, which makes a folder
+called **`Kinetrace`**; *Help → Check for Updates…* then updates it with
+`git pull`. The name and the place do not matter, and the folder can be moved
+or renamed later (the launcher repairs itself).
 
 **Where to put it.** Somewhere in your own user folder that is **not synced to
 the cloud**, for example:
 
 - **Mac:** your home folder, i.e. `Kinetrace` next to Documents (in Finder:
-  **Go → Home**). Not the Desktop or Documents when *iCloud Drive → Desktop &
-  Documents Folders* is on: iCloud would upload the 1.5 GB environment and the
-  models, and *Optimize Mac Storage* can remove files from the disk, which
-  breaks the program. Not Downloads either (easy to clean out by mistake).
-  An external drive formatted for Windows (exFAT) may not work.
+  **Go → Home**). **Not** in Documents, Desktop or Downloads: macOS lets an app
+  read those only with your permission, and `Kinetrace.app` started from
+  Finder can then fail to open (the setup warns if the folder is there). With
+  *iCloud Drive → Desktop & Documents Folders* on, iCloud would also upload the
+  1.5 GB environment and the models, and *Optimize Mac Storage* can remove
+  files from the disk, which breaks the program. Already there? Move the whole
+  folder to your home folder: it repairs itself. An external drive formatted
+  for Windows (exFAT) may not work.
 - **Windows:** e.g. `C:\Kinetrace` or a folder in your user folder. Avoid
   folders that OneDrive or Dropbox sync.
 - **Ubuntu:** anywhere in your home folder, e.g. `~/Kinetrace`.
@@ -81,12 +86,12 @@ Notepad to read it.
      xattr -dr com.apple.quarantine ~/Kinetrace
      ```
 3. A **Terminal** window opens and the setup runs in it. **Keep it open** until
-   Kinetrace's window appears (a few minutes the first time). If the Mac asks
-   *"Terminal would like to access files in your Documents (or Desktop,
-   Downloads) folder"*, click **Allow**: the folder you put Kinetrace in is
-   one of those.
-4. At the end the setup makes **`Kinetrace.app`** in the folder (see step 3
-   below).
+   it says *Kinetrace … is installed and ready* (a few minutes the first time).
+4. At the end the setup makes **`Kinetrace.app`** in the folder and opens
+   Kinetrace with it. The Terminal window is then no longer needed: close it
+   (closing it does not close Kinetrace). Its last lines say what must stay in
+   the folder and what may be deleted, and Kinetrace's first window says it
+   once more.
 
 ### Ubuntu
 
@@ -118,15 +123,20 @@ the launcher again: what is already installed is kept and it goes on from there.
 
 ## 3. You are done: starting it again
 
-- **Windows:** double-click `run.bat`. It starts in seconds from now on.
+- **Windows:** double-click `run.bat`. It starts in seconds from now on. Keep
+  its black window open while you use Kinetrace (you can minimise it):
+  closing it closes Kinetrace.
 - **Mac:** double-click **`Kinetrace.app`** in the folder. It starts in seconds
   with no Terminal window (its messages go to `logs/launcher.log`). Drag it to
   the Dock to keep it there. It is made on your Mac during the first run, so
   macOS does not ask about it. It shows as **Kinetrace** in the Dock, the menu
-  bar and ⌘-Tab. (`Kinetrace.command` still works; it keeps a Terminal
-  window open while Kinetrace runs, and closing that window quits Kinetrace.)
-  If a later update needs to install something, `Kinetrace.app` opens the
-  Terminal window for that step by itself.
+  bar and ⌘-Tab. (`Kinetrace.command` still works: it opens a Terminal,
+  checks the setup and hands over to `Kinetrace.app`, after which the Terminal
+  can be closed.) If a later update or a moved folder needs a setup step,
+  `Kinetrace.app` opens the Terminal window for that step by itself, and the
+  same goes: close it once Kinetrace's window is open.
+  If `Kinetrace.app` says it cannot open or write in its folder, the folder is
+  in Documents, Desktop or Downloads: move it to your home folder.
 - **Ubuntu:** `./run.sh`.
 
 The first **Track** downloads the point model (66 MB) and the first outline the

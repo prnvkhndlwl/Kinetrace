@@ -12656,6 +12656,22 @@ class _WorldAxesDialog(QDialog):
         self.accept()
 
 
+def show_install_welcome(win) -> None:
+    """(G178) The pop-up the first time Kinetrace opens after an install (the launcher's flag,
+    `welcome.take_pending`): it is installed, how to begin and to start it next time, which window
+    may be closed and what to keep (owner 2026-10-09: users often do not read the terminal)."""
+    import platform
+    from kinetrace import welcome
+    box = QMessageBox(win)
+    box.setWindowTitle("Kinetrace is installed")
+    box.setIcon(QMessageBox.Information)
+    box.setTextFormat(Qt.RichText)
+    box.setText(welcome.popup_html(APP_VERSION, platform.system()))
+    box.setStandardButtons(QMessageBox.Ok)
+    box.exec()
+    box.deleteLater()
+
+
 def main():
     import os
     import sys
@@ -12702,6 +12718,9 @@ def main():
     win = MainWindow()
     crashlog.attach(win._error_context, win._on_error_logged)
     win.show()
+    from kinetrace import welcome
+    if welcome.take_pending():          # (G178) the first start after an install, once
+        QTimer.singleShot(600, lambda: show_install_welcome(win))
     if len(sys.argv) > 1 and Path(sys.argv[1]).exists():
         arg = sys.argv[1]
         if arg.endswith(PROJECT_SUFFIX) or projectfile.is_project(arg):

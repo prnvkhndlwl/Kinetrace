@@ -251,9 +251,37 @@ else:
         update.sys, update.subprocess.Popen = real_sys, real_popen
     assert started[0] == ["open", "-n", str(app_dir)], started
     assert started[1] == ["open", str(fake / "Kinetrace.command")], started
+    # (X37) never a silent flash in the Dock: a folder it cannot read or write is said in a dialog
+    told = tmp / "told.txt"
+    (stub / "osascript").write_text(f'#!/bin/bash\nfor a; do last="$a"; done\necho "$last" >> "{told.as_posix()}"\n',
+                                    encoding="utf-8", newline="\n")
+    (stub / "osascript").chmod(0o755)
+    app_dir = macapp.build(fake)
+    exe = app_dir / "Contents" / "MacOS" / "Kinetrace"
+    launcher = exe.read_text(encoding="utf-8")
+    assert "/usr/bin/osascript" in launcher and "head -c 1 run.sh" in launcher, "the launcher checks and tells"
+    exe.write_text(launcher.replace("/usr/bin/osascript", "osascript"), encoding="utf-8", newline="\n")
+    (fake / "logs" / "launcher.log").unlink()
+    shutil.rmtree(fake / "logs")
+    (fake / "logs").write_text("not a folder")                       # logs cannot be made: refused, said
+    r = launch()
+    said = told.read_text() if told.exists() else ""
+    assert r.returncode == 1 and "cannot write in its folder" in said and "Go > Home" in said, (r, said)
+    (fake / "logs").unlink()
+    told.unlink()
+    run_sh = (fake / "run.sh").read_text(encoding="utf-8")
+    (fake / "run.sh").unlink()                                        # its folder cannot be read
+    exe.write_text(exe.read_text(encoding="utf-8").replace(macapp.shlex.quote(str(fake)), "'" + str(fake) + "'"),
+                   encoding="utf-8", newline="\n")
+    r = launch()
+    said = told.read_text() if told.exists() else ""
+    assert r.returncode == 1 and "cannot open its folder" in said and "Documents, Desktop or Downloads" in said, \
+        (r, said)
+    (fake / "run.sh").write_text(run_sh, encoding="utf-8", newline="\n")
     shutil.rmtree(tmp, ignore_errors=True)
     print("[5] Kinetrace.app: plist, rebuild when stale, launcher runs run.sh from its folder (output in "
-          "logs/), Terminal for an install still to do: OK")
+          "logs/), Terminal for an install still to do; a folder it cannot read or write is said in a dialog "
+          "(X37): OK")
 # ---- [6] key names on a Mac: the reference and the manual say what to press (P2-7) ----
 from kinetrace.app import HOTKEYS_HTML  # noqa: E402
 from kinetrace.widgets import native_keys  # noqa: E402
