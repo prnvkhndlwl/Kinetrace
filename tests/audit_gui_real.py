@@ -1052,14 +1052,31 @@ try:
         win._goto(0)
         win.layers.clearSelection()
         pump(0.2)
+        # run scope = exactly the LAYERS selection (G150): with nothing selected T only says so
+        step("Ctrl+A selects everything", lambda: key(Qt.Key_A, Qt.ControlModifier, win.canvas.viewport()))
         POLICY["mode"] = "accept"
         step("track T", lambda: key(Qt.Key_T, target=win.canvas.viewport()), settle=0.2)
+        def why_no_run(label):                  # why T did nothing: the app's own reason, if it gave one
+            rec("track_not_started", label=label, state=str(win.state), frame=win.current,
+                loading=bool(getattr(win, "_loading", False)), blocked=getattr(win, "_track_blocked", None),
+                selected=[it.text(0) for it in win.layers.selectedItems()],
+                toasts=[n[0] for n in getattr(win.toast, "_notices", [])],
+                status=win.statusBar().currentMessage())
+            shot(win, "track_not_started_" + label.replace(" ", "_"))
+
         ok = wait(lambda: win.state == TRACKING, 240, "run starts")
+        if not ok:
+            why_no_run("run starts")
         if ok:
             wait(lambda: win.current > 5 or win.state != TRACKING, 240, "first frames")
             shot(win, "tracking_running")
             check_controls("tracking")
             walk_menubar()
+            if win.state != TRACKING:           # the short clip ended during the menu walk: run it again
+                rec("run_ended_during_menu_walk", frame=win.current)
+                step("Home", lambda: key(Qt.Key_Home, target=win.canvas.viewport()))
+                step("track T (again from frame 0)", lambda: key(Qt.Key_T, target=win.canvas.viewport()), settle=0.2)
+                wait(lambda: win.state == TRACKING, 240, "run restarts")
             for kname, k, mods in [("F", Qt.Key_F, Qt.NoModifier), ("B", Qt.Key_B, Qt.NoModifier),
                                    ("N", Qt.Key_N, Qt.NoModifier), ("S", Qt.Key_S, Qt.NoModifier),
                                    ("Delete", Qt.Key_Delete, Qt.NoModifier), ("E", Qt.Key_E, Qt.NoModifier)]:
@@ -1073,7 +1090,13 @@ try:
         new_state("paused")
         pump(0.5)
         shot(win, "paused")
-        walk_menubar()
+        paused_at = win.current
+        # Undo here restores the tracks from before the run, so T would have nothing to resume from
+        # (the tracked state tests Ctrl+Z on its own)
+        walk_menubar(skip=("Open Video", "Open Project", "Exit", "Quit", "Undo Last Run"))
+        if win.current != paused_at:            # a menu entry (Events > Notes > frame N) moved the playhead:
+            win._goto(paused_at)                # a re-run from frame 0 overwrote what follows, so resume where it paused
+            pump(0.3)
         step("track T again", lambda: key(Qt.Key_T, target=win.canvas.viewport()), settle=0.2)
         if wait(lambda: win.state == TRACKING, 120, "resume"):
             pump(1.0)
@@ -1082,6 +1105,8 @@ try:
             QTest.keyClick(win.canvas.viewport(), Qt.Key_X)
             wait(lambda: win.state != TRACKING, 10, "pause X")
             rec("pause_latency", key="X", seconds=round(time.time() - t0, 3))
+        else:
+            why_no_run("resume")
         step("track to the end", lambda: key(Qt.Key_T, target=win.canvas.viewport()), settle=0.2)
         wait(lambda: win.state == TRACKING, 120, "resume 2")
         wait(lambda: win.state != TRACKING, 600, "run ends")
@@ -1126,7 +1151,7 @@ try:
             rec("skip", why="run tests/verify_3d_gui.py once to build the 3-camera project")
         else:
             STUB["open"] = PROJ
-            POLICY["answers"] = ["No"]          # a resume / save-changes question
+            POLICY["answers"] = ["Discard"]     # "Save changes?" is Save / Cancel / Discard ("No" matched nothing -> Cancel)
             step("File > Open Project", lambda: click_menu_path(["File", "Open Project"]))
             STUB["open"] = ""
             wait(lambda: win.project is not None and win.project.n_views == 3 and win.state == READY, 60, "3-cam project")
