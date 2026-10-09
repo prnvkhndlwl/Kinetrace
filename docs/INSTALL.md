@@ -151,11 +151,8 @@ Windows and Ubuntu).
 | ViTPose + RT-DETR | human joints in 2D | 425 + 81 MB | ✅ | ✅ | ✅ slower |
 | SAM 3D Body (needs Meta's permission) | human joints in 3D | 2.8 GB (2.1 + 0.7) | ✅ | ❌ **NVIDIA only**: Meta's code cannot run on a Mac | ❌ |
 
-**Ball markers on a Mac** (wand calibration, the SAM circle per ball) are slow on
-the Apple GPU: 0.2 frames/s on an M4 Max, slower than its CPU (0.6 frames/s),
-with the same accuracy. Until that is fixed, start Kinetrace with the CPU for a
-ball-marker run: in Terminal, in the Kinetrace folder,
-`KINETRACE_DEVICE=cpu ./run.sh`.
+**Ball markers on a Mac** (wand calibration, the SAM circle per ball) run on the
+Apple GPU: 2.1 frames/s at 1280×720 on an M4 Max, 3.3× faster than its CPU.
 
 ## Optional models that need Meta's permission (SAM 3, SAM 3D Body)
 

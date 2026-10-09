@@ -60,8 +60,8 @@ downloads by itself.
 
 **On a Mac** (measured on an M4 Max): AllTracker (the default point model; it
 failed in 0.4.1), CoTracker3, SAM 2.1 and ViTPose run on the Mac's GPU —
-AllTracker with the same coordinates as on the CPU, 0.74 px on 4K. Ball markers
-are faster on the CPU there for now. SAM 3D Body cannot run. Where the manual
+AllTracker with the same coordinates as on the CPU, 0.74 px on 4K; ball markers
+3.3× faster than on its CPU. SAM 3D Body cannot run. Where the manual
 says **Ctrl**, press **⌘**.
 [All models, every system](docs/INSTALL.md#which-models-run-on-which-computer).
 

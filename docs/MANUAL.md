@@ -1431,7 +1431,11 @@ the numbers just get measured from the new starting point.
    swung into view, a person walking past, a flash all leave the same bump in
    every camera that saw them. It needs a stretch in which something moved
    that all cameras could see; it is the choice when a video has no sound
-   track, and a good cross-check of the sound result. Reading a camera's
+   track, and a good cross-check of the sound result. The change has to be
+   **large in the picture**: a person or an animal crossing, a flash, the wand
+   close to the camera. A small object far away — a wand tip across a big room —
+   changes too little of each frame to be seen, and the verdict says NONE; use
+   sound for such a stretch. Reading a camera's
    stretch takes seconds from a local disk and a minute or two over a network
    share. It looks in exactly the window you ask for: *Around frame of …* and
    the length you set, no more.
