@@ -15,7 +15,10 @@ internet: a local HTTP server stands in for Hugging Face / GitHub).
       code on unpickling is refused).
   [5] the app: the Track "Preparing the models" dialog names the model the run
       really uses (AllTracker by default), shows MB and time left, and its
-      Cancel stops the run with a sentence, not a traceback.
+      Cancel stops the run with a sentence, not a traceback. Which models are
+      present is set by the test, never read off models/ (CI has none).
+  [6] run_suites' one-line summary names the failing check, not a warning
+      that happened to be printed last on stderr.
 
 Run: .venv\\Scripts\\python.exe tests\\verify_downloads.py
 """
@@ -257,7 +260,7 @@ class _Boom:
 
 evil_w = OUT / "evil.pth"
 with open(evil_w, "wb") as fh:
-    pickle.dump({"model": _Boom()}, fh)
+    pickle.dump({"model": _Boom()}, fh, protocol=2)    # torch's own protocol: no warning on stderr
 try:
     dl.load_weights(evil_w)
     check(False, "a checkpoint that runs code must be refused")
@@ -282,16 +285,27 @@ class _W:                     # the attributes _models_needed reads off a worker
         self.download_failed = None
 
 
-real_is_file = Path.is_file
+real_is_file, real_code_present = Path.is_file, dl.code_present
+# which models are "here" is set by the test, never read off models/: a clean checkout (CI) has
+# none, and "CoTracker3 present" failed there on every OS
+here = set()
+Path.is_file = lambda p: (any(p == dl.FILES[k].dest for k in here)
+                          or (real_is_file(p) and not any(p == f.dest for f in dl.FILES.values())))
+dl.code_present = lambda key: key in here
 try:
-    Path.is_file = lambda p: False if p == dl.FILES["alltracker"].dest else real_is_file(p)
     parts, down = win._models_needed(_W("alltracker"))
     check(down and parts and "AllTracker" in parts[0] and "66 MB" in parts[0],
           f"AllTracker (the default) missing -> named with its size: '{parts[0] if parts else ''}'")
     parts, down = win._models_needed(_W("cotracker3"))
-    check(not down, "CoTracker3 present -> nothing to download")
+    check(down and parts and "CoTracker3" in parts[0],
+          f"CoTracker3 missing -> named: '{parts[0] if parts else ''}'")
+    here.add("cotracker3")
+    parts, down = win._models_needed(_W("cotracker3"))
+    check(not down and not parts, "CoTracker3 present -> nothing to download")
+    parts, down = win._models_needed(_W("alltracker"))
+    check(down, "... while AllTracker, not present, is still downloaded")
 finally:
-    Path.is_file = real_is_file
+    Path.is_file, dl.code_present = real_is_file, real_code_present
 
 
 class _Ball:
@@ -372,6 +386,19 @@ win.worker = None
 win.state = appmod.IDLE
 win._dev_probe.wait(20000)
 win.close()
+
+# ---------------------------------------------------------------- [6] the CI summary
+print("[6] the suite runner's one-line summary names the failing check")
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from run_suites import summary_line  # noqa: E402
+
+warn = ("...\\torch\\_weights_only_unpickler.py:590: UserWarning: Detected pickle protocol 4 in the checkpoint\n"
+        "  return Unpickler(file, encoding=encoding).load()\n")
+got = summary_line("[5] ...\n  FAIL  CoTracker3 present\n\nverify_downloads FAILED (1):\n  - CoTracker3 present\n", warn)
+check(got == "  - CoTracker3 present", f"a warning on stderr is not the verdict: '{got}' (was torch's warning)")
+got = summary_line("[1] ...\n", warn + "Traceback (most recent call last):\n  File \"x.py\", line 1\nValueError: boom\n")
+check(got == "ValueError: boom", f"a crash: the exception's line: '{got}'")
+check(summary_line("verify_x PASSED\n", "") == "verify_x PASSED", "a pass: the suite's own last line")
 
 print()
 if FAILS:

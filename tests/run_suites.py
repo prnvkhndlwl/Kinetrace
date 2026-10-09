@@ -1,5 +1,5 @@
 """Run a list of verification suites one after another and record, for each,
-its last printed line and its exit code, in tests/out/suite_runs.txt. ASCII
+its summary line (summary_line) and its exit code, in tests/out/suite_runs.txt. ASCII
 only (Windows consoles are cp1252). Usage:
 
     .venv\\Scripts\\python.exe tests\\run_suites.py verify_core verify_3d ...
@@ -86,6 +86,16 @@ def clean():
     shutil.rmtree(RECOVERY, ignore_errors=True)       # unsaved-work copies the last suite left
 
 
+def summary_line(stdout, stderr):
+    """The line that says why: a traceback's last line, else the suite's own last
+    printed line. A warning on stderr is not the verdict (torch's pickle-protocol
+    warning stood in for verify_downloads' FAIL line on every CI run)."""
+    out = [ln for ln in stdout.splitlines() if ln.strip()]
+    err = [ln for ln in stderr.splitlines() if ln.strip()]
+    lines = err if err and (not out or any(ln.startswith("Traceback") for ln in err)) else out
+    return lines[-1][:160] if lines else ""
+
+
 def main(argv):
     names = []
     for a in argv:
@@ -109,8 +119,7 @@ def main(argv):
         try:
             r = subprocess.run([PY, path], cwd=ROOT, env=env, capture_output=True, text=True,
                                encoding="utf-8", errors="replace", timeout=3600)
-            lines = [ln for ln in (r.stdout + "\n" + r.stderr).strip().splitlines() if ln.strip()]
-            last = lines[-1][:160] if lines else ""
+            last = summary_line(r.stdout, r.stderr)
             code = r.returncode
         except subprocess.TimeoutExpired:
             last, code = "TIMEOUT after 3600 s", -1
