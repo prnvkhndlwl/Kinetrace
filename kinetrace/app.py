@@ -555,6 +555,8 @@ class _ViewRuntime:
         self.seek: SeekService | None = None
         self.want_frame: int | None = None   # frame last requested (stale-reply guard)
         self.bad_frames: set = set()         # frames already reported as undecodable (I40)
+        self.seek_plan = None                # (I266) how this computer reaches the file's frames, once checked
+        self.frame_check = None              # (I266) the last fingerprint.CheckResult on this computer
 
     def stop(self) -> None:
         if self.seek is not None:
@@ -800,6 +802,10 @@ class MainWindow(QMainWindow):
         self._busy_stack: list[dict] = []
         self._busy_next = 0
         self._first_frame_token: int | None = None
+        # (I266) the cameras' videos checked in the background, one at a time: [(view runtime, by the user)]
+        self._fc_queue: list = []
+        self._fc_job = None
+        self._fc_dialogs: list = []         # the open evidence windows: [(view runtime, FrameCheckDialog)]
 
         self._build_ui()
         self._apply_state()
@@ -1484,6 +1490,12 @@ class MainWindow(QMainWindow):
         self.act_recover = QAction("&Recover Unsaved Work…", self, triggered=self._recover_dialog)
         self.act_recover.setToolTip("Work that was never saved (the program closed, or you chose not to "
                                     "save) is kept in Kinetrace's recovery folder: open it from here")
+        self.act_check_frames = QAction("Check Video &Frames on This Computer…", self,
+                                        triggered=lambda: self._check_frames())
+        self.act_check_frames.setToolTip(
+            "Does this computer show the working camera's video with the same picture at each frame number as "
+            "the computer that made the project? Shows the saved pictures beside this computer's frames. Runs "
+            "by itself when a project is opened on another computer.")
         self.act_import_tracks = QAction("&Import Tracks…", self, triggered=lambda: self._import_tracks_dialog())
         self.act_import_tracks.setToolTip("Tracks made in DeepLabCut, SLEAP, DLTdv / Argus or another Kinetrace "
                                           "project, into the camera on screen (points matched by name)")
@@ -1516,8 +1528,8 @@ class MainWindow(QMainWindow):
         self.act_quit = QAction("&Quit", self, shortcut=QKeySequence("Ctrl+Q"), triggered=self.close)
         self.act_quit.setMenuRole(QAction.QuitRole)
         self.act_quit.setToolTip("Close Kinetrace (asks first when there are unsaved changes)")
-        for a in (self.act_export, self.act_exports, self.act_overlay, None, self.act_export_one, None,
-                  self.act_quit):
+        for a in (self.act_export, self.act_exports, self.act_overlay, None, self.act_export_one,
+                  self.act_check_frames, None, self.act_quit):
             m_file.addSeparator() if a is None else m_file.addAction(a)
 
     def _build_edit_menu(self) -> None:
@@ -2070,6 +2082,7 @@ class MainWindow(QMainWindow):
         self.act_save.setEnabled(has_video)
         self.act_save_as.setEnabled(has_video and not tracking)
         self.act_export_one.setEnabled(has_video and not tracking)
+        self.act_check_frames.setEnabled(has_video)           # (I266) runs in the background, also during a run
         self.act_exports.setEnabled(has_video and not tracking)
         self.act_open.setEnabled(not tracking)
         self.act_open_folder.setEnabled(not tracking)
@@ -3199,6 +3212,7 @@ class MainWindow(QMainWindow):
         if getattr(info, "fps_note", ""):
             # every time, speed and camera-rate number depends on it (I37)
             self.toast.show_message(info.fps_note, "warn", 12000)
+        self._frames_check_soon()      # (I266) every camera: its seeks, then its frame fingerprint
         if info.vfr_suspected:
             QMessageBox.warning(
                 self, "Variable frame rate detected",
@@ -3271,6 +3285,199 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Frame cache cleared ({n_frames} frames, {n_bytes / 1024**2:.0f} MB) "
             f"— frame {self.current} re-decoded from the file", 5000)
+
+    # ------------------------------------------- the videos' frames on this computer (I266)
+
+    def _frames_check_soon(self, rts=None, by_user: bool = False) -> None:
+        """Check the cameras' videos (`rts`, else all) in the background, one at a time, the working
+        camera first: their seeks (a file whose seeks are inexact here is read exactly from then on),
+        then the frame fingerprint -- made for a camera that has none, compared with this computer's
+        frames when the decoder or the file differs from where it was made (`framecheck`). Nothing
+        here changes data; a shift is SHOWN (`_show_frame_check`)."""
+        if self.project is None:
+            return
+        todo = list(rts) if rts is not None else list(self._views)
+        act = self._views[self.project.active] if 0 <= self.project.active < len(self._views) else None
+        todo.sort(key=lambda r: r is not act)
+        for rt in todo:
+            if by_user:
+                self._fc_queue.insert(0, (rt, True))
+            elif not any(r is rt for r, _ in self._fc_queue):
+                self._fc_queue.append((rt, False))
+        self._fc_next()
+
+    def _fc_next(self) -> None:
+        if self._fc_job is not None or self.project is None:
+            return
+        from kinetrace.framecheck import FrameCheckWorker
+        while self._fc_queue:
+            rt, by_user = self._fc_queue.pop(0)
+            i = self._view_index(rt)
+            if i < 0:
+                continue
+            s = self.project.sessions[i]
+            name = self.project.name(i)
+            if s.fingerprint is None and s.fingerprint_problem and not by_user:
+                self.toast.show_message(
+                    f"{name}: the saved frame fingerprint could not be read ({s.fingerprint_problem}), so this "
+                    "computer's frames are not checked against it. File → Check Video Frames makes a new one -- "
+                    "do that on the computer that made the project.", "warn", 12000)
+                s.fingerprint_problem = ""
+                make = False
+            else:
+                make = True
+            data = bool(s.tracked.any()) or any(m.n_masked() > 0 for m in s.seg_masks)
+            th = FrameCheckWorker(rt.info.path, rt.info.n_frames, s.fingerprint, name, make_missing=make,
+                                  force=by_user, data_before=data)
+            th.seeks_checked.connect(lambda plan, r=rt: self._fc_seeks(r, plan))
+            th.made.connect(lambda fp, r=rt, u=by_user: self._fc_made(r, fp, u))
+            th.checked.connect(lambda res, r=rt, u=by_user: self._fc_checked(r, res, u))
+            th.failed.connect(lambda msg: self.toast.show_message(msg, "warn", 10000))
+            th.finished.connect(self._fc_finished)
+            self._fc_job = th
+            th.start(QThread.Priority.LowPriority)
+            return
+
+    def _fc_finished(self) -> None:
+        th, self._fc_job = self._fc_job, None
+        if th is not None:
+            th.wait(2000)
+            _retire(th)
+        QTimer.singleShot(0, self._fc_next)
+
+    def _fc_stop(self, rt=None) -> None:
+        """Stop the frame checks (of view runtime `rt` only, when given): a camera that goes, a project
+        that is left, the window closing."""
+        self._fc_queue = [(r, u) for r, u in self._fc_queue if rt is not None and r is not rt]
+        self._fc_close_dialogs(rt)
+        th = self._fc_job
+        if th is not None and (rt is None or getattr(th, "path", None) == rt.info.path):
+            th.cancel()
+            th.wait(10000)
+            _retire(th)
+            self._fc_job = None
+
+    def _fc_seeks(self, rt, plan) -> None:
+        """A file's seeks were checked: one whose seeks land elsewhere is read exactly from now on, its
+        frames decoded so far are dropped from the cache and the picture is decoded again."""
+        rt.seek_plan = plan
+        i = self._view_index(rt)
+        if i < 0 or plan.exact:
+            return
+        rt.cache.clear()
+        rt.want_frame = None
+        if i == self.project.active or rt.seek is not None:
+            self._start_seek_service(i)      # a fresh decoder: no frame reached the old way arrives late
+        if i == self.project.active:
+            self._goto(self.current, force=True)
+        else:
+            self._refresh_companions()
+        self.toast.show_message(f"{self.project.name(i)}: {plan.note}", "warn", 20000)
+
+    def _fc_made(self, rt, fp, by_user: bool) -> None:
+        i = self._view_index(rt)
+        if i < 0:
+            return
+        s = self.project.sessions[i]
+        if s.fingerprint is None and os.path.normcase(str(s.video_path)) == os.path.normcase(str(rt.info.path)):
+            s.fingerprint = fp            # not a change the user made: saved with the project's next save
+            moving = sum(m.sep >= 0.004 for m in fp.marks)
+            self.statusBar().showMessage(
+                f"{self.project.name(i)}: frame fingerprint made ({len(fp.marks)} moments, {moving} with clear "
+                "motion) -- saved with the project, so another computer can check its frames", 8000)
+            if by_user:
+                self._frames_check_soon([rt], by_user=True)
+
+    def _fc_checked(self, rt, res, by_user: bool) -> None:
+        rt.frame_check = res
+        i = self._view_index(rt)
+        if i < 0:
+            return
+        if by_user or res.needs_eyes:
+            QTimer.singleShot(0, lambda: self._show_frame_check(rt))
+        else:
+            self.toast.show_message(f"{res.quality.upper()}: {res.sentence}",
+                                    "info" if res.quality == "good" else "warn", 9000)
+
+    def _check_frames(self) -> None:
+        """File → Check Video Frames on This Computer…: the working camera, now, with the evidence."""
+        if self.project is None or self.state == IDLE or not self._views:
+            QMessageBox.information(self, "Open a video first", "Open a video or a project first.")
+            return
+        self.statusBar().showMessage(f"Checking the frames of {self.project.name(self.project.active)}…", 5000)
+        self._frames_check_soon([self._views[self.project.active]], by_user=True)
+
+    def _show_frame_check(self, rt) -> None:
+        from kinetrace import fingerprint as fpm
+        from kinetrace.framecheck import FrameCheckDialog
+        i = self._view_index(rt)
+        res = rt.frame_check
+        if i < 0 or res is None or self.project is None:
+            return
+        s = self.project.sessions[i]
+        fp = s.fingerprint
+        if fp is None:
+            return
+        reference = not fpm.needs_check(fp, rt.info.path)
+
+        def go_to(frame: int, r=rt) -> None:
+            k = self._view_index(r)
+            if k < 0 or self.state != READY:
+                return
+            if k != self.project.active:
+                self._set_active_view(k)
+            self._goto(int(frame))
+        add = None
+        if reference and i == self.project.active and self.state == READY:
+            add = lambda r=rt: self._fc_add_frame(r, self.current)      # noqa: E731 -- the frame on screen at the click
+        # NOT modal: the hand check is stepping through the main window while the evidence stays open; one
+        # window per camera (a newer result replaces it), closed with the project
+        self._fc_close_dialogs(rt)
+        dlg = FrameCheckDialog(self, res, fp, self.project.name(i), go_to=go_to, add_frame=add,
+                               reference=reference, current_frame=self.current if add else None)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        dlg.setModal(False)
+        self._fc_dialogs.append((rt, dlg))
+        dlg.finished.connect(lambda _r, d=dlg: self._fc_dialogs.__setitem__(
+            slice(None), [x for x in self._fc_dialogs if x[1] is not d]))
+        dlg.show()
+        dlg.raise_()
+
+    def _fc_close_dialogs(self, rt=None) -> None:
+        """Close the evidence windows (of view runtime `rt` only, when given)."""
+        for r, d in list(self._fc_dialogs):
+            if rt is None or r is rt:
+                try:
+                    d.close()
+                except RuntimeError:          # already deleted
+                    pass
+        self._fc_dialogs = [x for x in self._fc_dialogs if rt is not None and x[0] is not rt]
+
+    def _fc_add_frame(self, rt, frame: int) -> None:
+        """The fallback for a video that barely moves: the frame on screen joins the fingerprint (its
+        crop decoded off the GUI thread). Only where the fingerprint was made (the dialog offers it
+        only there)."""
+        from kinetrace import fingerprint as fpm
+        i = self._view_index(rt)
+        if i < 0:
+            return
+        s = self.project.sessions[i]
+        if s.fingerprint is None:
+            return
+        try:
+            new = self._in_background(f"Adding frame {frame}", lambda: fpm.add_mark(s.fingerprint, rt.info.path, frame),
+                                      detail="Reading the frame and its neighbours…")
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Frame not added", _plain_error(e, f"frame {frame} could not be added"))
+            return
+        s.fingerprint = new
+        m = next(k for k in new.marks if k.frame == int(frame))
+        verdict = "good" if m.sep >= 0.02 else "ok" if m.sep >= 0.004 else "poor"
+        self.toast.show_message(
+            f"Frame {frame} is in {self.project.name(i)}'s fingerprint ({verdict.upper()}: it differs from its "
+            f"neighbours by {m.sep:.3f}, the picture moves {m.move_px:.2f} px there"
+            + ("; it barely moves -- pick a frame where something moves faster" if verdict == "poor" else "")
+            + "). Saved with the project.", "info" if verdict != "poor" else "warn", 12000)
 
     # ------------------------------------------------------- multi-camera views
 
@@ -3383,6 +3590,7 @@ class MainWindow(QMainWindow):
         if getattr(info, "fps_note", ""):
             self.toast.show_message(f"{self.project.name(i)}: {info.fps_note}", "warn", 12000)
         self._gopro_soon()                       # (G145)
+        self._frames_check_soon([self._views[-1]])   # (I266)
         cal = self.project.calibration
         if cal is not None and 0 < len(cal) < self.project.n_views:
             # the 3D menu greys out (it needs every camera calibrated): say why,
@@ -3421,6 +3629,7 @@ class MainWindow(QMainWindow):
         if i == p.active:                 # the next camera takes over at the SAME instant (I111)
             nxt = i + 1 if i + 1 < p.n_views else i - 1
             target = p.map_frame(i, nxt, self.current)
+        self._fc_stop(self._views[i])      # (I266)
         self._views[i].stop()
         del self._views[i]
         p.remove_view(i)
@@ -3884,6 +4093,7 @@ class MainWindow(QMainWindow):
         self.project.dirty = True
 
     def _teardown_video(self):
+        self._fc_stop()                     # (I266) the frame checks of the video that is going
         for th in (self._body_worker, self._body_video):
             if th is not None and th.isRunning():
                 th.request_cancel()
@@ -12173,6 +12383,7 @@ class MainWindow(QMainWindow):
                       getattr(self, "_lock_timer", None)):
             if timer is not None:
                 timer.stop()
+        self._fc_stop()                      # (I266) a frame check stops between frames
         for rt in list(getattr(self, "_views", [])):
             try:
                 rt.stop()

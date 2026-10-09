@@ -538,6 +538,9 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
     if s.body is not None:
         _put_arrays(files, f"{d}/body", s.body.to_arrays("body_", mesh=False), "body_")
         _put_mesh(files, f"{d}/body", s.body)
+    fp = getattr(s, "fingerprint", None)
+    if fp is not None:              # (I266) meta.json + crops.npy + thumbs.npy
+        _put_arrays(files, f"{d}/fingerprint", fp.to_arrays(""), "")
 
 
 _MESH_BLOCKS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()     # BodyTrack -> (key, {name: entry})
@@ -764,7 +767,7 @@ _TOP_FILES = {META, "project.json", "state.json", "calibration.json", "lenses.js
 _CAM_FILES = {"view.json", "points.csv", "tracks.csv", "events.csv", "notes.csv", "ball_prompts.json", "spots.json",
               "skeleton.json", "segment.json", "tracks.npy", "confidence.npy", "visibility.npy", "manual.npy",
               "tracked.npy", "occluded.npy", "radius.npy"}
-_CAM_DIRS = ("tracks", "silhouette", "body", "segments")
+_CAM_DIRS = ("tracks", "silhouette", "body", "segments", "fingerprint")
 # files an older layout left in a camera folder (format 1's tracks.csv, the recovery form's dense arrays): a save
 # removes them if they are there, besides what the previous save wrote (I164)
 _LEGACY_CAM_FILES = ("skeleton.json", "tracks.csv", "tracks.npy", "confidence.npy", "visibility.npy", "manual.npy", "tracked.npy",
@@ -1045,7 +1048,7 @@ def _layout_rel(rel) -> bool:
 
 # the kinds of file a project's sub-folders hold: what a save may treat as its own when it has no record
 _OWN_SUFFIX = {"tracks": (".csv",), "silhouette": (".csv", ".npy", ".json"), "body": (".npy", ".json"),
-               "segments": (".csv", ".npy", ".json"),
+               "segments": (".csv", ".npy", ".json"), "fingerprint": (".npy", ".json"),
                "reconstruction": (".csv", ".npy", ".json")}
 
 
@@ -1448,7 +1451,8 @@ def changes_since_save(frozen: Frozen, path: str | Path) -> tuple[list[str], lis
     index = _read_index(root)
     if not index:
         return None
-    skip = lambda r: r in _NOT_CHANGES or r.endswith("/view.json")      # noqa: E731
+    # (I266) a frame fingerprint made since the save is not a change the user made either
+    skip = lambda r: r in _NOT_CHANGES or r.endswith("/view.json") or "/fingerprint/" in r      # noqa: E731
     items, removed, _news = _plan(frozen, root, index)
     changed = [rel for rel, it in items.items() if not it.same and not skip(rel)]
     return changed, [r for r in removed if not skip(r)]
@@ -1958,7 +1962,24 @@ def _read_camera(src: _Source, d: str, s) -> None:
     _read_events_notes(src, d, s)
     _read_markers(src, d, s, index)
     _read_segment_body(src, d, s)
+    _read_fingerprint(src, d, s)
     _read_view(src, d, s, index)
+
+
+def _read_fingerprint(src: _Source, d: str, s) -> None:
+    """(I266) The camera's frame fingerprint, if it has one. It is not data: one that cannot be
+    read never stops the project from opening -- the reason is kept for the app to say."""
+    from kinetrace.fingerprint import VideoFingerprint
+    try:
+        arrays = src.arrays(f"{d}/fingerprint")
+        if arrays:
+            fp = VideoFingerprint.from_arrays(arrays)
+            if fp.width != s.width or fp.height != s.height:
+                raise ValueError(f"it describes a {fp.width} x {fp.height} video, the camera is "
+                                 f"{s.width} x {s.height}")
+            s.fingerprint = fp
+    except (ProjectFileError, ValueError, KeyError, TypeError, IndexError) as e:
+        s.fingerprint, s.fingerprint_problem = None, f"{d}/fingerprint: {e}"
 
 
 def _read_points(src: _Source, d: str) -> tuple[list, list]:
@@ -2265,7 +2286,11 @@ What is where
                           the animal's silhouette per frame: frame,area,score,centroid_x,centroid_y,x0,y0,x1,y1
   cameras/<camera>/silhouette/*.npy, body/*.npy
                           outlines, midline and body poses (NumPy arrays)
-  exports/                files for DeepLabCut, DLTdv or MATLAB, refreshed at every save
+  cameras/<camera>/fingerprint/meta.json, crops.npy, thumbs.npy
+                          the video's busiest moments as decoded where the project was made:
+                          another computer checks that it shows the same pictures at the same
+                          frame numbers (File > Check Video Frames)
+  exports/               files for DeepLabCut, DLTdv or MATLAB, refreshed at every save
                           when chosen in File > Keep Exports Up to Date
   videos/                 optional: put the videos here to keep everything in one folder
   .cache/                 copies of the tables for fast opening (safe to delete)

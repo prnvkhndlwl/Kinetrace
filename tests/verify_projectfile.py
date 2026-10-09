@@ -106,6 +106,14 @@ def camera(name, T, fps, w, h, seed):
               timeline=[10, 90])
     s.ui_state = ui
     s.current_frame = T // 2
+    if seed == 1:                        # (I266) one camera with a frame fingerprint, the others without
+        from kinetrace.fingerprint import Mark, VideoFingerprint
+        s.fingerprint = VideoFingerprint(
+            {"os": "Windows", "opencv": "5.0.0", "avcodec": "61.19.100", "avformat": "61.7.100", "swscale": "8.3.100",
+             "backend": "auto"}, {"name": name + ".mp4", "size": 12345, "mtime_ns": 1700000000123456789}, T, w, h,
+            "2026-10-08 12:00:00", [Mark(5, (10, 20, 64), 37.5, 0.0312, 1.25), Mark(77, (0, 0, 64), 12.0, 0.004, 0.5, "user")],
+            r.integers(0, 256, (2, 64, 64, 3)).astype(np.uint8), r.integers(0, 256, (2, 120, 160)).astype(np.uint8),
+            "exact", True)
     return s
 
 
@@ -187,6 +195,8 @@ def compare(p, q):
                     not all(np.array_equal(x, y) for x, y in zip(a.masks.contours[f], b.masks.contours[f]))
                     for f in a.masks.contours) or sorted(a.masks.midline) != sorted(b.masks.midline):
                 check(False, f"{n}: silhouette outlines / midline differ")
+        if (a.fingerprint is None) != (b.fingerprint is None) or (a.fingerprint and not a.fingerprint.same(b.fingerprint)):
+            check(False, f"{n}: frame fingerprint differs")
         if a.body is not None:
             for k in ("joints3d", "joints2d", "conf", "score", "bbox", "focal", "cam_t", "faces"):
                 same_array(getattr(a.body, k), getattr(b.body, k), f"{n}.body.{k}")
@@ -254,12 +264,24 @@ rpath = os.path.join(OUT, "kitchen.recovery.kinetrace")
 pf.write(pf.freeze(p, STATE, pid, binary_tracks=True), rpath, compresslevel=0, fsync=False, backup=False)
 q2, _, _ = pf.read(rpath)
 check(compare(p, q2), "the binary encoding (recovery) round-trips too")
+fpdir = os.path.join(path, "cameras", "cam1", "fingerprint")
+check(sorted(os.listdir(fpdir)) == ["crops.npy", "meta.json", "thumbs.npy"] and q.sessions[0].fingerprint is not None
+      and q.sessions[1].fingerprint is None, "(I266) a camera's frame fingerprint is saved in its folder; a camera "
+      "without one opens without one")
+with open(os.path.join(fpdir, "meta.json"), "w", encoding="utf-8") as fh:
+    fh.write('{"format_version": 1, "marks": [{"frame": 5}]')          # cut short
+qd, _, _ = pf.read(path)
+check(qd.sessions[0].fingerprint is None and "fingerprint" in qd.sessions[0].fingerprint_problem
+      and qd.sessions[0].n_points == p.sessions[0].n_points,
+      "a damaged fingerprint never stops the project from opening; the reason is kept to be said")
+pf.write_folder(pf.freeze(p, STATE, pid, target=path), path)
 
 # ----------------------------------------------------------------- 2. nothing silently left out
 print("\n[2] field coverage")
 TRANSIENT = {
     # active_seg: which segment the S tool acts on (reset to the first on open, G149)
-    "TrackingSession": {"_dirty", "data_version", "last_interp_hidden_skipped", "video_path", "active_seg"},
+    "TrackingSession": {"_dirty", "data_version", "last_interp_hidden_skipped", "video_path", "active_seg",
+                        "fingerprint_problem"},     # (I266) why a saved fingerprint could not be read
     "Project": {"path", "dirty", "edits"},
     "MaskTrack": {"native_w", "native_h"},
     "BodyTrack": {"mesh_version", "_version", "_cache", "examined", "stopped_early"},
@@ -268,7 +290,8 @@ PERSISTED = {
     "TrackingSession": {"n_frames", "fps", "file_fps", "width", "height", "tracks", "visibility", "manual", "tracked",
                         "confidence", "occluded", "radius", "points", "events", "notes", "annotator", "animal",
                         "masks", "body", "current_frame", "ui_state", "_name_counter", "_event_counter",
-                        "segments", "seg_masks"},      # (G149) every segment and its silhouettes
+                        "segments", "seg_masks",       # (G149) every segment and its silhouettes
+                        "fingerprint"},                # (I266) cameras/<cam>/fingerprint/
     "Project": {"sessions", "names", "offsets", "rates", "active", "calibration", "reconstruction", "lenses",
                 "exports"},
     "MaskTrack": {"n_frames", "bbox", "area", "centroid", "score", "contours", "midline"},

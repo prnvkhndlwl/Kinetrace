@@ -53,7 +53,9 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        # animal layers, the two zooms (G152-G160)
        "verify_layers",
        # (G168-G172) many cameras on screen and their order; (I265) Save during a run
-       "verify_camera_views", "verify_save_during_run"]
+       "verify_camera_views", "verify_save_during_run",
+       # (I266) a video that decodes differently on another computer: the fingerprint, exact seeks
+       "verify_fingerprint", "verify_fingerprint_gui", "verify_decode_identity"]
 # the synthetic test videos are generated on demand (deterministic; not stored in the repo)
 TEST_VIDEOS = {
     "test600.mp4": ([], None),

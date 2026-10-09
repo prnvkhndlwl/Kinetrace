@@ -73,6 +73,8 @@ cameras/<folder>/segments/<name>/    every further animal (a project may have an
                                      segment.json (with its "order") and silhouette/, as above; the
                                      first animal stays where a one-animal project has it
 cameras/<folder>/body/*.npy          body poses and mesh (binary; only after a Body run)
+cameras/<folder>/fingerprint/        the video's frame fingerprint: meta.json, crops.npy, thumbs.npy
+                                     (what each frame number shows where the project was made; optional)
 exports/                             files for other programs, refreshed at each save (only when chosen);
                                      DLTdv files there are the points file + `_pointnames.csv` only
 videos/                              optional: the videos, to keep everything in one folder
@@ -273,6 +275,23 @@ hand, whose `score` is 1.0 meaning "you said so" and not a detection confidence;
 3 = no box, the whole frame was taken as the person), `meta.json` (rig, people's
 names, backend), and the mesh. An older body track without `box_src` opens with
 every box unknown.
+
+`fingerprint/` (I266; optional — a camera without one opens normally, and one that cannot be read
+never stops a project from opening): which picture each frame number means, as decoded where the
+fingerprint was made. `meta.json`: `format_version` (1), `decoder` (`os`, `machine`, `opencv`,
+`avcodec`, `avformat`, `swscale` from OpenCV's build information, and `backend` = the
+`KINETRACE_DECODE` choice), `file` (`name`, `size`, `mtime_ns` of the video then), `n_frames`,
+`width`, `height`, `made`, `seeks` (`exact`, or `read forward` when that file's seeks were found
+inexact there), `data_before` (the camera already had data when it was made), and `marks`: per
+saved moment its `frame`, `box` = [x, y, side] of the crop in the full picture (pixels from the
+top-left corner), `motion` (the grey change to its neighbours inside the crop's window — the smaller of
+the change to the frame before and after, mean levels on a 320-px-wide copy), `sep`
+(1 − correlation of the crop with its own neighbouring frames: how well it tells them apart),
+`move_px` (how far the crop's content moves from the frame before) and `picked` (`auto`, or
+`user` for a frame added by hand). `crops.npy`: K × side × side × 3 `uint8` RGB, the crop of each
+moment's frame at full resolution; `thumbs.npy`: K × h × 160 `uint8` grey, the whole frame. Another
+computer whose decoder or file differs compares its frames N−2 … N+2 with each crop; nothing is
+ever re-indexed.
 
 Read them with `numpy.load` in Python, [`readNPY`](https://github.com/kwikteam/npy-matlab)
 in MATLAB, or `RcppCNPy::npyLoad` in R. Readable copies are one export away:

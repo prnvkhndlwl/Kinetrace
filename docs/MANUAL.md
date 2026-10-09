@@ -2380,6 +2380,84 @@ all), it asks you to point it at each one (*Locate video*). If the video you pic
 frames from the one the project remembers, it warns you: that is usually another
 cut or take, and the tracks would sit on the wrong frames.
 
+### Another computer: is frame 1234 still the same picture?
+
+Everything in a project is stored **by frame number**: "the snout is at x, y in
+frame 1234". Frame 1234 is the 1234th picture the computer's video decoder hands
+over, and decoders are not the same everywhere — Windows, macOS and Linux each
+bring their own version, and phone or action-camera files contain small
+instructions ("start at the third picture") that versions have followed
+differently. If a Mac showed every picture one frame later than the PC you
+tracked on, the video would still have the same number of frames — nothing
+would look wrong — but every track would sit one frame off there.
+
+So the program keeps a **fingerprint** of each camera's video in the project:
+the moments where the picture changes most (spread over the whole video), a
+small full-resolution piece of each, and which computer and decoder made it. It
+is made by itself, in the background, after you open a video (measured: 6 s for
+a 4K clip, 9 s for 5000 frames of HD; a long 4K video reads about 1500 frames,
+some 30 s) — you can work meanwhile, it does not count as an unsaved change, and
+it is saved with the project (`cameras/<camera>/fingerprint`).
+
+**When you open the project on another computer** (or after the video file was
+copied or replaced), the program compares, in the background, each saved piece
+with that computer's frames just before, at and after the same frame number, and
+tells you:
+
+* **GOOD — the same pictures.** A short notice: *this computer shows every saved
+  picture at its own frame number*. Nothing else happens.
+* **POOR — shifted.** A window opens: *On this computer cam2 shows the picture
+  1 frame later than where the project was made*. For each saved moment you see,
+  side by side, the saved picture, this computer's frames N−1, N and N+1 (the one
+  that matches is framed in green and marked *best match*), and a difference
+  picture (black = the same picture). **Previous / Next moment** step through
+  them. Each moment's numbers are listed below the pictures: *best +1, 250x closer
+  than the next* means the match is unmistakable; a match only 1.2–3x closer counts
+  only when every moment points the same way, and the window says so.
+* **POOR — mixed** (some moments shifted, others not: a frame is missing or
+  doubled somewhere on this computer) and **POOR — different** (none of the saved
+  pictures is near its frame: probably another take or cut) open the same window.
+* **Cannot tell** — the video barely moves, so neighbouring frames look alike. The
+  program then says how much it could matter: *the picture moves 0.12 px from one
+  frame to the next* — **GOOD** below 0.5 px (harmless: a one-frame shift moves a
+  track by less than half a pixel), **OK** below 2 px, **POOR** above (then the
+  window opens too).
+
+**Nothing in your project is ever changed or moved by this.** The tracks stay on
+the frame numbers they were made on; the program only shows you what it found.
+
+**Check it by hand:** in the window, choose a moment and press **Go to this
+frame**: the main window shows that frame of the camera, and the window stays
+open beside it. Compare it with the saved picture (left) — the same pose of the
+animal, the same position of whatever moves. Click the main window and step one
+frame back and forward (← →) to see the neighbours.
+
+**What to do about a shift.** Work on the computer that made the project, or make
+a copy of the video that every computer reads the same way: on the computer that
+made the project, re-encode it once (`ffmpeg -i GX010001.MP4 -c:v libx264 -crf 18
+plain.mp4`), put the new file in place of the old one (same name, or Locate it),
+open the project there and look at the check: it must say **GOOD — the same
+pictures** before you rely on the new file; then take it to the other computer.
+
+**Check by hand at any time: File → Check Video Frames on This Computer…** checks
+the camera you are working in now and always opens the window. On the computer
+that made the project it shows the saved moments (it is the reference there).
+**A video that barely moves** (a static scene with one short movement): go to a
+frame where something moves fast, open this window and press **Add the frame on
+screen to the fingerprint** — do that on the computer that made the project, and
+save. The program tells you how good that frame is (*GOOD*: it differs clearly
+from its neighbours; *POOR*: pick a faster moment).
+
+**"Jumping to a frame lands on the wrong picture on this computer."** Some files —
+typically from a camera that dropped a frame, so its time stamps skip — make
+jumping to a frame (clicking the timeline, typing a frame number) land a frame or
+two away from where playing from the start arrives. The program checks every
+video for this when it opens it. When it happens, it says so and from then on
+reaches every frame of that video by reading forward from just before it:
+every frame is exact, jumping is a little slower. A video without the problem
+jumps as fast as before. To make it fast again, re-encode it once (the message
+gives the command) and track on the new file.
+
 **A camera whose video you cannot find** (you press Cancel, or it will not open)
 is left out of this session, and the program says so (*Opened without some
 cameras*). Your project is **not** changed: it still holds that camera with
@@ -3174,6 +3252,19 @@ the missing frames never had a picture, so nothing of yours is lost. If a
 project saved earlier used the longer count, its last few timeline columns
 simply stay empty.
 
+**"On this computer cam2 shows the picture 1 frame later than where the project
+was made."** This computer's video decoder numbers the frames of that video
+differently from the computer the project was made on, so its tracks are drawn
+one frame off here. Nothing was changed. The window shows the evidence; see
+*Another computer: is frame 1234 still the same picture?* in section 11 for how
+to check it by hand and what to do.
+
+**"Jumping to a frame of … lands on the wrong picture on this computer."** The
+file's time stamps skip (usually a frame the camera dropped), so jumping and
+playing from the start disagreed. From now on every frame of it is read exactly
+(jumping is a little slower). Re-encode it once with the command in the message
+to make it fast again — and track on the new file.
+
 **The picture looks stale, frozen, or garbled.** Press **Shift+C**. This throws
 away the stored pictures and re-reads the current one from the file. It never
 touches your tracked data.
@@ -3477,6 +3568,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 |---|---|
 | **Ctrl+O** / **Ctrl+Shift+O** | open a video / a project |
 | **File → Open Folder of Videos…** | several cameras in one folder: tick which to import, put them in camera order (camera 1 = the reference) |
+| **File → Check Video Frames on This Computer…** | does this computer show the same picture at each frame number as the one that made the project? (it also checks by itself on opening) |
 | **Ctrl+S** / **Ctrl+Shift+S** | save the project / save it under a new name (Ctrl+S during a run: saved as soon as the run stops) |
 | **Ctrl+Q** | quit (File → Quit); asks first when there are unsaved changes |
 | **Ctrl+E** | export your results |
