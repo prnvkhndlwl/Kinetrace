@@ -503,6 +503,10 @@ def lens_profile(info: GoProInfo):
     K = np.array([[f, 0.0, (w - 1) / 2.0], [0.0, f, (h - 1) / 2.0], [0.0, 0.0, 1.0]])
     prof = lens_mod.LensProfile(w, h, K, k, True, float("nan"), 0,
                                 f"GoPro's lens model from the video ({info.label}): nominal, not measured on this camera")
+    # VRES is the size the camera STORES (3840 x 2160 on a 4K clip filmed on its side, whose rotation
+    # tag makes it play 2160 x 3840): the model is in the stored picture, so `lens.fit_profile` turns
+    # it for a camera whose video is turned
+    prof.rotation = 0
     prof.report = {
         "verdict": "ok", "gopro_nominal": True, "model": "fisheye", "gopro_poly_fit_px": fit_px,
         "focal_px": [f, f], "principal_px": [K[0, 2], K[1, 2]], "dist": k.tolist(), "width": w, "height": h,

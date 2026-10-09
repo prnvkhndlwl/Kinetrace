@@ -30,6 +30,7 @@ from kinetrace import lens as _lens
 from kinetrace import theme
 from kinetrace import wand as _wand
 from kinetrace import wanddata as wd
+from kinetrace.video_source import display_rotation
 from kinetrace.errors import plain_error
 from kinetrace.lenswizard import VERDICT_COLORS, _dim, stop_page_threads
 
@@ -43,17 +44,20 @@ VERDICT_WORDS = {"good": "GOOD — you can trust this calibration",
 MIN_FRAMES, GOOD_FRAMES = 10, 30
 
 
-def lens_size_mismatch(prof, width: int, height: int, cam_name: str) -> str | None:
-    """None when lens profile `prof` was made at this camera's picture size,
-    else the sentence that says why it cannot be used (I31): its focal length
-    and centre are in the other size's pixels, and with every camera profiled
-    both are HELD FIXED in the solve - a 1280 x 960 profile on 640 x 480
-    cameras turned a sound rig into verdict poor with the blame on the wand.
-    The ONE size rule is `lens.size_mismatch` (R19); this is its wizard form."""
-    if prof is None or not width or not height:
-        return None
-    return _lens.size_mismatch((prof.width, prof.height), (width, height), cam_name,
-                               "this lens profile was measured on")
+def lens_for_camera(prof, session, cam_name: str) -> tuple[object | None, str]:
+    """Lens profile `prof` made fit for the camera of `session`: (the profile to use -- the same
+    one, or a copy turned to the camera's picture when its video is turned, a camera filmed on its
+    side -- and "" or the sentence saying it was turned) or (None, why it cannot be used, I31: its
+    focal length and centre are in another picture's pixels, and with every camera profiled both
+    are HELD FIXED in the solve - a 1280 x 960 profile on 640 x 480 cameras turned a sound rig
+    into verdict poor with the blame on the wand). The ONE rule is `lens.fit_profile` (R19);
+    this is its form for a project's camera. (None, "") without a profile."""
+    if prof is None:
+        return None, ""
+    if not session.width or not session.height:
+        return prof, ""
+    return _lens.fit_profile(prof, (int(session.width), int(session.height)),
+                             display_rotation(session.video_path), cam_name, "this lens profile was measured on")
 
 
 def _same_lens(a, b) -> bool:
@@ -63,24 +67,26 @@ def _same_lens(a, b) -> bool:
 def share_targets(project, view: int, prof=None) -> tuple[list[int], list[int]]:
     """The other cameras a lens profile of camera `view` can be shared with
     (G40: identical cameras, one checkerboard calibration): every camera with
-    the same picture size. Returns (without a profile, with a DIFFERENT one) -
-    the second only after the user agrees. `prof` = the profile (default: the
-    one attached to `view`)."""
+    the same picture size -- or the same pictures turned, a camera filmed on its
+    side (`lens_for_camera` turns the profile for it). Returns (without a
+    profile, with a DIFFERENT one) - the second only after the user agrees.
+    `prof` = the profile (default: the one attached to `view`)."""
     lenses = list(getattr(project, "lenses", []) or [])
     if prof is None:
         prof = lenses[view] if view < len(lenses) else None
-    s0 = project.sessions[view]
     fill, replace = [], []
+    if prof is None:
+        return fill, replace
     for c in range(project.n_views):
         if c == view:
             continue
-        sc = project.sessions[c]
-        if (int(sc.width), int(sc.height)) != (int(s0.width), int(s0.height)):
+        mine, _ = lens_for_camera(prof, project.sessions[c], project.name(c))
+        if mine is None:
             continue
         other = lenses[c] if c < len(lenses) else None
         if other is None:
             fill.append(c)
-        elif not _lens.same_profile(other, prof):
+        elif not _lens.same_profile(other, mine):
             replace.append(c)
     return fill, replace
 
@@ -456,7 +462,8 @@ class CamerasPage(QWizardPage):
             self.lens_grid.addWidget(QLabel(p.name(c)), c, 0)
             prof = p.lenses[c] if c < len(p.lenses) else None
             s = p.sessions[c]
-            bad = lens_size_mismatch(prof, s.width, s.height, p.name(c))
+            fitted, bad = lens_for_camera(prof, s, p.name(c))
+            bad = bad if fitted is None else None
             if prof is None:
                 text = "no lens profile — the wand estimates the focal length, no distortion correction"
             elif bad:
@@ -525,14 +532,19 @@ class CamerasPage(QWizardPage):
         prof, v, views = lw.result_profile, lw.result_view, (lw.result_views() if accepted else [])
         lw.deleteLater()            # (I249) the wizard holds its scan (~93 MB of thumbnails): release it
         if accepted and prof is not None and v is not None:
-            s = p.sessions[v]
-            bad = lens_size_mismatch(prof, s.width, s.height, p.name(v))
-            if bad:
+            fitted, bad = lens_for_camera(prof, p.sessions[v], p.name(v))
+            if fitted is None:
                 self._refuse_lens(v, bad)
                 return
-            for k in views:          # + the cameras it is shared with (G40)
-                p.lenses[k] = prof
+            for k in views:          # + the cameras it is shared with (G40), each turned to its own video
+                mine = fitted if k == v else lens_for_camera(prof, p.sessions[k], p.name(k))[0]
+                if mine is not None:
+                    p.lenses[k] = mine
             p.dirty = True
+            self._refresh_lens_rows()
+            if bad and v < len(self.lens_labels):   # turned for a camera filmed on its side: said
+                self.lens_labels[v].setText(self.lens_labels[v].text() + " — " + bad)
+            return
         self._refresh_lens_rows()
 
     def _share_lens(self, c: int):
@@ -556,7 +568,7 @@ class CamerasPage(QWizardPage):
             if ans != QMessageBox.Yes:
                 replace = []
         for k in fill + replace:
-            p.lenses[k] = prof
+            p.lenses[k] = lens_for_camera(prof, p.sessions[k], p.name(k))[0]   # turned for a turned video
         if fill or replace:
             p.dirty = True
         self._refresh_lens_rows()
@@ -579,14 +591,15 @@ class CamerasPage(QWizardPage):
             return
         if which:
             prof.source = f"{Path(path).name}{which}"
-        s = p.sessions[c]
-        bad = lens_size_mismatch(prof, s.width, s.height, p.name(c))
-        if bad:
+        fitted, bad = lens_for_camera(prof, p.sessions[c], p.name(c))
+        if fitted is None:
             self._refuse_lens(c, bad)
             return
-        p.lenses[c] = prof
+        p.lenses[c] = fitted
         p.dirty = True
         self._refresh_lens_rows()
+        if bad and c < len(self.lens_labels):       # turned for a camera filmed on its side: said
+            self.lens_labels[c].setText(self.lens_labels[c].text() + " — " + bad)
 
     def _remove_lens(self, c: int):
         p = self.wiz.project
@@ -596,15 +609,14 @@ class CamerasPage(QWizardPage):
         self._refresh_lens_rows()
 
     def usable_lens(self, c: int):
-        """Camera c's lens profile when it matches the camera's picture size,
-        else None (I31: a profile attached elsewhere at another size is shown
-        on its row as not used, never solved with)."""
+        """Camera c's lens profile fitted to the camera's pictures (`lens_for_camera`), else None
+        (I31: a profile attached elsewhere at another size is shown on its row as not used, never
+        solved with)."""
         p = self.wiz.project
         prof = p.lenses[c] if c < len(p.lenses) else None
         if prof is None or c >= p.n_views:
             return None
-        s = p.sessions[c]
-        return None if lens_size_mismatch(prof, s.width, s.height, p.name(c)) else prof
+        return lens_for_camera(prof, p.sessions[c], p.name(c))[0]
 
     def usable_lenses(self) -> list:
         """`usable_lens` for every camera, in project order (R20: the list that

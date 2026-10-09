@@ -139,6 +139,10 @@ class VideoInfo:
     # (G145) GoPro footage: the `gpmf.GoProInfo` read from the file (the flag that turns on the GoPro
     # workflow -- its lens model, settings checks, sensors); None for every other camera
     gopro: object = None
+    # how far the decoder turned the stored pictures clockwise (0 / 90 / 180 / 270) to show them
+    # the way up the file's rotation tag says -- a camera filmed on its side; None = this decode
+    # backend does not say (`applied_rotation`). What a lens profile is turned by (`lens.fit_profile`)
+    rotation: int | None = 0
 
     @property
     def header_overcount(self) -> int:
@@ -160,6 +164,42 @@ class VideoInfo:
                     "the camera really recorded at that rate: set the real rate with the camera's fps "
                     "button in the CAMERAS panel.")
         return ""
+
+
+# the turn `probe_video` found per video file (`display_rotation`), so a check on the GUI thread
+# can know it without opening the file there
+_ROTATIONS: dict[str, int | None] = {}
+
+
+def _rot_key(path: str) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def applied_rotation(cap) -> int | None:
+    """How far, in degrees clockwise (0 / 90 / 180 / 270), this capture turns the stored pictures
+    before handing them out: the file's rotation tag (a camera filmed on its side writes landscape
+    pictures plus "show them turned"), applied by OpenCV's FFmpeg backend. Measured on a GoPro
+    clip tagged that way: the stored 3840 x 2160 picture comes out 2160 x 3840, and equals the
+    stored one turned 90 degrees counter-clockwise, reported as 270. 0 when the capture shows the
+    pictures as stored; None when the backend cannot say (Media Foundation reports -1)."""
+    try:
+        meta = float(cap.get(cv2.CAP_PROP_ORIENTATION_META))
+        auto = float(cap.get(cv2.CAP_PROP_ORIENTATION_AUTO))
+    except Exception:       # noqa: BLE001 - an OpenCV without these properties cannot say
+        return None
+    if not np.isfinite(meta) or meta < 0:
+        return None
+    if auto == 0:
+        return 0
+    r = int(meta) % 360
+    return r if r in (0, 90, 180, 270) else None
+
+
+def display_rotation(path: str) -> int | None:
+    """The clockwise turn the decoder applies to this video's pictures (`applied_rotation`), as
+    found when the video was opened (`probe_video`) in this run of the program; None when it was
+    not opened, or the backend cannot say. Reads no file."""
+    return _ROTATIONS.get(_rot_key(path)) if path else None
 
 
 def verified_frame_count(cap, n_header: int, max_probes: int = 24) -> int:
@@ -223,6 +263,7 @@ def probe_video(path: str, vfr_samples: int = 60, progress=None) -> VideoInfo:
         raw_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        rotation = applied_rotation(cap)
         if n_frames <= 0 or width <= 0 or height <= 0:
             raise ValueError(f"Video reports invalid metadata (frames={n_frames}, {width}x{height}).")
         say("rate", width=width, height=height, fps=raw_fps, frames=n_frames)
@@ -284,7 +325,8 @@ def probe_video(path: str, vfr_samples: int = 60, progress=None) -> VideoInfo:
                 f"No frame of this video could be decoded ({header} claimed).\n\n"
                 "The file may be damaged, or use a codec this computer cannot read. Re-encoding usually fixes it:\n"
                 f'ffmpeg -i "{Path(path).name}" -c:v libx264 -crf 18 fixed.mp4')
-        return VideoInfo(path, n_frames, fps, width, height, vfr, header, fps_source)
+        _ROTATIONS[_rot_key(path)] = rotation
+        return VideoInfo(path, n_frames, fps, width, height, vfr, header, fps_source, rotation=rotation)
     finally:
         cap.release()
 

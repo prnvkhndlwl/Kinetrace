@@ -1691,7 +1691,15 @@ close it without saving, the program offers to save it for you. The wizard:
    board video must have **exactly the same picture size** as that camera's
    video (same resolution and recording mode); if it does not, the page names
    both sizes and will not go on — film the board in the experiment's mode, or
-   pick the camera it belongs to.
+   pick the camera it belongs to. **A camera filmed on its side is the same
+   size:** it still records its normal pictures, and its video only says "play
+   me turned" (a 3840 × 2160 GoPro on its side plays 2160 × 3840, often with
+   black bars beside it in a player). Film the board with the camera held
+   normally; the profile records how its video was turned and is turned to
+   fit the camera exactly (the attach message says so). The same goes for a
+   camera mounted upside down. A lens file from another program, or one saved
+   before Kinetrace recorded the turn, cannot be turned safely (which way is
+   not known): measure the lens again here.
 4. **Check the boards.** The next page shows you every board it found, so you
    can see for yourself what the calibration is being built from — see below.
 5. The last page shows the verdict with its reasons, a before/after picture,
@@ -1705,8 +1713,8 @@ close it without saving, the program offers to save it for you. The wizard:
    GoPro's lens model, a file), as a Kinetrace `.klens.json` or for other
    programs (OpenCV `.yml` / `.json`, Argus `.txt` for a standard lens), and
    **3D → Load a Lens Profile for This Camera…** puts a saved profile on the
-   camera you are working on (same picture size only; replacing a profile is
-   asked first). Already have a profile? On step 3 press
+   camera you are working on (same picture size only, or the same pictures
+   turned for a camera filmed on its side; replacing a profile is asked first). Already have a profile? On step 3 press
    **I already have a lens file…** instead (a `.klens.json`, or an Argus /
    DLTdv camera profile `.txt`): it goes straight to this last page. From an
    Argus file with several lines each camera gets the line with its own camera
@@ -1896,7 +1904,8 @@ five pages and explains each one:
    wizard for it, **Load file…** takes a saved `.klens.json` or an Argus /
    DLTdv profile, **Remove** drops it, and **Use for all** gives this camera's
    profile to every other camera with the same picture size (identical
-   cameras: calibrate one lens, share it). A camera that already has a
+   cameras: calibrate one lens, share it; one filmed on its side gets it turned
+   to fit). A camera that already has a
    different profile of its own is replaced only if you say yes. A shared
    profile says *the same profile as …* on its row. With a profile on every
    camera the distortion tick is greyed out — there is nothing left for it to

@@ -10585,15 +10585,18 @@ class MainWindow(QMainWindow):
         wiz.deleteLater()                        # (I249) its scan and corner frames are not kept for the session
         if not accepted or profile is None or rview is None:
             return
-        bad = self._lens_misfit(profile, rview)
-        if bad:                                  # a profile of another picture size (I31)
-            QMessageBox.warning(self, "Lens profile not attached", bad)
+        fitted, said = self._lens_fit(profile, rview)
+        if fitted is None:                       # a profile of another picture size (I31)
+            QMessageBox.warning(self, "Lens profile not attached", said)
             return
-        self._set_lenses({k: profile for k in views})   # the identical cameras it was shared with too (G40)
+        # the identical cameras it was shared with too (G40), each turned to its own video
+        by_view = {k: (fitted if k == rview else self._lens_fit(profile, k)[0]) for k in views}
+        self._set_lenses({k: f for k, f in by_view.items() if f is not None})
         v = str(profile.report.get("verdict", "loaded")).upper()
         self.toast.show_message(
-            f"Lens profile attached to {', '.join(p.name(k) for k in views)} ({v}: {profile.summary()}). "
-            "The wand calibration will use it; save the project to keep it.", "success", 9000)
+            f"Lens profile attached to {', '.join(p.name(k) for k in views)} ({v}: {fitted.summary()}). "
+            + (said + " " if said else "")
+            + "The wand calibration will use it; save the project to keep it.", "success", 12000 if said else 9000)
 
     LENS_SAVE_FILTER = ("Kinetrace lens (*.klens.json);;OpenCV lens (*.yml);;OpenCV lens, JSON (*.json);;"
                         "Argus / DLTdv camera profile (*.txt)")
@@ -10672,9 +10675,9 @@ class MainWindow(QMainWindow):
         if prof is None:
             QMessageBox.warning(self, "Lens profile not loaded", which)
             return
-        bad = self._lens_misfit(prof, v)
-        if bad:
-            QMessageBox.warning(self, "Lens profile not attached", bad)
+        prof, said = self._lens_fit(prof, v)
+        if prof is None:
+            QMessageBox.warning(self, "Lens profile not attached", said)
             return
         old = p.lenses[v] if v < len(p.lenses) else None
         if old is not None and QMessageBox.question(
@@ -10684,16 +10687,19 @@ class MainWindow(QMainWindow):
             return
         self._set_lenses({v: prof})
         self.toast.show_message(f"Lens profile {Path(path).name}{which} attached to {p.name(v)} ({prof.summary()}). "
-                                "The wand calibration will use it; save the project to keep it.", "success", 10000)
+                                + (said + " " if said else "")
+                                + "The wand calibration will use it; save the project to keep it.", "success",
+                                14000 if said else 10000)
 
-    def _lens_misfit(self, prof, v: int) -> str | None:
-        """Why lens profile `prof` does not fit camera v (another picture size, I31), as a sentence;
-        None when it fits. The one check of the lens wizard, Load a Lens Profile and GoPro's lens."""
-        from kinetrace.calibwizard import lens_size_mismatch
+    def _lens_fit(self, prof, v: int) -> tuple[object | None, str]:
+        """Lens profile `prof` made fit for camera v (`calibwizard.lens_for_camera`): (the profile to
+        attach -- turned when the camera's video is turned, a camera filmed on its side -- and "" or
+        the sentence saying so) or (None, why it does not fit: another picture size, I31). The one
+        check of the lens wizard, Load a Lens Profile and GoPro's lens."""
+        from kinetrace.calibwizard import lens_for_camera
         p = self.project
-        sv = p.sessions[v]
-        bad = lens_size_mismatch(prof, sv.width, sv.height, p.name(v))
-        return bad[0].upper() + bad[1:] if bad else None
+        fitted, said = lens_for_camera(prof, p.sessions[v], p.name(v))
+        return fitted, (said[0].upper() + said[1:] if said else "")
 
     def _set_lenses(self, by_view: dict) -> None:
         """Attach lens profiles {camera: profile} to the project (the list padded to the cameras)."""
@@ -10916,11 +10922,11 @@ class MainWindow(QMainWindow):
             prof = gpmf.lens_profile(info) if info is not None else None
             if prof is None:
                 continue
-            bad = self._lens_misfit(prof, v)
-            if bad:
-                refused.append(bad)
+            fitted, said = self._lens_fit(prof, v)      # turned for a camera filmed on its side
+            if fitted is None:
+                refused.append(said)
                 continue
-            done[v] = prof
+            done[v] = fitted
         self._set_lenses(done)
         done = [p.name(v) for v in done]
         said = (f"GoPro's lens model attached to {', '.join(done)}: the wand calibration will undistort with it; "

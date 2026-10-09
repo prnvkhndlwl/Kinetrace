@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
 
 from kinetrace import gpmf, lens, theme
 from kinetrace.errors import plain_error
+from kinetrace.video_source import display_rotation
 from kinetrace.boardreview import BoardReview, pixmap
 
 VERDICT_COLORS = {"good": theme.GREEN, "ok": "#FFD60A", "poor": theme.RED}
@@ -454,7 +455,13 @@ class VideoPage(QWizardPage):
         was ignored)."""
         self.wiz.square = self.square_m()
         self.wiz.model = self.model()
-        self.wiz.base_lens = gpmf.lens_profile(self.wiz.gopro) if self.wiz.model == "gopro" else None
+        base = gpmf.lens_profile(self.wiz.gopro) if self.wiz.model == "gopro" else None
+        scan = self.wiz.scan
+        if base is not None and scan is not None:
+            # GoPro's model is in the STORED picture: turned to the board video's pictures when its
+            # rotation tag turns them (a board filmed with the camera on its side)
+            base = lens.fit_profile(base, scan.size, scan.rotation)[0] or base
+        self.wiz.base_lens = base
 
     def _view(self) -> int | None:
         return int(self.cam.currentData()) if self.cam.count() else None
@@ -479,11 +486,14 @@ class VideoPage(QWizardPage):
             return None
         s = p.sessions[view]
         cam = (int(s.width), int(s.height))
-        if self.wiz.scan is not None:
-            return lens.size_mismatch(self.wiz.scan.size, cam, p.name(view), "The checkerboard video has")
+        rot = display_rotation(s.video_path)
+        if self.wiz.scan is not None:       # a board video filmed level fits a camera filmed on its side
+            return lens.turn_needed(self.wiz.scan.size, self.wiz.scan.rotation, cam, rot, p.name(view),
+                                    "The checkerboard video has")[1]
         prof = self.wiz.result_profile
         if prof is not None:
-            return lens.size_mismatch((prof.width, prof.height), cam, p.name(view))
+            fitted, why = lens.fit_profile(prof, cam, rot, p.name(view))
+            return why if fitted is None else None
         return None
 
     def _camera_changed(self, *_):
@@ -633,6 +643,7 @@ class ReviewPage(QWizardPage):
                 try:
                     prof = lens.calibrate_lens([corners[i] for i in idx], pattern, square, scan.size, model,
                                                max_views=max(len(idx), lens.MAX_VIEWS), base=base)
+                    prof.rotation = scan.rotation       # how the board video's pictures were turned
                     # the errors of the profile that is SHOWN, not of the provisional fit auto_select made
                     err = lens.per_view_errors(corners, pattern, square, prof)
                 except Exception:                               # noqa: BLE001
@@ -669,6 +680,7 @@ class ReviewPage(QWizardPage):
             # thin them to a 40-view spread behind a "Fitted from 120 boards"
             prof = lens.calibrate_lens(chosen, pattern, square, scan.size, model, max_views=len(chosen),
                                        base=self.wiz.base_lens)
+            prof.rotation = scan.rotation               # how the board video's pictures were turned
             return prof, lens.per_view_errors(everything, pattern, square, prof)
         try:
             prof, err = _off_thread(self.wiz, work)

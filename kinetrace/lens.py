@@ -49,6 +49,7 @@ MAX_VIEWS = 40                  # boards a fit is made from (`select_diverse` th
 # automatic choice of views, and the review board's "Drop the worst".
 OUTLIER_FLOOR_FIT_PX = 0.45
 OUTLIER_FLOOR_PICK_PX = 0.5
+QUARTER_TURNS = (0, 90, 180, 270)   # the turns a video's rotation tag can ask for
 
 
 def px_scale(width: float, height: float) -> float:
@@ -90,6 +91,11 @@ class LensProfile:
     n_views: int = 0
     source: str = ""
     report: dict = field(default_factory=dict)
+    # how far the decoder turned the board video's stored pictures clockwise (0 / 90 / 180 / 270,
+    # `video_source.applied_rotation`) before the lens was measured on them: what `fit_profile`
+    # turns the profile by for a camera whose video is turned otherwise. None = not known (a file
+    # from another program, or a profile saved before Kinetrace recorded it)
+    rotation: int | None = None
 
     # ---- derived ------------------------------------------------------
     @property
@@ -164,17 +170,21 @@ class LensProfile:
         return {"kinetrace_lens": 1, "width": int(self.width), "height": int(self.height),
                 "K": np.asarray(self.K, np.float64).tolist(), "dist": np.asarray(self.dist, np.float64).tolist(),
                 "fisheye": bool(self.fisheye), "rms": (None if not np.isfinite(self.rms) else float(self.rms)),
-                "n_views": int(self.n_views), "source": self.source, "report": self.report}
+                "n_views": int(self.n_views), "source": self.source, "report": self.report,
+                "rotation": None if self.rotation is None else int(self.rotation)}
 
     @staticmethod
     def from_json(d: dict) -> "LensProfile":
         if "kinetrace_lens" not in d:
             raise ValueError("not a Kinetrace lens file")
         rms = d.get("rms")
+        rot = d.get("rotation")
+        rot = int(rot) % 360 if isinstance(rot, (int, float)) and np.isfinite(rot) else None
         return LensProfile(int(d["width"]), int(d["height"]), np.asarray(d["K"], np.float64).reshape(3, 3),
                            np.asarray(d.get("dist", []), np.float64).ravel(), bool(d.get("fisheye", False)),
                            float("nan") if rms is None else float(rms), int(d.get("n_views", 0)),
-                           str(d.get("source", "")), dict(d.get("report") or {}))
+                           str(d.get("source", "")), dict(d.get("report") or {}),
+                           rot if rot in QUARTER_TURNS else None)
 
     def save(self, path: str | Path) -> str:
         p = Path(path)
@@ -247,14 +257,26 @@ def _parse_argus(path: str | Path) -> list[tuple[int, LensProfile]]:
 def same_profile(a: LensProfile | None, b: LensProfile | None) -> bool:
     """The same lens calibration (one profile shared by several identical
     cameras, G40) - compared by value, so it holds after a project reload,
-    where each camera gets its own copy."""
+    where each camera gets its own copy; a copy turned for a camera filmed on
+    its side (`turn_profile`, I269) is the same lens."""
     if a is None or b is None:
         return False
     if a is b:
         return True
-    return (int(a.width) == int(b.width) and int(a.height) == int(b.height) and bool(a.fisheye) == bool(b.fisheye)
-            and np.shape(a.dist) == np.shape(b.dist) and np.allclose(a.K, b.K, rtol=0, atol=1e-9)
-            and np.allclose(a.dist, b.dist, rtol=0, atol=1e-12))
+
+    def equal(x, y):
+        return (int(x.width) == int(y.width) and int(x.height) == int(y.height) and bool(x.fisheye) == bool(y.fisheye)
+                and np.shape(x.dist) == np.shape(y.dist) and np.allclose(x.K, y.K, rtol=0, atol=1e-9)
+                and np.allclose(x.dist, y.dist, rtol=0, atol=1e-12))
+    if equal(a, b):
+        return True
+    for cw in (90, 180, 270):
+        try:
+            if equal(turn_profile(a, cw), b):
+                return True
+        except ValueError:          # a model that cannot be turned is only ever itself
+            return False
+    return False
 
 
 def profile_key(prof: LensProfile | None):
@@ -344,6 +366,132 @@ def size_mismatch(size: tuple[int, int], cam_size: tuple[int, int], cam_name: st
     return (f"{what} {w} x {h} pictures, but {cam_name} records {cw} x {ch}. A lens profile only fits "
             "the resolution and recording mode it was measured at: film the board with the camera set exactly "
             "as for the experiment, or choose the camera this lens belongs to.")
+
+
+_TURNED = {0: "as the camera stored them", 90: "turned 90° clockwise from how the camera stored them",
+           180: "turned upside down from how the camera stored them",
+           270: "turned 90° counter-clockwise from how the camera stored them"}
+_TURN = {90: "90° clockwise", 180: "upside down", 270: "90° counter-clockwise"}
+
+
+def turn_needed(size: tuple[int, int], rotation: int | None, cam_size: tuple[int, int], cam_rotation: int | None,
+                cam_name: str = "this camera", what: str = "This lens profile was measured on"
+                ) -> tuple[int | None, str | None]:
+    """How a lens measured on pictures of `size` (w, h), turned `rotation` degrees clockwise by the
+    decoder, fits a camera whose pictures are `cam_size`, turned `cam_rotation`: (the clockwise
+    turn to give the profile, None) or (None, the sentence that says why it cannot be used).
+
+    The size rule (`size_mismatch`, I31) with one exception: a camera filmed on its side records
+    the SAME pictures and its video only says "show them turned", so a profile measured with the
+    camera level fits it once turned by the difference -- when both turns are known. When either
+    is not, a quarter-turned size is refused (which way to turn it is unknown), and an equal size is
+    taken as it is, as always (an upside-down camera cannot be told then)."""
+    w, h = int(size[0]), int(size[1])
+    cw, ch = int(cam_size[0]), int(cam_size[1])
+    if rotation is not None and cam_rotation is not None:
+        turn = (int(cam_rotation) - int(rotation)) % 360
+        tw, th = (h, w) if turn in (90, 270) else (w, h)
+        if (tw, th) == (cw, ch) and turn in QUARTER_TURNS:
+            return turn, None
+        return None, size_mismatch((w, h), (cw, ch), cam_name, what) or (
+            f"{what} {w} x {h} pictures {_TURNED.get(int(rotation) % 360, '')}, and {cam_name}'s pictures are "
+            f"{_TURNED.get(int(cam_rotation) % 360, '')}: turned to match, they are not the same size.")
+    elif (w, h) == (ch, cw) and (w, h) != (cw, ch):
+        unknown = ("the profile does not record which way the pictures of its checkerboard video were turned "
+                   "(a file from another program, or one made before Kinetrace recorded it)" if rotation is None
+                   else f"the video of {cam_name} does not say which way it is turned (this decoder cannot tell)")
+        fix = ("Measure the lens in Kinetrace from the checkerboard video (3D → Calibrate a Lens): a profile made "
+               "now records the turn, and is turned for this camera by itself." if rotation is None else
+               "Open the videos with the default decoder (KINETRACE_DECODE not set), which reads the turn.")
+        return None, (f"{what} {w} x {h} pictures and {cam_name} records {cw} x {ch}: the same pictures turned a "
+                      f"quarter turn, as when a camera films on its side. The lens is the same and the profile "
+                      f"could be turned to fit, but {unknown}, so it is not known which way. {fix}")
+    bad = size_mismatch((w, h), (cw, ch), cam_name, what)
+    return (None, bad) if bad else (0, None)
+
+
+def _turn_cw_once(prof: LensProfile) -> LensProfile:
+    """`prof` for its pictures turned 90 degrees clockwise: pixel (x, y) moves to (h - 1 - y, x),
+    the ray (x, y, 1) to (-y, x, 1). Radial distortion does not change; the tangential pair goes
+    (p1, p2) -> (p2, -p1) and the thin-prism terms (s1..s4) -> (-s3, -s4, s1, s2). Exact."""
+    import copy
+    w, h = int(prof.width), int(prof.height)
+    K = np.asarray(prof.K, np.float64)
+    if abs(K[0, 1]) > 1e-9:
+        raise ValueError("its camera matrix has a skew term, which a turned picture cannot keep in that form")
+    fx, fy, cx, cy = float(K[0, 0]), float(K[1, 1]), float(K[0, 2]), float(K[1, 2])
+    K2 = np.array([[fy, 0.0, (h - 1) - cy], [0.0, fx, cx], [0.0, 0.0, 1.0]])
+    d = np.asarray(prof.dist, np.float64).ravel().copy()
+    if not prof.fisheye:                 # Kannala-Brandt (fisheye) is radial only: nothing to move
+        if d.size >= 14 and np.any(np.abs(d[12:14]) > 0):
+            raise ValueError("it has tilted-sensor terms, which Kinetrace cannot turn")
+        if d.size >= 4:
+            p1, p2 = float(d[2]), float(d[3])
+            d[2], d[3] = p2, -p1
+        if d.size >= 12:
+            s1, s2, s3, s4 = (float(v) for v in d[8:12])
+            d[8:12] = [-s3, -s4, s1, s2]
+    rep = copy.deepcopy(prof.report or {})
+    if "focal_px" in rep:
+        rep["focal_px"] = [fy, fx]
+    if "principal_px" in rep:
+        rep["principal_px"] = [float(K2[0, 2]), float(K2[1, 2])]
+    if "width" in rep or "height" in rep:
+        rep["width"], rep["height"] = h, w
+    if "dist" in rep:
+        rep["dist"] = d.tolist()
+    if isinstance(rep.get("centre_fixed"), list) and len(rep["centre_fixed"]) == 2:
+        rep["centre_fixed"] = rep["centre_fixed"][::-1]           # left-right <-> up-down
+    if isinstance(rep.get("centre_split"), dict):
+        cs = rep["centre_split"]
+        cs["dx_px"], cs["dy_px"] = cs.get("dy_px"), cs.get("dx_px")
+    return LensProfile(h, w, K2, d, prof.fisheye, prof.rms, prof.n_views, prof.source, rep,
+                       None if prof.rotation is None else (int(prof.rotation) + 90) % 360)
+
+
+def turn_profile(prof: LensProfile, cw_deg: int) -> LensProfile:
+    """The same lens for its pictures turned `cw_deg` (0 / 90 / 180 / 270) degrees clockwise -- a
+    new profile (the given one is not changed; 0 returns it). Raises ValueError for another
+    angle or a model that cannot be turned (skew, tilted sensor)."""
+    cw = int(cw_deg) % 360
+    if cw not in QUARTER_TURNS:
+        raise ValueError(f"a lens profile can only be turned by quarter turns, not {cw_deg} degrees")
+    if cw == 0:
+        return prof
+    out = prof
+    for _ in range(cw // 90):
+        out = _turn_cw_once(out)
+    out.source = f"{prof.source or 'lens profile'}, turned {_TURN[cw]}"
+    reasons = out.report.get("verdict_reasons")
+    if isinstance(reasons, list):
+        reasons.append(f"The profile was measured on {int(prof.width)} x {int(prof.height)} pictures and turned "
+                       f"{_TURN[cw]} for a camera whose video is turned that way (the same lens; its numbers "
+                       "moved to the turned picture's pixels, an exact change).")
+    return out
+
+
+def fit_profile(prof: LensProfile, cam_size: tuple[int, int], cam_rotation: int | None,
+                cam_name: str = "this camera", what: str = "This lens profile was measured on"
+                ) -> tuple[LensProfile | None, str]:
+    """THE rule for putting lens profile `prof` on a camera recording `cam_size` pictures turned
+    `cam_rotation` degrees clockwise by the decoder (`video_source.display_rotation`): -> (the
+    profile to attach, "" or a sentence saying it was turned) or (None, why it cannot be used).
+    `turn_needed` decides; a turned profile is a new one that records the camera's turn."""
+    turn, bad = turn_needed((prof.width, prof.height), prof.rotation, cam_size, cam_rotation, cam_name, what)
+    if bad:
+        return None, bad
+    if not turn:
+        return prof, ""
+    try:
+        out = turn_profile(prof, turn)
+    except ValueError as e:
+        return None, (f"{what} {int(prof.width)} x {int(prof.height)} pictures and {cam_name}'s video is turned "
+                      f"{_TURN[turn]} from them, so the profile would have to be turned, but {e}. Measure the lens "
+                      "in Kinetrace from the checkerboard video (3D → Calibrate a Lens).")
+    return out, (f"The lens was measured on {int(prof.width)} x {int(prof.height)} pictures "
+                 f"{_TURNED[int(prof.rotation)]} and {cam_name}'s pictures are {_TURNED[int(cam_rotation) % 360]}, "
+                 f"so the profile was turned {_TURN[turn]} to fit its {int(cam_size[0])} x {int(cam_size[1])} "
+                 "pictures (exact: the same lens, its numbers moved to the turned picture's pixels).")
 
 
 # ---------------------------------------------------------- checkerboard
@@ -652,6 +800,9 @@ class ScanResult:
     # square -- the same physical corner on every frame) or "image" (nearest
     # the picture's top-left: a symmetric board, or one too faint to tell)
     orient: list[str] = field(default_factory=list)
+    # how far the decoder turned the video's stored pictures clockwise (`video_source.applied_rotation`):
+    # the profile fitted from these boards records it (`LensProfile.rotation`)
+    rotation: int | None = None
 
     def thumb_scale(self, i: int) -> float:
         """Pixels of thumbnail per pixel of video, for drawing corners on it."""
@@ -665,11 +816,12 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
     """Look for the board in up to `max_candidates` frames spread over the
     video. Detection runs on a downscaled copy for speed, then the corners
     are refined at full resolution. Own VideoCapture (one per thread)."""
-    from kinetrace.video_source import open_capture
+    from kinetrace.video_source import applied_rotation, open_capture
     cap = open_capture(str(path))
     if not cap.isOpened():
         raise OSError(f"could not open {path}")
     try:
+        rotation = applied_rotation(cap)
         n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -708,7 +860,7 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
             if progress is not None:
                 progress((k + 1) / len(idx), f"frame {f}: {len(frames)} boards found")
         return ScanResult((w, h), fps, n, len(idx), frames, corners, sample,
-                          thumbs, str(path), orient)
+                          thumbs, str(path), orient, rotation)
     finally:
         cap.release()
 

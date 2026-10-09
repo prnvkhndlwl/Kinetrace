@@ -244,7 +244,11 @@ file.
 ### `lenses.json`
 
 A list, one entry per camera (`null` without a profile): `width`, `height`,
-`K`, `dist`, `fisheye`, `rms`, `n_views`, `source`, `report`.
+`K`, `dist`, `fisheye`, `rms`, `n_views`, `source`, `report`, `rotation`. The profile
+is in the pixels of the camera's pictures as Kinetrace shows them; `rotation` (0, 90,
+180, 270 or `null` = not known) is how far, clockwise, the video player turned the
+stored pictures by the file's rotation tag (a camera filmed on its side). A
+`.klens.json` file holds the same fields, for the pictures of its checkerboard video.
 
 ### `cameras/<folder>/silhouette/summary.csv`
 
