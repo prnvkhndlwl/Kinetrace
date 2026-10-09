@@ -308,7 +308,9 @@ Your projects and exports are not touched by any of this.
 
 **Help → Check for Updates…** asks GitHub for the newest version (one request;
 nothing about you is sent, and nothing is checked unless you ask), shows what is
-new, and **Update now** installs it. Only changed files are replaced; `.venv/`,
+new, and **Update now** installs it. When you have not checked for 30 days, a
+note at start says so (click it to check; it comes back at most once a week
+until you do); that reminder only counts days, it never goes online. Only changed files are replaced; `.venv/`,
 `models/`, `recovery/`, `logs/`, `skeletons/`, `settings.ini` and your footage
 are never touched. When the app will not start, double-click `update.bat`
 (Windows) or `Update.command` (Mac), or run `bash update.sh` (`--check` only

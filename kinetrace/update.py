@@ -109,6 +109,22 @@ def is_newer(remote: str, local: str = APP_VERSION) -> bool:
     return parse_version(remote) > parse_version(local)
 
 
+# (G179) Nothing is checked unless the user asks, so a user who never asks never hears of a fix. The
+# app counts the days instead (no network): this long without a check, a note at start says so ...
+REMIND_AFTER_DAYS = 30
+REMIND_EVERY_DAYS = 7        # ... and not again sooner, until the user checks
+
+
+def reminder_due(now: float, last_check: float, since: float, last_reminded: float) -> bool:
+    """Whether to remind the user to check for updates (times in seconds since the epoch, 0 = never):
+    `REMIND_AFTER_DAYS` since the last check (or, never checked, since `since`: the first start that
+    counted), and `REMIND_EVERY_DAYS` since the last reminder. Offline: it only compares dates."""
+    day = 86400.0
+    base = max(float(last_check or 0), float(since or 0))
+    return (base > 0 and now - base >= REMIND_AFTER_DAYS * day
+            and now - float(last_reminded or 0) >= REMIND_EVERY_DAYS * day)
+
+
 # ------------------------------------------------------------------- network
 
 def api_base() -> str:

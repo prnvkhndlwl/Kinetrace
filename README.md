@@ -113,7 +113,7 @@ More in [Accuracy](https://github.com/prnvkhndlwl/Kinetrace/wiki/Accuracy) and
 [The whole wiki](https://github.com/prnvkhndlwl/Kinetrace/wiki)
 
 **Updating:** *Help → Check for Updates…* installs a newer version and keeps
-your projects and models.
+your projects and models; after 30 days without a check, a note at start reminds you.
 
 **Found a bug or have a question?** [Open an issue](https://github.com/prnvkhndlwl/Kinetrace/issues/new/choose)
 — [contributing](CONTRIBUTING.md) says what helps, and the [code of conduct](CODE_OF_CONDUCT.md)

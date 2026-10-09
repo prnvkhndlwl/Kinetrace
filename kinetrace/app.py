@@ -2760,7 +2760,43 @@ class MainWindow(QMainWindow):
         from kinetrace import updatedialog
         dlg = updatedialog.UpdateDialog(self, busy=self._update_busy, restart=self._restart_after_update)
         dlg.exec()
+        if getattr(dlg, "release", None) is not None:      # GitHub answered: the reminder starts over (G179)
+            self._set_setting("updates/last_check", time.time())
         dlg.deleteLater()
+
+    def _set_setting(self, key: str, value) -> None:
+        try:
+            self._settings().setValue(key, value)
+        except Exception:      # noqa: BLE001 - a settings file that cannot be written is not worth an error
+            pass
+
+    def _remind_updates(self, now: float | None = None) -> bool:
+        """(G179) At start (`main`): when the user has not checked for updates for
+        `update.REMIND_AFTER_DAYS` days, a clickable note says so -- at most once every
+        `update.REMIND_EVERY_DAYS` days. Offline: nothing is checked unless the user asks."""
+        from kinetrace import update
+        now = time.time() if now is None else float(now)
+        try:
+            s = self._settings()
+            last = float(s.value("updates/last_check", 0) or 0)
+            since = float(s.value("updates/since", 0) or 0)
+            reminded = float(s.value("updates/last_reminder", 0) or 0)
+        except Exception:      # noqa: BLE001 - unreadable settings: no reminder
+            return False
+        if not since:
+            self._set_setting("updates/since", now)          # the days start counting now
+            since = now
+        if not update.reminder_due(now, last, since, reminded):
+            return False
+        self._set_setting("updates/last_reminder", now)
+        days = int((now - max(last, since)) // 86400)
+        self.toast.show_message(
+            (f"You last checked for a newer Kinetrace {days} days ago" if last else
+             f"Kinetrace has not checked for a newer version in {days} days")
+            + f" (you have {APP_VERSION}). Click here, or Help → Check for Updates…, to look: fixes are only "
+            "installed when you ask, and nothing is checked unless you do.", "info", 20000,
+            on_click=self._check_updates)
+        return True
 
     def _restart_after_update(self):
         """Close the usual way (Save / Discard / Cancel for unsaved work), then
@@ -12721,6 +12757,8 @@ def main():
     from kinetrace import welcome
     if welcome.take_pending():          # (G178) the first start after an install, once
         QTimer.singleShot(600, lambda: show_install_welcome(win))
+    else:
+        QTimer.singleShot(1500, win._remind_updates)      # (G179) no check for a month: a note, offline
     if len(sys.argv) > 1 and Path(sys.argv[1]).exists():
         arg = sys.argv[1]
         if arg.endswith(PROJECT_SUFFIX) or projectfile.is_project(arg):

@@ -201,7 +201,9 @@ ready, needs downloading, or still needs access or a token.
 
 Open **Help → Check for Updates…**. The program asks GitHub whether a newer
 version has been published. It sends nothing about you or your computer, and
-it never checks unless you ask. If there is one, you see what is new, and
+it never checks unless you ask. When you have not checked for 30 days, a note at
+start reminds you (click it to check now; it comes back at most once a week
+until you do) — the reminder only counts days, it does not go online. If there is one, you see what is new, and
 **Update now** installs it (a download cut off by a lost connection resumes where it
 stopped, and a full disk is named as such). Only the program's own files are replaced: your
 projects, downloaded models, unsaved-work copies, saved skeletons and settings

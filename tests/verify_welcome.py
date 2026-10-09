@@ -1,4 +1,5 @@
-"""(G178, X37) After an install: the launcher's last words and the app's one-time pop-up.
+"""(G178, X37, G179) After an install: the launcher's last words, the app's one-time pop-up, and the
+offline reminder to check for updates.
 
   [1] the closing text: the version, which window may be closed (a Mac hands over to Kinetrace.app:
       "you can close it"; Windows / Linux: keep it open, closing it closes Kinetrace), how to start it
@@ -11,6 +12,8 @@
       warns about Documents / Desktop / Downloads; both still parse.
   [4] the pop-up (offscreen): `app.show_install_welcome` says it is installed, how to begin and to start
       next time, which window may be closed, what to keep.
+  [5] the update reminder: offline; after 30 days without a check a clickable note (it opens Check for
+      Updates), not again within a week; a check that reached GitHub starts the 30 days again.
 
 .venv\\Scripts\\python.exe tests\\verify_welcome.py
 """
@@ -117,6 +120,69 @@ check(seen.get("title") == "Kinetrace is installed" and f"Kinetrace {APP_VERSION
       "the pop-up: installed, how to begin, next time, what to keep", text[:200])
 for system, words in (("Darwin", "you can close it"), ("Windows", "closing it closes Kinetrace")):
     check(words in welcome.popup_html(APP_VERSION, system), f"the pop-up on {system}: {words}")
+
+print("\n[5] the update reminder (G179, offline)")
+from kinetrace import update  # noqa: E402
+D = 86400.0
+T = 1_800_000_000.0
+check(not update.reminder_due(T, 0, 0, 0), "never counted: no reminder")
+check(not update.reminder_due(T + 29 * D, 0, T, 0) and update.reminder_due(T + 30 * D, 0, T, 0),
+      "never checked: a reminder after 30 days of counting, not before")
+check(not update.reminder_due(T + 60 * D, T + 50 * D, T, 0), "a check 10 days ago: no reminder")
+check(not update.reminder_due(T + 33 * D, 0, T, T + 30 * D) and update.reminder_due(T + 37 * D, 0, T, T + 30 * D),
+      "reminded 3 days ago: not again; a week later: again")
+
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from kinetrace.app import MainWindow  # noqa: E402
+w = MainWindow()
+w.resize(1200, 800)
+w.show()
+s = w._settings()
+for k in ("updates/last_check", "updates/since", "updates/last_reminder"):
+    s.remove(k)
+s.sync()
+asked = []
+w._check_updates = lambda: asked.append("check")          # what the note's click starts
+check(not w._remind_updates(T) and float(w._settings().value("updates/since", 0)) == T,
+      "the first start only starts counting")
+check(not w._remind_updates(T + 20 * D), "20 days: nothing")
+shown = w._remind_updates(T + 31 * D)
+note = " ".join(str(n[0]) for n in w.toast._notices)
+check(shown and w.toast.isVisible() and "31 days" in note and "Check for Updates" in note,
+      "31 days: a note says so", note[:160])
+QTest.mouseClick(w.toast, Qt.LeftButton)
+app.processEvents()
+check(asked == ["check"], "clicking the note opens Check for Updates", asked)
+check(not w._remind_updates(T + 32 * D) and w._remind_updates(T + 38 * D), "not again the next day; a week later again")
+del w._check_updates                                         # the real one, with a stand-in dialog
+
+
+class _Dialog:
+    def __init__(self, *a, **k):
+        self.release = object()                              # GitHub answered
+
+    def exec(self):
+        return 0
+
+    def deleteLater(self):
+        pass
+
+
+from kinetrace import updatedialog  # noqa: E402
+real_dialog = updatedialog.UpdateDialog
+updatedialog.UpdateDialog = _Dialog
+try:
+    w._check_updates()
+finally:
+    updatedialog.UpdateDialog = real_dialog
+last = float(w._settings().value("updates/last_check", 0))
+import time  # noqa: E402
+check(abs(last - time.time()) < 60 and not w._remind_updates(time.time() + 5 * D),
+      "a check that reached GitHub starts the 30 days again", last)
+w.close()
+app.processEvents()
+w._dev_probe.wait(10000)
 
 print("\nverify_welcome: " + ("PASSED" if not FAILS else f"FAILED ({len(FAILS)}): " + "; ".join(FAILS)))
 sys.exit(1 if FAILS else 0)
