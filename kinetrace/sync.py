@@ -44,7 +44,7 @@ def motion_signal(path: str, f0: int, f1: int, progress=None, should_cancel=None
     cameras, 40 s): mean |d| correlation 0.53, 99th percentile 0.84, same
     lag. Own VideoCapture, one sequential read after a single seek. NaN where
     a frame did not decode."""
-    from kinetrace.video_source import open_capture
+    from kinetrace.video_source import open_capture, seek_capture
     cap = open_capture(str(path))
     if not cap.isOpened():
         raise OSError(f"could not open {path}")
@@ -55,7 +55,7 @@ def motion_signal(path: str, f0: int, f1: int, progress=None, should_cancel=None
         out = np.full(max(0, f1 - f0), np.nan)
         if f1 <= f0:
             return out
-        cap.set(cv2.CAP_PROP_POS_FRAMES, f0)
+        seek_capture(cap, str(path), f0)          # (I266) exact frames on a file whose seeks are not
         prev = None
         for k in range(f1 - f0):
             if should_cancel is not None and should_cancel():

@@ -120,7 +120,18 @@ jobs:
             verify_portable verify_core verify_projectfile verify_recovery verify_interop verify_stress verify_3d \
             verify_wand verify_lens verify_body verify_onbody_rules verify_sync verify_timeline_events \
             verify_ui_focus verify_display verify_multicam verify_3d_gui verify_sweep_fixes \
-            verify_alltracker_mps verify_install_paths verify_downloads verify_update
+            verify_alltracker_mps verify_install_paths verify_downloads verify_update \
+            verify_fingerprint verify_fingerprint_gui
+
+      - name: Frames decode as on Windows (I266)
+        # each OS's opencv-python ships its own FFmpeg: clips with B-frames behind an edit list, a late
+        # start and a dropped frame must show the same picture at each frame number as on Windows
+        # (tests/data/decode_identity, written there); a shift here is what a project moved to this OS
+        # would show its user
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
+          "$PY" tests/verify_decode_identity.py
 
       - name: Keep the logs of failing suites
         if: failure()

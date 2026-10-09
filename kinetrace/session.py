@@ -392,6 +392,11 @@ class TrackingSession:
         # per-point one, so it lives beside `masks` rather than in `points`.
         self.body: BodyTrack | None = None
         # (G153) there is no per-camera skeleton: each animal carries its own (AnimalMeta.skeleton)
+        # (I266) which pictures this camera's frame numbers mean, as decoded where the project was
+        # made (`fingerprint.VideoFingerprint`): another computer checks its own decoding against it.
+        # Not data the user edits: making one does not mark the project changed; it is saved with it.
+        self.fingerprint = None
+        self.fingerprint_problem = ""   # a saved fingerprint that could not be read: why (said once)
         self.current_frame = 0  # persisted so projects reopen where the user left off
         self.ui_state: dict = dict(DEFAULT_UI_STATE)
         self.data_version = 0   # bumped on every mutation (timeline repaint/cache key)

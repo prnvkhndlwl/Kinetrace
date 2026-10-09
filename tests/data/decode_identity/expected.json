@@ -1,0 +1,37 @@
+{
+ "decoder": {
+  "os": "Windows",
+  "machine": "AMD64",
+  "opencv": "5.0.0",
+  "avcodec": "61.19.100",
+  "avformat": "61.7.100",
+  "swscale": "8.3.100",
+  "backend": "auto"
+ },
+ "clips": {
+  "bframes": {
+   "n_frames": 98,
+   "sha256_16": "f7465f1aa786011a",
+   "seeks_exact": true,
+   "gaps": 0
+  },
+  "editlist": {
+   "n_frames": 96,
+   "sha256_16": "e1a4b22719b514d9",
+   "seeks_exact": true,
+   "gaps": 0
+  },
+  "late_start": {
+   "n_frames": 98,
+   "sha256_16": "293a711f686aea3c",
+   "seeks_exact": true,
+   "gaps": 0
+  },
+  "dropped_frame": {
+   "n_frames": 95,
+   "sha256_16": "f9e0dd290cdebe87",
+   "seeks_exact": false,
+   "gaps": 1
+  }
+ }
+}

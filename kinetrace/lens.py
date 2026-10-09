@@ -816,7 +816,7 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
     """Look for the board in up to `max_candidates` frames spread over the
     video. Detection runs on a downscaled copy for speed, then the corners
     are refined at full resolution. Own VideoCapture (one per thread)."""
-    from kinetrace.video_source import applied_rotation, open_capture
+    from kinetrace.video_source import applied_rotation, open_capture, seek_capture
     cap = open_capture(str(path))
     if not cap.isOpened():
         raise OSError(f"could not open {path}")
@@ -835,7 +835,7 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
         for k, f in enumerate(idx.tolist()):
             if should_cancel is not None and should_cancel():
                 break
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(f))
+            seek_capture(cap, str(path), int(f))      # (I266) the frame the board review shows again
             ok, bgr = cap.read()
             if not ok:
                 continue

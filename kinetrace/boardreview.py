@@ -85,13 +85,13 @@ class _FrameReader(QThread):
                 why = (f"the video is no longer at {self.video} (moved, renamed, or on a drive that is "
                        "not connected)")
             else:
-                from kinetrace.video_source import open_capture
+                from kinetrace.video_source import open_capture, seek_capture
                 cap = open_capture(self.video)
                 try:
                     if not cap.isOpened():
                         why = f"{name} could not be opened as a video"
                     else:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_no)
+                        seek_capture(cap, self.video, self.frame_no)      # (I266) as the scan read it
                         ok, img = cap.read()
                         if ok and img is not None:
                             bgr = img
