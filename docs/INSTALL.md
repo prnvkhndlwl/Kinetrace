@@ -310,7 +310,11 @@ Your projects and exports are not touched by any of this.
 nothing about you is sent, and nothing is checked unless you ask), shows what is
 new, and **Update now** installs it. When you have not checked for 30 days, a
 note at start says so (click it to check; it comes back at most once a week
-until you do); that reminder only counts days, it never goes online. Only changed files are replaced; `.venv/`,
+until you do); that reminder only counts days, it never goes online. A folder
+made with `git clone` is updated with git: on a Mac whose Command Line Tools
+are missing or broken (often after a macOS upgrade), *Update now* stays off and
+the window says how to repair them (`xcode-select --install` in Terminal), or
+run `git pull` in the folder yourself. Only changed files are replaced; `.venv/`,
 `models/`, `recovery/`, `logs/`, `skeletons/`, `settings.ini` and your footage
 are never touched. When the app will not start, double-click `update.bat`
 (Windows) or `Update.command` (Mac), or run `bash update.sh` (`--check` only

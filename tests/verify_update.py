@@ -302,6 +302,40 @@ else:
     check(r.reinstall and not (clone / ".venv/kinetrace-install.json").exists(), "requirements changed -> marker dropped")
     print("  fast-forwarded to the tag (not past it), local change refused, marker dropped OK")
 
+    # (X38) a git that does not RUN (the owner's Mac: Apple's /usr/bin/git stand-in with broken Command
+    # Line Tools) is skipped for one that does; with none, the refusal says what to do, in full
+    import types  # noqa: E402
+    broken = TMP / "broken_git.py"
+    broken.write_text("import sys\nsys.stderr.write(\"xcrun: error: unable to load libxcrun "
+                      "(dlopen(/Library/Developer/CommandLineTools/usr/lib/libxcrun.dylib, 0x0005)): fat file, "
+                      "but missing compatible architecture\")\nsys.exit(1)\n")
+    real_candidates = update._git_candidates
+    working = real_candidates()
+    update._GIT_CMD = None
+    update._git_candidates = lambda: [[sys.executable, str(broken)]] + working
+    try:
+        check(update.git_cmd() == working[0] and update.git_blocker(clone) is None,
+              "a git that does not run is skipped for one that does")
+        update._GIT_CMD = None
+        update._git_candidates = lambda: [[sys.executable, str(broken)]]
+        real_sys = update.sys
+        update.sys = types.SimpleNamespace(platform="darwin")
+        try:
+            why = update.git_blocker(clone)
+        finally:
+            update.sys = real_sys
+        check(why is not None and "Command Line Tools" in why and "xcode-select --install" in why
+              and "git pull" in why and "release page" in why and "xcrun" not in why,
+              "no git that runs on a Mac: the Command Line Tools named, the repair and the way round, no raw error")
+        update._GIT_CMD = None
+        update._git_candidates = lambda: []
+        why = update.git_blocker(clone)
+        check(why is not None and "git does not work" in why and "release page" in why, "no git at all: said")
+    finally:
+        update._git_candidates = real_candidates
+        update._GIT_CMD = None
+    print("  a git that does not run is skipped; none: the refusal says why and what to do OK")
+
 
 # ---------------------------------------------------------------- [5] scripts
 print("[5] launchers, scripts, installer, release workflow, licence")
