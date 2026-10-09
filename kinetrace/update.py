@@ -203,20 +203,76 @@ def install_kind(root: Path = ROOT) -> str:
     return "git" if (Path(root) / ".git").exists() else "zip"
 
 
+_GIT_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+
+def _git_candidates() -> list[list[str]]:
+    """The gits to try, in order. A Mac app started from Finder sees only the system folders, so
+    `which git` finds Apple's /usr/bin/git: a stand-in that needs the Command Line Tools and fails
+    when they are missing or broken (owner's Mac 2026-10-09, after a macOS upgrade: "unable to load
+    libxcrun ... fat file"). Homebrew's git, when there is one, is tried first."""
+    out: list[list[str]] = []
+    if sys.platform == "darwin":
+        out += [[p] for p in ("/opt/homebrew/bin/git", "/usr/local/bin/git") if os.path.exists(p)]
+    found = shutil.which("git")
+    if found and [found] not in out:
+        out.append([found])
+    return out
+
+
+_GIT_CMD: list[str] | None = None
+_GIT_PROBLEM = ""             # what the last git tried said when none works (for `git_blocker`)
+
+
+def git_cmd() -> list[str] | None:
+    """The first git that RUNS (`git --version`), or None; remembered once one works."""
+    global _GIT_CMD, _GIT_PROBLEM
+    if _GIT_CMD is not None:
+        return _GIT_CMD
+    for cmd in _git_candidates():
+        try:
+            r = subprocess.run([*cmd, "--version"], capture_output=True, text=True, timeout=20,
+                               creationflags=_GIT_FLAGS)
+        except (OSError, subprocess.SubprocessError) as e:
+            _GIT_PROBLEM = str(e)
+            continue
+        if r.returncode == 0:
+            _GIT_CMD = cmd
+            return cmd
+        _GIT_PROBLEM = (r.stderr or r.stdout).strip()
+    return None
+
+
 def _git(root: Path, *args: str, timeout: float = 120) -> subprocess.CompletedProcess:
-    flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
-                          timeout=timeout, creationflags=flags)
+    cmd = git_cmd() or ["git"]
+    return subprocess.run([*cmd, "-C", str(root), *args], capture_output=True, text=True,
+                          timeout=timeout, creationflags=_GIT_FLAGS)
+
+
+def _no_git_sentence() -> str:
+    """Why there is no working git here, and what to do -- in words (G94: never a raw error)."""
+    manual = ("Or update by hand with a git that works (`git pull` in the Kinetrace folder), or download the "
+              "new version from the release page.")
+    if sys.platform == "darwin":
+        broken = "xcrun" in _GIT_PROBLEM or "CommandLineTools" in _GIT_PROBLEM or "developer tools" in _GIT_PROBLEM
+        return ("This folder is a git clone, so it is updated with git, but git does not work on this Mac: "
+                + ("Apple's Command Line Tools, which provide it, need repairing (this often happens after a "
+                   "macOS upgrade). " if broken or not _git_candidates() else "")
+                + "To repair them, open Terminal and run `xcode-select --install` (if it says they are already "
+                  "installed, run `sudo rm -rf /Library/Developer/CommandLineTools` first), then try again. "
+                + manual)
+    return "This folder is a git clone, so it is updated with git, but git does not work here. " + manual
 
 
 def git_blocker(root: Path = ROOT) -> str | None:
     """Why a git checkout cannot be updated automatically, or None."""
-    if shutil.which("git") is None:
-        return ("This folder is a git checkout but git is not installed here. Update it with "
-                "`git pull`, or download the new version from the release page.")
+    if git_cmd() is None:
+        return _no_git_sentence()
     r = _git(root, "status", "--porcelain", "--untracked-files=no")
     if r.returncode != 0:
-        return f"git could not read this folder: {(r.stderr or r.stdout).strip()[:200]}"
+        said = (r.stderr or r.stdout).strip()
+        return (f"git could not read this folder ({said[:400]}). Update it by hand (`git pull` in the "
+                "Kinetrace folder), or download the new version from the release page.")
     if r.stdout.strip():
         n = len(r.stdout.strip().splitlines())
         return (f"{n} file(s) of Kinetrace itself were changed in this folder, so updating would "
