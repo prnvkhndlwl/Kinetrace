@@ -3,10 +3,10 @@
 Track ▾ -> Point model: Moving spot. For what the appearance trackers lose
 without a word: a spot a few pixels across that moves more than its own size
 per frame over a background that moves too (waves, ripples, leaves) -- a
-squid's head spot filmed from a ship, a bat over a river, an insect. On such
-footage AllTracker and CoTracker3 follow the background with high confidence
-(measured on two flying squid: lost within 2 frames, confidence 0.74-0.98,
-so auto-pause never fires; AUDIT I160).
+pale spot on an animal at the water surface, a bat over a river, an insect. On
+such footage AllTracker and CoTracker3 follow the background with high
+confidence (measured on real footage: lost within 2 frames, confidence
+0.74-0.98, so auto-pause never fires; AUDIT I160).
 
 On every frame the spot is searched near where its speed puts it (a
 constant-velocity prediction) with ONE detector, its "cue":
@@ -44,7 +44,7 @@ import numpy as np
 CUES = ("bright", "dark", "change")
 CUE_LABELS = {"auto": "automatic", "bright": "bright spot", "dark": "dark spot",
               "change": "unusual change"}
-DOG_RATIO = 4.0 / 1.5          # outer / inner sigma of the difference of Gaussians (the squid's 1.5 / 4.0)
+DOG_RATIO = 4.0 / 1.5          # outer / inner sigma of the difference of Gaussians (1.5 / 4.0: best on a 4-6 px spot)
 SIGMAS = (1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 11.0, 15.0, 21.0)   # spot scales tried at the seed
 #   (diameter ~ 2.8 sigma: 3 to ~60 px across; I162 -- it stopped at ~23 px)
 SMALL_SIGMAS = SIGMAS[:7]      # enough for the tiny-spot hint (<= 12 px), cheap on the GUI thread
@@ -53,13 +53,13 @@ MOTION_MARGIN = (1.5, 2.0)     # the test's smallest search = 1.5 x the 90th-per
 DEFAULT_SIGMA = 1.5
 MIN_RADIUS = 6.0               # px: the search radius never goes below this
 MAX_RADIUS = 400.0
-FIRST_RADIUS = 25.0            # px: the first search when the speed is unknown (squid: 20-30 px worked)
+FIRST_RADIUS = 25.0            # px: the first search when the speed is unknown (20-30 px worked on real footage)
 FIRST_SIMILAR = 0.3            # ... where two candidates this alike in strength (log ratio) = ambiguous
 VEL_KEEP = 0.5                 # velocity = VEL_KEEP x the old one + the rest x the last step
 REF_FRAMES = 8                 # the spot's reference strength = median of its last accepted frames
 WEAK_FRAC = 0.25               # a candidate under this x the reference strength is not the spot ...
 NOISE_K = 3.0                  # ... nor one under this x the DoG noise of the water / sky around it ON
-                               # THAT FRAME (the owner's squid: clicked frames >= 3.3, after the spot
+                               # THAT FRAME (real footage: clicked frames >= 3.3, after the spot
                                # fades into the ripples 1.6-3.0; one start-frame noise let it drift on)
 NOISE_HALF = 24.0              # px around the 3-sigma support: the area that noise is measured over
 AMBIG_RATIO = 0.85             # a second candidate this strong = two equally likely spots: stop
@@ -84,7 +84,7 @@ SPOT_MIN_CONTRAST = 6.0        # ... and standing this far out of its background
 # the one rule the app gives everywhere for which point model to use (G60)
 POINT_TARGET_MAX = 20.0        # px across: up to this, a target can be followed as a single point
 WHICH_MODEL = ("Moving spot is for a target small enough to be ONE point: a dot a few pixels to about 20 px "
-               "across, with no shape you could put a second landmark on (a squid's head spot seen from a ship, "
+               "across, with no shape you could put a second landmark on (a pale spot on an animal at the water surface, "
                "a distant bat, bird or insect). If you can see a body, a head, legs, wings or an outline, use "
                "AllTracker (with Segment for the outline): it needs no extra clicking.")
 # the test on the user's clicks (G57)
@@ -170,7 +170,7 @@ def default_radius(cue: str, sigma: float) -> float:
 
 def default_gain(cue: str) -> float:
     # a bright / dark spot is searched tightly (a wider search grabs glints on
-    # water: the squid); a change blob is a turning animal (the bats)
+    # water); a change blob is a turning animal
     return 1.5 if cue == "change" else 0.0
 
 

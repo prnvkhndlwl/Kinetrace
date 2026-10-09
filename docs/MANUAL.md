@@ -3128,7 +3128,7 @@ them: Track tracks each selected point with its own tracker.
 |---|---|---|
 | An animal, a person or an object whose shape you can see — even a small one, if you can make out its body | **AllTracker** (the default), with **Segment** (SAM 3) for the outline | one click per body part to start |
 | Painted dots or stickers on a body, with strong contrast, when speed matters | **CoTracker3** | one click per point |
-| A target that is only a dot — small enough to be one point (a few pixels to about 20 across), with no shape of its own — often over a background that moves (waves, ripples, sky, leaves): a squid's head spot from a ship, a distant bat, bird or insect | **Moving spot** | the dot on two frames in a row to start; 20 frames in a row for the test below |
+| A target that is only a dot — small enough to be one point (a few pixels to about 20 across), with no shape of its own — often over a background that moves (waves, ripples, sky, leaves): a pale spot on an animal at the water surface, a distant bat, bird or insect | **Moving spot** | the dot on two frames in a row to start; 20 frames in a row for the test below |
 | A round marker such as a wand ball | **Point ▾ → Ball marker** (whatever the point model) | one click per ball |
 
 Moving spot follows **one point per target**. On anything bigger it would
@@ -3137,10 +3137,10 @@ outline, that is AllTracker's job. The test below says so when the target
 measures more than about 20 pixels across.
 
 **Why AllTracker can lose a small spot.** AllTracker and CoTracker3 follow the
-*texture* around what you clicked. A squid's white head spot filmed from a ship
-is a few pixels across and has no texture of its own; the water around it has
-plenty, so they follow the water. Their confidence stays high, so nothing warns
-you: on two flying squid both were off within 2 frames.
+*texture* around what you clicked. A white spot a few pixels across, filmed on
+water, has no texture of its own; the water around it has plenty, so they
+follow the water. Their confidence stays high, so nothing warns you: on real
+footage of such a spot both were off within 2 frames.
 
 **How Moving spot works.** On every frame it looks for the spot where its speed
 says it should be, with one of three detectors: the brightest small blob there
@@ -3475,7 +3475,7 @@ left blank in every export and out of 3D. Drawn as a ring with a cross.
 its points, then Scene. Track tracks what is selected there.
 
 **Moving spot** — the point model for a target small enough to be **one
-point**: a dot with no visible shape (a squid's head spot on water, a distant
+point**: a dot with no visible shape (a pale spot on water, a distant
 bat against the sky). Anything whose shape you can see goes to AllTracker. It looks for the
 spot where its speed puts it — the brightest or darkest small blob there, or
 what changes much more than that background usually does — and stops where it

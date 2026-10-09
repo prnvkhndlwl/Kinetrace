@@ -12,7 +12,7 @@ exact ground truth. Every scene is the hard case it is named after:
          dark-spot search finds rocks, the unusual-change cue finds the bat
 
 Options: `vanish_at` (the spot is gone from that frame on), `fade` = (first,
-last) frame over which the sea spot fades to nothing (the owner's squid: it
+last) frame over which the sea spot fades to nothing (as on real footage: it
 fades into the ripples), `twin` (a second identical spot crosses the first), `zigzag` (the sky bird dodges
 up and down), `bird_sigma` (its size),
 `exit_right` (the spot flies out of the picture). Frames are RGB uint8.

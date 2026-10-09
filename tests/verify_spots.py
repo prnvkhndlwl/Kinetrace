@@ -73,7 +73,7 @@ look = spots.measure_spot(sea[0], sea_gt[0])
 assert look is not None and look.cue == "bright" and look.diameter < 8, look
 look = spots.measure_spot(sky[0], sky_gt[0])
 assert look is not None and look.cue == "dark" and look.diameter < 10, look
-assert spots.looks_like_small_spot(sea[0], sea_gt[0]) is not None, "the squid-like spot is a tiny spot"
+assert spots.looks_like_small_spot(sea[0], sea_gt[0]) is not None, "the sea spot is a tiny spot"
 # a big textured animal is not a tiny spot
 big = np.full((300, 300, 3), 90, np.uint8)
 cv2.ellipse(big, (150, 150), (90, 50), 20, 0, 360, (170, 150, 120), -1)
@@ -117,7 +117,7 @@ print("  the right cue follows each scene; the wrong ones stop OK")
 fr, gt = make_scene("sea", vanish_at=40)
 t, out = follow(fr, gt, spots.SpotSettings())
 assert t.stopped == (40, "missing") and max(out) == 39, (t.stopped, max(out))
-# a spot that FADES into the water (the owner's squid): it must stop, not follow the ripples
+# a spot that FADES into the water (as on real footage): it must stop, not follow the ripples
 fr, gt = make_scene("sea", fade=(35, 50))
 t, out = follow(fr, gt, spots.SpotSettings())
 e = errors(out, gt)

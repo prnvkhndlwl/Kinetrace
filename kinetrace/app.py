@@ -9020,7 +9020,7 @@ class MainWindow(QMainWindow):
 
     def _hint_corrections(self, pid: int) -> None:
         """G58: once per point, when it has been corrected by hand on 5 of the last
-        20 frames while AllTracker / CoTracker3 tracks it -- the squid pattern."""
+        20 frames while AllTracker / CoTracker3 tracks it -- a small spot those trackers lose without a word."""
         s = self.session
         # a ball marker is not tested (the test refuses it): no hint for it (G102)
         if s is None or s.points[pid].kind != "point" or s.points[pid].is_ball or self._tracker_of(pid) == "spot":

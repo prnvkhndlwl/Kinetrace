@@ -5,7 +5,8 @@
 # v0.2.0 and publishes a GitHub Release with notes written from the commits
 # since the previous one (edit them on the Releases page if you like). Pushes
 # that leave APP_VERSION alone publish nothing, so work in progress never
-# reaches users. A version that is already published is left alone.
+# reaches users. A version that is already published is left alone. A 0.x
+# version is published as a beta ("Kinetrace 0.5.0 (beta)", a beta note on top).
 # (Actions tab -> "Release" -> Run workflow does the same by hand.)
 name: Release
 
@@ -43,5 +44,13 @@ jobs:
             echo "$tag is already published - nothing to do."
             exit 0
           fi
-          gh release create "$tag" --target "$GITHUB_SHA" --title "Kinetrace $VERSION" --generate-notes
-          echo "Published $tag: users are offered it by Help -> Check for Updates."
+          # 0.x = beta: said in the title and on top of the notes. NOT marked "pre-release": GitHub's
+          # /releases/latest (what Help -> Check for Updates asks) leaves pre-releases out
+          title="Kinetrace $VERSION"
+          notes=""
+          case "$VERSION" in
+            0.*) title="$title (beta)"
+                 notes="**Beta.** Kinetrace is still being tested: expect rough edges, keep your own copies of your data, and please report problems on the Issues page." ;;
+          esac
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$title" --notes "$notes" --generate-notes
+          echo "Published $tag ($title): users are offered it by Help -> Check for Updates."

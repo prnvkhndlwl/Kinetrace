@@ -214,17 +214,17 @@ def _():
 def _():
     r_spot = spots.TestResult("Moving spot: bright spot, search 6 px", "spot", spots.SpotSettings("bright", 6, 0, 1.5),
                               frames=10, first_ok=10, errors=[1.0])
-    txt = spots.verdict_text("squid_1", [r_spot])
-    assert "for squid_1" in txt and "for this project" not in txt, txt
+    txt = spots.verdict_text("spot_1", [r_spot])
+    assert "for spot_1" in txt and "for this project" not in txt, txt
     r_at = spots.TestResult("AllTracker", "alltracker", frames=10, first_ok=10, errors=[0.5])
-    txt = spots.verdict_text("squid_1", [r_at])
-    assert "for squid_1" in txt and "for this project" not in txt, txt
-    dlg = pointtest.PointModelTest(None, "squid_1", V600, FrameCache(1 << 20), 600, (640, 480),
+    txt = spots.verdict_text("spot_1", [r_at])
+    assert "for spot_1" in txt and "for this project" not in txt, txt
+    dlg = pointtest.PointModelTest(None, "spot_1", V600, FrameCache(1 << 20), 600, (640, 480),
                                    {f: np.array([1.0 * f, 5.0]) for f in range(25)}, [], True, False)
     dlg._thread = types.SimpleNamespace(_cancel=False, limit=6.0, look=None, unread=None)
     dlg._on_done([r_spot])
-    assert "for squid_1" in dlg.btn_use.text() and "for this project" not in dlg.btn_use.text(), dlg.btn_use.text()
-    assert "squid_1" in dlg.btn_use.text()
+    assert "for spot_1" in dlg.btn_use.text() and "for this project" not in dlg.btn_use.text(), dlg.btn_use.text()
+    assert "spot_1" in dlg.btn_use.text()
 
 
 # ---------------------------------------------------------------- I187 / I194: Moving spot
