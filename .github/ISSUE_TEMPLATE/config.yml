@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Manual and wiki
+    url: https://github.com/prnvkhndlwl/Kinetrace/wiki
+    about: How to install, track, calibrate and export; the limitations.
+  - name: Report a security problem (privately)
+    url: https://github.com/prnvkhndlwl/Kinetrace/security/advisories/new
+    about: Please do not report security problems in a public issue.
