@@ -50,6 +50,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_gopro", "verify_point_tools", "verify_lens_export",
        # (I269) a lens profile on a camera filmed on its side
        "verify_lens_turn",
+       # (G176) one lens file on several cameras
+       "verify_lens_attach",
        # any number of segments (G149) and which segment each action takes (G150, G151)
        "verify_segments", "verify_segment_targets",
        # animal layers, the two zooms (G152-G160)

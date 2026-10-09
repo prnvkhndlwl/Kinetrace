@@ -1724,13 +1724,24 @@ close it without saving, the program offers to save it for you. The wizard:
    project (with nothing open that button reads **Close**); **Save lens
    file…** keeps it for other projects (`.klens.json`) —
    worth doing every time, since it stays valid as long as the camera keeps
-   the same lens, zoom and resolution. Forgot? **3D → Export Lens Profile…**
+   the same lens, zoom and resolution. The profile records which checkerboard
+   video it was measured on (name and full path) and the frame numbers of the
+   boards it used (the report lists them too), so you can always go back and
+   look at those frames. Forgot? **3D → Export Lens Profile…**
    saves any camera's profile at any time (however it was made: checkerboard,
    GoPro's lens model, a file), as a Kinetrace `.klens.json` or for other
    programs (OpenCV `.yml` / `.json`, Argus `.txt` for a standard lens), and
-   **3D → Load a Lens Profile for This Camera…** puts a saved profile on the
-   camera you are working on (same picture size only, or the same pictures
-   turned for a camera filmed on its side; replacing a profile is asked first). Already have a profile? On step 3 press
+   **3D → Load a Lens Profile for Cameras…** puts a saved profile on as many
+   cameras as you like in one go — a rig of 5 + 5 or 4 + 4 + 2 identical
+   cameras needs one load per group. It lists every camera with what it
+   records (a GoPro's model, lens mode and size) and what the file would do to
+   it: *fits*, *fits, turned* (a camera filmed on its side), *does not fit*
+   (another picture size: it cannot be ticked; hover the row for why), or
+   *replaces its profile* (in orange). The camera you are working on starts
+   ticked; **Tick every camera it fits** ticks the rest — then untick any
+   camera of another model, lens or mode, since the same picture size does not
+   prove the same lens. A camera that already has a different profile is
+   never ticked for you. Press **Attach to N cameras**. Already have a profile? On step 3 press
    **I already have a lens file…** instead (a `.klens.json`, or an Argus /
    DLTdv camera profile `.txt`): it goes straight to this last page. From an
    Argus file with several lines each camera gets the line with its own camera

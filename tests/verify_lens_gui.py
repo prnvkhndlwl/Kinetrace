@@ -13,6 +13,7 @@ profiles are covered too.
 
 Run: .venv\\Scripts\\python.exe tests\\verify_lens_gui.py
 """
+import json
 import os
 import sys
 import time
@@ -367,6 +368,26 @@ for c in range(N_CAM):
     assert not prof.fisheye
 print("lens wizard attached a GOOD profile to every camera OK")
 
+# the profile names its board video and the VIDEO frames of the boards it used: each listed frame,
+# read again from that video, shows the board at the corners the fit used
+for c in range(N_CAM):
+    bd, sc = p.lenses[c].board, scans[c]
+    assert bd.get("video") == os.path.basename(board_videos[c]), bd.get("video")
+    assert os.path.normcase(bd.get("path", "")) == os.path.normcase(os.path.abspath(board_videos[c])), bd.get("path")
+    assert bd["size"] == list(sc.size) and bd["rotation"] == 0 and bd["pattern"] == [9, 6], bd
+    assert abs(bd["square_m"] - 0.024) < 1e-12, bd["square_m"]
+    assert len(bd["frames"]) == p.lenses[c].n_views and set(bd["frames"]) <= set(sc.frames), bd["frames"]
+    assert any("frames " in r and os.path.basename(board_videos[c]) in r for r in p.lenses[c].report["verdict_reasons"])
+cap = cv2.VideoCapture(board_videos[0])
+for f in p.lenses[0].board["frames"][:5]:
+    cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+    ok, bgr = cap.read()
+    found = lens.detect_board(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (9, 6)) if ok else None
+    want = scans[0].corners[scans[0].frames.index(f)]
+    assert found is not None and np.max(np.abs(found - want)) < 0.5, f"frame {f}: the board is not where the fit had it"
+cap.release()
+print("the profile names its board video and frames, and they hold the boards OK")
+
 # save / load the lens file through the result page
 lensfile = os.path.join(SCRATCH, "cam1.klens.json")
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (lensfile, ""))
@@ -377,7 +398,12 @@ wiz.page_result._save()
 assert os.path.exists(lensfile)
 back = lens.LensProfile.load(lensfile)
 assert np.allclose(back.K, p.lenses[0].K) and back.report["verdict"] == "good"
-print("lens file save / load OK")
+assert back.board == p.lenses[0].board and back.board["frames"], "the board video and frames are in the file"
+assert "views_used" in p.lenses[0].report and "views_used" not in json.load(open(lensfile, encoding="utf-8"))["report"], \
+    "views_used (positions in the wizard's board list) stays in memory, not in the file"
+doubled = p.lenses[0].save(os.path.join(SCRATCH, "twice.klens.klens.json"))
+assert os.path.basename(doubled) == "twice.klens.json" and os.path.exists(doubled), doubled
+print("lens file save / load OK (board video kept; no doubled .klens)")
 
 # ---- "I already have a lens file" reaches the Attach button (I76) --------------------
 QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (lensfile, ""))

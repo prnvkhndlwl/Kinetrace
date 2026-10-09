@@ -10,7 +10,7 @@ alone attached it with the centre on the wrong side. A turn that is not known is
 Pure: the turn is exact for the standard, rational and fisheye models (projection identity), the
 fitting rule, the file round trip; the decoder's turn on ffmpeg-tagged clips (and its direction:
 the picture really is the stored one turned that way); a board scan records its video's turn.
-Through the window (offscreen): 3D -> Load a Lens Profile for This Camera... on a camera filmed on its
+Through the window (offscreen): 3D -> Load a Lens Profile for Cameras... on a camera filmed on its
 side and on an upside-down one, an unknown turn refused, the wand wizard's "Use for all" targets.
 
 .venv\\Scripts\\python.exe tests\\verify_lens_turn.py
@@ -25,6 +25,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+sys.path.insert(1, HERE)
 OUT = os.path.join(HERE, "out", "lens_turn")
 shutil.rmtree(OUT, ignore_errors=True)
 os.makedirs(OUT, exist_ok=True)
@@ -42,6 +43,9 @@ QMessageBox.warning = staticmethod(lambda *a, **k: (ASK["warn"].append(str(a[2])
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.question = staticmethod(lambda *a, **k: ASK["question"])
 app = QApplication.instance() or QApplication([])
+import _lens_attach  # noqa: E402  (the camera list: the working camera stays ticked)
+
+_lens_attach.install()
 
 from kinetrace import gpmf, lens  # noqa: E402
 from kinetrace.app import READY, MainWindow  # noqa: E402
@@ -285,8 +289,9 @@ before = p.lenses[0]
 ASK["open"] = argus
 w.act_load_lens.trigger()
 pump(0.1)
-check(p.lenses[0] is before and ASK["warn"] and "not known which way" in ASK["warn"][-1],
-      "a profile that does not record its turn is refused on the turned camera, in words", ASK["warn"][-1:])
+seen = _lens_attach.STATE["seen"][-1]
+check(p.lenses[0] is before and "not known" in seen["rows"][0][0] and not seen["rows"][0][1],
+      "a profile that does not record its turn cannot be ticked for the turned camera, in words", seen)
 
 # the wand wizard's "Use for all": the level camera's profile reaches the turned cameras, turned
 p.lenses = [None, None, small]

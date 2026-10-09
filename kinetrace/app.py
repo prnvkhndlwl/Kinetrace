@@ -1736,9 +1736,10 @@ class MainWindow(QMainWindow):
         self.act_export_lens.setToolTip("Save a camera's lens profile (from the checkerboard, GoPro's lens model or a\n"
                                         "file) to reuse it later: for this camera in other projects, or for other\n"
                                         "cameras of the same model, lens, zoom and recording mode")
-        self.act_load_lens = QAction("Load a Lens Profile for This Camera…", self, triggered=self._load_lens_profile)
+        self.act_load_lens = QAction("Load a Lens Profile for Cameras…", self, triggered=self._load_lens_profile)
         self.act_load_lens.setToolTip("Attach a saved lens profile (.klens.json, OpenCV .yml / .json, Argus .txt) to\n"
-                                      "the working camera; the picture size must match")
+                                      "the cameras you tick (all the identical ones at once); the picture size must\n"
+                                      "match, or be the same pictures turned (a camera filmed on its side)")
         self.act_wand = QAction("Calibrate Cameras with a &Wand…", self, triggered=self._wand_wizard)
         self.act_wand.setToolTip("Work out where the cameras are from a wand of known length waved in "
                                  "front of them — no MATLAB, no easyWand. Explains every step.")
@@ -10905,7 +10906,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self, "No lens profile yet",
                 "No camera of this project has a lens profile yet.\n\nMake one with 3D → Calibrate a Lens "
-                "(checkerboard), load one with 3D → Load a Lens Profile for This Camera…"
+                "(checkerboard), load one with 3D → Load a Lens Profile for Cameras…"
                 + (", or give the GoPro cameras GoPro's lens model in 3D → GoPro Cameras…" if self._gopro_infos() else "")
                 + ". Then export it here.")
             return
@@ -10937,24 +10938,29 @@ class MainWindow(QMainWindow):
             return
         self.toast.show_message(
             f"Lens profile of {p.name(v)} saved as {Path(path).name} ({prof.width}×{prof.height}). To use it again: "
-            "3D → Load a Lens Profile for This Camera… (or the lens wizard's <i>I already have a lens file…</i>), "
+            "3D → Load a Lens Profile for Cameras… (or the lens wizard's <i>I already have a lens file…</i>), "
             "for this camera in another project or for cameras of the same model, lens, zoom and recording mode.",
             "success", 12000)
 
     def _load_lens_profile(self) -> None:
-        """3D -> Load a Lens Profile for This Camera… (G148): a saved profile (.klens.json, OpenCV, Argus: the
-        lens wizard's reader, `lens.read_lens_for`) attached to the working camera after the picture-size
-        check every lens gets (I31). Replacing a profile the camera already has is asked first."""
+        """3D -> Load a Lens Profile for Cameras… (G148, G176): a saved profile (.klens.json, OpenCV, Argus: the
+        lens wizard's reader, `lens.read_lens_for`) attached after the picture-size check every lens gets
+        (I31; turned for a camera filmed on its side, I269). With several cameras, `LensAttachDialog` lists
+        what the file does to each and attaches it to the ticked ones in one go (a rig of identical
+        cameras); with one camera, replacing its profile is asked first."""
         from kinetrace import lens as lens_mod
         from kinetrace.lenswizard import LENS_FILTER
         p = self.project
         if p is None or self.state != READY:
             return
         v = p.active
-        path, _ = QFileDialog.getOpenFileName(self, f"Lens profile for {p.name(v)}",
+        path, _ = QFileDialog.getOpenFileName(self, "Lens profile" if p.n_views > 1 else f"Lens profile for {p.name(v)}",
                                               self._start_folder(str(Path(self.info.path).parent) if self.info else ""),
                                               LENS_FILTER)
         if not path:
+            return
+        if p.n_views > 1:
+            self._load_lens_for_cameras(path)
             return
         try:
             prof, which = lens_mod.read_lens_for(path, v, p.name(v))
@@ -10980,6 +10986,37 @@ class MainWindow(QMainWindow):
                                 + (said + " " if said else "")
                                 + "The wand calibration will use it; save the project to keep it.", "success",
                                 14000 if said else 10000)
+
+    def _load_lens_for_cameras(self, path: str) -> None:
+        """(G176) Lens file `path` for the cameras the user ticks in `LensAttachDialog`: each gets its own
+        line of an Argus file and its own turn; the ticks are the consent to replace a profile (the row
+        says it replaces, in amber); what was done is said in a toast."""
+        from kinetrace.lensattach import LensAttachDialog, attach_rows
+        p = self.project
+        recordings = []
+        for k in range(p.n_views):
+            g = getattr(self._views[k].info, "gopro", None) if k < len(self._views) else None
+            s = p.sessions[k]
+            recordings.append(g.label if g is not None else f"{int(s.width)} x {int(s.height)}, {s.fps:g} fps")
+        try:
+            rows = attach_rows(p, path, recordings)
+        except Exception as e:      # noqa: BLE001 - not a lens file, a damaged one: said
+            QMessageBox.warning(self, "Lens profile not loaded",
+                                _plain_error(e, f"{Path(path).name} could not be read", reading=True))
+            return
+        dlg = LensAttachDialog(self, path, rows, p.active)
+        accepted = dlg.exec() == QDialog.Accepted
+        views = dlg.chosen() if accepted else []
+        dlg.deleteLater()
+        if not views:
+            return
+        by_view = {r.view: r.profile for r in rows if r.view in views}
+        self._set_lenses(by_view)
+        turned = [r.name for r in rows if r.view in views and r.profile is not None and r.detail]
+        self.toast.show_message(
+            f"Lens profile {Path(path).name} attached to {', '.join(p.name(k) for k in views)}"
+            + (f" (turned to fit {', '.join(turned)}, filmed turned)" if turned else "")
+            + ". The wand calibration will use it; save the project to keep it.", "success", 12000)
 
     def _lens_fit(self, prof, v: int) -> tuple[object | None, str]:
         """Lens profile `prof` made fit for camera v (`calibwizard.lens_for_camera`): (the profile to

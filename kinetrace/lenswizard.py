@@ -605,6 +605,13 @@ class ReviewPage(QWizardPage):
         used = (prof.report or {}).get("views_used")
         self.wiz.used_boards = ([idx[k] for k in used if 0 <= k < len(idx)] if used is not None
                                 else list(idx))
+        # the video and its frame numbers go into the profile: the lens can be traced back to its boards
+        scan = self.wiz.scan
+        if scan is not None:
+            prof.board = lens.board_record(scan, self.wiz.used_boards, self.wiz.pattern, self.wiz.square)
+            said = lens.board_sentence(prof.board)
+            if said and isinstance(prof.report.get("verdict_reasons"), list):
+                prof.report["verdict_reasons"].append(said)
 
     def _now(self) -> tuple:
         return (tuple(self.review.chosen()), self.review.corner_rev)

@@ -104,11 +104,12 @@ QListWidget::item:selected {{
     background: rgba(10,132,255,0.28); color: white;
     border: 1px solid rgba(10,132,255,0.45);
 }}
-QListView::indicator {{
+/* tables too (G176): an unticked box drawn by the platform style is invisible on this theme */
+QListView::indicator, QTableView::indicator {{
     width: 14px; height: 14px; border-radius: 4px;
     border: 1px solid {HAIRLINE}; background: {BG_INPUT};
 }}
-QListView::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
+QListView::indicator:checked, QTableView::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
 QDockWidget {{ color: {TEXT_DIM}; font-weight: 600; }}
 QDockWidget::title {{ padding: 7px 10px; background: {BG_WINDOW}; }}
 

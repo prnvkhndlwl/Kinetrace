@@ -96,6 +96,9 @@ class LensProfile:
     # turns the profile by for a camera whose video is turned otherwise. None = not known (a file
     # from another program, or a profile saved before Kinetrace recorded it)
     rotation: int | None = None
+    # where the boards came from (`board_record`): the checkerboard video and the VIDEO frame numbers of
+    # the boards the fit used, so the calibration can be traced back; {} for a profile not fitted here
+    board: dict = field(default_factory=dict)
 
     # ---- derived ------------------------------------------------------
     @property
@@ -167,11 +170,14 @@ class LensProfile:
 
     # ---- files ----------------------------------------------------------
     def to_json(self) -> dict:
+        # `views_used` is the lens wizard's working state (positions in the list of boards the fit was given,
+        # meaningless without its scan): not written. The boards' video frames are in `board`
+        report = {k: v for k, v in (self.report or {}).items() if k != "views_used"}
         return {"kinetrace_lens": 1, "width": int(self.width), "height": int(self.height),
                 "K": np.asarray(self.K, np.float64).tolist(), "dist": np.asarray(self.dist, np.float64).tolist(),
                 "fisheye": bool(self.fisheye), "rms": (None if not np.isfinite(self.rms) else float(self.rms)),
-                "n_views": int(self.n_views), "source": self.source, "report": self.report,
-                "rotation": None if self.rotation is None else int(self.rotation)}
+                "n_views": int(self.n_views), "source": self.source, "report": report,
+                "rotation": None if self.rotation is None else int(self.rotation), "board": self.board}
 
     @staticmethod
     def from_json(d: dict) -> "LensProfile":
@@ -184,12 +190,14 @@ class LensProfile:
                            np.asarray(d.get("dist", []), np.float64).ravel(), bool(d.get("fisheye", False)),
                            float("nan") if rms is None else float(rms), int(d.get("n_views", 0)),
                            str(d.get("source", "")), dict(d.get("report") or {}),
-                           rot if rot in QUARTER_TURNS else None)
+                           rot if rot in QUARTER_TURNS else None, dict(d.get("board") or {}))
 
     def save(self, path: str | Path) -> str:
         p = Path(path)
-        if not p.name.lower().endswith(LENS_SUFFIX):
-            p = p.with_name(p.stem + LENS_SUFFIX)
+        base = p.name[:-len(LENS_SUFFIX)] if p.name.lower().endswith(LENS_SUFFIX) else p.stem
+        while base.lower().endswith(".klens"):      # "x.klens" + the filter's suffix wrote x.klens.klens.json
+            base = base[:-len(".klens")]
+        p = p.with_name((base or "lens") + LENS_SUFFIX)
         p.write_text(json.dumps(self.to_json(), indent=1), encoding="utf-8")
         return str(p)
 
@@ -446,7 +454,8 @@ def _turn_cw_once(prof: LensProfile) -> LensProfile:
         cs = rep["centre_split"]
         cs["dx_px"], cs["dy_px"] = cs.get("dy_px"), cs.get("dx_px")
     return LensProfile(h, w, K2, d, prof.fisheye, prof.rms, prof.n_views, prof.source, rep,
-                       None if prof.rotation is None else (int(prof.rotation) + 90) % 360)
+                       None if prof.rotation is None else (int(prof.rotation) + 90) % 360,
+                       copy.deepcopy(prof.board or {}))      # the boards' video is the same one
 
 
 def turn_profile(prof: LensProfile, cw_deg: int) -> LensProfile:
@@ -863,6 +872,28 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
                           thumbs, str(path), orient, rotation)
     finally:
         cap.release()
+
+
+def board_record(scan: ScanResult, used: list[int], pattern: tuple[int, int], square_m: float) -> dict:
+    """Where a checkerboard fit's boards came from, for `LensProfile.board`: the video (file name and
+    full path, picture size, its turn) and the VIDEO frame numbers of the boards the fit used (`used` =
+    scan numbering; 0 = the video's first frame), with the board's inner corners and square. A
+    profile's `report["views_used"]` counts the boards the fit was given, not frames: these do."""
+    import os
+    frames = [int(scan.frames[i]) for i in (used or []) if 0 <= int(i) < len(scan.frames)]
+    return {"video": Path(scan.video).name, "path": os.path.abspath(scan.video) if scan.video else "",
+            "size": [int(v) for v in scan.size], "rotation": scan.rotation, "frames": frames,
+            "pattern": [int(v) for v in pattern], "square_m": float(square_m)}
+
+
+def board_sentence(board: dict) -> str:
+    """The `board` record in words, for the report: which video and frames the lens was measured on."""
+    if not board or not board.get("video"):
+        return ""
+    fr = board.get("frames") or []
+    return (f"Measured on {len(fr)} boards in {board['video']} ({board['size'][0]} x {board['size'][1]}), at frames "
+            f"{', '.join(str(f) for f in fr)} (0 = the video's first frame). The file keeps the video's name, path "
+            "and these frames, so the calibration can be checked again later.")
 
 
 # ------------------------------------------------------------- calibrate

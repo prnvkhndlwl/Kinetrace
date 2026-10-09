@@ -3,9 +3,10 @@
 Through the window (offscreen, two cameras, no GPU): 3D -> Export Lens Profile… with no profile says so
 and writes nothing; with GoPro's lens on camA it writes a .klens.json that reads back identical (report
 kept), an OpenCV .yml that reads back identical, and refuses a fisheye as an Argus .txt with a message;
-3D -> Load a Lens Profile for This Camera… puts the saved file on camB, asks before replacing a profile
-(No keeps it), refuses a profile of another picture size; with profiles on both cameras the export asks
-which camera's.
+3D -> Load a Lens Profile for Cameras… (its camera list, G176: the working camera ticked) puts the saved
+file on camB; a profile that would replace camB's is not pre-ticked (nothing changes until it is ticked);
+a profile of another picture size cannot be ticked; with profiles on both cameras the export asks which
+camera's.
 
 .venv\\Scripts\\python.exe tests\\verify_lens_export.py
 """
@@ -29,6 +30,7 @@ import numpy as np  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox  # noqa: E402
 
 from _synth_gopro import make_gopro_video  # noqa: E402
+import _lens_attach  # noqa: E402
 
 ASK = {"save": ("", ""), "open": "", "item": None, "question": QMessageBox.No, "info": [], "warn": [], "items": []}
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: ASK["save"])
@@ -46,6 +48,7 @@ def _item(parent, title, label, items, current=0, editable=False):
 
 
 QInputDialog.getItem = staticmethod(_item)
+_lens_attach.install()
 app = QApplication.instance() or QApplication([])
 from kinetrace import calibio, lens  # noqa: E402
 from kinetrace.app import READY, MainWindow  # noqa: E402
@@ -128,23 +131,26 @@ pump(0.1)
 check(p.lenses[1] is not None and same(p.lenses[1], prof) and p.dirty, "Load: camB has the saved profile")
 other = lens.LensProfile(640, 480, prof.K * 2, prof.dist, True, float("nan"), 0, "elsewhere")
 other_path = other.save(os.path.join(OUT, "other_size.klens.json"))
-ASK["question"] = QMessageBox.Yes
 ASK["open"] = other_path
 w.act_load_lens.trigger()
 pump(0.1)
-check(same(p.lenses[1], prof) and ASK["warn"] and "640" in ASK["warn"][-1],
-      "a profile of another picture size is refused, the camera keeps its own", ASK["warn"][-1:])
+seen = _lens_attach.STATE["seen"][-1]
+check(same(p.lenses[1], prof) and "640" in seen["rows"][1][0] and not seen["rows"][1][1] and not seen["chosen"],
+      "a profile of another picture size cannot be ticked (the row says why), the camera keeps its own", seen)
 mod = lens.LensProfile(prof.width, prof.height, prof.K * 1.01, prof.dist, True, 0.5, 30, "checkerboard (Kinetrace)")
 mod_path = mod.save(os.path.join(OUT, "mod.klens.json"))
-ASK["question"] = QMessageBox.No
 ASK["open"] = mod_path
 w.act_load_lens.trigger()
 pump(0.1)
-check(same(p.lenses[1], prof), "replacing is asked first: No keeps the profile")
-ASK["question"] = QMessageBox.Yes
+seen = _lens_attach.STATE["seen"][-1]
+check(same(p.lenses[1], prof) and "replaces" in seen["rows"][1][0] and not seen["chosen"],
+      "replacing is not pre-ticked: nothing changes until camB is ticked", seen)
+_lens_attach.STATE["do"] = lambda dlg: _lens_attach.tick(dlg, 1)
 w.act_load_lens.trigger()
 pump(0.1)
-check(same(p.lenses[1], mod), "Yes replaces it")
+_lens_attach.STATE["do"] = None
+check(same(p.lenses[1], mod) and "camB" in _lens_attach.STATE["seen"][-1]["summary"],
+      "ticking camB replaces it (the dialog said so)", _lens_attach.STATE["seen"][-1])
 
 # both cameras have a profile: the export asks whose
 ASK["items"].clear()

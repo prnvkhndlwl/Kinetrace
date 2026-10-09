@@ -249,7 +249,12 @@ A list, one entry per camera (`null` without a profile): `width`, `height`,
 `K`, `dist`, `fisheye`, `rms`, `n_views`, `source`, `report`, `rotation`. The profile
 is in the pixels of the camera's pictures as Kinetrace shows them; `rotation` (0, 90,
 180, 270 or `null` = not known) is how far, clockwise, the video player turned the
-stored pictures by the file's rotation tag (a camera filmed on its side). A
+stored pictures by the file's rotation tag (a camera filmed on its side). `board`
+(empty for a profile not fitted from a checkerboard in Kinetrace) says where it was
+measured: `video` (file name), `path`, `size`, `rotation`, `frames` (the video frame
+numbers of the boards the fit used, 0 = the first frame), `pattern` (inner corners) and
+`square_m`. (The lens wizard's own list positions of those boards are not written: without
+its scan they say nothing.) A
 `.klens.json` file holds the same fields, for the pictures of its checkerboard video.
 
 ### `cameras/<folder>/silhouette/summary.csv`
