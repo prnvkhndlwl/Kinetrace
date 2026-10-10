@@ -107,7 +107,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>frame box</td><td>type a frame number + Enter</td></tr>
 </table>
 <h3>Tracking</h3><table>
-<tr><td class=k>T</td><td>start tracking / pause (semi-automatic mode: one step). Only what is <b>selected</b> in LAYERS is tracked: the points selected there, and an animal row = its silhouette and all its points — nothing selected, nothing tracked</td></tr>
+<tr><td class=k>T</td><td>start tracking / pause (semi-automatic mode: one step). Only what is <b>selected</b> in LAYERS is tracked: the points selected there, and an animal row = its silhouette (Ctrl+click its points to track them with it) — nothing selected, nothing tracked</td></tr>
 <tr><td class=k>Ctrl+A</td><td>select everything to track: every animal and every point</td></tr>
 <tr><td class=k>several selected</td><td>right-click one of them in LAYERS (or hold right on one of their markers): one menu for all — track these, clear here / in the window / whole tracks, delete, hidden here, show / hide, Tracker, fill gaps, <b>Move to</b> another animal, and for two points of one animal <b>Connect them with a bone</b>; a short right click on one of their markers clears all of them on this frame</td></tr>
 <tr><td class=k>AT / CT / MS</td><td>beside a point's name in LAYERS: its tracker — AllTracker, CoTracker3 or Moving spot (right-click → Tracker). One Track press tracks each selected point with its own tracker; AllTracker and CoTracker3 points run one after the other (two passes over the same frames), and a point that stops ends the run for all</td></tr>
@@ -1375,7 +1375,7 @@ class MainWindow(QMainWindow):
         self.layers.setToolTip(
             "LAYERS: each animal with its points under it, then Scene (points of no animal).\n"
             "Click a row to select it (Ctrl / Shift+click for several, Ctrl+A for everything): Track tracks\n"
-            "exactly what is selected -- an animal row = its silhouette and all its points.\n"
+            "exactly what is selected -- an animal row = its silhouette; Ctrl+click its points to add them.\n"
             "With a point selected, a plain click on the video places it on this frame.\n"
             "Drag points onto another animal (or Scene) to move them there. Double-click renames;\n"
             "the checkbox shows / hides; right-click for everything else. AT / CT / MS beside a point =\n"
@@ -2181,16 +2181,14 @@ class MainWindow(QMainWindow):
             self.act_onboarding.setChecked(False)
 
     def _run_scope(self):
-        """Which points a run covers: EXACTLY what is selected in LAYERS (owner, 2026-10-02, G61 --
-        nothing selected used to mean everything): the selected points and every point of a
-        selected animal row (G154: an animal row stands for its silhouette and all its points).
-        Returns (set of pids, n_selected)."""
+        """Which points a run covers: EXACTLY the points selected in LAYERS (owner, 2026-10-02, G61 --
+        nothing selected used to mean everything). An animal row is its SILHOUETTE only (G180, owner
+        2026-10-09; G154 made it the silhouette and all its points): Ctrl+click its points to track
+        them too. Returns (set of pids, n_selected)."""
         s = self.session
         if s is None:
             return set(), 0
         sel = {p for p in self._selected_pids() if p < s.n_points}
-        for k in self._selected_segments():
-            sel |= set(s.points_of(k))
         return sel, len(sel)
 
     def _segment_selected(self) -> bool:
@@ -2276,37 +2274,44 @@ class MainWindow(QMainWindow):
                 and not m.derived and not m.is_ball and not m.free)
 
     def _run_segments(self, scope, s=None) -> list[int]:
-        """The animals whose silhouettes a run with `scope` covers (G149, G154): the selected animal
-        rows, the animal a selected landmark is derived from (it cannot fill in without the
-        silhouette), and the animal a selected point is held on (I185, G156)."""
+        """The animals whose silhouettes a run SEGMENTS (G149, G180): exactly the selected animal
+        rows that have a silhouette. A selected point never brings its animal's silhouette into the
+        run: a held one is kept on the silhouette already saved (`_stored_segments`), a derived
+        landmark fills in when its animal's row runs (`_live_derived`). `scope` is kept for the
+        callers' signature."""
+        s = s if s is not None else self.session
+        if s is None or not s.segments or s is not self.session:
+            return []
+        return sorted(k for k in set(self._selected_segments()) if k < s.n_segments and s.has_silhouette(k))
+
+    def _stored_segments(self, pids, live=(), s=None) -> list[int]:
+        """The animals whose SAVED silhouettes hold this run's points (G180, I185): the animal of
+        each held point among `pids` that is not segmented in the run (`live`) and has a silhouette
+        on at least one frame. No SAM: a frame without a saved silhouette leaves the point free."""
         s = s if s is not None else self.session
         if s is None or not s.segments:
             return []
-        out = set(self._selected_segments()) if s is self.session else set()
-        for q in scope:
-            if 0 <= q < s.n_points:
-                k = s.segment_of(q)
-                if k is not None and (s.points[q].derived or self._held(s, q)):
-                    out.add(k)
-        return sorted(k for k in out if k < s.n_segments and s.has_silhouette(k))
+        out = {s.segment_of(q) for q in pids if self._held(s, q)} - set(live) - {None}
+        return sorted(k for k in out if len(s.mask_frames(k)))
+
+    @staticmethod
+    def _live_derived(s, segs) -> list[int]:
+        """The silhouette-derived landmarks of the animals a run segments (G180, I184): they are the
+        silhouette's own output, so every run that re-segments an animal fills ALL of them in --
+        stale ones never stay beside new silhouettes."""
+        return [q for q in s.derived_pids() if s.segment_of(q) in set(segs)]
 
     def _seg_list(self, scope, segment, s=None) -> list[int]:
-        """The animals of a run: `segment` None = the selection rule (`_run_segments`), False = none,
-        True = those or the animals of the scope's points, a list = these animal NAMES (an
-        every-camera run names the working camera's animals) plus the ones the scope's points ride
-        on (G149)."""
+        """The animals a run segments: `segment` None = the selection rule (`_run_segments`), False =
+        none, a list = these animal NAMES (an every-camera run names the working camera's animals,
+        G149)."""
         s = s if s is not None else self.session
         if s is None or not s.segments or segment is False:
             return []
         if isinstance(segment, (list, tuple, set)):
             named = [k for k, n in enumerate(s.segment_names()) if n in set(segment)]
             return sorted(set(named) | set(self._run_segments(scope, s)))
-        segs = self._run_segments(scope, s)
-        if segment is True and not segs:
-            # the animals the run's own points belong to (G151n; was the invisible active row)
-            segs = sorted({k for q in scope if 0 <= q < s.n_points for k in [s.segment_of(q)]
-                           if k is not None and s.has_silhouette(k)})
-        return segs
+        return self._run_segments(scope, s)
 
     def _run_segment(self, scope) -> bool:
         """A silhouette runs (G149: any of them) -- see `_run_segments`."""
@@ -2371,13 +2376,14 @@ class MainWindow(QMainWindow):
         `_tracker_passes` without the passes that cannot (points with no position here and no
         segment to carry) -- before, pass 1 with nothing to start made the whole press do nothing,
         and the button counted passes that could never run. The segment, and the silhouette-derived
-        landmarks that need it, ride with the first pass that runs."""
+        landmarks it fills in (G180: all of its animals'), ride with the first pass that runs."""
         s = self.session
         groups = [list(g) for g in self._tracker_passes(scope)] if (s is not None and scope) else [[]]
         if len(groups) < 2:
             return groups
-        seg = self._run_segment(scope)
-        derived = [q for g in groups for q in g if s.points[q].derived]
+        segs = self._run_segments(scope)
+        seg = bool(segs)
+        derived = self._live_derived(s, segs)
         out, carried = [], False
         for g in ([q for q in g if not s.points[q].derived] for g in groups):
             carries = seg and not carried
@@ -2408,9 +2414,6 @@ class MainWindow(QMainWindow):
         # the same rule the press uses: only passes that can start on this frame count (I203)
         n_pass = len(self._plan_passes(scope, semi, self.act_track_all.isChecked())) \
             if (s is not None and scope and self.state == READY) else 1
-        # a held point brings its animal's silhouette although the animal's row is not selected (I185, G160)
-        rides = bool(seg and s is not None and not self._segment_selected()
-                     and not any(0 <= q < s.n_points and s.points[q].derived for q in scope))
         label = "Step" if semi else "Track"
         self.btn_track.setText(f"{label} · {' + '.join(what_sel)}" + (f" ({n_pass} passes)" if n_pass > 1 else "")
                                + (" ▶  (F)" if semi else " ▶") if what_sel else (f"{label} ▶  (F)" if semi
@@ -2432,20 +2435,22 @@ class MainWindow(QMainWindow):
         self.btn_track.setEnabled(True)
         if self.state == IDLE:
             blocked = "Open a video first (Ctrl+O) or a project (Ctrl+Shift+O)"
+        elif s is not None and not scope and not seg and self._selected_segments():
+            # (G180) an animal row is its silhouette only: one without a silhouette has nothing to run
+            blocked = ("The selected animal has no silhouette yet: press S and click it on the video to outline "
+                       "it, or Ctrl+click its points in LAYERS to track them")
         elif s is not None and not scope and not seg and (s.n_points or s.animal is not None):
-            blocked = ("Select what to track in LAYERS: click a point or an animal (an animal = its silhouette "
-                       "and all its points; Ctrl+click for several, Ctrl+A for all) — only what is selected is "
-                       "tracked")
+            blocked = ("Select what to track in LAYERS: click a point, or an animal for its silhouette "
+                       "(Ctrl+click for several — an animal and its points tracks both; Ctrl+A for all) — only "
+                       "what is selected is tracked")
         elif s is None or (n == 0 and not animal_ok):
             if scope and all(0 <= q < s.n_points and s.points[q].derived for q in scope):
-                # silhouette-derived landmarks are never placed by hand: they fill in from the
-                # segment (G120)
-                blocked = (f"The selected landmark(s) fill in from the segment's silhouette, which has no click on "
-                           f"frame {self.current}: press S and click the animal here (or go to a frame with its "
-                           "silhouette) and select the segment's row in SEGMENT too"
-                           if s.animal is not None else
-                           "The selected landmark(s) fill in from the segment's silhouette: press S and click "
-                           "the animal first, then select the segment's row in SEGMENT and Track")
+                # silhouette-derived landmarks are never placed by hand: they fill in whenever their
+                # animal's silhouette is tracked (G120, G180)
+                blocked = ("The selected landmark(s) fill in from their animal's silhouette: select the animal's "
+                           "row in LAYERS and Track — they fill in with it"
+                           + (f" (its silhouette has no click on frame {self.current}: press S and click the "
+                              "animal here, or go to a frame with its silhouette)" if seg else ""))
             elif scope:
                 blocked = (f"The selected point(s) have no position on frame {self.current}. Select a "
                            "point that exists here, or place it here first (click it on the video)")
@@ -2466,12 +2471,13 @@ class MainWindow(QMainWindow):
             if n:
                 what.append(f"the {n} selected point(s)")
             if animal_ok:
-                what.append("the segment (silhouette)")
+                what.append("the silhouette" if len(segs) < 2 else f"{len(segs)} silhouettes")
             what = " and ".join(what)
-            if rides and animal_ok:
-                what += (" (its animal keeps its points on its silhouette, so the silhouette rides along — "
-                         "right-click the animal → untick 'Keep its points on its silhouette', or mark a point "
-                         "'may leave its silhouette', to track without it)")
+            if animal_ok and self._live_derived(s, segs):
+                what += " (with the landmarks derived from it)"
+            held = self._held_note(pids_here, segs if animal_ok else [])
+            if held:
+                what += f" — {held}"
             if n_pass > 1:
                 what += (" — in two passes, one after the other: the AllTracker points, then the CoTracker3 points "
                          "over the same frames (a point that stops ends the run for all"
@@ -2493,6 +2499,31 @@ class MainWindow(QMainWindow):
                        "hidden, so you cannot watch it there. Show them with their eye in CAMERAS (or Show all) "
                        "to watch every camera." if hidden_cams else ""))
         self._fit_track_label()
+
+    def _held_note(self, pids, live) -> str:
+        """(G180) What holds the run's held points when their animal's silhouette is NOT tracked in
+        the run (`live`): its saved silhouette, on how many of the frames ahead -- or nothing yet.
+        '' when no such point is in the run."""
+        s = self.session
+        if s is None:
+            return ""
+        by: dict[int, int] = {}
+        for q in pids:
+            k = s.segment_of(q)
+            if k is not None and k not in live and self._held(s, q):
+                by[k] = by.get(k, 0) + 1
+        ahead = max(0, s.n_frames - self.current - 1)
+        parts = []
+        for k, n in sorted(by.items()):
+            name = s.segments[k].name
+            have = int((s.mask_frames(k) > self.current).sum())
+            if have:
+                parts.append(f"{n} point(s) of {name} kept on its saved silhouette ({have:,} of the {ahead:,} "
+                             "frames ahead have one; elsewhere they move freely)")
+            else:
+                parts.append(f"{n} point(s) of {name} would be kept on its silhouette, but it has none saved "
+                             f"yet, so they move freely (track {name}'s row first, or with them)")
+        return "; ".join(parts)
 
     def _set_track_blocked(self, reason: str | None):
         """None = Track can start here; else the sentence T / a click shows. The
@@ -5099,7 +5130,8 @@ class MainWindow(QMainWindow):
         a_hold.setChecked(bool(a is not None and a.hold))
         a_hold.setToolTip("Its points tracked by appearance are nudged back when they slip just past the "
                           "silhouette's edge, and a run stops where one clearly leaves it (a point marked 'May "
-                          "leave its silhouette' is exempt). Needs a silhouette.")
+                          "leave its silhouette' is exempt). Needs a silhouette: tracked with them (Ctrl+click "
+                          "the animal's row too) or saved from an earlier run; a frame without one leaves them free.")
         acts["hold"] = a_hold
         a_mid = menu.addAction("Show the midlines")
         a_mid.setCheckable(True)
@@ -7987,7 +8019,8 @@ class MainWindow(QMainWindow):
             s.set_position(job.local0, pid, float(target[0]), float(target[1]))
             self._on_select(pid)
             self._refresh_overlay()
-            self._start_tracking(stop_after=job.local1, only_pids=[pid], quiet=True, segment=True)
+            # the point alone: a held one is kept on its animal's saved silhouettes, nothing re-segmented (G180)
+            self._start_tracking(stop_after=job.local1, only_pids=[pid], quiet=True, segment=False)
             if self.state == TRACKING:
                 st["done"].append(job)
                 self.statusBar().showMessage(
@@ -8369,17 +8402,16 @@ class MainWindow(QMainWindow):
             if fv is None or rt is None or not (0 <= fv < rt.n_frames - (1 if step else 0)):
                 continue
             pids = [q for q in sv.seedable_at(fv) if sv.points[q].name in names]
-            # this camera's animals ride along for the points they hold (I185, G160)
+            # the working camera's segmented animals, by name; a held point never brings one (G180: it is
+            # kept on that camera's saved silhouettes, `_stored_segments`)
             segs_v = self._seg_list(scope, seg_names, sv) if segment is not False else []
-            if segment is None:
-                segs_v = sorted(set(segs_v) | set(self._run_segments([q for q in pids], sv)))
             seg_v = [sv.segments[k].name for k in segs_v]
             seg_ok = bool(any(sv.animal_seedable_at(fv, k) for k in segs_v))
             if not pids and not seg_ok:
                 continue
-            # a run that re-segments fills the silhouette-derived landmarks of the run too (I184):
+            # a run that re-segments fills the silhouette-derived landmarks of its animals too (I184, G180):
             # without them the old derived positions stayed beside the new silhouettes
-            dpids = [q for q in sv.derived_pids() if sv.points[q].name in names] if seg_ok else []
+            dpids = self._live_derived(sv, segs_v) if seg_ok else []
             stop = int(fv) + 1 if step else None
             if stops is not None:
                 if v not in stops or stops[v] is None:
@@ -8798,11 +8830,15 @@ class MainWindow(QMainWindow):
         """Track was pressed with nothing that can start on this frame: why, as a notice (the
         Track button's tooltip says the same in `_update_track_button`)."""
         s = self.session
-        if not scope and not run_seg:
+        if not scope and not run_seg and self._selected_segments():
+            self.toast.show_message(
+                "The selected animal has no silhouette yet, so nothing was tracked: press <b>S</b> and click it "
+                "on the video to outline it, or Ctrl+click its points in <b>LAYERS</b> to track them.", "warn", 8000)
+        elif not scope and not run_seg:
             self.toast.show_message(
                 "Nothing is selected, so nothing was tracked. Select what to track in <b>LAYERS</b>: points, "
-                "or an animal (its silhouette and all its points); Ctrl+click for several, <b>Ctrl+A</b> for all.",
-                "warn", 8000)
+                "or an animal for its silhouette; Ctrl+click for several (an animal and its points tracks both), "
+                "<b>Ctrl+A</b> for all.", "warn", 8000)
         elif scope:
             self.toast.show_message(
                 f"The selected point(s) have no position on frame {self.current}. Select a "
@@ -8821,10 +8857,12 @@ class MainWindow(QMainWindow):
             return
         s = self.session
         skipped = sum(1 for i in range(s.n_points) if not s.points[i].derived and i in scope) - len(pids)
+        segs = self._run_segments(scope) if animal_ok else []
+        parts = ([f"the {len(pids)} selected point(s)"] if pids else []) + (
+            ["the silhouette" if len(segs) < 2 else f"{len(segs)} silhouettes"] if animal_ok else [])
+        held = self._held_note(pids, segs)
         self.statusBar().showMessage(
-            f"Tracking the {len(pids)} selected point(s)"
-            + ((" and the silhouette" if len(self._run_segments(scope)) < 2 else
-                f" and {len(self._run_segments(scope))} silhouettes") if animal_ok else "")
+            f"Tracking {' and '.join(parts)}" + (f" — {held}" if held else "")
             + " — only what is selected in LAYERS is tracked", 6000)
         if skipped:
             self.statusBar().showMessage(
@@ -8838,12 +8876,13 @@ class MainWindow(QMainWindow):
         start, plus the segment's silhouette frames when it runs -- every point's, a new point D
         alone read "will overwrite 4900 already-tracked frames" (G101). False = the user said no."""
         s = self.session
-        cols = list(pids) + ([q for q in s.derived_pids() if q in scope] if animal_ok else [])
+        segs = self._run_segments(scope) if animal_ok else []     # the run's segments (G149, G180)
+        cols = list(pids) + self._live_derived(s, segs)
         ahead = (s.tracked[self.current + 1:][:, cols].any(axis=1) if cols
                  else np.zeros(max(0, s.n_frames - self.current - 1), bool))
         if animal_ok:
             has_mask = np.zeros(s.n_frames, bool)
-            for k in self._seg_list(scope, True):      # the run's segments (G149, G151n)
+            for k in segs:
                 has_mask[s.mask_frames(k)] = True
             ahead = ahead | has_mask[self.current + 1:]
         frames_after = int(ahead.sum())
@@ -8941,12 +8980,15 @@ class MainWindow(QMainWindow):
         """The segments' part of a run (G149: every segment of the run, one SAM session): each one's
         prompts (or its stored silhouette on this frame as the seed), the derived landmarks to fill in,
         and its landmarks' on-body rules (the constraint, the stop where a landmark leaves the animal,
-        the off-body demotion). A two-pass run's second pass gets the silhouettes the first pass wrote
-        as STORED segments (I185): no SAM, the same rules."""
+        the off-body demotion). The held points of an animal the run does not segment are kept on its
+        SAVED silhouettes (G180; I185 did it for a two-pass run's second pass, which is now just a
+        case of it): no SAM, the same rules, no constraint on a frame without one. A segmented animal
+        fills in ALL its derived landmarks (G180, I184)."""
         from kinetrace.tracker import AnimalSpec, DerivedSpec
         s = self.session
         animals: list = []
         derived: list = []
+        segs: list = []
         if animal_ok:
             segs = [k for k in self._seg_list(scope, segment) if s.animal_seedable_at(self.current, k)]
             for j, k in enumerate(segs):
@@ -8957,25 +8999,16 @@ class MainWindow(QMainWindow):
                     seed_mask = mt.rasterize(self.current, wh, ww)
                 animals.append(AnimalSpec({f: list(v) for f, v in a.prompts.items()}, dict(a.boxes), seed_mask,
                                           self._seg_backend, index=k, name=a.name, **self._segment_roles(s, k, pids)))
-                derived += [DerivedSpec(pid, s.points[pid].spec, seg=j) for pid in s.derived_pids()
-                            if pid in scope and s.segment_of(pid) == k]
+                derived += [DerivedSpec(pid, s.points[pid].spec, seg=j) for pid in self._live_derived(s, [k])]
             if segs and self._passes is not None and not self._passes.get("done") and self.project is not None:
-                # pass 1 of a two-pass run carries this camera's segments: their silhouettes are what
-                # the later pass is kept on (I185)
+                # pass 1 of a two-pass run carries this camera's segments: the later pass is kept on the
+                # silhouettes they write (I185; the second pass's status line says so)
                 self._passes.setdefault("seg_views", {})[self.project.active] = [s.segments[k].name for k in segs]
-        pp = self._passes
-        if (segment is False and not animals and pp is not None and pp.get("done") and specs
-                and self.project is not None and self.project.active in pp.get("seg_views", {})):
-            # (I185) the second pass of a two-pass run: no SAM, but the silhouettes pass 1 just wrote
-            # into the session hold its on-body points to the same rules as a run with the segments.
-            # {camera: segment names}; a plain set of cameras (no names) = every segment there
-            sv = pp["seg_views"]
-            names = sv[self.project.active] if isinstance(sv, dict) else s.segment_names()
-            for name in names:
-                k = s.segment_index(name)
-                if k is not None and len(s.mask_frames(k)):
-                    animals.append(AnimalSpec(index=k, name=name, stored=s.seg_masks[k],
-                                              **self._segment_roles(s, k, pids)))
+        if specs:
+            # (G180) after the live ones: a DerivedSpec's `seg` indexes the live segments
+            for k in self._stored_segments(pids, segs):
+                animals.append(AnimalSpec(index=k, name=s.segments[k].name, stored=s.seg_masks[k],
+                                          **self._segment_roles(s, k, pids)))
         return _SegmentSpecs(animals, derived)
 
     def _spot_velocity(self, pid: int, f: int):

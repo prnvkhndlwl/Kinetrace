@@ -9,8 +9,9 @@ drag and drop points from one animal parent to another"), and the toolbar's two 
             the click / the selected point's animal / Scene (with a notice), + Point
   [3] G154  dragging points onto another animal or Scene (a real drop event): renamed in both cameras, one
             Ctrl+Z; a derived landmark is not dropped into Scene
-  [4] G154/G156/G160  Track = the selection: an animal row = its silhouette and its points; a point alone
-            runs alone unless its animal holds its points (opt-in); Scene points are never held
+  [4] G180/G156/G160  Track = the selection, by T: an animal row = its silhouette (and the landmarks derived
+            from it), never its points; a point alone runs alone, a held one kept on its animal's SAVED
+            silhouettes (no SAM); Ctrl+click both = both; Scene points are never held
   [5] G157  skeleton: a template on the selected animal, a bone between two selected points (the menu),
             the head, a template saved from an animal and given to another
   [6] G154  the animal's row: rename (its points follow, both cameras), hold, remove keeping / deleting points
@@ -356,29 +357,92 @@ check(s.points[d].segment == "animal" and "derived" in " ".join(n[0] for n in wi
       "a landmark derived from the silhouette is not dropped into Scene, and says why")
 
 # ------------------------------------------------------------------ [4] Track = the selection
-print("[4] Track = the selection (G154, G156, G160)")
-s.segments[1].add_click(0, 250, 180)
+print("[4] Track = the selection (G180: an animal row = its silhouette; G156, G160: holding is opt-in)")
+f0 = win.current
+s.segments[1].add_click(f0, 250, 180)
+if p3 not in s.seedable_at(f0):
+    s.set_position(f0, p3, 250.0, 180.0)
+d2 = s.add_landmark("animal 2 tip", "silhouette", "tip")       # a derived landmark of animal 2
+s.points[d2].segment = "animal 2"
+masks1, s.seg_masks[1] = s.seg_masks[1], s._new_masks()      # animal 2 with no saved silhouette yet
+win._refresh_point_list()
+built = []
+orig_launch = win._launch_run
+win._launch_run = lambda w, *a, **k: built.append(w)        # the worker T builds, not started
+
+
+def press_t():
+    """T, the user's key: the worker that run would start (None = nothing started)."""
+    built.clear()
+    QTest.keyClick(win, Qt.Key_T)
+    pump(0.2)
+    win.act_undo.setEnabled(True)
+    return built[-1] if built else None
+
+
+def run_of(w):
+    """(tracked point ids, [(animal index, live?)], derived point ids, the held set of each animal)."""
+    if w is None:
+        return None
+    return ([sp.pid for sp in w.specs], [(a.index, a.stored is None) for a in w.animals],
+            [d.pid for d in w.derived], [set(st.constrain) for st in w._segs])
+
+
 row_click(lay.point_item(p3))                                    # a point of animal 2, alone
-win._update_track_button()
-check(win._run_scope()[0] == {p3} and not win._run_segments({p3}) and "silhouette" not in win.btn_track.text(),
-      "a point alone runs alone (its animal does not hold its points: opt-in)", win.btn_track.text())
+w = run_of(press_t())
+check(win._run_scope()[0] == {p3} and "silhouette" not in win.btn_track.text() and w == ([p3], [], [], []),
+      "a point alone runs alone (its animal does not hold its points: opt-in)", (win.btn_track.text(), w))
 s.segments[1].hold = True
 win._update_track_button()
-check(win._run_segments({p3}) == [1] and "silhouette" in win.btn_track.text(),
-      "its animal holds its points: its silhouette rides along", win.btn_track.text())
+w = run_of(press_t())
+check("silhouette" not in win.btn_track.text() and w == ([p3], [], [], []) and "none saved" in win.btn_track.toolTip(),
+      "G180 its animal holds its points but has no saved silhouette: no SAM, the point runs free, the tooltip says so",
+      (win.btn_track.text(), w, win.btn_track.toolTip()))
+for f in range(f0, min(N, f0 + 12)):
+    s.write_mask(f, blob(250, 180, 30), 1.0, 8.0, i=1)
+win._update_track_button()
+w = run_of(press_t())
+check(w == ([p3], [(1, False)], [], [{p3}]) and "kept on its saved silhouette" in win.btn_track.toolTip(),
+      "G180 ... with saved silhouettes: the point is kept on them (no SAM run), the tooltip says on how many frames",
+      (w, win.btn_track.toolTip()))
 s.points[p3].free = True
-check(not win._run_segments({p3}), "a point marked 'may leave its silhouette': alone again")
+w = run_of(press_t())
+check(w == ([p3], [], [], []), "a point marked 'may leave its silhouette': alone again", w)
 s.points[p3].free = False
+row_click(win._animal_item(1))                                   # the animal's row alone
+w = run_of(press_t())
+check(win._run_scope()[0] == set() and win.btn_track.text().startswith("Track · silhouette")
+      and w == ([], [(1, True)], [d2], [set()]),
+      "G180 an animal row = its silhouette only (with the landmarks derived from it): none of its points",
+      (win.btn_track.text(), w))
+row_click(lay.point_item(p3), mod=Qt.ControlModifier)            # ... and Ctrl+click its point
+w = run_of(press_t())
+check(w == ([p3], [(1, True)], [d2], [{p3}]) and "point" in win.btn_track.text(),
+      "G180 the animal's row + its point (Ctrl+click): both, the point held on the live silhouette",
+      (win.btn_track.text(), w))
+row_click(lay.point_item(d2))                                    # a derived landmark alone
+w = run_of(press_t())
+check(w is None and "select the animal's row" in (win._track_blocked or ""),
+      "G180 a derived landmark alone does not run: it fills in with its animal's row, and Track says so",
+      (w, win._track_blocked))
+ke = s.add_segment("empty")
+win._refresh_point_list()
+row_click(win._animal_item(ke))
+w = run_of(press_t())
+check(w is None and "has no silhouette yet" in (win._track_blocked or ""),
+      "G180 an animal with no silhouette: nothing runs, Track says to outline it or select its points",
+      (w, win._track_blocked))
+s.remove_segment(ke, keep_points=True)
+s.remove_point(d2)
+s.seg_masks[1] = masks1
 s.segments[1].hold = False
-row_click(win._animal_item(1))
-scope = win._run_scope()[0]
-check(scope == set(s.points_of(1)) and win._run_segments(scope) == [1],
-      "an animal row = its silhouette and all its points", (scope, s.points_of(1)))
+win._launch_run = orig_launch
+win._refresh_point_list()
 row_click(lay.point_item(0))
 row_click(win._animal_item(1), mod=Qt.ControlModifier)
 check(win._selected_pids() == [0] and win._selected_segments() == [1], "Ctrl+click adds an animal to a point")
 row_click(lay.point_item(0))
-check(not win._run_segments({0}), "a Scene point never brings a silhouette")
+check(not win._run_segments({0}) and not win._stored_segments([0]), "a Scene point never brings a silhouette")
 
 # ------------------------------------------------------------------ [5] skeleton
 print("[5] skeletons (G157)")

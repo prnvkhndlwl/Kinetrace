@@ -14,7 +14,8 @@ app starts pass 2 with no silhouette)
       silhouettes; no masks emitted
   [3] the app: a real two-pass run (AllTracker + head, then CoTracker3) with a mock SAM in pass 1: pass 2
       is kept on the silhouettes and stops where its landmark leaves the animal; the Track tooltip says so
-  [4] every-camera two-pass plumbing: each camera's pass 2 gets THAT camera's silhouettes
+  [4] every-camera two-pass plumbing: each camera's pass 2 gets THAT camera's silhouettes; (G180) any run
+      of a held point is kept on the saved silhouettes, a point not held gets none
 
 Run: .venv\\Scripts\\python.exe tests\\verify_review_i185.py   (the models are used: CoTracker3 and AllTracker)
 """
@@ -346,6 +347,31 @@ def section2():
     check("a gap of stored silhouettes: no crash, no constraint on its frames, the stop comes after it",
           lambda: rec_g["err"] is None and rec_g["paused"] is not None and rec_g["paused"][0] >= EXPECT + 14,
           (rec_g["err"], rec_g["paused"], gap[0], gap[-1]))
+    # (G180) one run, two animals: A segmented live (its row selected), B's held point kept on B's SAVED
+    # silhouettes (only its point selected)
+    specs = [trk.PointSpec(i, GT[0, i].astype(np.float32).copy()) for i in range(3)]
+    saved = trk.get_segmenter
+    trk.get_segmenter = lambda be, **k: MockAnimal()
+    rec_m = {"masks": 0, "paused": None, "err": None, "fin": None}
+    try:
+        live_a = trk.AnimalSpec({0: [(float(GT[0, 0, 0]), float(GT[0, 0, 1]), 1)]}, {}, None, "stub", index=0,
+                                name="A", on_body={0}, constrain={0})
+        stored_b = trk.AnimalSpec(index=1, name="B", stored=stored_track(N + 8), on_body={1, 2}, constrain={1})
+        wm = trk.TrackingWorker(V600, 0, None, None, FrameCache(1 << 28), N, specs=specs, point_backend="cotracker3",
+                                autopause=False, animals=[live_a, stored_b])
+        wm.masks_ready.connect(lambda summ: rec_m.__setitem__("masks", rec_m["masks"] + 1))
+        wm.autopaused.connect(lambda f, p: rec_m.__setitem__("paused", (f, p)))
+        wm.finished_ok.connect(lambda last, p: rec_m.__setitem__("fin", (last, p)))
+        wm.error.connect(lambda m: rec_m.__setitem__("err", m))
+        wm.run()
+        rec_m["reason"] = wm._autopause_reason
+    finally:
+        trk.get_segmenter = saved
+    check("G180 a live animal and a stored one in ONE run: no error, the live one's silhouettes are emitted",
+          lambda: rec_m["err"] is None and rec_m["masks"] > 0, (rec_m["err"], rec_m["masks"]))
+    check("G180 ... and B's held point still stops where it leaves B's saved silhouette",
+          lambda: rec_m["paused"] is not None and rec_m["paused"][1] == 1 and rec_m["reason"] == "exit"
+          and abs(rec_m["paused"][0] - EXPECT) <= 4, (rec_m["paused"], rec_m.get("reason"), EXPECT))
 
 
 # ================================================================= [3] the app: a real two-pass run
@@ -410,6 +436,8 @@ def section3():
     select_rows(win, 0, 1)
     win._on_select(0)
     select_rows(win, 0, 1)
+    win._animal_item(0).setSelected(True)            # (G180) the animal's row = its silhouette, with the points
+    pump(0.05)
     win._update_track_button()
     check("the Track button's tooltip says the second pass is kept on the first pass's silhouettes",
           "kept on the silhouettes the first one makes" in win.btn_track.toolTip(), win.btn_track.toolTip())
@@ -482,6 +510,9 @@ def section4():
         if v != 2:                                    # camera C: its first pass did not carry a segment
             for f in range(40):
                 sv.masks.set_from_work(f, rect_mask(f), (1.0, 1.0), 8.0)
+    for sv in p.sessions:                             # (G156, G180) both points are the animal's, it holds them
+        sv.move_points([0, 1], 0)
+        sv.segments[0].hold = True
     check("(setup) both points have a position on frame 0 in every camera",
           all(bool(sv.tracked[0, 0]) and bool(sv.tracked[0, 1]) for sv in p.sessions),
           [(sv.n_points, [bool(sv.tracked[0, q]) for q in range(sv.n_points)]) for sv in p.sessions])
@@ -499,15 +530,20 @@ def section4():
           lambda: built[0] is not None and built[0]._stored is p.sessions[0].masks and built[0].animal is None)
     check("camera B's pass 2 gets camera B's silhouettes",
           lambda: built[1] is not None and built[1]._stored is p.sessions[1].masks)
-    check("camera C's first pass carried no segment there: its pass 2 is not held to anything stale",
+    check("camera C has no saved silhouette: its pass 2 is not held to anything",
           lambda: built[2] is not None and getattr(built[2], "_stored", None) is None
           and not built[2].constrain, (built[2], getattr(built[2], "constrain", None), win.project.active))
     win._passes = None
     win._set_active_view(0)
     win._goto(0, force=True)
     alone = win._start_tracking(stop_after=30, only_pids=[1], quiet=True, build_only=True, segment=False)
-    check("a run that is not the second pass of a two-pass run gets no stored silhouettes",
-          lambda: alone is not None and getattr(alone, "_stored", None) is None)
+    check("G180 any run of a held point is kept on the saved silhouettes (not only a two-pass run's second pass)",
+          lambda: alone is not None and alone._stored is p.sessions[0].masks and alone.animal is None
+          and alone.constrain == {1})
+    p.sessions[0].segments[0].hold = False
+    free = win._start_tracking(stop_after=30, only_pids=[1], quiet=True, build_only=True, segment=False)
+    check("G180 ... and a point its animal does not hold gets none",
+          lambda: free is not None and getattr(free, "_stored", None) is None)
     close(win)
 
 

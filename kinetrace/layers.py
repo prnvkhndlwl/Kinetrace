@@ -5,8 +5,8 @@ allow the user to drag and drop points from one animal parent to another").
 One tree: every ANIMAL (an individual: its optional silhouette, its skeleton, whether its points
 are held on it) with its points as children, then SCENE (the points of no animal: wand ends,
 reference markers). One selection for both: a plain click selects only that row, Ctrl / Shift add.
-An animal row stands for its silhouette AND all its points (Track runs them; Delete removes the
-animal). Dragging point rows onto an animal, one of its points or Scene asks the app to move them
+An animal row is its silhouette for Track (G180: Ctrl+click its points to track them too) and the
+whole animal for Delete. Dragging point rows onto an animal, one of its points or Scene asks the app to move them
 (`move_requested`): the app renames them "<animal> <part>" in every camera, as one undo step, and
 rebuilds the tree.
 
@@ -163,7 +163,8 @@ class LayersPanel(QTreeWidget):
                     top.setToolTip(0, f"{a.name}: {len(pids)} point(s); silhouette on {n_masked:,} of "
                                       f"{s.n_frames:,} frames from {a.n_prompts()} click(s)/box(es)"
                                    + ("; its points are kept on the silhouette" if a.hold else "")
-                                   + ".\nSelect it (with S on, a click on the video outlines it). Its checkbox "
+                                   + ".\nSelect it to track its silhouette (Ctrl+click its points to track them "
+                                     "too; with S on, a click on the video outlines it). Its checkbox "
                                      "shows / hides its silhouette; double-click renames it; right-click for "
                                      "its skeleton, silhouettes and more. Drag points onto it to make them its.")
                     if not has_sil and not pids:
