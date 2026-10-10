@@ -790,25 +790,42 @@ dname = p.sessions[0].points[-1].name
 win._set_active_view(0)
 win._goto(F, force=True)
 pid0 = 0
+select_rows(win, pid0)
+win._animal_item(0).setSelected(True)                  # (G180) the animal's row = its silhouette
+pump(0.05)
+jobs = win._multi_jobs(False)
+check("I184 every-camera runs that re-segment also fill the derived landmarks of their animals (G180: all of them)",
+      bool(jobs) and all(dname in [p.sessions[j["view"]].points[q].name for q in j["pids"]] for j in jobs), jobs)
 select_rows(win, pid0, p.sessions[0].n_points - 1)
 jobs = win._multi_jobs(False)
-check("I184 every-camera runs that re-segment also fill the derived landmarks of the run",
-      bool(jobs) and all(dname in [p.sessions[j["view"]].points[q].name for q in j["pids"]] for j in jobs), jobs)
+check("G180 a derived landmark selected without its animal's row does not re-segment",
+      all(j["segment"] is False and dname not in [p.sessions[j["view"]].points[q].name for q in j["pids"]]
+          for j in jobs), jobs)
 win._deselect()
 win._on_select(pid0)
-# (G153, G156, G160) the point is the animal's, and the animal holds its points: then its silhouette comes
+# (G153, G156, G160, G180) the point is the animal's, and the animal holds its points: never a SAM run
 s0 = p.sessions[0]
 s0.move_points([pid0], 0)
-check("G160 an animal's point alone runs alone (holding is opt-in)", not win._run_segment({pid0}))
+check("G160 an animal's point alone runs alone (holding is opt-in)",
+      not win._run_segment({pid0}) and not win._stored_segments([pid0]))
 s0.segments[0].hold = True
-check("I185 the animal holds its points: a selected point of it brings its silhouette, its row not selected",
-      not win._segment_selected() and win._run_segment({pid0}))
-s0.points[pid0].free = True
-check("I185 a point marked 'may leave its silhouette' does not bring it", not win._run_segment({pid0}))
-s0.points[pid0].free = False
+check("G180 the animal holds its points: a selected point of it never brings a SAM run, its row not selected",
+      not win._segment_selected() and not win._run_segment({pid0}))
 win._update_track_button()
-check("I185 the Track button's tooltip says the silhouette rides along",
-      "so the silhouette rides along" in win.btn_track.toolTip(), win.btn_track.toolTip())
+check("G180 ... with no saved silhouette the point runs free, and the Track button's tooltip says so",
+      not win._stored_segments([pid0]) and "none saved" in win.btn_track.toolTip(), win.btn_track.toolTip())
+box = np.zeros((H3, W3), bool)
+box[100:380, 100:540] = True
+for f in range(F, min(N3, F + 10)):
+    s0.seg_masks[0].set_from_work(f, box, (1.0, 1.0), 8.0)
+win._update_track_button()
+check("G180 ... with saved silhouettes it is kept on them, and the tooltip says on how many frames",
+      win._stored_segments([pid0]) == [0] and "kept on its saved silhouette" in win.btn_track.toolTip(),
+      win.btn_track.toolTip())
+s0.points[pid0].free = True
+check("I185 a point marked 'may leave its silhouette' is not held", not win._stored_segments([pid0]))
+s0.points[pid0].free = False
+s0.seg_masks[0].clear(0, s0.n_frames - 1)
 win._deselect()
 # the pass holding the head landmark goes first and carries the segment (I185)
 s0 = p.sessions[0]

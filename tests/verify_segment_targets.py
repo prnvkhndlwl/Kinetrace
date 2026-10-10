@@ -17,7 +17,7 @@ clicks on the SEGMENT list.
   k  Carve Volume: the highlighted segment's silhouettes
   l  Body: a silhouette of another segment than the active one drives the run
   m  silhouette exports: every segment, one file / folder each; Export enabled by any segment
-  n  a re-track's segment = its point's segment
+  n  a re-track's held point is kept on its own animal's saved silhouettes (G180: no re-segmenting)
   o  convert info lists every segment; convert masks needs --animal when there are several
 
 .venv\\Scripts\\python.exe tests\\verify_segment_targets.py
@@ -450,8 +450,16 @@ pump(0.3)
 print("[n] a re-track's segment")
 highlight_only([])
 s.active_seg = 2
-check(win._seg_list([hp1], True) == [1], "the point's own animal (animal 2), not the active one",
-      win._seg_list([hp1], True))
+s.segments[1].hold = True
+had = s.seg_masks[1].has(3)
+if not had:
+    s.write_mask(3, blob(100, 100, 10), 1.0, 6.0, i=1)
+check(win._stored_segments([hp1]) == [1] and win._seg_list([hp1], False) == [],
+      "G180 a re-track's held point is kept on its OWN animal's saved silhouettes (animal 2, not the active one); "
+      "nothing is re-segmented", (win._stored_segments([hp1]), win._seg_list([hp1], False)))
+if not had:
+    s.seg_masks[1].clear(3, 3)
+s.segments[1].hold = False
 
 # ---------------------------------------------------------------- o: convert info
 print("[o] convert info")

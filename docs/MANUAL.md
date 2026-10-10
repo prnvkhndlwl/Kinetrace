@@ -478,8 +478,8 @@ to bring the names back. The Track button always keeps its words.
   only that row; **Ctrl+click** or **Shift+click** adds rows; **Ctrl+A**
   selects every animal and every point. **Track tracks exactly what is
   selected here**: a point row is that point, an animal row is its silhouette
-  and all its points. **Drag** points onto another animal (or onto Scene) to
-  move them there.
+  only (Ctrl+click its points to track them with it). **Drag** points onto
+  another animal (or onto Scene) to move them there.
 
   **Names:** double-click a row to rename it; right-click it for everything
   else (on the video, hold the right button on a marker instead: a short right
@@ -669,18 +669,27 @@ notice to move it. You can always move points later by dragging them in LAYERS
 **Select what you want tracked** in LAYERS — only that is tracked. Press
 **Ctrl+A** to select everything (every animal and every point), or click rows
 (Ctrl+click adds one, Shift+click a range). A point row is that point; an
-**animal row is its silhouette and all its points**. The Track button says what
-it will track, for example **Track · 3 points + silhouette ▶** or
+**animal row is its silhouette only** — not its points. To track an animal's
+silhouette and its points together, click the animal's row and Ctrl+click the
+points. The Track button says what it will track, for example
+**Track · 3 points + silhouette ▶**, **Track · silhouette ▶** or
 **Track · 2 silhouettes ▶**. With nothing selected it tracks nothing and says
 so. What is selected is part of your project: save, close and reopen it, and
 the same rows are selected again.
 
-A point selected on its own is tracked on its own: its animal's silhouette is
-**not** tracked along with it. There are two exceptions, where the silhouette
-comes along because the point cannot be followed without it: the animal has
-**Keep its points on its silhouette** ticked (right-click the animal; off
-unless you turn it on — section 14), or the point is a landmark that comes from
-the silhouette (tail tip, midline …).
+A point selected on its own is tracked on its own: the silhouette program
+(SAM) does **not** run with it. A handy order is: select the animal's row and
+track its silhouette first, then select its points and track them.
+
+- If the animal has **Keep its points on its silhouette** ticked (right-click
+  the animal; off unless you turn it on — section 14), its points are kept on
+  the silhouette **already saved** from an earlier run. On frames that have no
+  saved silhouette they move freely. The Track button's tooltip says how many
+  of the frames ahead have one (*kept on its saved silhouette (1,240 of the
+  4,000 frames ahead have one)*), or that there is none yet.
+- Landmarks that come from the silhouette (tail tip, midline …) are worked out
+  **whenever the animal's silhouette is tracked** — select the animal's row.
+  Selected on their own they do not run, and Track says so.
 
 Each point is followed by **its own tracker**, shown beside its name (**AT**
 AllTracker, **CT** CoTracker3, **MS** Moving spot). One Track press handles a
@@ -3056,10 +3065,11 @@ where it really is and press Track. To let one point of the animal off its
 outline, right-click it → **May leave its silhouette (free point)**. Points in
 **Scene** (reference markers on a rock, wand ends) are never held. When a run
 stops this way, the message names the point and the frame. An animal with this
-ticked shows a small dot inside its swatch in LAYERS. With it ticked,
-selecting one of its points brings the animal's silhouette into the run even
-if the animal's own row is not selected: without the outline there would be
-nothing to hold the point to.
+ticked shows a small dot inside its swatch in LAYERS. The outline a point is
+held to is the one tracked in the same run (the animal's row selected too) or,
+when only the points are selected, the silhouette **saved** from an earlier
+run; a frame with no saved silhouette leaves the point free on that frame.
+Selecting a point never starts the silhouette program on its own.
 
 **ROI** (bottom bar, on by default) — when your animal is small in a big frame,
 the program works on a zoomed-in crop so it can see more detail. It decides for
@@ -3391,15 +3401,20 @@ outline adds its own time on top.
 
 **It tracked only one body part when you wanted all of them (or nothing at all).**
 Track follows exactly what is selected in LAYERS: a point row is that point, an
-animal row is its silhouette and all its points. Press **Ctrl+A** to select
-every animal and every point, then Track again. The Track button always says
+animal row is its silhouette only. Ctrl+click the points you want too, or press
+**Ctrl+A** to select every animal and every point, then Track again. The Track
+button always says
 what it is about to do (*Track · 3 points + silhouette ▶*); with nothing
 selected it tracks nothing and a notice tells you to select something.
 
 **The silhouette was not tracked along with a point.** A point selected on its
-own is tracked on its own. Select the animal's row too (or the animal row
-alone, for the silhouette and all its points), or tick *Keep its points on its
-silhouette* on the animal (right-click it in LAYERS).
+own is tracked on its own. Select the animal's row too (Ctrl+click it): the
+animal row alone tracks only the silhouette. To keep the points on an outline
+tracked earlier, tick *Keep its points on its silhouette* on the animal
+(right-click it in LAYERS).
+
+**Selecting the animal tracked only its outline, not its points.** An animal
+row is its silhouette only. Ctrl+click the points you want tracked with it.
 
 **A new point landed in the wrong animal (or in Scene).** Drag it in LAYERS onto
 the right animal, or right-click it → **Move to ▸**. To steer the next one,
@@ -3586,7 +3601,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | Key | Does |
 |---|---|
 | **Ctrl+A** | select everything to track: every animal and every point (Edit → Select Everything to Track) |
-| **Track ▶** or **T** | start tracking from this frame: **only what is selected** in LAYERS — a point row is that point, an animal row its silhouette and all its points (with Track ▾ → **Every camera**: in each camera that has them). A point alone does not bring its animal's silhouette unless the animal keeps its points on its silhouette. Nothing selected = nothing tracked |
+| **Track ▶** or **T** | start tracking from this frame: **only what is selected** in LAYERS — a point row is that point, an animal row its silhouette only — Ctrl+click its points to track both (with Track ▾ → **Every camera**: in each camera that has them). A point alone never runs the silhouette; if its animal keeps its points on its silhouette, it is held on the silhouette saved earlier. Nothing selected = nothing tracked |
 | **Shift+T** | several cameras: this run in every camera that has the points here, all at the same time |
 | **X** or **Space** | stop (during **3D → Re-track Disagreeing Stretches** it stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run it stops every camera at once) |
 | **F** (semi-automatic mode) | track exactly one frame (in every camera with Track ▾ → Every camera) |
