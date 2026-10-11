@@ -505,6 +505,16 @@ def relaunch(root: Path = ROOT) -> None:
     install.py first when the update asked for it."""
     root = Path(root)
     if sys.platform == "win32":
+        launcher = root / "kinetrace" / "winlaunch.py"
+        if (root / "Kinetrace.lnk").exists() and launcher.exists():
+            # what the Kinetrace shortcut runs (winapp.py): no console window, and run.bat in a console
+            # by itself when the update asked for an install step -- as Kinetrace.app on a Mac
+            from kinetrace.winapp import launcher_python
+            pyw = launcher_python(root)
+            if pyw.exists():
+                subprocess.Popen([str(pyw), "-I", str(launcher)], cwd=str(root),
+                                 creationflags=0x00000008 | 0x00000200, close_fds=True)   # detached
+                return
         # run.bat in a console of its own, as a double click would. Not `start "title" x`: an
         # unquoted first argument of start is the program, so "start Kinetrace run.bat" ran
         # nothing (I156). `cmd /c ""path""` takes the quoted path literally (& ^ in a folder name).

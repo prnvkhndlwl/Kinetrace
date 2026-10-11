@@ -18,6 +18,7 @@ import traceback
 faulthandler.enable()
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 os.environ.setdefault("KINETRACE_UPDATE_API", "http://127.0.0.1:9/api")   # never asks GitHub (G37)
+os.environ["KINETRACE_START_MENU_DIR"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "start_menu")   # never the real Start menu
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 

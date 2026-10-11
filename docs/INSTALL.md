@@ -123,9 +123,15 @@ the launcher again: what is already installed is kept and it goes on from there.
 
 ## 3. You are done: starting it again
 
-- **Windows:** double-click `run.bat`. It starts in seconds from now on. Keep
-  its black window open while you use Kinetrace (you can minimise it):
-  closing it closes Kinetrace.
+- **Windows:** double-click the **Kinetrace** shortcut in the folder (the
+  first run made it, with the Kinetrace icon). It starts in seconds with no
+  black window. Right-click it → **Pin to Start** or **Pin to taskbar** to keep
+  it there, or use Help → Add Kinetrace to the Start Menu (an entry outside the
+  folder: remove it with the same menu before deleting the folder). If an
+  update or a moved folder needs a setup step, the shortcut opens `run.bat`'s
+  window; after moving the folder, double-click `run.bat` once to renew the
+  shortcut. `run.bat` still works too: keep its black window open while you use
+  Kinetrace (closing it closes Kinetrace).
 - **Mac:** double-click **`Kinetrace.app`** in the folder. It starts in seconds
   with no Terminal window (its messages go to `logs/launcher.log`). Drag it to
   the Dock to keep it there. It is made on your Mac during the first run, so
@@ -246,7 +252,8 @@ still missing.
 **Inside the Kinetrace folder** (deleting the folder removes all of these):
 the environment (`.venv`), the models (`models/`), the error and install logs
 (`logs/`), unsaved-work recovery copies (`recovery/`), saved skeletons
-(`skeletons/`), your settings (`settings.ini`), and on a Mac `Kinetrace.app`.
+(`skeletons/`), your settings (`settings.ini`), on a Mac `Kinetrace.app` and on
+Windows the `Kinetrace` shortcut (its icon is `.venv\kinetrace.ico`).
 
 **Outside it:**
 
@@ -270,6 +277,10 @@ the environment (`.venv`), the models (`models/`), the error and install logs
   (Mac), `~/.config/QtProject.conf` (Ubuntu) or the registry key
   `HKEY_CURRENT_USER\Software\QtProject` (Windows). Every program built with
   Qt shares it, so uninstalling Kinetrace leaves it alone.
+- Windows, only if you used **Help → Add Kinetrace to the Start Menu**: the
+  Start menu entry `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Kinetrace.lnk`.
+  A copy you pinned to Start or the taskbar is Windows' own, kept until you
+  unpin it.
 - macOS remembers that you allowed `Kinetrace.command` and Terminal's access to
   the folder (System Settings → Privacy & Security).
 
@@ -294,8 +305,10 @@ rm -rf ~/Kinetrace "$HOME/Library/Application Support/Kinetrace" ~/Library/Prefe
 (with your folder's path in place of `~/Kinetrace`). Also remove Kinetrace from
 the Dock if you put it there.
 
-**Windows:** close Kinetrace, then delete the Kinetrace folder, and
-`%LOCALAPPDATA%\Kinetrace` if it exists. To remove the old settings of 0.4.1
+**Windows:** close Kinetrace (if you added it to the Start menu, first use
+**Help → Remove Kinetrace from the Start Menu**, and unpin it from Start or the
+taskbar), then delete the Kinetrace folder, and `%LOCALAPPDATA%\Kinetrace` if
+it exists. To remove the old settings of 0.4.1
 and earlier, in a Command Prompt:
 
 ```bat

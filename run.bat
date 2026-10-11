@@ -101,6 +101,8 @@ if errorlevel 1 (
     exit /b 1
 )
 if "%~1"=="--check" goto :done
+rem the Kinetrace shortcut in this folder (kinetrace\winapp.py): next time, no run.bat and no console window
+".venv\Scripts\python.exe" -m kinetrace.winapp --if-stale --quiet >nul 2>nul
 rem installed in THIS run: what to keep / close / delete, and the app's one-time pop-up (kinetrace\welcome.py)
 ".venv\Scripts\python.exe" -m kinetrace.welcome console
 
@@ -122,6 +124,8 @@ if exist "%VENV_HOME%\python.exe" (
         >> ".venv\pyvenv.cfg" echo executable = %VENV_HOME%\python.exe
     )
 )
+rem the Kinetrace shortcut: made when missing, rewritten after a folder move or a newer shortcut layout
+".venv\Scripts\python.exe" -m kinetrace.winapp --if-stale --quiet >nul 2>nul
 rem ONE line on purpose (I142): cmd reads a batch file as it goes, and Help ->
 rem Check for Updates may replace this file while the app runs; the pause and
 rem the exit are read before the app starts, so nothing of the new file runs.
