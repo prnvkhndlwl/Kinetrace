@@ -1576,8 +1576,11 @@ them by name.
   press Ctrl+Shift+2 again) and they come back to the playhead; click one of
   them to work in it. The dashed lines and ◇ in your working camera keep
   working, because they come from the other cameras' tracks, not their pictures.
-- **Only the working camera** (**Ctrl+2**): the others are hidden and give the
-  whole window to the camera you are working on.
+- **Only the working camera** (**Ctrl+2**, or just **M**): the others are hidden
+  and give the whole window to the camera you are working on — handy for
+  clicking points precisely. Press **M** again and every camera comes back
+  exactly where it was: the same order, the same sizes, and a camera you had
+  hidden stays hidden. Click a camera first to choose which one M enlarges.
 
 **Which cameras are on screen, and where.** With many cameras every view is
 small; show only the ones you need — two or three to check that a flash lines
@@ -3580,6 +3583,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | type in the frame box | go to that frame number |
 | **O** | onion skin: ghosts of the previous / next frame |
 | **L** | loupe: magnifier under the cursor |
+| **M** | several cameras: the working camera alone, filling the view area; **M** again puts every camera back where it was |
 | View → Trails / Display filter | fading trails (Off / Last 10 frames / Custom…) and upcoming path; contrast / brighten / frame difference (display only) |
 
 ### Working on the video
@@ -3632,7 +3636,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | middle-drag | pan, at any time — even while tracking |
 | **Shift + +** / **Shift + −**, **Ctrl+wheel** over the timeline, or the three magnifier buttons in the timeline's top-left corner | zoom the timeline's time axis (the last button shows the whole video) |
 | **Ctrl+1** | show / hide the right panel |
-| **Ctrl+2** | show only the camera you are working on |
+| **Ctrl+2** | show only the camera you are working on (the same as **M**) |
 | **Ctrl+Shift+2** | Active view only: only the working camera reads its video; the others stay where they are until Sync all views (again: back to Sync all views; also *View → Other cameras*) |
 | **Ctrl+3** | reconstruct the 3D landmarks (needs a calibration of every camera) and show the 3D view |
 | **Ctrl+4** | carve the animal's volume at this frame from the cameras' outlines |
