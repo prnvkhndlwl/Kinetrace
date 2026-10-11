@@ -100,7 +100,9 @@ window always shows which processor is in use.
 
 **Nothing else — not even Python.** Everything the program needs lives inside
 its own folder; the first start fetches whatever is missing, without asking
-you anything. It does not install anything into your operating system.
+you anything. It does not install anything into your operating system (on
+Windows, a Start-menu entry is made only if you ask for one, with Help → Add
+Kinetrace to the Start Menu).
 Deleting the folder removes it completely; your projects and exports are saved
 where you choose and stay. **Help → Kinetrace's Folders…** lists every place
 the program uses, and `docs/INSTALL.md` in the folder has the full installation
@@ -110,8 +112,20 @@ steps and how to uninstall.
 
 ## 3. Starting the program
 
-**Windows:** double-click `run.bat` in the program folder. (If Windows says
-*"Windows protected your PC"*, click *More info*, then *Run anyway*.)
+**Windows:** the first time, double-click `run.bat` in the program folder.
+(If Windows says *"Windows protected your PC"*, click *More info*, then *Run
+anyway*.) Its black window shows the setup; leave it open until it says
+Kinetrace is installed and ready. That first run also makes a **Kinetrace**
+shortcut (with the Kinetrace icon) in the folder. From then on, double-click
+**Kinetrace** instead: it starts the program with no black window. To keep it
+handy, right-click it → **Pin to Start** or **Pin to taskbar**, or use **Help →
+Add Kinetrace to the Start Menu…** (that entry lives in your Windows profile,
+outside the folder: remove it with the same menu, which then reads *Remove
+Kinetrace from the Start Menu*, before you delete the folder). If an update or
+a moved folder needs a setup step, the shortcut opens `run.bat`'s window for
+you; after moving the folder, double-click `run.bat` once to renew the
+shortcut. `run.bat` itself still works as before (keep its window open while
+you use Kinetrace: closing it closes the program).
 
 **Mac:** double-click `Kinetrace.command` in the program folder. The first
 time, the Mac refuses it because it came from the internet and is not signed
@@ -3219,7 +3233,8 @@ clean retry and loses none of your work.
 **The program will not start / an error mentions "encodings" or "103".**
 The folder was moved or renamed while the program was set up in it. Run
 `run.bat` (Mac: `Kinetrace.command`, Ubuntu: `./run.sh`) once; it repairs
-itself.
+itself (on Windows it also renews the Kinetrace shortcut, which pointed at the
+old place).
 
 **A red notice says "Something went wrong", or the program closed by itself.**
 Kinetrace keeps a record of every error it meets — what went wrong, where in

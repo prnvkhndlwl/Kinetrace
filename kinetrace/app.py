@@ -1866,6 +1866,15 @@ class MainWindow(QMainWindow):
             "Every folder Kinetrace reads or writes, with its size, and a button to open it -- what "
             "deleting the Kinetrace folder removes, and what it leaves (your projects and exports)")
         m_help.addAction(self.act_folders)
+        # (Windows) the Kinetrace shortcut in the Start menu, opt-in: it lives outside the folder (winapp.py)
+        self.act_start_menu = QAction("Add Kinetrace to the &Start Menu…", self, triggered=self._toggle_start_menu)
+        self.act_start_menu.setToolTip(
+            "Puts the Kinetrace shortcut in your Windows Start menu (or takes it out again). It lives in your "
+            "Windows profile, outside the Kinetrace folder. To pin Kinetrace to the taskbar, right-click the "
+            "Kinetrace shortcut in the Kinetrace folder -> Pin to taskbar.")
+        self.act_start_menu.setVisible(sys.platform == "win32")
+        m_help.addAction(self.act_start_menu)
+        m_help.aboutToShow.connect(self._refresh_start_menu_action)
         m_help.addAction(QAction("&Keyboard && Mouse Reference…", self,
                                  triggered=self._show_hotkeys))
         m_help.addSeparator()
@@ -2713,6 +2722,64 @@ class MainWindow(QMainWindow):
         lay.addWidget(btns)
         dlg.exec()
         dlg.deleteLater()
+
+    def _start_menu_here(self) -> bool:
+        """The Start menu holds the Kinetrace entry of THIS folder (winapp.py; Windows only)."""
+        if sys.platform != "win32":
+            return False
+        from kinetrace import winapp
+        try:
+            return winapp.start_menu_points_to()
+        except Exception:       # noqa: BLE001 - an unreadable entry is treated as none of ours
+            return False
+
+    def _refresh_start_menu_action(self) -> None:
+        if sys.platform == "win32":
+            self.act_start_menu.setText("Remove Kinetrace from the &Start Menu…" if self._start_menu_here()
+                                        else "Add Kinetrace to the &Start Menu…")
+
+    def _toggle_start_menu(self) -> None:
+        """Help -> Add Kinetrace to the Start Menu / Remove Kinetrace from the Start Menu (Windows, opt-in:
+        the entry is the one thing outside the Kinetrace folder, so it is never made unasked)."""
+        if sys.platform != "win32":
+            return
+        from kinetrace import winapp
+        if self._start_menu_here():
+            if QMessageBox.question(
+                    self, "Remove from the Start menu",
+                    "Remove Kinetrace from your Start menu?\n\nThe Kinetrace shortcut in the Kinetrace folder "
+                    "stays; a copy you pinned to the taskbar stays too (right-click it -> Unpin to remove it).",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+                return
+            try:
+                winapp.remove_start_menu()
+            except OSError as e:
+                QMessageBox.warning(self, "Start menu", _plain_error(e, "Kinetrace could not be removed from the "
+                                                                         "Start menu"))
+                return
+            self.toast.show_message("Kinetrace is no longer in the Start menu.", "success", 6000)
+            return
+        other = winapp.start_menu_other()
+        text = ("Add Kinetrace to your Start menu?\n\nThe entry is kept in your Windows profile, OUTSIDE the "
+                "Kinetrace folder. Before you delete the folder to uninstall Kinetrace, remove it here "
+                "(Help -> Remove Kinetrace from the Start Menu); otherwise it stays behind as a dead link.\n\n"
+                "To pin Kinetrace to the taskbar instead, right-click the Kinetrace shortcut in the Kinetrace "
+                "folder -> Pin to taskbar.")
+        if other:
+            text += (f"\n\nThe Start menu already has a Kinetrace entry, for another Kinetrace folder ({other}): "
+                     "it will start this one instead.")
+        if QMessageBox.question(self, "Add to the Start menu", text, QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.Yes) != QMessageBox.Yes:
+            return
+        try:
+            winapp.add_start_menu()
+        except (OSError, ImportError) as e:
+            QMessageBox.warning(self, "Start menu", _plain_error(e, "Kinetrace could not be added to the Start "
+                                                                     "menu"))
+            return
+        self.toast.show_message("Kinetrace is in the Start menu now: press the Windows key and type "
+                                "<b>Kinetrace</b>. Right-click it there to pin it to Start or the taskbar.",
+                                "success", 9000)
 
     def _show_folders(self):
         """Help → Kinetrace's Folders…: `paths.places()` with sizes (measured in the background:

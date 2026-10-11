@@ -42,10 +42,14 @@ def take_pending(prefix: str | None = None) -> bool:
     return True
 
 
-def _start_next_time(system: str) -> str:
+def _start_next_time(system: str, folder: str | None = None) -> str:
     if system == "Darwin":
         return "Kinetrace.app in this folder (drag it to the Dock to keep it there)"
     if system == "Windows":
+        if folder is not None and (Path(folder) / "Kinetrace.lnk").exists():
+            # winapp.py made it in this run (run.bat does that before this text): no console window next time
+            return ("the Kinetrace shortcut in this folder - double-click it (no extra window); right-click it "
+                    "-> Pin to Start or Pin to taskbar to keep it there")
         return "double-click run.bat in this folder"
     return "./run.sh in this folder"
 
@@ -66,7 +70,7 @@ def finished_text(version: str, folder: str, how: str, system: str) -> str:
     out = [line, f" Kinetrace {version} is installed and ready.", line, ""]
     out += [" " + s for s in window]
     out += ["",
-            " Next time, start it with: " + _start_next_time(system) + ".",
+            " Next time, start it with: " + _start_next_time(system, folder) + ".",
             "",
             " DO NOT delete or move anything out of this folder:",
             f"   {folder}",
@@ -85,8 +89,10 @@ def finished_text(version: str, folder: str, how: str, system: str) -> str:
     return "\n".join(out)
 
 
-def popup_html(version: str, system: str) -> str:
-    """The one-time pop-up the first time the app opens after an install."""
+def popup_html(version: str, system: str, folder: str | None = None) -> str:
+    """The one-time pop-up the first time the app opens after an install. `folder` = the Kinetrace folder
+    (None = this one)."""
+    folder = str(Path(__file__).resolve().parent.parent) if folder is None else folder
     if system == "Darwin":
         window = ("The Terminal window from the installation is no longer needed: you can close it.")
     else:
@@ -95,7 +101,7 @@ def popup_html(version: str, system: str) -> str:
     return (f"<p><b>Kinetrace {version} is installed and ready.</b></p>"
             "<p><b>To begin:</b> File → Open Video… (Ctrl+O), or drag a video onto this window. "
             "Press <b>F1</b> for the manual; Help → System Check… says what this computer runs.</p>"
-            f"<p><b>Next time</b>, start it with {_start_next_time(system)}.</p>"
+            f"<p><b>Next time</b>, start it with {_start_next_time(system, folder)}.</p>"
             f"<p>{window}</p>"
             "<p><b>Keep the Kinetrace folder as it is</b>: its <i>.venv</i> and <i>models</i> folders are the "
             "program and its models, and the launchers start it. Moving or renaming the whole folder is fine. "

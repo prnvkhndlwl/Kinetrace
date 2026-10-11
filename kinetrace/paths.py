@@ -66,6 +66,21 @@ def _qt_settings() -> Place | None:
     return Place("Qt's settings", p, False, note) if p.exists() else None
 
 
+def _start_menu() -> Place | None:
+    """(Windows) the Start menu entry the user added for this folder (Help -> Add Kinetrace to the Start
+    Menu, winapp.py): the one thing of Kinetrace outside its folder."""
+    if sys.platform != "win32":
+        return None
+    try:
+        from kinetrace import winapp
+        if not winapp.start_menu_points_to(ROOT):
+            return None
+        return Place("Start menu entry (you added it)", winapp.start_menu_link(), False,
+                     "remove it with Help -> Remove Kinetrace from the Start Menu before deleting the folder")
+    except Exception:       # noqa: BLE001 - the shell could not be asked: nothing to list
+        return None
+
+
 def places() -> list[Place]:
     from kinetrace import crashlog, recovery
     rec, rec_fallback = recovery.folder()
@@ -84,6 +99,9 @@ def places() -> list[Place]:
     if fallback.exists() and not any(p.path.is_relative_to(fallback) for p in out):
         out.append(Place("Per-user fallback folder", fallback, False,
                          "used only when the Kinetrace folder could not be written"))
+    menu = _start_menu()
+    if menu is not None:
+        out.append(menu)
     legacy = _legacy_settings()
     if legacy is not None:
         out.append(legacy)

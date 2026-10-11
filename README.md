@@ -38,7 +38,7 @@ with the mouse, and export the tracks to the tools you already use.
 
    | Windows | Mac (Apple Silicon, macOS 14+) | Ubuntu 22.04+ |
    |---|---|---|
-   | double-click `run.bat` | double-click `Kinetrace.command`; the first time, macOS refuses it: click **Done** (not *Move to Trash*, the default), then allow it in **System Settings → Privacy & Security → Open Anyway** | `./run.sh` |
+   | double-click `run.bat`; afterwards the **Kinetrace** shortcut it makes in the folder (no console window; pin it to Start or the taskbar) | double-click `Kinetrace.command`; the first time, macOS refuses it: click **Done** (not *Move to Trash*, the default), then allow it in **System Settings → Privacy & Security → Open Anyway** | `./run.sh` |
 
 3. **Wait once.** The first start sets everything up inside the folder
    without asking anything (about 4 GB with an NVIDIA GPU, mostly PyTorch;
