@@ -12,6 +12,9 @@
   [5] G172  Add videos (several) asks their order; CAMERAS -> Camera order... reorders an open project:
             each camera keeps its data, offsets are re-based on the new reference, a calibration
             follows its cameras, the 3D result is dropped
+  [8] G181  M (the user's key on the video): the working camera alone, filling the view area; M again:
+            every camera back in the same order, a hidden one still hidden, the same cell sizes; one
+            switch with View -> Other cameras -> Only the working camera (Ctrl+2)
 
 .venv\\Scripts\\python.exe tests\\verify_camera_views.py
 """
@@ -633,6 +636,54 @@ win._show_tracked_views()                      # what clicking the notice does
 pump(0.3)
 check(not grid.hidden() and 1 in grid.visible_indices(), "clicking the notice shows every camera")
 win.act_track_all.setChecked(False)
+
+# ------------------------------------------------------------------ [8] M
+print("[8] M: the working camera alone, M again: every camera back where it was (G181)")
+grid = win.grid
+n_v = win.project.n_views
+check(n_v >= 2, "(setup) two or more cameras", n_v)
+grid.set_arrangement(order=list(reversed(range(n_v))), hidden=set())   # a user's own arrangement: reversed
+win._set_active_view(1)
+pump(0.4)
+
+
+def snapshot():
+    return (grid.display_order(), grid.hidden(), grid.visible_indices(),
+            {i: grid._cells[i].geometry().getRect() for i in grid.visible_indices()})
+
+
+before = snapshot()
+win.canvas.setFocus()
+QTest.keyClick(win.canvas.viewport(), Qt.Key_M)                    # the user's key, on the video
+pump(0.4)
+cell = grid._cells[1].geometry()
+check(grid.visible_indices() == [1] and win.act_solo.isChecked(), "M: only the working camera is on screen",
+      grid.visible_indices())
+check(cell.width() >= grid.width() - 4 and cell.height() >= grid.height() - 4,
+      "... filling the whole view area", (cell.getRect(), grid.size()))
+check("press M" in win.statusBar().currentMessage(), "... and the status bar says how to come back",
+      win.statusBar().currentMessage())
+QTest.keyClick(win.canvas.viewport(), Qt.Key_M)
+pump(0.4)
+after = snapshot()
+check(after == before and not win.act_solo.isChecked(),
+      "M again: the same order, the same hidden camera, the same cells and sizes", (before, after))
+check(win.act_sync_all.isChecked(), "... and the cameras follow the playhead again (the mode before M)")
+QTest.keyClick(win, Qt.Key_2, Qt.ControlModifier)                 # the menu's own key is the same switch
+pump(0.3)
+check(grid.visible_indices() == [1], "Ctrl+2 is the same switch", grid.visible_indices())
+QTest.keyClick(win.canvas.viewport(), Qt.Key_M)
+pump(0.3)
+check(snapshot() == before, "... and M undoes it: one switch, not two", snapshot())
+grid.set_arrangement(hidden={0})                                    # a camera hidden with its eye
+pump(0.3)
+QTest.keyClick(win.canvas.viewport(), Qt.Key_M)
+pump(0.3)
+QTest.keyClick(win.canvas.viewport(), Qt.Key_M)
+pump(0.3)
+check(grid.hidden() == {0} and not win.act_solo.isChecked(), "a camera hidden before M stays hidden after it",
+      grid.hidden())
+grid.set_arrangement(order=list(range(n_v)), hidden=set())
 
 # ------------------------------------------------------------------ end
 win.project.dirty = False

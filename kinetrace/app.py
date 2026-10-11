@@ -138,6 +138,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>Point ▾</td><td>region shape for an armed drag: circle · rectangle · polygon (click corners, Enter closes) · <b>Ball marker</b>: click a ball, SAM outlines it every frame and the fitted circle's centre is the point (wand balls, markers, a dropped ball — add one per ball; they track together in one window, and balls too far apart for one (about 740 px) get a window each — any spacing works)</td></tr>
 <tr><td class=k>O</td><td>onion skin: ghost markers of the previous (solid) and next (dashed) frame</td></tr>
 <tr><td class=k>L</td><td>loupe: magnifier under the cursor with a crosshair on the exact pixel</td></tr>
+<tr><td class=k>M</td><td>several cameras: the working camera alone, filling the view area (the others pause); <b>M</b> again puts every camera back where it was — the same as View → Other cameras → Only the working camera (Ctrl+2)</td></tr>
 <tr><td class=k>View → Trails</td><td>Off / Last 10 frames / Custom… (any length) — fading, optional upcoming path; in every camera while Track ▾ → Every camera is ticked; View → Display filter: contrast / brighten / frame difference (display only)</td></tr>
 <tr><td class=k>drag (armed)</td><td>outline a region in the Point ▾ shape (circle or rectangle; a polygon is clicked corner by corner) → tracked as one point (its fitted center)</td></tr>
 <tr><td class=k>Ctrl+click</td><td>move the selected point here (one Ctrl+Z step)</td></tr>
@@ -1595,7 +1596,8 @@ class MainWindow(QMainWindow):
         self.act_solo = QAction("Only the &working camera (hide the others)", self, checkable=True, checked=False,
                                 shortcut=QKeySequence("Ctrl+2"))
         self.act_solo.setToolTip("Hide the other cameras — they also stop decoding, "
-                                 "which gives scrubbing the whole disk back")
+                                 "which gives scrubbing the whole disk back. M toggles it too: the working "
+                                 "camera alone, then every camera back where it was")
         # ExclusiveOptional: Ctrl+2 / Ctrl+Shift+2 pressed again untick their choice
         # (a strictly exclusive group ignores that); the handlers then fall back
         # (Hidden -> how the cameras were followed, Active view only -> Sync all)
@@ -4046,6 +4048,22 @@ class MainWindow(QMainWindow):
         self._apply_state()
         self.setWindowTitle(f"{APP_NAME} — {Path(info.path).name}")
 
+    def _toggle_maximize_view(self) -> None:
+        """M (owner 2026-10-10, G181): the working camera fills the grid; M again puts every camera back
+        where it was -- order, hidden ones, sizes. The same switch as View -> Other cameras -> Only the
+        working camera (Ctrl+2), so the menu, the CAMERAS panel and the saved layout always agree; the other
+        cameras stop decoding while hidden."""
+        p = self.project
+        if p is None or p.n_views < 2 or not self.act_solo.isEnabled():
+            self.statusBar().showMessage("M shows the working camera alone when the project has two or more "
+                                         "cameras", 4000)
+            return
+        self.act_solo.setChecked(not self.act_solo.isChecked())
+        self.statusBar().showMessage(
+            f"{p.name(p.active)} alone on screen (the other cameras pause) — press M to bring every camera back"
+            if self.act_solo.isChecked() else
+            "Every camera back in its place — press M to show the working camera alone again", 5000)
+
     def _on_solo_toggled(self, on: bool):
         self.grid.set_solo(on)
         if not on and not (self.act_sync_all.isChecked() or self.act_sync_active.isChecked()):
@@ -4565,6 +4583,8 @@ class MainWindow(QMainWindow):
         elif key == Qt.Key_L and plain:
             self.act_loupe.toggle()
             self.statusBar().showMessage("Loupe " + ("on" if self.act_loupe.isChecked() else "off"), 2000)
+        elif key == Qt.Key_M and plain:
+            self._toggle_maximize_view()            # M : the working camera alone, M again: the grid back
         elif key == Qt.Key_X and shift_only:
             self._toggle_hidden_here()
         elif key == Qt.Key_N and shift_only:
