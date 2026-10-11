@@ -34,18 +34,27 @@ Questions and ideas are welcome too: use **Question** or **Feature request**.
    window, makes the user's real gesture (keys, clicks, drops) rather than
    calling a method directly. Tests live in `tests/`; each prints `PASSED` and
    exits non-zero on a failure.
-4. Run the tests for what you touched, then the CPU group:
+4. Run the tests for what you touched (`--affected` picks them from the files
+   you changed, using `tests/suite_map.py`), then the CPU group:
 
    ```
-   .venv\Scripts\python.exe tests\run_suites.py --cpu        (Windows)
+   .venv\Scripts\python.exe tests\run_suites.py --affected   (Windows)
+   .venv\Scripts\python.exe tests\run_suites.py --cpu
    .venv/bin/python tests/run_suites.py --cpu                (macOS / Ubuntu)
    ```
 
-   With an NVIDIA GPU, also `--gpu`. Say in the pull request what you ran.
+   With an NVIDIA GPU, also `--gpu`. Then `tests/run_suites.py --stamp`
+   prints which suites passed on exactly your commit: paste it into the pull
+   request. A new module goes into `tests/suite_map.py` (`verify_suite_map`
+   fails until it is there).
 5. Update the documentation the change makes wrong: the in-app manual
    (`docs/MANUAL.md`), the [wiki](https://github.com/prnvkhndlwl/Kinetrace/wiki)
    page, tooltips and messages.
-6. Open a pull request against `main` and describe what changed and why.
+6. Open a pull request against `main`; the template asks what changed and
+   why, the tests (the stamp), whether coordinates changed, and the docs. The
+   **PR check** then installs Kinetrace on Ubuntu and Windows and runs the
+   suites that need no GPU; it must be green before the pull request can be
+   merged.
 
 ### Ground rules
 

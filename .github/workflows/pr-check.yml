@@ -1,0 +1,101 @@
+# Every pull request into main: install Kinetrace the way the launchers do, on Ubuntu and Windows, and run
+# the test suites that need no GPU and no model download, plus a check that the change adds no personal
+# folder path. Branch protection makes these required, so a red pull request cannot be merged. (The GPU suites
+# need an NVIDIA GPU: the pull request text carries their local results, `tests/run_suites.py --stamp`.)
+# Free on a public repository; about 20 minutes per run.
+name: PR check
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:              # a new push to the same pull request cancels the older run
+  group: pr-check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  QT_QPA_PLATFORM: offscreen
+  PYTHONIOENCODING: utf-8
+  KINETRACE_PERF_SCALE: "4"     # GitHub's shared runners are several times slower than a workstation
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262      # v4.4.0, pinned (I159)
+        with:
+          fetch-depth: 0          # the base branch, for the personal-path check
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0, pinned (I159)
+        with:
+          python-version: "3.12"
+
+      - name: No personal folder paths added
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff --unified=0 "$BASE"...HEAD -- . ':!*.png' ':!*.ico' | python - <<'EOF'
+          import re, sys
+          pat = re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+(?!someone\b|x\b|<|%)\w|/Users/(?!someone\b|x\b|<|\$)\w"
+                           r"|/home/(?!runner\b|someone\b|<|\$)\w")
+          path, bad = None, 0
+          for ln in sys.stdin:
+              if ln.startswith("+++ "):
+                  path = ln[6:].strip()
+              elif ln.startswith("+") and path and pat.search(ln):
+                  print(f"{path}: adds a personal folder path: {ln[1:].strip()[:120]}")
+                  bad += 1
+          print("personal-path check:", "clean" if not bad else f"{bad} line(s) - use a generic example path")
+          sys.exit(1 if bad else 0)
+          EOF
+
+      - name: System libraries for Qt (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-cursor0 libegl1 libxkbcommon-x11-0 libgl1 \
+            libxkbcommon0 libdbus-1-3 libfontconfig1
+
+      - name: Install as the launcher does (Ubuntu)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x run.sh
+          ./run.sh --check
+          test -f .venv/kinetrace-install.json
+
+      - name: Install as the launcher does (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call run.bat --check
+          if not exist .venv\kinetrace-install.json exit /b 1
+
+      - name: Test suites without GPU or model downloads
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then PY=.venv/Scripts/python.exe; else PY=.venv/bin/python; fi
+          "$PY" tests/run_suites.py \
+            verify_suite_map verify_portable verify_core verify_projectfile verify_recovery verify_interop \
+            verify_stress verify_3d verify_wand verify_lens verify_body verify_onbody_rules verify_sync \
+            verify_timeline_events verify_ui_focus verify_display verify_multicam verify_3d_gui verify_sweep_fixes \
+            verify_alltracker_mps verify_install_paths verify_downloads verify_update \
+            verify_fingerprint verify_fingerprint_gui verify_decode_identity
+
+      - name: Keep the logs of failing suites
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2, pinned (I159)
+        with:
+          name: suite-logs-${{ matrix.os }}
+          path: tests/out/suite_*.log
+          if-no-files-found: ignore
