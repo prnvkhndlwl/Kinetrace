@@ -100,16 +100,20 @@ def _thin(idx: np.ndarray, n_max: int) -> np.ndarray:
 
 
 def collect_wand(project, name_a: str, name_b: str, max_frames: int = 400,
-                 min_views: int = 2) -> tuple[np.ndarray, np.ndarray]:
+                 min_views: int = 2, views: list[int] | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Wand observations: (F, C, 2, 2) [frame, camera, end, xy] over the
     reference instants where BOTH ends are seen by >= `min_views` cameras,
-    thinned evenly to `max_frames`. Also returns the reference frames used."""
+    thinned evenly to `max_frames`. Also returns the reference frames used.
+    `views` (I272): only these cameras, in this order (C = len(views)); None = every camera."""
     t0, t1 = sampling_window(project)
+    n_c = project.n_views if views is None else len(views)
     if t1 < t0:
-        return np.zeros((0, project.n_views, 2, 2)), np.zeros(0, np.int64)
+        return np.zeros((0, n_c, 2, 2)), np.zeros(0, np.int64)
     t = np.arange(t0, t1 + 1)
     a = _sample_name(project, name_a, t)
     b = _sample_name(project, name_b, t)
+    if views is not None:
+        a, b = a[:, list(views)], b[:, list(views)]
     both = np.isfinite(a).all(axis=2) & np.isfinite(b).all(axis=2)   # (M, C)
     keep = np.nonzero(both.sum(axis=1) >= min_views)[0]
     keep = _thin(keep, max_frames)
@@ -121,20 +125,22 @@ def collect_wand(project, name_a: str, name_b: str, max_frames: int = 400,
 
 
 def collect_extra_points(project, names: list[str], max_points: int = 3000,
-                         min_views: int = 2, stride_hint: int = 1) -> np.ndarray:
+                         min_views: int = 2, stride_hint: int = 1, views: list[int] | None = None) -> np.ndarray:
     """Every (name, reference frame) seen by >= `min_views` cameras is one
-    independent 3D point: (B, C, 2). Thinned evenly to `max_points`."""
+    independent 3D point: (B, C, 2). Thinned evenly to `max_points`. `views` as in `collect_wand`."""
     t0, t1 = sampling_window(project)
     rows = []
     if t1 >= t0 and names:
         t = np.arange(t0, t1 + 1, max(1, int(stride_hint)))
         for nm in names:
             p = _sample_name(project, nm, t)                          # (M, C, 2)
+            if views is not None:
+                p = p[:, list(views)]
             ok = np.isfinite(p).all(axis=2).sum(axis=1) >= min_views
             if ok.any():
                 rows.append(p[ok])
     if not rows:
-        return np.zeros((0, project.n_views, 2))
+        return np.zeros((0, project.n_views if views is None else len(views), 2))
     bg = np.concatenate(rows, axis=0)
     idx = _thin(np.arange(len(bg)), max_points)
     return bg[idx]
@@ -263,6 +269,72 @@ def find_fall(project, name: str, t0: int | None = None, t1: int | None = None,
     left = [w for w, on in (("the rest before it", ts), ("what follows it (landing, bounce or catch)", te)) if on]
     note = (" - " + " and ".join(left) + " left out") if left else ""
     return int(t[i0]), int(t[i1]), note
+
+
+def wand_visibility(project, name_a: str, name_b: str) -> np.ndarray:
+    """(M, C) bool over the sampling window: camera c sees BOTH wand ends at that reference instant
+    (what `collect_wand` keeps, before thinning) - computed once, read by the camera ticks (I272)."""
+    t0, t1 = sampling_window(project)
+    if t1 < t0:
+        return np.zeros((0, project.n_views), bool)
+    t = np.arange(t0, t1 + 1)
+    a = _sample_name(project, name_a, t)
+    b = _sample_name(project, name_b, t)
+    return np.isfinite(a).all(axis=2) & np.isfinite(b).all(axis=2)
+
+
+def shared_frames(both: np.ndarray, views: list[int]) -> dict[int, int]:
+    """Per camera of `views`: the instants it sees both wand ends while at least one OTHER camera of
+    `views` does too - what that camera can be calibrated from in a run on `views`."""
+    v = list(views)
+    if not v or both.shape[0] == 0:
+        return {c: 0 for c in v}
+    sub = both[:, v]
+    n = sub.sum(axis=1, keepdims=True)
+    return {c: int((sub[:, k] & (n[:, 0] >= 2)).sum()) for k, c in enumerate(v)}
+
+
+def camera_groups(both: np.ndarray, views: list[int], min_frames: int) -> list[list[int]]:
+    """The cameras of `views` joined into groups: two cameras are joined when they see both wand
+    ends together on at least `min_frames` instants (directly or through other cameras). One group
+    = one calibration can hold them all; several = no wand frame ties one group to another."""
+    v = list(views)
+    parent = {c: c for c in v}
+
+    def root(c):
+        while parent[c] != c:
+            parent[c] = parent[parent[c]]
+            c = parent[c]
+        return c
+    if both.shape[0]:
+        for i, a in enumerate(v):
+            for b in v[i + 1:]:
+                if int((both[:, a] & both[:, b]).sum()) >= min_frames:
+                    parent[root(b)] = root(a)
+    groups: dict[int, list[int]] = {}
+    for c in v:
+        groups.setdefault(root(c), []).append(c)
+    return sorted(groups.values(), key=lambda g: g[0])
+
+
+def camera_ticks(both: np.ndarray, min_frames: int) -> list[tuple[bool, int, int, str]]:
+    """(I272) The wizard's default choice of cameras: per camera (ticked, instants with both wand
+    ends, instants shared with another camera that has them, why it is left out in words or "").
+    A camera is ticked when it shares at least `min_frames` such instants with another camera."""
+    C = both.shape[1]
+    n_both = both.sum(axis=0) if both.shape[0] else np.zeros(C, int)
+    shared = shared_frames(both, list(range(C)))
+    out = []
+    for c in range(C):
+        nb, sh = int(n_both[c]), shared[c]
+        if nb == 0:
+            out.append((False, 0, 0, "no wand clicks (no frame with both ends): left out, not calibrated"))
+        elif sh < min_frames:
+            out.append((False, nb, sh, f"only {sh} of its frames are shared with another camera (at least "
+                                       f"{min_frames} needed): left out, not calibrated"))
+        else:
+            out.append((True, nb, sh, ""))
+    return out
 
 
 def coverage_summary(project, name_a: str, name_b: str) -> list[tuple[str, int, int]]:

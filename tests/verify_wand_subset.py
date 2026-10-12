@@ -203,11 +203,17 @@ def sec_a():
         assert "no wand" in wz.page_wand.ticks[NO_WAND].text().lower(), wz.page_wand.ticks[NO_WAND].text()
         assert len(cal_) == N_CAM and cal_.camera(NO_WAND) is None, [c is None for c in cal_.cameras]
         assert cal_.views() == [0, 1, 3, 4], cal_.views()
-        assert wz.result.report["verdict"] == "good", wz.result.report["verdict_reasons"]
+        rep = wz.result.report
+        # "ok", not "good", only because this rig's wand covers ~20 % of each picture (a coverage note)
+        assert rep["verdict"] in ("good", "ok") and rep["wand_score_pct"] < 0.5, rep["verdict_reasons"]
+        assert not any("cam3" in r for r in rep["verdict_reasons"]), rep["verdict_reasons"]
+        assert rep["project_views"] == [0, 1, 3, 4] and rep["camera_names"] == ["cam1", "cam2", "cam4", "cam5"]
+        html = wz.page_run.report.toPlainText()
+        assert "cam3" in html and "not calibrated" in html, html[:600]
         score, n = wand_score(cal_, P)
         assert score < 0.5 and n > 300, (score, n)
-        print(f"A. camera 3 (no clicks) unticked, calibration of 1, 2, 4, 5: verdict good, wand score "
-              f"{score:.3f} % over {n} frames OK")
+        print(f"A. camera 3 (no clicks) unticked, calibration of 1, 2, 4, 5: verdict {rep['verdict']}, "
+              f"wand score {score:.3f} % over {n} frames; the report lists cam3 as not calibrated OK")
     finally:
         close_wizard(wz)
 
@@ -372,7 +378,91 @@ def sec_g():
           "the import dialog keeps 'not calibrated' cameras OK")
 
 
-SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f, sec_g]
+def sec_h():
+    """Through the real window: the wizard's calibration of cameras 1, 2, 4, 5 becomes the project's,
+    the 3D menu's Reconstruct runs on them and says camera 3 is left out."""
+    import cv2
+    from PySide6.QtWidgets import QDialog
+    from _clean import forget_recovery
+    from kinetrace.app import READY, MainWindow
+    P = build(tag="subh")
+    paths = [s.video_path for s in P.sessions]
+    img = np.full((H, W, 3), 30, np.uint8)
+    for pth, s in zip(paths, P.sessions):
+        vw = cv2.VideoWriter(pth, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (W, H))
+        for _ in range(s.n_frames):
+            vw.write(img)
+        vw.release()
+        forget_recovery(pth)
+    proj_path = os.path.join(SCRATCH, "wand_subset_gui.kinetrace")
+    P.save(proj_path)
+    real_critical = QMessageBox.critical
+    QMessageBox.critical = staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError(a[2] if len(a) > 2 else a)))
+    real_exec = cw.WandWizard.exec
+    win = MainWindow()
+    win.show()
+    try:
+        win._open_project_from_path(proj_path)
+        for _ in range(300):
+            pump(0.05)
+            if win.state == READY and win.project is not None and win.project.n_views == N_CAM:
+                break
+        assert win.state == READY and win.project.n_views == N_CAM
+
+        def drive(self):
+            self.show()
+            self.restart()
+            pump(0.1)
+            goto(self, self.page_wand)
+            self.page_wand.length.setValue(WAND_L)
+            assert [cb.isChecked() for cb in self.page_wand.ticks] == [True, True, False, True, True]
+            goto(self, self.page_cams)
+            known_focal(self)
+            goto(self, self.page_frame)
+            self.page_frame.r_none.setChecked(True)
+            goto(self, self.page_run)
+            run_and_wait(self)
+            assert self.result_calibration is not None, self.page_run.report.toPlainText()[:400]
+            self.accept()
+            return QDialog.Accepted
+
+        cw.WandWizard.exec = drive
+        win._wand_wizard()
+        pump(0.2)
+        p = win.project
+        assert p.calibration is not None and p.calibration.views() == [0, 1, 3, 4], p.calibration
+        pump(0.1)
+        assert win.act_recon.isEnabled()
+        win.act_recon.trigger()                       # 3D -> Reconstruct, as the menu does
+        for _ in range(200):
+            pump(0.05)
+            if p.reconstruction is not None:
+                break
+        r = p.reconstruction
+        assert r is not None, "Reconstruct did not run with cameras 1, 2, 4, 5 calibrated"
+        ia, ib = r.names.index("wand A"), r.names.index("wand B")
+        L = np.linalg.norm(r.xyz[:, ia] - r.xyz[:, ib], axis=1)
+        assert np.isfinite(L).sum() > 300 and np.nanstd(L) / np.nanmean(L) < 0.01, (np.isfinite(L).sum(),)
+        assert np.isnan(r.per_cam[..., NO_WAND]).all()
+        t = win.toast.text()
+        assert "cam3" in t and "not calibrated" in t, t
+        print(f"H. through the window: calibration of 1, 2, 4, 5 -> 3D -> Reconstruct: {int(np.isfinite(L).sum())} "
+              f"wand frames, the toast names cam3 as left out OK")
+    finally:
+        cw.WandWizard.exec = real_exec
+        QMessageBox.critical = real_critical
+        if hasattr(win, "_dev_probe"):
+            win._dev_probe.wait(60000)
+        win.project.dirty = False if win.project is not None else None
+        win.close()
+        pump(0.2)
+        win.deleteLater()
+        pump(0.1)
+        for pth in paths:
+            forget_recovery(pth)
+
+
+SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f, sec_g, sec_h]
 
 if __name__ == "__main__":
     failed = []

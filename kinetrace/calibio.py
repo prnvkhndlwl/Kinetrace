@@ -672,7 +672,7 @@ def dlt_columns(cal, names: list[str] | None = None) -> list[str] | None:
     """(I273) Which camera each column of `dlt_csv_matlab`'s file is, when the calibration leaves a
     camera out (column k is then not camera k): ["column 1 = cam1", ...]; None when every camera
     up to the last calibrated one is calibrated (column k = camera k, as always)."""
-    views = cal.views()
+    views = [k for k, c in enumerate(cal.cameras) if c is not None]       # a WandResult has no views()
     if views == list(range(len(views))):
         return None
     return [f"column {k + 1} = {names[v] if names and v < len(names) else f'camera {v + 1}'}"
@@ -686,7 +686,7 @@ def dlt_csv_matlab(cal, path, pixel_origin_out: float = 1.0) -> None:
     `pixel_origin_out` = the convention written (1.0 = MATLAB, 0.0 = Kinetrace's own); (R20)
     `wand.export_dlt_csv` is this function. (I273) Only the calibrated cameras have a column, in
     camera order (`dlt_columns` says which camera each column is)."""
-    cols = [cal.camera(v).coefs_for_origin(pixel_origin_out) for v in cal.views()]   # (R14) the one shift
+    cols = [c.coefs_for_origin(pixel_origin_out) for c in cal.cameras if c is not None]  # (R14) the one shift
     np.savetxt(str(path), np.stack(cols, axis=1), delimiter=",", fmt="%.12g")
 
 # ------------------------------------------------------------------ lens profiles
