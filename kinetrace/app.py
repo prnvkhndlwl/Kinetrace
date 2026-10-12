@@ -1969,13 +1969,22 @@ class MainWindow(QMainWindow):
                 "stands.\n\nMake one with 3D → Calibrate Cameras with a Wand, or bring one you already "
                 "have (DLTdv, easyWand, Argus or a Kinetrace .kcal.json) with 3D → Import Calibration.")
             return False
-        if len(p.calibration) != p.n_views:
+        cal = p.calibration
+        left_out = [p.name(v) for v in range(p.n_views) if cal.camera(v) is None]
+        if len(cal) > p.n_views or p.n_views - len(left_out) < 2:
             QMessageBox.information(
                 self, what,
-                f"The calibration covers {len(p.calibration)} camera(s) but the project has {p.n_views}. "
-                "Calibrate all cameras (3D → Calibrate Cameras with a Wand), import a calibration that "
-                "includes every camera, or remove the extra camera with its × in the CAMERAS panel.")
+                f"The calibration covers {p.n_views - len(left_out)} of this project's {p.n_views} cameras; "
+                f"{what} needs two or more calibrated cameras. Calibrate the cameras that see the wand "
+                "(3D → Calibrate Cameras with a Wand), or import a calibration that includes them.")
             return False
+        if left_out:
+            # (I273) 3D runs on the calibrated cameras; say which cameras are left out of it
+            self.toast.show_message(
+                f"{what}: {', '.join(left_out)} {'is' if len(left_out) == 1 else 'are'} not calibrated and "
+                "left out (3D uses the calibrated cameras). To include "
+                f"{'it' if len(left_out) == 1 else 'them'}, track the wand there and calibrate again.",
+                "info", 9000)
         return True
 
     def _reference_instant(self) -> int:
@@ -2071,7 +2080,8 @@ class MainWindow(QMainWindow):
         # 3D layer: needs several cameras, then a calibration, then a result
         p = self.project
         multi = p is not None and p.n_views > 1 and has_video and not tracking
-        has_cal = multi and p.calibration is not None and len(p.calibration) == p.n_views
+        has_cal = (multi and p.calibration is not None and len(p.calibration) <= p.n_views   # (I273) any 2+
+                   and sum(p.calibration.camera(v) is not None for v in range(p.n_views)) >= 2)
         # Import Calibration and Sync open with one video too and explain what
         # a further step needs (I115)
         live3d = has_video and not tracking and p is not None
@@ -3721,12 +3731,7 @@ class MainWindow(QMainWindow):
                    + [(("new", x), Path(x).name, "new") for x in paths])
 
         def problem(keys):
-            # a calibration of the first cameras must keep them first (Project.order_problem)
-            cal = p.calibration
-            k = len(cal) if cal is not None else 0
-            if 0 < k <= p.n_views and sorted(key[1] for key in keys[:k] if key[0] == "cam") != list(range(k)):
-                return (f"the calibration covers cameras 1-{k} only, so they must stay the first {k} cameras; "
-                        "put the new videos after them")
+            # (I273) the calibration no longer limits the order (a new camera is not calibrated)
             return None
         dlg = CameraOrderDialog(self, entries, f"Add {len(paths)} camera{'s' if len(paths) != 1 else ''}: their order",
                                 consequence="The new cameras are marked “new”. Each camera keeps its points and offset; "
@@ -3803,18 +3808,17 @@ class MainWindow(QMainWindow):
         self._gopro_soon()                       # (G145)
         self._frames_check_soon([self._views[-1]])   # (I266)
         cal = self.project.calibration
-        if cal is not None and 0 < len(cal) < self.project.n_views:
-            # the 3D menu greys out (it needs every camera calibrated): say why,
-            # and that the existing calibration is kept, not lost (I16)
+        if cal is not None and cal.n_calibrated > 0:
+            # say that the new camera is not in the calibration, and that the existing calibration
+            # is kept, not lost (I16); 3D goes on with the calibrated cameras (I273)
             QMessageBox.information(
-                self, "The calibration covers the first cameras",
-                f"This project's calibration was made for {len(cal)} camera(s); {Path(path).name} is "
+                self, "The new camera is not calibrated",
+                f"This project's calibration covers {cal.n_calibrated} camera(s); {Path(path).name} is "
                 f"camera {i + 1} and is not in it.\n\n"
-                "The calibration stays in the project and in the saved file, but 3D (Reconstruct, "
-                "Volume, the 3D view) needs every camera calibrated. Either calibrate all "
-                f"{self.project.n_views} cameras (3D → Calibrate Cameras with a Wand, or Import "
-                "Calibration with a file that includes this camera), or remove this camera again "
-                "with its × in the CAMERAS panel to use 3D again.")
+                "The calibration stays in the project and in the saved file, and 3D (Reconstruct, "
+                "Volume, the 3D view) goes on with the calibrated cameras, leaving this one out. To "
+                "include it, track the wand in it and calibrate again (3D → Calibrate Cameras with a "
+                "Wand), or Import Calibration with a file that includes this camera.")
         return True
 
     def _remove_view(self, i: int):
@@ -11571,7 +11575,8 @@ class MainWindow(QMainWindow):
         from kinetrace.calib import reconstruction_report
         widths = [s.width for s in p.sessions if s.width] or [1920]
         heights = [s.height for s in p.sessions if s.height] or [0]
-        rep = reconstruction_report(r, p.n_views, float(max(widths)), float(max(heights)))     # long side (I250)
+        n_cal = sum(p.calibration.camera(v) is not None for v in range(p.n_views))         # (I273)
+        rep = reconstruction_report(r, n_cal, float(max(widths)), float(max(heights)))     # long side (I250)
         self._recon_report = rep
         self._update_disagreement()             # per-camera disagreement onto the timeline
         self._refresh_guides()

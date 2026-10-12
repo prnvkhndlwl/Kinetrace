@@ -367,6 +367,7 @@ class Project:
             del self.lenses[i]
         if self.calibration is not None and i < len(self.calibration.cameras):
             del self.calibration.cameras[i]
+            self.calibration.__dict__.pop("_probe_cache", None)     # the first two cameras may be others now
         self.reconstruction = None
         # removing the reference promotes the next camera: the new reference's
         # rate becomes the unit, and re-zeroing shifts the set — nothing moves
@@ -387,13 +388,8 @@ class Project:
         order = list(order)
         if sorted(order) != list(range(n)):
             return "a camera order must name every camera exactly once"
-        cal = self.calibration
-        k = len(cal) if cal is not None else 0
-        if 0 < k < n and sorted(order[:k]) != list(range(k)):
-            # a calibration of the first k cameras cannot have a gap: an uncalibrated camera among them
-            # would take a calibrated one's place
-            return (f"the calibration covers cameras 1-{k} only, so they must stay the first {k} cameras "
-                    f"(in any order among themselves); calibrate every camera to order them freely")
+        # (I273) a calibration may leave any camera out: a camera that is not calibrated moves with
+        # its camera like a calibrated one, so the calibration no longer limits the order
         return None
 
     def reorder_views(self, order) -> bool:
@@ -418,8 +414,8 @@ class Project:
         self.lenses = perm((list(self.lenses) + [None] * n)[:n])
         cal = self.calibration
         if cal is not None and len(cal):
-            k = min(len(cal), n)
-            cal.cameras = [cal.cameras[i] for i in order[:k]] + list(cal.cameras[k:])
+            cal.cameras = perm(cal.padded(n))           # (I273) a not-calibrated camera (None) moves too
+            cal.__dict__.pop("_probe_cache", None)      # the first two calibrated cameras may be others now
         r0 = self.rates[REFERENCE_VIEW]
         if r0 > 0 and abs(r0 - 1.0) > 1e-12:
             self.rates = [r / r0 for r in self.rates]
