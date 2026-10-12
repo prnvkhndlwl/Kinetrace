@@ -119,6 +119,24 @@ your projects and models; after 30 days without a check, a note at start reminds
 — [contributing](CONTRIBUTING.md) says what helps, and the [code of conduct](CODE_OF_CONDUCT.md)
 applies. Security problems: report them privately ([SECURITY.md](SECURITY.md)).
 
+## Acknowledgements
+
+Much of Kinetrace grew out of years spent tracking with **DLTdv** and
+**DeepLabCut**: they shaped what it does and how it does it — clicking and
+correcting points frame by frame, calibrated multi-camera 3D, and following
+user-defined body parts through long videos. Kinetrace is an independent
+program and contains no code from either; it reads and writes both formats so
+that work can move freely between them. The two papers:
+
+- Hedrick, T. L. (2008). Software techniques for two- and three-dimensional
+  kinematic measurements of biological and biomimetic systems.
+  *Bioinspiration & Biomimetics*, 3(3), 034001.
+  [doi:10.1088/1748-3182/3/3/034001](https://doi.org/10.1088/1748-3182/3/3/034001)
+- Mathis, A., Mamidanna, P., Cury, K. M., Abe, T., Murthy, V. N., Mathis, M. W.,
+  & Bethge, M. (2018). DeepLabCut: markerless pose estimation of user-defined
+  body parts with deep learning. *Nature Neuroscience*, 21(9), 1281–1289.
+  [doi:10.1038/s41593-018-0209-y](https://doi.org/10.1038/s41593-018-0209-y)
+
 ## Licence & privacy
 
 Free for any **non-commercial** use under the
