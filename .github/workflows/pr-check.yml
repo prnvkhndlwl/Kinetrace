@@ -45,10 +45,12 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          git diff --unified=0 "$BASE"...HEAD -- . ':!*.png' ':!*.ico' | python - <<'EOF'
+          # the checker goes to a file first: `python - <<EOF` would make the heredoc python's stdin and the
+          # piped diff would never be read (the check would always pass)
+          cat > "$RUNNER_TEMP/pathcheck.py" <<'EOF'
           import re, sys
           pat = re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+(?!someone\b|x\b|<|%)\w|/Users/(?!someone\b|x\b|<|\$)\w"
-                           r"|/home/(?!runner\b|someone\b|<|\$)\w")
+                           r"|/home/(?!runner\b|someone\b|<|\$)\w", re.I)
           path, bad = None, 0
           for ln in sys.stdin:
               if ln.startswith("+++ "):
@@ -59,6 +61,7 @@ jobs:
           print("personal-path check:", "clean" if not bad else f"{bad} line(s) - use a generic example path")
           sys.exit(1 if bad else 0)
           EOF
+          git diff --unified=0 "$BASE"...HEAD -- . ':!*.png' ':!*.ico' | python "$RUNNER_TEMP/pathcheck.py"
 
       - name: System libraries for Qt (Ubuntu)
         if: runner.os == 'Linux'

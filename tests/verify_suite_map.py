@@ -59,35 +59,58 @@ check(s == [] and u == [], "text outside the app selects nothing")
 s, _ = suite_map.suites_for(["kinetrace/tracker.py", "kinetrace/tracker.py"])
 check(len(s) == len(set(s)) and s[0] == "verify_tracker", "no suite twice; the table's order kept")
 
-# 4. the run header and the stamp
-hs = run_suites.head_stamp()
-check(hs.startswith(" HEAD ") and len(hs.split()[1]) == 10, f"the run header names the commit ({hs.strip()})")
-head = run_suites.git("rev-parse", "--short=10", "HEAD")
-with tempfile.TemporaryDirectory() as tmp:
-    old_out = run_suites.OUT
-    run_suites.OUT = tmp
-    open(os.path.join(tmp, "suite_runs.txt"), "w", encoding="utf-8").write(
-        f"\n==== run at 2026-01-01 10:00:00 HEAD {head}\n"
-        "verify_core                  ok  exit    0       5s  ALL CORE CHECKS PASSED\n"
-        f"\n==== run at 2026-01-01 11:00:00 HEAD {head} dirty\n"
-        "verify_scrub                 BAD exit    1       5s  a dirty run is not evidence\n"
-        "\n==== run at 2026-01-01 12:00:00 HEAD deadbeef00\n"
-        "verify_lens                  ok  exit    0       5s  another commit's code\n"
-        "\n==== run at 2026-01-01 13:00:00\n"
-        "verify_wand                  ok  exit    0       5s  an old run without a commit\n")
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        run_suites.stamp()
-    run_suites.OUT = old_out
-text = buf.getvalue()
-check(f"Suites on {head}" in text, "the stamp names the commit")
-cpu = [ln for ln in text.splitlines() if ln.startswith("- CPU group")]
-check(bool(cpu) and cpu[0].startswith(f"- CPU group: 1 of {len(run_suites.CPU)} ok"),
-      "only the clean run on this commit counts (CPU group: 1 ok)")
-check("verify_scrub" not in text.split("NOT RUN", 1)[0] and "BAD" not in text,
-      "a dirty run's failure is not reported as evidence")
-check("verify_lens" in text and "verify_wand" in text and "NOT RUN on this code" in text,
-      "another commit's and an unstamped run's results show as NOT RUN")
+
+def git_checks():
+    """Sections 4-5 need a git checkout (a ZIP install has none: they are skipped there)."""
+    # 4. the run header and the stamp
+    hs = run_suites.head_stamp()
+    check(hs.startswith(" HEAD ") and len(hs.split()[1]) == 10, f"the run header names the commit ({hs.strip()})")
+    head = run_suites.git("rev-parse", "--short=10", "HEAD")
+    with tempfile.TemporaryDirectory() as tmp:
+        old_out = run_suites.OUT
+        run_suites.OUT = tmp
+        open(os.path.join(tmp, "suite_runs.txt"), "w", encoding="utf-8").write(
+            f"\n==== run at 2026-01-01 10:00:00 HEAD {head}\n"
+            "verify_core                  ok  exit    0       5s  ALL CORE CHECKS PASSED\n"
+            f"\n==== run at 2026-01-01 11:00:00 HEAD {head} dirty\n"
+            "verify_scrub                 BAD exit    1       5s  a dirty run is not evidence\n"
+            "\n==== run at 2026-01-01 12:00:00 HEAD deadbeef00\n"
+            "verify_lens                  ok  exit    0       5s  another commit's code\n"
+            "\n==== run at 2026-01-01 13:00:00\n"
+            "verify_wand                  ok  exit    0       5s  an old run without a commit\n"
+            f"\n==== run at 2026-01-01 14:00:00 HEAD {head}\n"
+            "verify_sync                  ok  exit    0       5s  the code moved under this run\n"
+            f"==== changed during the run: HEAD {head} dirty (these results are not evidence for any commit)\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_suites.stamp()
+        run_suites.OUT = old_out
+    text = buf.getvalue()
+    check(f"Suites on {head}" in text, "the stamp names the commit")
+    cpu = [ln for ln in text.splitlines() if ln.startswith("- CPU group")]
+    check(bool(cpu) and cpu[0].startswith(f"- CPU group: 1 of {len(run_suites.CPU)} ok"),
+          "only the clean run on this commit counts (CPU group: 1 ok)")
+    check("verify_scrub" not in text.split("NOT RUN", 1)[0] and "BAD" not in text,
+          "a dirty run's failure is not reported as evidence")
+    check("verify_lens" in text and "verify_wand" in text and "NOT RUN on this code" in text,
+          "another commit's and an unstamped run's results show as NOT RUN")
+    check("verify_sync" in text.split("NOT RUN on this code", 1)[-1].splitlines()[0],
+          "a run during which the code changed is not evidence")
+
+    # 5. a base that does not exist runs nothing and fails, instead of reporting 0 suites as success
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            run_suites.affected("no-such-branch-x41")
+        check(False, "--affected with an unknown base fails")
+    except SystemExit as e:
+        check(e.code == 2, "--affected with an unknown base fails (exit 2, nothing run)")
+
+
+if run_suites.git("rev-parse", "--short=10", "HEAD"):
+    git_checks()
+else:
+    print("skip the run-header / stamp checks: not a git checkout (a ZIP install)")
+
 
 print("verify_suite_map: PASSED" if not fails else f"verify_suite_map: {fails} FAILED")
 sys.exit(1 if fails else 0)

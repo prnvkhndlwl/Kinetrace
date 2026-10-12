@@ -114,13 +114,19 @@ def head_stamp():
     sha = git("rev-parse", "--short=10", "HEAD")
     if not sha:
         return ""
-    return f" HEAD {sha}" + (" dirty" if git("status", "--porcelain", "--untracked-files=no") else "")
+    return f" HEAD {sha}" + (" dirty" if git("status", "--porcelain") else "")   # untracked files count too
 
 
 def affected(base):
     """The suites for the files changed since `base` (committed, staged or not), via tests/suite_map.py."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import suite_map
+    if not git("rev-parse", "--verify", "--quiet", base + "^{commit}"):
+        if base == "main" and git("rev-parse", "--verify", "--quiet", "origin/main^{commit}"):
+            base = "origin/main"                      # a clone without a local main
+        else:
+            print(f"--affected: '{base}' is not a branch or commit here - nothing was run")
+            sys.exit(2)
     merge_base = git("merge-base", base, "HEAD") or base
     changed = sorted(set(git("diff", "--name-only", merge_base).splitlines()) |
                      set(git("ls-files", "--others", "--exclude-standard").splitlines()))
@@ -139,17 +145,23 @@ def stamp():
     if not head or not os.path.exists(path):
         print("no commit or no tests/out/suite_runs.txt")
         return 1
-    results, sha, when, dirty = {}, None, None, False
+    results, run, sha, when, dirty = {}, {}, None, None, False
     for raw in open(path, encoding="utf-8", errors="replace"):
         if raw.startswith("==== run at"):
+            results.update(run)                       # the previous run counts
+            run = {}
             parts = raw.split()
             when = " ".join(parts[3:5])
             sha = parts[parts.index("HEAD") + 1] if "HEAD" in parts else None
             dirty = "dirty" in parts
             continue
+        if raw.startswith("==== changed during the run"):
+            run = {}                                  # the code moved under the run: none of it is evidence
+            continue
         bits = raw.split()
         if len(bits) >= 4 and bits[1] in ("ok", "BAD") and bits[2] == "exit" and sha and not dirty:
-            results[bits[0]] = (sha, when, bits[1] == "ok", raw.strip()[:150])
+            run[bits[0]] = (sha, when, bits[1] == "ok", raw.strip()[:150])
+    results.update(run)
     same = {}
 
     def is_code(f):
@@ -183,7 +195,7 @@ def stamp():
 
 
 def main(argv):
-    if argv[:1] == ["--stamp"]:
+    if "--stamp" in argv:
         return stamp()
     names = []
     args = list(argv)
@@ -205,7 +217,8 @@ def main(argv):
         return 0
     ensure_test_videos(names)
     log = open(os.path.join(OUT, "suite_runs.txt"), "a", encoding="utf-8")
-    log.write(f"\n==== run at {time.strftime('%Y-%m-%d %H:%M:%S')}{head_stamp()}\n")
+    started = head_stamp()
+    log.write(f"\n==== run at {time.strftime('%Y-%m-%d %H:%M:%S')}{started}\n")
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8", KINETRACE_RECOVERY_DIR=RECOVERY,
                KINETRACE_UPDATE_API="http://127.0.0.1:9/api")   # no suite ever asks GitHub (G37)
     bad = 0
@@ -238,6 +251,9 @@ def main(argv):
                 fh.write(r.stdout if code != -1 else "")
                 fh.write("\n---- stderr ----\n")
                 fh.write(r.stderr if code != -1 else "")
+    if started and head_stamp() != started:       # files edited / committed while the suites ran
+        log.write(f"==== changed during the run:{head_stamp()} (these results are not evidence for any commit)\n")
+        print("note: the code changed while the suites ran; --stamp will not count this run")
     print(f"{len(names) - bad} of {len(names)} suites exit 0")
     return 1 if bad else 0
 
