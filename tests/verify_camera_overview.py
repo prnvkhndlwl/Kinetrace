@@ -93,14 +93,19 @@ class _P:
         return f"cam{v + 1}"
 
 
+from kinetrace.calib import Calibration  # noqa: E402
 facts = cameraoverview.camera_facts(_P([_S(320, 240), _S(640, 480), _S(320, 240)], [lensA, lensA, None],
-                                       ["calibrated camera", "calibrated camera"]), [])
+                                       Calibration(["calibrated camera", "calibrated camera"])), [])
 check([f.lens_state for f in facts] == ["ok", "unused", "none"], "lens: used / attached but not used / none",
       [f.lens_state for f in facts])
 check("640" in facts[1].lens_note and facts[1].lens_note[0].isupper(), "why it is not used, as a sentence",
       facts[1].lens_note)
 check([f.calibrated for f in facts] == [True, True, False] and "2 cameras" in facts[2].calibration_text,
       "a calibration of two cameras covers the first two", [f.calibration_text for f in facts])
+gap = cameraoverview.camera_facts(_P([_S(320, 240), _S(640, 480), _S(320, 240)], [None, None, None],
+                                     Calibration(["calibrated camera", None, "calibrated camera"])), [])
+check([f.calibrated for f in gap] == [True, False, True] and "not calibrated" in gap[1].calibration_text,
+      "(I273) a calibration of cameras 1 and 3: camera 2 is not calibrated", [f.calibration_text for f in gap])
 check(cameraoverview.camera_facts(_P([_S(320, 240)], [None], None), [])[0].calibration_text == "no calibration yet",
       "no calibration: said")
 

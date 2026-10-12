@@ -207,14 +207,16 @@ def carve(cams: list[CameraCalibration], masks: list[np.ndarray | None],
     n = np.maximum(np.ceil((hi - lo) / voxel).astype(int) + 1, 1)
     if n.prod() > 60_000_000:
         raise ValueError(f"grid of {n} voxels is too large; use a coarser voxel or tighter bounds")
-    views = [(cal, undistorted_mask(cal, m, dilate_px)) for cal, m in zip(cams, masks) if m is not None]
+    # (I273) a camera that is not calibrated (None) does not vote either
+    views = [(cal, undistorted_mask(cal, m, dilate_px)) for cal, m in zip(cams, masks)
+             if m is not None and cal is not None]
     valids = [undistort_valid(cal, um.shape[1], um.shape[0]) for cal, um in views]
     # (I172) a camera whose silhouette does not touch its picture border sees the
     # WHOLE animal: a voxel in front of it that falls outside its picture is
     # outside its silhouette, a vote against. A silhouette that reaches the border
     # (the animal is cut by the picture's edge) says nothing about what is beyond
     # it, so such a camera has no vote there, as does an empty mask.
-    framed = [_frames_whole_animal(m) for cal, m in zip(cams, masks) if m is not None]
+    framed = [_frames_whole_animal(m) for cal, m in zip(cams, masks) if m is not None and cal is not None]
     boxes = [_picture_box(cal, um.shape[1], um.shape[0]) for cal, um in views]
     inside = np.zeros(n.prod(), np.int16)
     seen = np.zeros(n.prod(), np.int16)

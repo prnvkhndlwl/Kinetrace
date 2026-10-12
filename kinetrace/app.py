@@ -7608,21 +7608,20 @@ class MainWindow(QMainWindow):
 
     def _cal_cam(self, v: int):
         """Camera `v`'s calibration, or None when the calibration does not cover
-        it -- a camera added after calibrating (G25). Calibration cameras are in
-        view order, and a camera added later is appended after them."""
+        it -- a camera added after calibrating (G25) or left out of a wand
+        calibration of some of the cameras (I273)."""
         p = self.project
         cal = p.calibration if p is not None else None
-        if cal is None or not (0 <= v < min(len(cal.cameras), p.n_views)):
+        if cal is None or not 0 <= v < p.n_views:
             return None
-        return cal.cameras[v]
+        return cal.camera(v)
 
     def _guides_ready(self) -> bool:
         """Two or more calibrated cameras: the guides and the ◇ predictions work
-        among them, even when a camera added later is not calibrated (G25) -- the
-        3D entries still need every camera (`_need_calibration`)."""
+        among them (G25, I273)."""
         p = self.project
         return (p is not None and p.n_views > 1 and p.calibration is not None
-                and min(len(p.calibration.cameras), p.n_views) >= 2)
+                and sum(p.calibration.camera(v) is not None for v in range(p.n_views)) >= 2)
 
     def _epipolar_guides(self, pid: int) -> list:
         """[(polyline (M, 2) native px of the working camera, colour, camera name), ...]: where
@@ -11706,7 +11705,7 @@ class MainWindow(QMainWindow):
                 "to look.", "warn", 7000)
             return
         def work():
-            cams = p.calibration.cameras
+            cams = p.calibration.padded(p.n_views)          # (I273) one per camera, None = not calibrated
             span = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) if len(pts) > 1 else 0.0
             margin = max(2.0 * span, 0.05)
             cut_off = False
@@ -11800,8 +11799,9 @@ class MainWindow(QMainWindow):
                            if a in idx and b in idx]
             scene.unit = r.unit
         if p.calibration is not None:
-            scene.cameras = np.array([c.center() for c in p.calibration.cameras])
-            scene.camera_names = list(p.names)
+            views = [v for v in p.calibration.views() if v < p.n_views]      # (I273) calibrated cameras
+            scene.cameras = np.array([p.calibration.camera(v).center() for v in views]).reshape(-1, 3)
+            scene.camera_names = [p.name(v) for v in views]
         if t in self._hull_cache:
             verts, faces, h = self._hull_cache[t]
             scene.mesh = (verts, faces)
