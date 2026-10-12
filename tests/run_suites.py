@@ -6,6 +6,12 @@ only (Windows consoles are cp1252). Usage:
     .venv\\Scripts\\python.exe tests\\run_suites.py --gpu        (the GPU group)
     .venv\\Scripts\\python.exe tests\\run_suites.py --cpu        (offscreen GUI + core)
     .venv/bin/python tests/run_suites.py --cpu                  (Linux / macOS)
+    .venv\\Scripts\\python.exe tests\\run_suites.py --affected [base] (the suites for the files changed since
+                                                         base, default main: tests/suite_map.py)
+    .venv\\Scripts\\python.exe tests\\run_suites.py --stamp      (the evidence block for a pull request)
+
+Each run's header names the commit it ran on ("HEAD <sha>", "dirty" when tracked files had uncommitted edits),
+so --stamp can say which results belong to the code in the pull request.
 
 Every suite keeps its unsaved-work recovery copies in tests/out/recovery
 (KINETRACE_RECOVERY_DIR), emptied before each suite, so no later suite meets a
@@ -63,7 +69,9 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        # (G168-G172) many cameras on screen and their order; (I265) Save during a run
        "verify_camera_views", "verify_save_during_run",
        # (I266) a video that decodes differently on another computer: the fingerprint, exact seeks
-       "verify_fingerprint", "verify_fingerprint_gui", "verify_decode_identity"]
+       "verify_fingerprint", "verify_fingerprint_gui", "verify_decode_identity",
+       # the test-selection table and the pull-request evidence stamp
+       "verify_suite_map"]
 # the synthetic test videos are generated on demand (deterministic; not stored in the repo)
 TEST_VIDEOS = {
     "test600.mp4": ([], None),
@@ -96,18 +104,121 @@ def summary_line(stdout, stderr):
     return lines[-1][:160] if lines else ""
 
 
+def git(*args):
+    r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def head_stamp():
+    """' HEAD <sha>[ dirty]' for the run header ('' outside a git checkout)."""
+    sha = git("rev-parse", "--short=10", "HEAD")
+    if not sha:
+        return ""
+    return f" HEAD {sha}" + (" dirty" if git("status", "--porcelain") else "")   # untracked files count too
+
+
+def affected(base):
+    """The suites for the files changed since `base` (committed, staged or not), via tests/suite_map.py."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import suite_map
+    if not git("rev-parse", "--verify", "--quiet", base + "^{commit}"):
+        if base == "main" and git("rev-parse", "--verify", "--quiet", "origin/main^{commit}"):
+            base = "origin/main"                      # a clone without a local main
+        else:
+            print(f"--affected: '{base}' is not a branch or commit here - nothing was run")
+            sys.exit(2)
+    merge_base = git("merge-base", base, "HEAD") or base
+    changed = sorted(set(git("diff", "--name-only", merge_base).splitlines()) |
+                     set(git("ls-files", "--others", "--exclude-standard").splitlines()))
+    names, unmapped = suite_map.suites_for(changed)
+    print(f"changed since {base}: {len(changed)} file(s) -> {len(names)} suite(s)")
+    for p in unmapped:
+        print(f"  not in tests/suite_map.py (ran the fallback set; add it): {p}")
+    return [n for n in names if os.path.exists(os.path.join(ROOT, "tests", n + ".py"))]
+
+
+def stamp():
+    """Print, for the current commit, the latest result of every suite run on it (or on a commit whose
+    difference from it touches no code), grouped as CPU / GPU / other: the pull request's evidence."""
+    head = git("rev-parse", "--short=10", "HEAD")
+    path = os.path.join(OUT, "suite_runs.txt")
+    if not head or not os.path.exists(path):
+        print("no commit or no tests/out/suite_runs.txt")
+        return 1
+    results, run, sha, when, dirty = {}, {}, None, None, False
+    for raw in open(path, encoding="utf-8", errors="replace"):
+        if raw.startswith("==== run at"):
+            results.update(run)                       # the previous run counts
+            run = {}
+            parts = raw.split()
+            when = " ".join(parts[3:5])
+            sha = parts[parts.index("HEAD") + 1] if "HEAD" in parts else None
+            dirty = "dirty" in parts
+            continue
+        if raw.startswith("==== changed during the run"):
+            run = {}                                  # the code moved under the run: none of it is evidence
+            continue
+        bits = raw.split()
+        if len(bits) >= 4 and bits[1] in ("ok", "BAD") and bits[2] == "exit" and sha and not dirty:
+            run[bits[0]] = (sha, when, bits[1] == "ok", raw.strip()[:150])
+    results.update(run)
+    same = {}
+
+    def is_code(f):
+        return (f.startswith(("kinetrace/", "tests/")) or f == "docs/MANUAL.md"
+                or f.endswith((".py", ".bat", ".sh", ".command", ".txt", ".yml", ".json")))
+
+    def equivalent(s):           # tested commit == HEAD, or only files that are not code differ since
+        if s not in same:
+            if s == head:
+                same[s] = True
+            elif git("cat-file", "-t", s) != "commit":
+                same[s] = False                       # a commit this checkout does not have
+            else:
+                same[s] = not any(is_code(f) for f in git("diff", "--name-only", s, "HEAD").splitlines())
+        return same[s]
+
+    print(f"Suites on {head} (run on this machine; results from tests/out/suite_runs.txt):")
+    for label, group in (("CPU group", CPU), ("GPU group", GPU)):
+        got = [results[n] for n in group if n in results and equivalent(results[n][0])]
+        bad = [r[3] for r in got if not r[2]]
+        missing = [n for n in group if not (n in results and equivalent(results[n][0]))]
+        last = max((r[1] for r in got), default="never")
+        print(f"- {label}: {len(got) - len(bad)} of {len(group)} ok on this code (last run {last})"
+              + (f"; NOT RUN on this code: {', '.join(missing)}" if missing else ""))
+        for b in bad:
+            print(f"    BAD {b}")
+    other = [(n, r) for n, r in sorted(results.items()) if n not in CPU and n not in GPU and equivalent(r[0])]
+    for n, r in other:
+        print(f"- {n}: {'ok' if r[2] else 'BAD'} ({r[1]})")
+    return 0
+
+
 def main(argv):
+    if "--stamp" in argv:
+        return stamp()
     names = []
-    for a in argv:
+    args = list(argv)
+    while args:
+        a = args.pop(0)
         if a == "--gpu":
             names += GPU
         elif a == "--cpu":
             names += CPU
+        elif a == "--affected":
+            base = "main"
+            if args and not args[0].startswith(("-", "verify_", "audit_")):
+                base = args.pop(0)                    # e.g. origin/main
+            names += [n for n in affected(base) if n not in names]
         else:
             names.append(a)
+    if not names:
+        print("no suites to run")
+        return 0
     ensure_test_videos(names)
     log = open(os.path.join(OUT, "suite_runs.txt"), "a", encoding="utf-8")
-    log.write(f"\n==== run at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    started = head_stamp()
+    log.write(f"\n==== run at {time.strftime('%Y-%m-%d %H:%M:%S')}{started}\n")
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8", KINETRACE_RECOVERY_DIR=RECOVERY,
                KINETRACE_UPDATE_API="http://127.0.0.1:9/api")   # no suite ever asks GitHub (G37)
     bad = 0
@@ -140,6 +251,9 @@ def main(argv):
                 fh.write(r.stdout if code != -1 else "")
                 fh.write("\n---- stderr ----\n")
                 fh.write(r.stderr if code != -1 else "")
+    if started and head_stamp() != started:       # files edited / committed while the suites ran
+        log.write(f"==== changed during the run:{head_stamp()} (these results are not evidence for any commit)\n")
+        print("note: the code changed while the suites ran; --stamp will not count this run")
     print(f"{len(names) - bad} of {len(names)} suites exit 0")
     return 1 if bad else 0
 
