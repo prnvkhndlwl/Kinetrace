@@ -323,7 +323,56 @@ def sec_f():
           f"a correct rig: no suggestion OK")
 
 
-SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f]
+def sec_g():
+    """Exports name the calibrated cameras; the import dialog keeps a camera not calibrated."""
+    import json
+    cal_ = gap_calibration()
+    names = [f"cam{c + 1}" for c in range(N_CAM)]
+    m = calibio.to_models(cal_, names)
+    assert [c.name for c in m.cameras] == ["cam1", "cam2", "cam4", "cam5"], [c.name for c in m.cameras]
+    assert any("cam3 is not calibrated" in n for n in m.notes), m.notes
+    toml = os.path.join(SCRATCH, "wand_subset_anipose.toml")
+    calibio.write_anipose(m, toml)
+    got = [c.name for c in calibio.read_anipose(toml)]
+    assert got == ["cam1", "cam2", "cam4", "cam5"], got
+    stem = os.path.join(SCRATCH, "wand_subset_files")
+    files = cw.save_calibration_files(None, None, stem + ".kcal.json", cal=cal_)
+    csv = np.loadtxt(stem + "_dltCoefs.csv", delimiter=",")
+    assert csv.shape == (11, 4), csv.shape
+    readme = open(stem + "_dltCoefs_README.txt", encoding="utf-8").read()
+    assert "column 3 = camera 4" in readme and "camera 3 is not calibrated" in readme, readme[:400]
+    assert any(f.endswith("_dltCoefs_README.txt") for f in files)
+    # the import dialog: the gap file onto a 5-camera project keeps camera 3 not calibrated
+    from kinetrace import view3d as v3
+    dlg = v3.CalibrationDialog(None, names, [(W, H)] * N_CAM)
+    assert dlg.load(stem + ".kcal.json")
+    assert [cb.currentData() for cb in dlg._combos] == [0, 1, -1, 3, 4], [cb.currentData() for cb in dlg._combos]
+    assert dlg._combos[NO_WAND].currentText() == "not calibrated"
+    # the user also sets camera 5 to "not calibrated" in its list, then OK
+    cb5 = dlg._combos[4]
+    cb5.setCurrentIndex(cb5.findData(-1))
+    dlg._accept()
+    rc = dlg.result_calibration
+    assert rc is not None and rc.views() == [0, 1, 3], rc
+    assert np.array_equal(rc.camera(3).coefs, cal_.camera(3).coefs)
+    dlg.deleteLater()
+    # a file with FEWER cameras than the project: the cameras left over are "not calibrated"
+    small = Calibration([cal_.camera(0), cal_.camera(1), cal_.camera(3)], "m")
+    kp = os.path.join(SCRATCH, "wand_subset_small.kcal.json")
+    with open(kp, "w", encoding="utf-8") as fh:
+        json.dump(calibio.calibration_to_kcal(small), fh)
+    dlg = v3.CalibrationDialog(None, names, [(W, H)] * N_CAM)
+    assert dlg.load(kp)
+    assert [cb.currentData() for cb in dlg._combos] == [0, 1, 2, -1, -1], [cb.currentData() for cb in dlg._combos]
+    dlg._accept()
+    assert dlg.result_calibration is not None and dlg.result_calibration.views() == [0, 1, 2]
+    dlg.deleteLater()
+    pump()
+    print("G. exports hold cam1, 2, 4, 5 under their names, the DLT csv says which column is which; "
+          "the import dialog keeps 'not calibrated' cameras OK")
+
+
+SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f, sec_g]
 
 if __name__ == "__main__":
     failed = []

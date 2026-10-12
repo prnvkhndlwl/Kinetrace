@@ -139,15 +139,19 @@ def _volume_points(cam: CameraCalibration, probe: np.ndarray | None, n: int = 12
 def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarray | None = None) -> Models:
     """Kinetrace calibration -> OpenCV-convention cameras (see the module
     docstring). `probe`: a world point in view (a reconstruction's centroid);
-    the calibration's own working point otherwise."""
-    if not cal.cameras:
+    the calibration's own working point otherwise. (I273) Only the calibrated cameras become models,
+    each named by its own camera's entry of `names` (a camera that is not calibrated is left out and
+    a note says so)."""
+    views = cal.views()
+    if not views:
         raise CalibFormatError("the calibration has no cameras")
-    if any(c.width <= 0 or c.height <= 0 for c in cal.cameras):
+    cams = [cal.camera(v) for v in views]
+    if any(c.width <= 0 or c.height <= 0 for c in cams):
         raise CalibFormatError("the calibration does not record every camera's picture size; open it with "
                                "the project's videos so the sizes are known")
     probe = probe if probe is not None else working_probe(cal)
     Ps = []
-    for cam in cal.cameras:
+    for cam in cams:
         P = cam.pixel_matrix() @ dlt_matrix(cam.coefs)
         P = P * front_sign(cam.coefs, probe)           # third row = depth, positive in front
         Ps.append(P)
@@ -157,7 +161,7 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
              else np.zeros(3))
     out: list[CamModel] = []
     notes: list[str] = []
-    for i, (cam, P) in enumerate(zip(cal.cameras, Ps)):
+    for i, cam, P in zip(views, cams, Ps):
         name = names[i] if names and i < len(names) else f"cam{i + 1}"
         M = P[:, :3] @ F
         if np.linalg.det(M) <= 0:
@@ -205,6 +209,11 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
     if np.any(shift):
         notes.append("The world origin is the calibration file's own again (Kinetrace had moved it to the "
                      "point the cameras look at).")
+    left_out = [v for v in range(max(len(cal), len(names or []))) if cal.camera(v) is None]
+    if left_out:
+        nm = [names[v] if names and v < len(names) else f"cam{v + 1}" for v in left_out]
+        notes.append(f"{', '.join(nm)} {'is' if len(nm) == 1 else 'are'} not calibrated, so not in these files: "
+                     "the files hold the calibrated cameras, each under its own name.")
     worst = max((m.check_px for m in out if np.isfinite(m.check_px)), default=0.0)
     notes.append(f"Check: the exported cameras put points of the working volume within {worst:.3f} px of "
                  "where Kinetrace's calibration puts them.")
@@ -659,13 +668,25 @@ def load_kcal(path):
     return cal
 
 
+def dlt_columns(cal, names: list[str] | None = None) -> list[str] | None:
+    """(I273) Which camera each column of `dlt_csv_matlab`'s file is, when the calibration leaves a
+    camera out (column k is then not camera k): ["column 1 = cam1", ...]; None when every camera
+    up to the last calibrated one is calibrated (column k = camera k, as always)."""
+    views = cal.views()
+    if views == list(range(len(views))):
+        return None
+    return [f"column {k + 1} = {names[v] if names and v < len(names) else f'camera {v + 1}'}"
+            for k, v in enumerate(views)]
+
+
 def dlt_csv_matlab(cal, path, pixel_origin_out: float = 1.0) -> None:
     """dltCoefs.csv for DLTdv / easyWand users: 11 rows, one column per camera,
     converted to MATLAB's 1-based pixels when the calibration was fitted on
     0-based ones (u' = u + 1: L1..L3 += L9..L11, L4 += 1; same for v).
     `pixel_origin_out` = the convention written (1.0 = MATLAB, 0.0 = Kinetrace's own); (R20)
-    `wand.export_dlt_csv` is this function."""
-    cols = [c.coefs_for_origin(pixel_origin_out) for c in cal.cameras]       # (R14) the one pixel-convention shift
+    `wand.export_dlt_csv` is this function. (I273) Only the calibrated cameras have a column, in
+    camera order (`dlt_columns` says which camera each column is)."""
+    cols = [cal.camera(v).coefs_for_origin(pixel_origin_out) for v in cal.views()]   # (R14) the one shift
     np.savetxt(str(path), np.stack(cols, axis=1), delimiter=",", fmt="%.12g")
 
 # ------------------------------------------------------------------ lens profiles

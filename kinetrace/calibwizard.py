@@ -1165,15 +1165,16 @@ class RunPage(QWizardPage):
 
 
 # the calibration file itself (no Qt) lives in calibio; these names stay here too
-from kinetrace.calibio import calibration_to_kcal, dlt_csv_matlab, load_kcal  # noqa: E402,F401
+from kinetrace.calibio import calibration_to_kcal, dlt_columns, dlt_csv_matlab, load_kcal  # noqa: E402,F401
 
 
 def _lensed_cameras(cal) -> list[tuple[int, float]]:
     """(camera index, how far its lens correction moves the picture's border
-    in px, NaN if unknown) for every camera that carries an undistortion."""
+    in px, NaN if unknown) for every camera that carries an undistortion (a camera that is
+    not calibrated carries none)."""
     out = []
     for k, c in enumerate(getattr(cal, "cameras", []) or []):
-        und = getattr(c, "undistort", None)
+        und = getattr(c, "undistort", None) if c is not None else None
         if und is None or getattr(und, "kind", "none") == "none":
             continue
         bend = float("nan")
@@ -1210,17 +1211,27 @@ def dlt_csv_caveat(cal, names: list[str] | None = None) -> str | None:
 
 def _dlt_readme(cal, csv_name: str, names: list[str] | None) -> str | None:
     lensed = _lensed_cameras(cal)
-    if not lensed:
+    columns = dlt_columns(cal, names)              # (I273) column k is not camera k when one is left out
+    if not lensed and not columns:
         return None
+    col_of = {v: k + 1 for k, v in enumerate(cal.views())}
+    out = [f"About {csv_name}", ""]
+    if columns:
+        left = [names[v] if names and v < len(names) else f"camera {v + 1}"
+                for v in range(len(cal)) if cal.camera(v) is None]
+        out += ["Only the calibrated cameras have a column (11 rows each); "
+                + (", ".join(left) + (" is" if len(left) == 1 else " are") + " not calibrated" if left else "")
+                + ". The columns are:", *[f"  - {c}" for c in columns],
+                "In DLTdv or easyWand, use these cameras in this order.", ""]
+    if not lensed:
+        return "\n".join(out)
     rows = []
     for k, bend in lensed:
         nm = names[k] if names and k < len(names) else f"camera {k + 1}"
-        kind = getattr(cal.cameras[k].undistort, "kind", "?")
+        kind = getattr(cal.camera(k).undistort, "kind", "?")
         amount = f"moves the picture's edges by up to {bend:.0f} px" if np.isfinite(bend) else "size not known"
-        rows.append(f"  - {nm} (column {k + 1}): {kind} lens correction, {amount}")
-    return "\n".join([
-        f"About {csv_name}",
-        "",
+        rows.append(f"  - {nm} (column {col_of.get(k, k + 1)}): {kind} lens correction, {amount}")
+    return "\n".join(out + [
         "These DLT coefficients (11 rows, one column per camera, pixels counted from 1 as in",
         "MATLAB / DLTdv / easyWand) are valid for UNDISTORTED - lens-corrected - pixels in these cameras:",
         *rows,
@@ -1240,8 +1251,9 @@ def _dlt_readme(cal, csv_name: str, names: list[str] | None) -> str | None:
 def _same_cameras(res, cal) -> bool:
     """True when `cal` is the calibration `res` produced: same number of
     cameras, identical DLT coefficients (a project saved and reopened keeps
-    them bit for bit)."""
-    a, b = list(res.cameras), list(cal.cameras)
+    them bit for bit). (I273) A run on some of the cameras compares with the
+    calibrated cameras of `cal`."""
+    a, b = list(res.cameras), [c for c in cal.cameras if c is not None]
     return len(a) == len(b) and all(np.array_equal(np.asarray(x.coefs, np.float64), np.asarray(y.coefs, np.float64))
                                     for x, y in zip(a, b))
 
@@ -1261,7 +1273,8 @@ def save_calibration_files(res, grav, path: str, cal=None, written: list | None 
         # another project's): its files must not carry the run's verdict and g check
         res, grav = None, None
     report = res.report if res is not None else getattr(cal, "report", {}) or {}
-    names = report.get("camera_names") if isinstance(report, dict) else None
+    # names by CAMERA (I273: a run on some of the cameras names only those in "camera_names")
+    names = (report.get("project_names") or report.get("camera_names")) if isinstance(report, dict) else None
     p = Path(path)
     if not p.name.lower().endswith(".kcal.json"):
         p = p.with_name(p.stem + ".kcal.json")
