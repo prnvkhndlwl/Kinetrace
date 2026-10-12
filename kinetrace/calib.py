@@ -465,11 +465,16 @@ class CameraCalibration:
 
 
 class Calibration:
-    """The cameras of a project, in VIEW order, plus the world unit."""
+    """The cameras of a project, in VIEW order, plus the world unit.
 
-    def __init__(self, cameras: list[CameraCalibration] | None = None, unit: str = "",
+    (I273) A camera the calibration does not cover is `None` in `cameras` (a wand calibration of
+    some of the cameras), and so is every camera past the end of the list (a camera added after
+    calibrating, G25). Read a camera with `camera(v)`, never `cameras[v]`; `views()` are the
+    calibrated cameras. `len()` counts the slots, calibrated or not."""
+
+    def __init__(self, cameras: list[CameraCalibration | None] | None = None, unit: str = "",
                  source: str = ""):
-        self.cameras: list[CameraCalibration] = list(cameras or [])
+        self.cameras: list[CameraCalibration | None] = list(cameras or [])
         self.unit = unit            # "m", "mm", … purely a label for exports
         self.source = source        # where it came from (file name), for the UI
         # set by `from_krt`: the world origin was moved by this vector (old-frame
@@ -483,6 +488,26 @@ class Calibration:
 
     def __len__(self) -> int:
         return len(self.cameras)
+
+    def camera(self, v: int) -> CameraCalibration | None:
+        """Camera `v`'s calibration, or None when it is not calibrated."""
+        return self.cameras[v] if 0 <= v < len(self.cameras) else None
+
+    def views(self) -> list[int]:
+        """The calibrated cameras' indices, in camera order."""
+        return [k for k, c in enumerate(self.cameras) if c is not None]
+
+    @property
+    def n_calibrated(self) -> int:
+        return sum(c is not None for c in self.cameras)
+
+    def covers(self, n_views: int) -> bool:
+        """Every one of `n_views` cameras is calibrated."""
+        return len(self.cameras) >= n_views and all(c is not None for c in self.cameras[:n_views])
+
+    def padded(self, n_views: int) -> list[CameraCalibration | None]:
+        """One slot per camera of an `n_views` project (None = not calibrated)."""
+        return [self.camera(v) for v in range(n_views)]
 
     # ---- files ----------------------------------------------------------
     @staticmethod
@@ -761,15 +786,23 @@ class Calibration:
 
     # ---- arrays form (the project file stores it as calibration.json) -----
     def to_arrays(self, prefix: str = "calib_") -> dict:
-        if not self.cameras:
+        """(I273) A camera that is not calibrated is a NaN row of coefficients and a null in "cams";
+        not-calibrated cameras at the end are left out (a calibration of the first k cameras is
+        written as it always was)."""
+        cams = list(self.cameras)
+        while cams and cams[-1] is None:
+            cams.pop()
+        if not cams:
             return {}
         meta = {"unit": self.unit, "source": self.source,
-                "cams": [{"width": c.width, "height": c.height, "pixel_origin": c.pixel_origin,
+                "cams": [None if c is None else
+                         {"width": c.width, "height": c.height, "pixel_origin": c.pixel_origin,
                           "y_flip": c.y_flip, "rmse": c.rmse, "undistort": c.undistort.to_json()}
-                         for c in self.cameras]}
+                         for c in cams]}
         if self.origin_shift is not None:
             meta["origin_shift"] = np.asarray(self.origin_shift, np.float64).tolist()
-        return {f"{prefix}coefs": np.stack([c.coefs for c in self.cameras]).astype(np.float64),
+        return {f"{prefix}coefs": np.stack([np.full(11, np.nan) if c is None else c.coefs
+                                            for c in cams]).astype(np.float64),
                 f"{prefix}meta": json.dumps(meta)}
 
     @staticmethod
@@ -782,6 +815,9 @@ class Calibration:
         cams = []
         for i, L in enumerate(coefs):
             d = (meta.get("cams") or [{}] * len(coefs))[i] if i < len(meta.get("cams", [])) else {}
+            if d is None or not np.isfinite(L).any():      # (I273) a camera that is not calibrated
+                cams.append(None)
+                continue
             cams.append(CameraCalibration(L.copy(), int(d.get("width", 0)), int(d.get("height", 0)),
                                           undistort_from_json(d.get("undistort", {})),
                                           float(d.get("pixel_origin", 1.0)), bool(d.get("y_flip", False)),

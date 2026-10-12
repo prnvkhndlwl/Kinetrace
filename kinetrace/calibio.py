@@ -622,7 +622,9 @@ def calibration_to_kcal(cal, report: dict | None = None, grav: dict | None = Non
     pixel convention and undistortion they were fitted in, the unit, and the
     wand report when there is one. Self-describing, unlike a bare dltCoefs.csv."""
     out = {"kinetrace_calibration": KCAL_VERSION, "unit": cal.unit, "source": cal.source,
-           "cameras": [{"width": int(c.width), "height": int(c.height),
+           # (I273) null = a camera of the project that this calibration does not cover
+           "cameras": [None if c is None else
+                       {"width": int(c.width), "height": int(c.height),
                         "pixel_origin": float(c.pixel_origin), "y_flip": bool(c.y_flip),
                         "rmse": (None if not np.isfinite(c.rmse) else float(c.rmse)),
                         "coefs": [float(v) for v in c.coefs],
@@ -634,13 +636,16 @@ def calibration_to_kcal(cal, report: dict | None = None, grav: dict | None = Non
 
 
 def load_kcal(path):
-    """`*.kcal.json` -> `calib.Calibration` (cameras in file order)."""
+    """`*.kcal.json` -> `calib.Calibration` (cameras in file order; null = not calibrated)."""
     from kinetrace.calib import undistort_from_json
     d = json.loads(Path(path).read_text(encoding="utf-8"))
     if "kinetrace_calibration" not in d:
         raise ValueError(f"{Path(path).name}: not a Kinetrace calibration file")
     cams = []
     for c in d.get("cameras", []):
+        if c is None:                                           # (I273) not calibrated
+            cams.append(None)
+            continue
         rmse = c.get("rmse")
         cams.append(CameraCalibration(np.asarray(c["coefs"], np.float64).reshape(11),
                                       int(c.get("width", 0)), int(c.get("height", 0)),
