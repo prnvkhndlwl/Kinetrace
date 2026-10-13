@@ -1172,6 +1172,8 @@ class RunPage(QWizardPage):
             if running:
                 self._thread.cancel()
             self.wiz.result = self.wiz.result_calibration = self.wiz.gravity = None
+            self._timing = None                       # a suggestion for other settings (ticks, ends) is stale
+            self.timing_box.setVisible(False)
             self.btn_save.setEnabled(False)
             self.btn_run.setEnabled(not running)
             self.bar.setValue(0)

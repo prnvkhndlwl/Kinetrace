@@ -11063,7 +11063,8 @@ class MainWindow(QMainWindow):
         self._apply_state()
         self._guides_on()
         self.toast.show_message(
-            f"Calibration loaded for {p.n_views} cameras ({p.calibration.source}). " + self.GUIDES_HINT
+            f"Calibration loaded for {p.calibration.n_calibrated} of {p.n_views} cameras "      # (I273)
+            f"({p.calibration.source}). " + self.GUIDES_HINT
             + " Next: <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3).", "info", 14000)
 
     GUIDES_HINT = ("Press <b>N</b> (＋ Add) and click a point in one camera: the other cameras show a dashed line "
@@ -11597,7 +11598,11 @@ class MainWindow(QMainWindow):
         words = {"sharp": "well determined", "weak": "weakly determined",
                  "flat": "flat: the landmarks do not move enough to time it -- do not trust",
                  "none": "unchanged: shares no landmark with another camera here"}
-        rows = "\n".join(f"  {p.name(i)}: {p.offsets[i]:+.3f} → {offs[i]:+.3f}   ({words.get(per_view.get(i), '')})"
+        def _why(i):          # (I273) a camera that is not calibrated has no 3D to be timed by
+            if p.calibration.camera(i) is None:
+                return "unchanged: not calibrated"
+            return words.get(per_view.get(i), "")
+        rows = "\n".join(f"  {p.name(i)}: {p.offsets[i]:+.3f} → {offs[i]:+.3f}   ({_why(i)})"
                          for i in range(p.n_views) if i)
         # The estimator always returns SOME number; the report says whether the
         # tracks actually support it (a flat residual surface once produced

@@ -397,6 +397,13 @@ def _inlier_share(xa: np.ndarray, xb: np.ndarray, thr: float) -> float:
     return float(m.ravel().astype(bool).mean())
 
 
+def _share_word(x: float) -> str:
+    """A verdict for a share of wand clicks that agree with one camera layout."""
+    if not np.isfinite(x):
+        return "not measured"
+    return "good" if x >= TIMING_GOOD_SHARE else ("ok" if x >= TIMING_GOOD_SHARE - TIMING_MARGIN else "poor")
+
+
 def timing_check(project, name_a: str, name_b: str, views: list[int], lens_models: list | None = None,
                  max_shift: int = TIMING_MAX_SHIFT, progress=None) -> TimingCheck:
     """(I274) Are the cameras' offsets right, to the whole frame, by the wand clicks alone? For every
@@ -548,7 +555,8 @@ def timing_check(project, name_a: str, name_b: str, views: list[int], lens_model
         out.lines.append(
             f"{names[c]}: its wand clicks agree with the other cameras when its offset is {old + d:g} instead of "
             f"{old:g} ({abs(d)} frame{'s' if abs(d) != 1 else ''} {'more' if d > 0 else 'less'}): "
-            f"{100 * then:.0f} % of the clicks fit one geometry then, {100 * now:.0f} % now.")
+            f"{100 * then:.0f} % of its clicks agree with one camera layout then ({_share_word(then)}), "
+            f"{100 * now:.0f} % now ({_share_word(now)}).")
     left = [names[c] for c in views if out.shift[c] is None]
     if out.suggestions:
         out.verdict = "suggest"

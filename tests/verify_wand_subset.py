@@ -522,7 +522,9 @@ def sec_h():
         assert "Volume needs three cameras" in seen, seen
         # Edit -> Undo: the offsets AND the calibration made at them go back, in one step
         assert win.act_undo.isEnabled()
-        win.act_undo.trigger()
+        win.activateWindow()
+        win.canvas.setFocus()
+        QTest.keyClick(win.canvas, Qt.Key_Z, Qt.ControlModifier)       # the user's Ctrl+Z
         pump(0.2)
         assert abs(p.offsets[3] - wrong) < 1e-9 and p.calibration is None and p.reconstruction is None, \
             (p.offsets, p.calibration)
