@@ -394,6 +394,24 @@ def _i232():
     check(err2 and not outp.exists(), "an error half-way deletes the partial mp4", f"exists={outp.exists()}")
 
 
+# ------------------------------------------------------------------ I276
+@section("[I276] the side-by-side video refuses a frame rate that is not a positive number")
+def _i276():
+    tr = coco_track(range(20))
+    outp = OUT / "review_body_sbs_fps.mp4"
+    for bad in (float("nan"), -30.0):
+        outp.unlink(missing_ok=True)
+        r = bodyview.SideBySideRenderer(str(video20()), tr, str(outp), 0, 19, 0, bodyview.PoseDrawOptions(), bad,
+                                        width=640)
+        ok_sig, err_sig = [], []
+        r.finished_ok.connect(lambda p, c: ok_sig.append(p))
+        r.error.connect(lambda m: err_sig.append(m))
+        r.run()
+        check(not ok_sig and err_sig and "frame rate" in err_sig[0] and not outp.exists(),
+              f"a frame rate of {bad:g} is refused in words and writes no file (as the overlay video, I226)",
+              f"ok={ok_sig} err={err_sig[:1]} exists={outp.exists()}")
+
+
 # ------------------------------------------------------------------ G77
 @section("[G77] the body mesh shows its front")
 def _g77():

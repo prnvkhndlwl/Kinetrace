@@ -214,6 +214,11 @@ def freeze_session(s, start: int = 0, end: int | None = None) -> SimpleNamespace
         segs=segs)
 
 
+def is_rate(fps: float) -> bool:
+    """A frame rate a video can be written at: a finite number above 0 (I226 overlay, I276 side-by-side)."""
+    return bool(np.isfinite(fps) and fps > 0)
+
+
 def open_writer(path: str | Path, fps: float, size: tuple[int, int]) -> tuple[cv2.VideoWriter, str]:
     """H.264 when the bundled FFmpeg can encode it, else MPEG-4. Returns the
     writer and the codec tag that worked."""
@@ -292,7 +297,7 @@ class OverlayRenderer(QThread):
                 v = float(v)
             except (TypeError, ValueError):
                 continue
-            if np.isfinite(v) and v > 0:
+            if is_rate(v):
                 return v
             if self.opts.fps is not None:
                 raise RuntimeError(f"{what} is {v:g}: it must be a number above 0 frames per second")

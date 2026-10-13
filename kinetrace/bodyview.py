@@ -973,10 +973,14 @@ class SideBySideRenderer(QThread):
 
     def run(self) -> None:
         from kinetrace.errors import plain_error
-        from kinetrace.render import open_writer
+        from kinetrace.render import is_rate, open_writer
         reader = vw = None
         created = False               # the writer made / truncated out_path: ours to delete
         try:
+            if not is_rate(self.fps):    # (I276) NaN went through `fps or 30.0` into a broken MP4
+                raise BodyRunProblem(f"the frame rate is {self.fps:g}: it must be a number above 0 frames per "
+                                     "second. Set the camera's frame rate with the fps button in the CAMERAS "
+                                     "panel, then export again.")
             if not self.frames:
                 raise BodyRunProblem("no posed frames in %d-%d" % (self.f0, self.f1))
             first = self.frames[0]
