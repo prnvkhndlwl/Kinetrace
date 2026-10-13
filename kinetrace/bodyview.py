@@ -21,13 +21,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QGroupBox, QHBoxLayout, QLabel, QMenu, QMessageBox,
                                QPushButton, QRadioButton, QSizePolicy, QSpinBox, QToolButton,
                                QVBoxLayout, QWidget)
 
 from kinetrace import theme
+from kinetrace.canvas import bgr_pixmap
 from kinetrace.body import MIN_JOINT_CONF, BodyTrack, canon, is_finger, median_axis
 from kinetrace.hull import _view_rotation
 from kinetrace.render import VideoWriteJob, is_rate
@@ -1387,9 +1387,7 @@ class BodySideBySide(QWidget):
                 img = cv2.resize(img, (max(2, int(img.shape[1] * sc)), h),
                                  interpolation=cv2.INTER_AREA)
         self.last_image = img
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        qi = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888)
-        self.canvas.setPixmap(QPixmap.fromImage(qi.copy()))
+        self.canvas.setPixmap(bgr_pixmap(img))
 
     def save_png(self, path: str) -> None:
         if self.last_image is None:

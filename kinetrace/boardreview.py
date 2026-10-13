@@ -26,12 +26,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from kinetrace import lens, theme
+from kinetrace.canvas import bgr_pixmap
 from kinetrace.widgets import wrap_caption
 
 TILE_W = 300                 # thumbnail width in the gallery
@@ -47,9 +48,7 @@ def pixmap(bgr: np.ndarray, width: int | None = None, max_w: int | None = None) 
     elif max_w and img.shape[1] > max_w:
         h = max(1, round(img.shape[0] * max_w / img.shape[1]))
         img = cv2.resize(img, (max_w, h), interpolation=cv2.INTER_AREA)
-    rgb = np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    q = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888)
-    return QPixmap.fromImage(q.copy())
+    return bgr_pixmap(img)
 
 
 def quality(err: float, size: tuple[int, int] | None = None) -> tuple[str, str]:

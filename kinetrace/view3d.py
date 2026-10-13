@@ -13,12 +13,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPushButton,
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from kinetrace import theme
+from kinetrace.canvas import bgr_pixmap
 from kinetrace.calib import Calibration, CameraCalibration
 from kinetrace.calibio import load_calibration
 from kinetrace.hull import _view_rotation
@@ -992,11 +992,7 @@ class View3D(QWidget):
         self._hits = hits
         self._last_dpr = dpr
         self.last_image = img
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888)
-        pm = QPixmap.fromImage(qimg.copy())
-        pm.setDevicePixelRatio(dpr)
-        self.canvas.setPixmap(pm)
+        self.canvas.setPixmap(bgr_pixmap(img, dpr))
 
     def save_png(self, path: str) -> None:
         if self.last_image is None:
