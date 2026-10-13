@@ -60,6 +60,15 @@ def lens_for_camera(prof, session, cam_name: str) -> tuple[object | None, str]:
                              display_rotation(session.video_path), cam_name, "this lens profile was measured on")
 
 
+def lens_turn_unknown(prof, session) -> bool:
+    """`lens_for_camera` refuses `prof` for the camera of `session` only because the profile does not
+    record its checkerboard video's turn (`lens.turn_unknown`): the turn can still be read from that
+    video (`lensattach.offer_board_turn`, G184)."""
+    return (prof is not None and bool(session.width) and bool(session.height)
+            and _lens.turn_unknown(prof, (int(session.width), int(session.height)),
+                                   display_rotation(session.video_path)))
+
+
 def _same_lens(a, b) -> bool:
     return _lens.same_profile(a, b)
 
@@ -592,6 +601,11 @@ class CamerasPage(QWizardPage):
         if which:
             prof.source = f"{Path(path).name}{which}"
         fitted, bad = lens_for_camera(prof, p.sessions[c], p.name(c))
+        if fitted is None and not which and lens_turn_unknown(prof, p.sessions[c]):
+            from kinetrace.lensattach import offer_board_turn
+            filled = offer_board_turn(self, prof, path, [p.name(c)])     # (G184) its turn, from its board video
+            if filled is not None:
+                fitted, bad = lens_for_camera(filled, p.sessions[c], p.name(c))
         if fitted is None:
             self._refuse_lens(c, bad)
             return

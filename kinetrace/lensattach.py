@@ -12,12 +12,48 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView, QLabel,
-                               QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout)
+from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QHeaderView,
+                               QLabel, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout)
 
 from kinetrace import lens, theme
+from kinetrace.errors import plain_error
 
 COLUMNS = ("Camera", "Recording", "Lens profile now", "With this file")
+BOARD_VIDEO_FILTER = "Videos (*.mp4 *.avi *.mov *.mkv *.m4v *.mpg);;All files (*)"
+
+
+def offer_board_turn(parent, prof, lens_path: str, cameras: list[str]):
+    """(G184) `prof` (read from `lens_path`) does not record which way its checkerboard video was turned,
+    so it cannot be turned for `cameras` (filmed on their side, `lens.turn_unknown`). Offer to read the
+    turn from that video: asked first; the video chosen; its size and turn read on a worker
+    (`lens.video_turn`, a VideoCapture) and written into a copy (`lens.record_turn`). -> the copy, or
+    None when declined or refused (a refusal is said). The ONE step of every place that attaches a
+    lens file: the wand wizard's Load file…, Load a Lens Profile (one camera) and for Cameras…."""
+    from kinetrace.lenswizard import _off_thread
+    names = ", ".join(cameras)
+    one = len(cameras) == 1
+    if QMessageBox.question(
+            parent, "Which way was its checkerboard video turned?",
+            f"{Path(lens_path).name} does not record which way the pictures of its checkerboard video were turned "
+            f"(it was made before Kinetrace recorded it), so it cannot be turned for {names}, filmed on "
+            f"{'its' if one else 'their'} side.\n\nKinetrace can read the turn from that checkerboard video (it "
+            f"has {int(prof.width)} x {int(prof.height)} pictures). Find the checkerboard video now?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+        return None
+    video, _ = QFileDialog.getOpenFileName(parent, f"Checkerboard video of {Path(lens_path).name}",
+                                           str(Path(lens_path).parent), BOARD_VIDEO_FILTER)
+    if not video:
+        return None
+    try:
+        size, rotation, oren = _off_thread(parent, lambda: lens.video_turn(video))
+    except Exception as e:      # noqa: BLE001 - not a video, a damaged one: said
+        QMessageBox.warning(parent, "Turn not read", plain_error(e, f"{Path(video).name} could not be read",
+                                                                 reading=True))
+        return None
+    filled, said = lens.record_turn(prof, video, size, rotation, oren)
+    if filled is None:
+        QMessageBox.warning(parent, "Turn not read", said)
+    return filled
 
 
 @dataclass
@@ -37,17 +73,18 @@ class AttachRow:
         return self.profile is not None and not self.already
 
 
-def attach_rows(project, path: str, recordings: list[str]) -> list[AttachRow]:
+def attach_rows(project, path: str, recordings: list[str], profile=None) -> list[AttachRow]:
     """One row per camera of `project`: what lens file `path` would do to it. A file with one line per
-    camera (Argus) gives each camera its own line (`lens.read_lens_for`). Raises what the reader raises
-    for a file that cannot be read at all."""
+    camera (Argus) gives each camera its own line (`lens.read_lens_for`). `profile` stands in for a
+    one-profile file's profile (its turn read from the board video since, G184). Raises what the
+    reader raises for a file that cannot be read at all."""
     from kinetrace.calibwizard import lens_for_camera
     rows = []
     for v in range(project.n_views):
         name = project.name(v)
         cur = project.lenses[v] if v < len(project.lenses) else None
         row = AttachRow(v, name, recordings[v] if v < len(recordings) else "", lens.lens_label(cur))
-        prof, which = lens.read_lens_for(path, v, name)
+        prof, which = (profile, "") if profile is not None else lens.read_lens_for(path, v, name)
         if prof is None:
             row.effect, row.detail = "no line for this camera in the file", which
             rows.append(row)
