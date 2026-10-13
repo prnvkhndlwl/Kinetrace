@@ -87,20 +87,21 @@ def wand_at(t):
     return c + 0.5 * WAND_L * d, c - 0.5 * WAND_L * d
 
 
-def build(no_wand=(NO_WAND,), offsets=None, error=None, tag="sub", seed=3, few=None):
+def build(no_wand=(NO_WAND,), offsets=None, error=None, tag="sub", seed=3, few=None, rates=None):
     """The rig as a project: camera c's local frame f shows reference instant f - offsets[c];
     the project is told offsets + error (a sync mistake). Cameras in `no_wand` get the
     landmarks but no clicks."""
     rng = np.random.RandomState(seed)
     offsets = list(offsets or [0, 3, -2, 5, 1])
     error = list(error or [0] * N_CAM)
+    rates = list(rates or [1.0] * N_CAM)               # camera c records at FPS * rates[c]
     ss = []
     for c, cal in enumerate(CAMS):
-        n_fr = T + 10
-        s = TrackingSession(os.path.join(SCRATCH, f"{tag}_cam{c + 1}.mp4"), n_fr, FPS, W, H)
+        n_fr = int(T * rates[c]) + 10
+        s = TrackingSession(os.path.join(SCRATCH, f"{tag}_cam{c + 1}.mp4"), n_fr, FPS * rates[c], W, H)
         ja, jb = s.add_landmark("wand A"), s.add_landmark("wand B")
         if c not in no_wand:
-            tt = np.arange(n_fr, dtype=np.float64) - offsets[c]
+            tt = (np.arange(n_fr, dtype=np.float64) - offsets[c]) / rates[c]
             A, B = wand_at(tt)
             inside = (tt >= 0) & (tt <= T - 1)
             if few is not None and c == few[0]:          # this camera saw the wand on a few frames only
@@ -351,6 +352,12 @@ def sec_f():
     tc_few = wd.timing_check(P_few, "wand A", "wand B", list(range(N_CAM)), [None] * N_CAM)
     assert tc_few.shift[4] is None and 4 not in tc_few.suggestions, (tc_few.shift, tc_few.lines)
     assert any("cannot check the timing of cam5" in ln for ln in tc_few.lines), tc_few.lines
+    # (review) cameras at other frame rates: camera 2 records at half the rate and is 1 of ITS frames off;
+    # the shifts are fitted in reference time, so only camera 2 gets a suggestion, of its own -1 frame
+    P_rate = build(no_wand=(), error=[0, 1, 0, 0, 0], rates=[1.0, 0.5, 1.0, 1.0, 1.0], tag="subf_rate")
+    assert abs(P_rate.rates[1] - 0.5) < 1e-12, P_rate.rates
+    tc_rate = wd.timing_check(P_rate, "wand A", "wand B", list(range(N_CAM)), [None] * N_CAM)
+    assert tc_rate.suggestions == {1: -1}, (tc_rate.suggestions, tc_rate.shift, tc_rate.lines)
     print(f"F. camera 2 told 4 frames late: the timing check suggests -4 ({tc.lines[0][:70]}...); "
           f"a correct rig: no suggestion OK")
 

@@ -484,7 +484,11 @@ def timing_check(project, name_a: str, name_b: str, views: list[int], lens_model
         out.lines = ["The wand clicks cannot check the cameras' timing here (too few frames that two "
                      "cameras share, or no clear agreement at any offset)."]
         return out
-    # one shift per camera: s_j - s_i = d_ij, weighted by the shared instants, first camera fixed
+    # one shift per camera, fitted in REFERENCE frames (review of I274: a pair's shift d is in the second
+    # camera's OWN frames, and cameras may run at other rates): u_j - u_i = d_ij / r_j, weighted by the
+    # shared instants; camera v's suggestion is then s_v = u_v * r_v of its own frames
+    rate = {c: float(project.rates[c]) or 1.0 for c in views}
+    same_rate = all(abs(rate[c] - rate[views[0]]) <= 1e-9 for c in views)
     ref = views[0] if views[0] in timed else timed[0]
     col = {c: k for k, c in enumerate(c for c in timed if c != ref)}
     A = np.zeros((len(used), len(col)))
@@ -496,12 +500,12 @@ def timing_check(project, name_a: str, name_b: str, views: list[int], lens_model
             A[r_, col[j]] += 1.0
         if i in col:
             A[r_, col[i]] -= 1.0
-        y[r_] = rec["best"]
+        y[r_] = rec["best"] / rate[j]
         w[r_] = np.sqrt(max(rec["rows"], 1))
     sol = np.linalg.lstsq(A * w[:, None], y * w, rcond=None)[0] if len(col) else np.zeros(0)
-    s = {ref: 0}
+    u = {ref: 0.0}
     for c, k in col.items():
-        s[c] = int(np.floor(sol[k] + 0.5))            # whole frames (no banker's rounding)
+        u[c] = float(sol[k])
     # connected to the reference through used pairs? (a camera only in pairs among others is still
     # fixed relative to them; lstsq gives the minimum-norm answer for a separate group: say unclear)
     reach, frontier = {ref}, [ref]
@@ -513,14 +517,17 @@ def timing_check(project, name_a: str, name_b: str, views: list[int], lens_model
                 if x == c and y_ not in reach:
                     reach.add(y_)
                     frontier.append(y_)
-    if 0 not in views or views[0] != 0:
-        # camera 1 (the project's clock) is not in this run: the shift most cameras need is "none"
+    s = {c: int(np.floor(u[c] * rate[c] + 0.5)) for c in u}       # whole own frames (no banker's rounding)
+    if ref != 0 and same_rate:
+        # camera 1 (the project's clock) is not timed in this run: the shift most cameras need is "none"
         vals = [s[c] for c in reach]
         mode = max(set(vals), key=lambda v: (vals.count(v), -abs(v)))
         s = {c: v - mode for c, v in s.items()}
-    resid = [abs(rec["best"] - (s[rec["cams"][1]] - s[rec["cams"][0]])) for rec in used
-             if rec["cams"][0] in reach and rec["cams"][1] in reach]
-    consistent = all(r_ <= 1 for r_ in resid)
+    # every pair within one of the second camera's frames of the fitted shifts
+    resid = [abs(rec["best"] - rate[rec["cams"][1]] * (s[rec["cams"][1]] / rate[rec["cams"][1]]
+                                                        - s[rec["cams"][0]] / rate[rec["cams"][0]]))
+             for rec in used if rec["cams"][0] in reach and rec["cams"][1] in reach]
+    consistent = all(r_ <= 1.0 + 1e-9 for r_ in resid)
     for c in views:
         out.shift[c] = s[c] if c in reach else None
     if not consistent:
