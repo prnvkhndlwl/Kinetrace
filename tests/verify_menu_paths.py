@@ -16,7 +16,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from PySide6.QtGui import QAction  # noqa: E402
-from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
+import shiboken6  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox  # noqa: E402
 
 QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -26,10 +27,11 @@ app = QApplication([])
 from kinetrace.app import MainWindow  # noqa: E402
 
 # ---- (a) the golden list: every menu-bar action before G188, with its shortcut ----------------------------
+# (the 3D menu's twin of File → Import → Calibration, `act_import_calib`, became that one action: `act_calib`)
 GOLDEN = [
     ("act_open", "Ctrl+O"), ("act_open_folder", ""), ("act_open_proj", "Ctrl+Shift+O"), ("act_recover", ""),
     ("act_save", "Ctrl+S"), ("act_save_as", "Ctrl+Shift+S"),
-    ("act_import_tracks", ""), ("act_import_calib", ""), ("act_import_xyz", ""), ("act_import_offsets", ""),
+    ("act_import_tracks", ""), ("act_import_xyz", ""), ("act_import_offsets", ""),
     ("act_import_masks", ""),
     ("act_export", "Ctrl+E"), ("act_exports", ""), ("act_overlay", ""), ("act_export_one", ""),
     ("act_check_frames", ""), ("act_quit", "Ctrl+Q"),
@@ -61,7 +63,7 @@ GOLDEN = [
     ("act_error_report", ""), ("act_folders", ""), ("act_start_menu", ""), ("text:Keyboard & Mouse Reference…", ""),
     ("act_updates", ""), ("act_about", ""),
 ]
-assert len(GOLDEN) == 83, len(GOLDEN)
+assert len(GOLDEN) == 82, len(GOLDEN)
 
 
 def label(a: QAction) -> str:
@@ -69,11 +71,18 @@ def label(a: QAction) -> str:
     return a.text().split("\t")[0].replace("&&", "\x00").replace("&", "").replace("\x00", "&")
 
 
+def submenus(win) -> dict:
+    """{C++ address of a menu's own action: the menu}. Found with findChildren: a wrapper from `QAction.menu()`
+    that Python frees deletes the C++ menu (the PySide6 harness rule in .claude/rules/tests.md) - it took the
+    Events and Skeleton menus with it at the first garbage collection."""
+    return {shiboken6.getCppPointer(m.menuAction())[0]: m for m in win.menuBar().findChildren(QMenu)}
+
+
 def tree(win, show=False):
-    """[(path list, action)] for every entry of the menu bar. With `show`, every menu is first sent aboutToShow
-    (the ones that fill themselves then do) and nothing is collected: a refresh rebuilds a menu and deletes the
-    actions a walk had already collected, so the caller shows first and walks second."""
-    out = []
+    """[(path list, action, its submenu or None)] for every entry of the menu bar. With `show`, every menu is
+    first sent aboutToShow (the ones that fill themselves then do) and nothing is collected: a refresh rebuilds a
+    menu and deletes the actions a walk had already collected, so the caller shows first and walks second."""
+    out, subs = [], submenus(win)
 
     def walk(menu, path):
         if show:
@@ -82,13 +91,12 @@ def tree(win, show=False):
         for a in menu.actions():
             if a.isSeparator():
                 continue
-            if a.menu() is not None:
-                out.append((path + [label(a)], a))
-                walk(a.menu(), path + [label(a)])
-            else:
-                out.append((path + [label(a)], a))
+            sub = subs.get(shiboken6.getCppPointer(a)[0])
+            out.append((path + [label(a)], a, sub))
+            if sub is not None:
+                walk(sub, path + [label(a)])
     for a in win.menuBar().actions():
-        walk(a.menu(), [label(a)])
+        walk(subs[shiboken6.getCppPointer(a)[0]], [label(a)])
     return out
 
 
@@ -99,8 +107,8 @@ app.processEvents()
 
 tree(win, show=True)
 leaves = tree(win)
-by_id = {id(a): p for p, a in leaves if a.menu() is None}
-by_text = {p[-1]: a for p, a in leaves if a.menu() is None}
+by_id = {id(a): p for p, a, sub in leaves if sub is None}
+by_text = {p[-1]: a for p, a, sub in leaves if sub is None}
 missing, wrong_key = [], []
 for key, shortcut in GOLDEN:
     if key.startswith("text:"):
@@ -147,20 +155,20 @@ def core_words(name: str) -> list:
 
 
 children: dict = {}
-for p, a in leaves:
-    children.setdefault(tuple(p[:-1]), []).append((p[-1], a))
-top_children = {label(a): a for a in win.menuBar().actions()}
+for p, a, sub in leaves:
+    children.setdefault(tuple(p[:-1]), []).append((p[-1], a, sub))
+top_children = {label(a) for a in win.menuBar().actions()}
 
 
 def match_entry(text: str, pos: int, path: list):
-    """(entry name, action, end position) of the entry the text at `pos` names, or None. Prose may shorten a
+    """(entry name, its submenu or None, end position) of the entry the text at `pos` names, or None. Prose may shorten a
     label to its first words when no other entry of that menu starts with the same words ("3D → Reconstruct")."""
     end = ARROW.search(text, pos)
     end = min(end.start() if end else len(text), pos + 300)
     toks = [(m.group().lower().replace("'", "").replace("’", ""), m.end()) for m in WORD.finditer(text, pos, end)]
     sibs = children.get(tuple(path), [])
     best = None
-    for name, act in sibs:
+    for name, act, sub in sibs:
         for cw in core_words(name):
             k = 0
             while k < len(cw) and k < len(toks) and toks[k][0] == cw[k]:
@@ -168,9 +176,9 @@ def match_entry(text: str, pos: int, path: list):
             if k == 0:
                 continue
             whole = k == len(cw)
-            unique = all(o is act or words(on)[:k] != cw[:k] for on, o in sibs)
+            unique = all(o is act or words(on)[:k] != cw[:k] for on, o, _ in sibs)
             if (whole or unique) and (best is None or k > best[0]):
-                best = (k, name, act, toks[k - 1][1])
+                best = (k, name, sub, toks[k - 1][1])
     return None if best is None else best[1:]
 
 
@@ -188,11 +196,11 @@ def resolve(text: str, pos: int, top: str):
         hit = match_entry(text, pos, path)
         if hit is None:
             return " > ".join(path) + " has no entry for " + repr(" ".join(text[pos:pos + 50].split()))
-        name, act, pos = hit
+        name, sub, pos = hit
         path.append(name)
         nxt = ARROW.search(text, pos)
         between = text[pos:nxt.start()] if nxt else ""
-        if act.menu() is None or nxt is None or WORD.search(between):
+        if sub is None or nxt is None or WORD.search(between):
             return None
         pos = nxt.end()
 
@@ -217,10 +225,60 @@ for path in sources:
             stale.append(f"{os.path.relpath(path, os.path.dirname(ROOT))}:{line}: {bad}")
 for s in stale:
     print("  STALE", s.encode("ascii", "replace").decode())
-assert not stale, f"{len(stale)} of {n_paths} menu paths do not resolve"
-print(f"(b) all {n_paths} menu paths in the code and the docs resolve OK")
+if not stale:
+    print(f"(b) all {n_paths} menu paths in the code and the docs resolve OK")
+
+# ---- (c) the G188 layout --------------------------------------------------------------------------------
+paths = {id(a): p for p, a, _ in leaves}
+m_export = next(sub for p, a, sub in leaves if p == ["File", "Export"])
+export_acts = [a for a in m_export.actions() if not a.isSeparator()]
+want = [win.act_export, win.act_overlay, win.act_export_one, win.act_export_lens, win.act_export_cal,
+        win.act_export_mesh, win.act_body_video, win.act_body_joints, win.act_body_angles, win.act_exports]
+assert export_acts == want, [label(a) for a in export_acts]
+for p, a, sub in leaves:
+    if p[0] != "File" and sub is None:
+        assert "export" not in p[-1].lower() or p[-1].startswith("Keep"), f"an export outside File > Export: {p}"
+assert sum(a is win.act_calib for _, a, _s in leaves) == 1 and paths[id(win.act_calib)] == ["File", "Import", "Calibration…"]
+print("(c) every export in File > Export, one calibration import OK")
+
+# ---- (d) a shortcut whose action now sits in a submenu still fires: pressed with real keys ----------------
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtGui import QKeySequence  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from kinetrace.app import READY  # noqa: E402
+
+VID = os.path.join(ROOT, "test600.mp4")
+win._open_video(VID)
+t0 = time.time()
+while win.state != READY:
+    app.processEvents()
+    time.sleep(0.01)
+    assert time.time() - t0 < 30, "the test video did not open"
+win.activateWindow()
+app.processEvents()
+pressed = []
+for key, shortcut in GOLDEN:
+    act = getattr(win, key, None) if not key.startswith("text:") else None
+    if act is None or not shortcut or len(paths[id(act)]) < 3:
+        continue                                  # top-level entries' shortcuts are not in question
+    chain = [sub for p, a, sub in leaves if sub is not None and paths[id(act)][:len(p)] == p]
+    if not all(m.isEnabled() for m in chain):
+        continue                                  # a menu off for a reason (Other cameras: one camera open)
+    was = act.isEnabled()
+    act.setEnabled(True)                          # the key's route is in question here, not the enable rule
+    act.triggered.disconnect()                    # its dialog would block: count the press instead
+    hits = []
+    act.triggered.connect(lambda *_a, h=hits: h.append(1))
+    QTest.keySequence(win, QKeySequence(shortcut))
+    app.processEvents()
+    act.setEnabled(was)
+    assert hits, f"{shortcut} did not reach {key} ({' > '.join(paths[id(act)])})"
+    pressed.append(shortcut)
+assert "Ctrl+E" in pressed, pressed
+print(f"(d) {', '.join(pressed)} fire(s) its action from inside the submenus OK")
 
 win._dev_probe.wait(30000)
 win.close()
 app.processEvents()
+assert not stale, f"(b) {len(stale)} of {n_paths} menu paths do not resolve (listed above)"
 print("verify_menu_paths PASSED")

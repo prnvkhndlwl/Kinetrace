@@ -982,6 +982,7 @@ class MainWindow(QMainWindow):
         self._build_skeleton_events_menus()
         self._build_3d_menu()
         self._build_body_menu()
+        self._fill_export_menu()
         self._build_help_menu()
         # QMenu hides action tooltips unless told otherwise: every explanation
         # written on a menu entry (what a wizard needs, what an export holds)
@@ -1539,18 +1540,31 @@ class MainWindow(QMainWindow):
             m_file.addSeparator() if a is None else m_file.addAction(a)
         m_import = m_file.addMenu("&Import")
         self.act_import_tracks.setText("&Tracks…")
-        # act_calib ("Import Calibration…" in the 3D menu) is created below; added in _add_import_calib
+        # act_calib (File → Import → Calibration…) is created with the 3D actions and inserted there
         self._m_import = m_import
         for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks):
             m_import.addAction(a)
+        # (G188) every export in one File → Export submenu, mirroring Import; the 3D and Body exports are
+        # created with their menus' actions, so `_fill_export_menu` fills it once they all exist
+        self._m_export = m_file.addMenu("&Export")
+        self.act_export.setText("&Tracks…")
+        self.act_overlay.setText("Overlay &Video…")
+        self.act_export_one.setText("Project as &One File…")
         # File → Quit (G43): the same close as the window's ×, so unsaved
         # changes are asked about first; Ctrl+Q (Cmd+Q on a Mac, where Qt moves it to the app menu)
         self.act_quit = QAction("&Quit", self, shortcut=QKeySequence("Ctrl+Q"), triggered=self.close)
         self.act_quit.setMenuRole(QAction.QuitRole)
         self.act_quit.setToolTip("Close Kinetrace (asks first when there are unsaved changes)")
-        for a in (self.act_export, self.act_exports, self.act_overlay, None, self.act_export_one,
-                  self.act_check_frames, None, self.act_quit):
+        for a in (None, self.act_check_frames, None, self.act_quit):
             m_file.addSeparator() if a is None else m_file.addAction(a)
+
+    def _fill_export_menu(self) -> None:
+        """File → Export (G188): the 2D exports, the calibration's, the body's, then the standing exports."""
+        for a in (self.act_export, self.act_overlay, self.act_export_one, None,
+                  self.act_export_lens, self.act_export_cal, self.act_export_mesh, None,
+                  self.act_body_video, self.act_body_joints, self.act_body_angles, None,
+                  self.act_exports):
+            self._m_export.addSeparator() if a is None else self._m_export.addAction(a)
 
     def _build_edit_menu(self) -> None:
         """Edit menu."""
@@ -1753,7 +1767,7 @@ class MainWindow(QMainWindow):
                                  "Needed for wide-angle / action cameras before a wand calibration; explains "
                                  "when you need it and when you do not.")
         # (G148) a camera's lens profile out to a file, and a file onto a camera, at any time
-        self.act_export_lens = QAction("E&xport Lens Profile…", self, triggered=self._export_lens_profile)
+        self.act_export_lens = QAction("&Lens Profile…", self, triggered=self._export_lens_profile)
         self.act_export_lens.setToolTip("Save a camera's lens profile (from the checkerboard, GoPro's lens model or a\n"
                                         "file) to reuse it later: for this camera in other projects, or for other\n"
                                         "cameras of the same model, lens, zoom and recording mode")
@@ -1764,11 +1778,11 @@ class MainWindow(QMainWindow):
         self.act_wand = QAction("Calibrate Cameras with a &Wand…", self, triggered=self._wand_wizard)
         self.act_wand.setToolTip("Work out where the cameras are from a wand of known length waved in "
                                  "front of them — no MATLAB, no easyWand. Explains every step.")
-        self.act_calib = QAction("Import &Calibration…", self, triggered=self._import_calibration)
+        self.act_calib = QAction("&Calibration…", self, triggered=self._import_calibration)       # File → Import
         self.act_calib.setToolTip("A Kinetrace calibration (.kcal.json), DLT coefficients from DLTdv / "
                                   "easyWand / Argus (dltCoefs.csv), an easyWandData.mat, a DLTdv8 project, "
                                   "or OpenCV-style camera matrices (K + R/t, JSON or text)")
-        self.act_export_cal = QAction("&Export Calibration…", self, triggered=self._export_calibration)
+        self.act_export_cal = QAction("&Calibration…", self, triggered=self._export_calibration)  # File → Export
         self.act_export_cal.setToolTip("Save this project's calibration for other projects (.kcal.json) and "
                                        "for DLTdv (dltCoefs.csv), with the report")
         self.act_sync = QAction("S&ync Cameras (Sound / Motion)…", self, triggered=self._sync_dialog)
@@ -1805,7 +1819,7 @@ class MainWindow(QMainWindow):
         self.act_view3d.setToolTip("The reconstructed landmarks, the cameras and the volume in 3D, orbitable.\n"
                                    "Needs a calibration first (Calibrate Cameras with a Wand, or Import\n"
                                    "Calibration), then Reconstruct 3D Landmarks (Ctrl+3).")
-        self.act_export_mesh = QAction("Export &Mesh of This Frame…", self, triggered=self._export_mesh)
+        self.act_export_mesh = QAction("&Mesh of This Frame…", self, triggered=self._export_mesh)
         self.act_export_mesh.setToolTip("Writes the volume carved at this frame (Carve Volume, Ctrl+4) as an OBJ / PLY\n"
                                         "mesh. Carve a volume at this frame first.")
         # (G177) every camera at a glance; it took over the GoPro-only table (G145)
@@ -1814,15 +1828,11 @@ class MainWindow(QMainWindow):
                                     "plays turned), its lens profile and whether it is used, whether the 3D\n"
                                     "calibration covers it; for GoPro footage also its settings, tilt, dropped\n"
                                     "frames, when it moved, and GoPro's own lens model")
-        # the 3D menu's entry, also under File -> Import (its own action: "Import" is the submenu's word)
-        self.act_import_calib = QAction("&Calibration…", self, triggered=self._import_calibration)
-        self.act_import_calib.setToolTip(self.act_calib.toolTip())
-        self._m_import.insertAction(self.act_import_xyz, self.act_import_calib)
-        for a in (self.act_sync, self.act_cameras, None, self.act_lens, self.act_load_lens, self.act_export_lens,
-                  self.act_wand, self.act_calib, self.act_export_cal,
+        # (G188) one action, in File → Import (the 3D menu had its own twin of it); the exports go to File → Export
+        self._m_import.insertAction(self.act_import_xyz, self.act_calib)
+        for a in (self.act_sync, self.act_cameras, None, self.act_lens, self.act_load_lens, self.act_wand,
                   self.act_offsets3d, None, self.act_recon, self.act_set_axes, self.act_retrack, self.act_hull, None,
-                  self.act_view3d,
-                  self.act_export_mesh):
+                  self.act_view3d):
             m_3d.addSeparator() if a is None else m_3d.addAction(a)
 
     def _build_body_menu(self) -> None:
@@ -1840,19 +1850,18 @@ class MainWindow(QMainWindow):
                                      triggered=self._toggle_body_view)
         self.act_body_view.setToolTip("The footage with the skeleton on it, the pose on its "
                                       "own, and the joint angles against time")
-        self.act_body_video = QAction("Export Side-by-side &Video…", self,
+        self.act_body_video = QAction("Body Side-by-side &Video…", self,
                                       triggered=self._export_body_video)
-        self.act_body_joints = QAction("Export Joint &Positions…", self,
+        self.act_body_joints = QAction("Body Joint &Positions…", self,
                                        triggered=self._export_body_joints)
         self.act_body_joints.setToolTip("One row per frame and person: every joint in pixels, "
                                         "and in metres when the model gives 3D")
-        self.act_body_angles = QAction("Export Joint &Angles…", self,
+        self.act_body_angles = QAction("Body Joint &Angles…", self,
                                        triggered=self._export_body_angles)
         self.act_body_angles.setToolTip("Joint angles in degrees with their rate of change, "
                                         "and a report saying what 0 means for each one")
         self.act_body_clear = QAction("&Remove Body Pose", self, triggered=self._clear_body)
-        for a in (self.act_body_run, None, self.act_body_view, self.act_body_video, None,
-                  self.act_body_joints, self.act_body_angles, None, self.act_body_clear):
+        for a in (self.act_body_run, None, self.act_body_view, None, self.act_body_clear):
             m_body.addSeparator() if a is None else m_body.addAction(a)
 
     def _build_help_menu(self) -> None:
@@ -2109,7 +2118,6 @@ class MainWindow(QMainWindow):
         # a further step needs (I115)
         live3d = has_video and not tracking and p is not None
         self.act_calib.setEnabled(live3d)
-        self.act_import_calib.setEnabled(live3d)
         # the two wizards stay clickable: a first-time user must be able to open
         # them and be TOLD what to prepare, not meet a greyed-out entry
         self.act_wand.setEnabled(not tracking)

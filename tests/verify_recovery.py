@@ -365,7 +365,7 @@ w._recover_dialog()
 check(not w.act_recover.isEnabled() and not labels_seen, "recovering is not offered in the middle of a run")
 w.state = READY
 w._apply_state()
-check(w.act_recover.isEnabled() and w.act_import_calib.text().replace("&", "") == "Calibration…",
+check(w.act_recover.isEnabled() and w.act_calib.text().replace("&", "") == "Calibration…",
       "... and is back after it; File -> Import names its calibration entry plainly")
 close(w, QMessageBox.Discard)
 check(recovery.find(left_id) is None, "and Discard drops it")
