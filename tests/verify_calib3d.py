@@ -9,7 +9,12 @@
   D. the wizard: the user's click on "Show in 3D" opens the 3D window on this run; the Wand calibration
      tick changes the picture; hovering a wand end tells its frame;
   E. the app: 3D View -> Wand calibration (the user's click on the tick), a click on a wand end moves the
-     timeline to that end's frame; "Covered by >= 3" changes the picture once the volume is computed.
+     timeline to that end's frame; "Covered by >= 3" changes the picture once the volume is computed;
+  F. no wand landmarks: cameras, fields of view and covered space only;
+  G. (G187) through the wizard's Show in 3D and the ticks: a wand end is a small dot, the pose pyramid 3 % of
+     the scene, and inside a camera's field of view the picture is 10 % that camera's colour (translucent sides);
+  H. (G187) at a display scaled to 200 % (a child process, QT_SCALE_FACTOR=2): the picture is drawn at the
+     display's pixel density and a hover still names the wand end under the mouse.
 
 Run: .venv\\Scripts\\python.exe tests\\verify_calib3d.py
 """
@@ -360,9 +365,186 @@ def sec_f():
           "Covered tick is counted OK")
 
 
-SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f]
+def _click_tick(cb):
+    QTest.mouseClick(cb, Qt.LeftButton, pos=QPoint(4, cb.height() // 2))
+    pump(0.1)
+
+
+def _side_of(raw: np.ndarray, w: int, h: int) -> np.ndarray:
+    """Which side of the picture (0 top, 1 right, 2 bottom, 3 left) each border pixel lies on - read from the
+    pixels themselves, independent of how the renderer groups them."""
+    x, y = raw[:, 0], raw[:, 1]
+    side = np.full(len(raw), -1)
+    side[(np.isclose(x, -0.5)) & (y > -0.5)] = 3
+    side[(np.isclose(y, h - 0.5)) & (x > -0.5)] = 2
+    side[(np.isclose(x, w - 0.5)) & (y < h - 0.5)] = 1
+    side[(np.isclose(y, -0.5)) & (x < w - 0.5)] = 0
+    return side
+
+
+def sec_g():
+    """(G187, owner 2026-10-12) smaller wand ends and pose pyramids; each camera's field of view a patch of
+    translucent (10 %) sides - through the wizard's Show in 3D and the user's clicks on the ticks."""
+    import cv2
+    from kinetrace import view3d as v3
+    P = ws.build(tag="g3d")
+    wz = ws.calibrate_through_wizard(P)
+    try:
+        pg = wz.page_run
+        QTest.mouseClick(pg.btn_3d, Qt.LeftButton)                  # Show in 3D
+        pump(0.3)
+        v = pg.view3d
+        pic = v.scene.calib
+        # only the wand points: the pyramids and fields of view ticked off by the user's clicks
+        for cb in (v.chk_pyr, v.chk_fov):
+            if cb.isChecked():
+                _click_tick(cb)
+        assert v.chk_calib.isChecked() and not v.chk_pyr.isChecked() and not v.chk_fov.isChecked()
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QWheelEvent
+        c = QPointF(v.width() / 2, v.height() / 2)
+        for _ in range(16):              # the wheel over the picture (the window takes it): zoom in, the dots spread
+            ws.app.sendEvent(v, QWheelEvent(c, v.mapToGlobal(c), QPoint(0, 0), QPoint(0, 120),
+                                            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False))
+        assert v.zoom > 9, v.zoom
+        pump(0.1)
+        v._render()
+        img = v.last_image
+        es = v._hits["ends"]
+        ok = np.isfinite(es).all(axis=1)
+        d = np.hypot(es[:, None, 0] - es[None, :, 0], es[:, None, 1] - es[None, :, 1])
+        d[~ok] = np.inf
+        d[:, ~ok] = np.inf
+        np.fill_diagonal(d, np.inf)
+        H_, W_ = img.shape[:2]
+        cand = [k for k in np.argsort(-d.min(axis=1)) if ok[k] and pic.end_state[k] != 3
+                and 10 <= es[k, 0] < W_ - 10 and 10 <= es[k, 1] < H_ - 10]
+        assert cand and d[cand[0]].min() >= 8, f"no wand end stands alone (nearest {d[cand[0]].min():.1f} px)"
+        k = cand[0]
+        x, y = int(es[k, 0]), int(es[k, 1])
+        win = img[y - 3:y + 4, x - 3:x + 4].astype(int)
+        spread = win.max(axis=2) - win.min(axis=2)                  # coloured, not the grey wand line
+        foot = int((spread > 30).sum())
+        assert foot <= 8, f"a wand end covers {foot} coloured pixels (radius 1 = 7, today's radius 2 = 16)"
+        # the pose pyramid: 3 % of the scene (wand cloud + cameras)
+        p = pic.finite_ends()
+        allp = np.vstack([p, np.array([c.centre for c in pic.cams])])
+        scene = float(np.linalg.norm(allp.max(axis=0) - allp.min(axis=0)))
+        frac = pic.cams[0].pose.depth / scene
+        assert abs(frac - 0.03) < 1e-9, f"pose pyramid depth {frac:.4f} of the scene, want 0.03"
+        # only the fields of view: a pixel well inside one side of one camera is 10 % that camera's colour
+        _click_tick(v.chk_calib)
+        _click_tick(v.chk_fov)
+        assert v.chk_fov.isChecked() and not v.chk_calib.isChecked() and not v.chk_pyr.isChecked()
+        v._render()
+        img = v.last_image
+        H_, W_ = img.shape[:2]
+        to_screen, _, _ = v3.screen_transform(v.scene, (W_, H_), v.azimuth, v.elevation, v.zoom, tuple(v.pan), 2,
+                                              v.chk_cams.isChecked(), True)
+        polys = []                                                   # (camera k, side, screen polygon)
+        for kc, cd in enumerate(pic.cams):
+            f = cd.fov
+            side = _side_of(f.raw, ws.W, ws.H)
+            cs = to_screen(cd.centre)[0][0]
+            for s in range(4):
+                b = f.border[side == s]
+                if len(b) < 2:
+                    continue
+                scr = np.vstack([cs[None], to_screen(b)[0]])
+                if np.isfinite(scr).all():
+                    polys.append((kc, s, np.round(scr).astype(np.int32)))
+        masks = []
+        for kc, s, scr in polys:
+            m = np.zeros((H_, W_), np.uint8)
+            cv2.fillPoly(m, [scr], 1)
+            masks.append(m)
+        found = None
+        for i, (kc, s, scr) in enumerate(polys):
+            inner = cv2.erode(masks[i], np.ones((13, 13), np.uint8))           # >= 6 px from its edges
+            others = np.zeros((H_, W_), np.uint8)
+            for j, m in enumerate(masks):
+                if j != i:
+                    others |= m
+            others = cv2.dilate(others, np.ones((5, 5), np.uint8))
+            free = inner.astype(bool) & ~others.astype(bool)
+            for cd in pic.cams:                                              # camera names
+                c = to_screen(cd.centre)[0][0]
+                if np.isfinite(c).all():
+                    free[max(0, int(c[1]) - 40):int(c[1]) + 40, max(0, int(c[0]) - 40):int(c[0]) + 120] = False
+            free[H_ - 100:, :110] = False                                    # the axis triad
+            free[H_ - 50:, W_ - 200:] = False                                # the scale bar
+            ys, xs = np.nonzero(free)
+            if len(ys) >= 20:
+                j = len(ys) // 2
+                found = (kc, int(ys[j]), int(xs[j]))
+                break
+        assert found is not None, "no camera side is free of the others on screen"
+        kc, py, px_ = found
+        bg = np.array([24, 26, 30], float)
+        col = np.array(v3.CAM_COLOURS[kc % len(v3.CAM_COLOURS)], float)
+        want = 0.9 * bg + 0.1 * col
+        got = img[py, px_].astype(float)
+        assert np.abs(got - want).max() <= 2, f"inside {pic.cams[kc].name}'s field of view: {got} (want {want.round(1)}, background {bg})"
+        print(f"G. wand end {foot} px, pose pyramid {frac:.2f} of the scene, {pic.cams[kc].name}'s field of view "
+              f"{got.astype(int).tolist()} = 10 % of its colour OK")
+    finally:
+        ws.close_wizard(wz)
+
+
+def _h_child():
+    """Run under QT_SCALE_FACTOR=2: the picture is drawn at the display's pixel density and a hover still finds
+    the wand end under the mouse."""
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+    P = ws.build(tag="h3d")
+    wz = ws.calibrate_through_wizard(P)
+    try:
+        pg = wz.page_run
+        QTest.mouseClick(pg.btn_3d, Qt.LeftButton)
+        pump(0.3)
+        v = pg.view3d
+        dpr = v.canvas.devicePixelRatioF()
+        if dpr < 1.5:
+            print(f"H-CHILD SKIP: no display scaling here (devicePixelRatio {dpr})")
+            return
+        v._render()
+        h, w = v.last_image.shape[:2]
+        assert (w, h) == (round(v.canvas.width() * dpr), round(v.canvas.height() * dpr)), \
+            f"picture {w}x{h} for a {v.canvas.width()}x{v.canvas.height()} canvas at {dpr}x"
+        pts = v.end_screen_points()
+        k = int(np.nanargmin(np.abs(pts[:, 0] - v.canvas.width() / 2) + np.abs(pts[:, 1] - v.canvas.height() / 2)))
+        hp = QPointF(float(pts[k, 0]), float(pts[k, 1]))
+        ws.app.sendEvent(v.canvas, QMouseEvent(QEvent.MouseMove, hp, v.canvas.mapToGlobal(hp), Qt.NoButton,
+                                               Qt.NoButton, Qt.NoModifier))
+        pump(0.1)
+        tip = v.canvas.toolTip()
+        hit = v._pick(pts[k, 0], pts[k, 1])
+        assert hit is not None and "frame" in tip and str(int(v.scene.calib.end_frame[hit])) in tip, tip
+        print(f"H-CHILD OK: {w}x{h} picture for a {v.canvas.width()}x{v.canvas.height()} canvas at {dpr}x; "
+              f"hover '{tip}'")
+    finally:
+        ws.close_wizard(wz)
+
+
+def sec_h():
+    """(G187) a display scaled to 200 %: the 3D picture is drawn at its pixel density (sharp, not stretched),
+    and a hover still names the wand end under the mouse. Run in a child process with QT_SCALE_FACTOR=2."""
+    import subprocess
+    env = dict(os.environ, QT_SCALE_FACTOR="2", QT_QPA_PLATFORM="offscreen")
+    r = subprocess.run([sys.executable, os.path.abspath(__file__), "--h-child"], env=env, cwd=ROOT,
+                       capture_output=True, text=True, timeout=600)
+    out = (r.stdout or "") + (r.stderr or "")
+    line = next((ln for ln in out.splitlines() if ln.startswith("H-CHILD")), "")
+    assert r.returncode == 0 and line.startswith("H-CHILD"), f"child exit {r.returncode}: {out[-600:]}"
+    print(f"H. {line[8:]}")
+
+
+SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f, sec_g, sec_h]
 
 if __name__ == "__main__":
+    if "--h-child" in sys.argv:
+        _h_child()
+        sys.exit(0)
     failed = []
     for fn in SECTIONS:
         try:
