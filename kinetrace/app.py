@@ -173,7 +173,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>3D menu</td><td><b>Sync Cameras (Sound / Motion)</b> (whole-frame offsets from the sound tracks or the pictures, with a noise filter) · <b>Calibrate a Lens (checkerboard)</b> (how a wide-angle lens bends the picture; opens with or without a video — with nothing open, save the lens file and attach it later) · <b>Calibrate Cameras with a Wand</b> · <b>Import Calibration</b> (a Kinetrace .kcal.json, DLT coefficients from DLTdv / easyWand / Argus, K + R/t, or a DLTdv8 project with its lens undistortion) · <b>Export Calibration</b> · <b>Estimate Sub-frame Offsets</b> (fractional sync from the tracks) · <b>Re-track Disagreeing Stretches</b> (a camera's landmark put back on the other cameras' rays and re-tracked, before / after verdict) · <b>Export Mesh of This Frame</b>. Entries that need more (a video, a second camera, a calibration) open anyway and say what is missing</td></tr>
 <tr><td class=k>Ctrl+3</td><td>reconstruct the 3D landmarks (matched by name across cameras) and open the 3D view</td></tr>
 <tr><td class=k>Ctrl+4</td><td>carve the volume hull at this frame from every camera's silhouette</td></tr>
-<tr><td class=k>Ctrl+5</td><td>show / hide the 3D view (drag to orbit, wheel to zoom, middle-drag to pan, double-click to reset)</td></tr>
+<tr><td class=k>Ctrl+5</td><td>show / hide the 3D view (drag to orbit, wheel to zoom, middle-drag to pan, double-click to reset; with a calibration: the wand calibration layers - wand points, camera pyramids, fields of view, covered space - and a click on a wand end goes to its frame)</td></tr>
 <tr><td class=k>Ctrl+6</td><td>show / hide the body side-by-side view (footage + skeleton | the pose on its own | joint angles over time)</td></tr>
 </table>
 <h3>Events &amp; timeline</h3><table>
@@ -1769,7 +1769,7 @@ class MainWindow(QMainWindow):
                                  triggered=self._reconstruct_3d)
         self.act_recon.setToolTip("Turn the landmarks tracked in two or more cameras (matched by name) into\n"
                                   "3D positions with the calibration, and say how well the cameras agree\n"
-                                  "(GOOD / USABLE / NOT TRUSTWORTHY). Needs every camera calibrated.")
+                                  "(GOOD / USABLE / NOT TRUSTWORTHY). Needs two or more calibrated cameras.")
         self.act_set_axes = QAction("Set World &Axes…", self, triggered=self._set_world_axes)      # (I170)
         self.act_set_axes.setToolTip("Choose the 3D world yourself: three landmarks give the origin, the +X and the\n"
                                      "+Y direction (+Z follows the right-hand rule). The calibration and the 3D\n"
