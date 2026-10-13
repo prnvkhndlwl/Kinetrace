@@ -1195,7 +1195,8 @@ select the point and press **Shift+X** (or right-click the marker → *Hidden on
 this frame (keep, do not export)*). The position stays in the project, so you can
 unmark it (**Shift+X** again), but it is left **blank in every export**, ignored
 by 3D, and never written over by a curve fill (*Keyframe digitizing*, above).
-Hidden frames show hatched on the timeline, the marker becomes a crossed ring and
+Hidden frames show hatched on the timeline (never red: a frame you marked hidden is
+dealt with, so **J** does not stop there either), the marker becomes a crossed ring and
 its name reads *(hidden)*. Each mark is one **Ctrl+Z** step.
 
 For a whole stretch: **Shift+drag** across the timeline (frames and rows, as for
@@ -2325,9 +2326,10 @@ calibration switches the first one on.
   writes, beside the part in each camera that has it, how well the cameras
   agree: *3D rmse 0.84 px · 2 cams*. It is the reconstruction residual in
   pixels (DLTdv's definition — the number 3D → Reconstruct reports for every
-  frame): green = good (under about 1.5 px at 1920 px wide), amber = usable,
-  red = one of the placements is off. With only **two** cameras it never reads
-  better than amber ("ok"): a slip along the line joining the two views is
+  frame): green = good (under about 1.5 px at 1920 px wide), yellow = usable,
+  red = one of the placements is off (every good / usable / poor verdict in the
+  program uses these three colours). With only **two** cameras it never reads
+  better than yellow ("ok"): a slip along the line joining the two views is
   invisible to two cameras, so a low number cannot be called good. The status
   bar says the same after each click. The dashed lines turn faint in every camera from then on — they have
   done their job. With only two cameras a slip *along* the other camera's line
