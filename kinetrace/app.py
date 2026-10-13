@@ -9785,18 +9785,29 @@ class MainWindow(QMainWindow):
         # extends the step, so the one Ctrl+Z goes back to before the first
         prev = self.__dict__.get("_undo_timing")
         self._set_undo_point(self.session.snapshot())
-        self.__dict__["_undo_timing"] = prev if prev is not None else {
+        rec = prev if prev is not None else {
             "offsets": before, "calibration": p.calibration, "wand_result": self._wand_result}
+        # what the step left behind: Ctrl+Z takes it back only while it is still so (a hand edit of an
+        # offset, or another calibration, since then is the user's and stays - review of I274)
+        rec["after"] = list(p.offsets)
+        rec["cal_after"] = p.calibration
+        self.__dict__["_undo_timing"] = rec
         p.dirty = True
         self._after_retime(had_3d)
         self._refresh_companions()
         self._refresh_cameras()
 
-    def _undo_timing_step(self, timing: dict) -> bool:
-        """Put back the offsets (and calibration) an `_apply_offsets_undoable` step changed."""
+    def _undo_timing_step(self, timing: dict) -> bool | None:
+        """Put back the offsets (and calibration) an `_apply_offsets_undoable` step changed. None (and
+        nothing changed) when the offsets or the calibration were changed again since."""
         p = self.project
         if p is None or len(timing["offsets"]) != p.n_views:
             return False                  # the camera set changed since: the step no longer fits
+        after = timing.get("after")
+        if (after is not None and (len(after) != p.n_views
+                                   or any(abs(a - b) > 1e-9 for a, b in zip(after, p.offsets))
+                                   or p.calibration is not timing.get("cal_after"))):
+            return None
         had_3d = p.reconstruction is not None
         for i, o in enumerate(timing["offsets"]):
             p.set_offset(i, float(o))
@@ -9818,7 +9829,19 @@ class MainWindow(QMainWindow):
             if p is not None and 0 <= v < p.n_views and v != p.active:
                 p.sessions[v].restore(snap)
         self._undo_snap = None
-        if timing is not None and self._undo_timing_step(timing):
+        undone = self._undo_timing_step(timing) if timing is not None else False
+        if undone is None:
+            self._refresh_companions()
+            self.act_undo.setEnabled(False)
+            self._refresh_point_list()
+            self._refresh_overlay()
+            self._update_frame_label()
+            self._apply_state()
+            self.statusBar().showMessage(
+                "The offsets or the calibration were changed again after 'Apply these offsets': Undo leaves "
+                "them as they are now", 8000)
+            return
+        if undone:
             self._refresh_companions()
             self.act_undo.setEnabled(False)
             self._refresh_point_list()
@@ -11290,6 +11313,10 @@ class MainWindow(QMainWindow):
             return
         p.calibration = wiz.result_calibration
         self._wand_result = (wiz.result, wiz.gravity)
+        rec = self.__dict__.get("_undo_timing")
+        if rec is not None and rec.get("after") is not None and all(
+                abs(a - b) <= 1e-9 for a, b in zip(rec["after"], p.offsets)):
+            rec["cal_after"] = p.calibration     # (I274) made AT the applied offsets: part of the same step
         self._drop_reconstruction("a new calibration was made")          # (I242)
         p.dirty = True
         self._apply_state()

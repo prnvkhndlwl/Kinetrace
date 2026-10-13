@@ -526,9 +526,25 @@ def sec_h():
         pump(0.2)
         assert abs(p.offsets[3] - wrong) < 1e-9 and p.calibration is None and p.reconstruction is None, \
             (p.offsets, p.calibration)
+        # (review) Apply again, then the user edits camera 2's offset in the CAMERAS panel: Undo must leave
+        # that edit (and the calibration) alone instead of taking them back with the Apply
+        win._wand_wizard()
+        pump(0.2)
+        assert abs(p.offsets[3] - (wrong - 3)) < 1e-9 and p.calibration is not None
+        cal_now = p.calibration
+        nudge = win.cameras._rows[1].nudges[1]              # CAMERAS: camera 2's "one frame later" button
+        nudge.click()
+        nudge.click()
+        pump(0.1)
+        hand = float(p.offsets[1])
+        if win.act_undo.isEnabled():
+            win.act_undo.trigger()
+            pump(0.2)
+        assert abs(p.offsets[1] - hand) < 1e-9 and abs(p.offsets[3] - (wrong - 3)) < 1e-9 \
+            and p.calibration is cal_now, (p.offsets, p.calibration)
         print(f"H. through the window: cam4 3 frames off -> suggestion, Apply -> calibration of 1, 2, 4, 5 -> "
               f"3D -> Reconstruct: {int(np.isfinite(L).sum())} wand frames, the toast names cam3; Undo puts the "
-              f"offset and the calibration back OK")
+              f"offset and the calibration back, but never a later hand edit OK")
     finally:
         cw.WandWizard.exec = real_exec
         QMessageBox.critical = real_critical
