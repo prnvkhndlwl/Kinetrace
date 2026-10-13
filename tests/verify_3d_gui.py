@@ -188,7 +188,7 @@ dlg.deleteLater()
 dlg = v3.CalibrationDialog(win, ["A", "B", "C"], [(W, H), (848, 480), (W, H)])
 assert dlg.load(csv)
 _labels = [dlg._combos[0].itemText(k) for k in range(dlg._combos[0].count())]
-assert _labels == ["cam 1", "cam 2", "cam 3"], _labels
+assert _labels == ["cam 1", "cam 2", "cam 3", "not calibrated"], _labels       # (I273) the last: left out
 assert "does not record picture sizes" in dlg.info.text(), dlg.info.text()
 dlg.conv.setCurrentIndex(2)
 dlg._combos[1].setCurrentIndex(2)

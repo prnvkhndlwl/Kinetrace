@@ -120,17 +120,16 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
     rules passed in: `margin` (the polylines' extra reach past the picture; None =
     `epipolar_polyline`'s default, 0 = cut exactly at the edges, what the guides draw),
     `observations` ([(camera, its calibration, raw (x, y)), ...], gathered by the caller at
-    the fractional frame, I253, among the calibrated cameras only -- then two calibrated cameras
-    are enough, where the default needs a calibration for EVERY camera of the project) and
+    the fractional frame, I253, among the calibrated cameras only; the default gathers them at the
+    integer frame, likewise among the calibrated cameras, I273) and
     `info`, which receives `intersect_polylines`'s {"mode", ...} plus "n_lines" and, when the
     crossing is refused, "outside_px"."""
     p = project
     cal = p.calibration
     if cal is None:
         return None
-    if observations is None and len(cal.cameras) != p.n_views:
-        return None
-    if observations is not None and not 0 <= view < min(len(cal.cameras), p.n_views):
+    dst = cal.camera(view) if 0 <= view < p.n_views else None
+    if dst is None:                           # (I273) this camera is not calibrated: no rays to it
         return None
     s = p.sessions[view]
     pid = s.pid_by_name(name)
@@ -145,11 +144,10 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
             probe = row.mean(axis=0) if len(row) else None
         if probe is None:
             probe = working_probe(cal)
-    dst = cal.cameras[view]
     if observations is None:
         observations = []
         for c in range(p.n_views):
-            if c == view:
+            if c == view or cal.camera(c) is None:
                 continue
             sc = p.sessions[c]
             j = sc.pid_by_name(name)
@@ -161,7 +159,7 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
             uv = sc.tracks[fc, j]
             if not np.isfinite(uv).all():
                 continue
-            observations.append((c, cal.cameras[c], uv))
+            observations.append((c, cal.camera(c), uv))
     kw = {} if margin is None else {"margin": float(margin)}
     lines = []
     for _c, cam, uv in observations:
@@ -202,7 +200,7 @@ def _blame(project, stretches: list[Stretch], threshold_px) -> list[Stretch]:
     smallest rest-residual is blamed if the rest agree (under the band and
     under half the full residual) and no other camera comes close; otherwise
     every stretch of the group is skipped with the reason."""
-    from kinetrace.calib import _Prepared, triangulate_batch
+    from kinetrace.calib import _Prepared
     p = project
     r = p.reconstruction
     if r is None or p.calibration is None or not stretches:
@@ -229,10 +227,10 @@ def _blame(project, stretches: list[Stretch], threshold_px) -> list[Stretch]:
         for st in g:
             t = np.arange(st.t0, st.t1 + 1)
             uv = prep.samples(p.rates, p.offsets, t)[:, j]              # (T, C, 2)
-            _, res_full, _, _ = triangulate_batch(prep.coefs, uv)
+            _, res_full, _, _ = prep.triangulate(uv)
             rest = uv.copy()
             rest[:, st.view] = np.nan
-            _, res_rest, _, _ = triangulate_batch(prep.coefs, rest)
+            _, res_rest, _, _ = prep.triangulate(rest)
             st.full_px = float(np.nanmedian(res_full)) if np.isfinite(res_full).any() else float("nan")
             st.rest_px = float(np.nanmedian(res_rest)) if np.isfinite(res_rest).any() else float("nan")
         # (I8) rank CAMERAS, not stretches: a camera whose error dipped under the
@@ -245,7 +243,8 @@ def _blame(project, stretches: list[Stretch], threshold_px) -> list[Stretch]:
                 by_view.setdefault(st.view, []).append(st)
         if not by_view:
             for st in g:
-                st.reason = ("only two cameras see it: cannot tell which one slid" if p.n_views <= 2
+                st.reason = ("only two cameras see it: cannot tell which one slid"
+                             if p.calibration.n_calibrated <= 2
                              else "the other cameras have no 3D there without this one")
             out.extend(g)
             continue
@@ -277,12 +276,13 @@ def _blame(project, stretches: list[Stretch], threshold_px) -> list[Stretch]:
 
 
 def _n_other_views(project, view: int, name: str, local_frame: int) -> int:
-    """How many OTHER cameras have landmark `name` (exportable, finite) at the
+    """How many OTHER calibrated cameras have landmark `name` (exportable, finite) at the
     instant of `view`'s `local_frame` - the rays `ray_target` could cross."""
     p = project
+    cal = p.calibration
     n = 0
     for c in range(p.n_views):
-        if c == view:
+        if c == view or cal is None or cal.camera(c) is None:
             continue
         sc = p.sessions[c]
         j = sc.pid_by_name(name)
@@ -341,7 +341,7 @@ def plan(project, threshold_px, min_run: int = MIN_RUN) -> list[Stretch]:
     for st in out:
         if st.reason:
             continue
-        if project.n_views >= 3 and not _start_on_two_rays(project, st, threshold_px, min_run):
+        if project.calibration.n_calibrated >= 3 and not _start_on_two_rays(project, st, threshold_px, min_run):
             continue
         why: list[str] = []
         got = ray_target(project, st.view, st.name, st.local0, why=why)

@@ -88,6 +88,7 @@ DEFAULT_UI_STATE: dict = {
     "loupe": False,          # magnifier under the cursor
     "display_filter": "none",  # none | contrast | bright | diff (display only)
     "region_shape": "circle",  # what an armed drag draws: circle | rect | polygon
+    "wand_ends": [],         # (G185) the two wand landmarks of the last wand calibration (its 3D picture)
 }
 
 SOURCES = ("track", "silhouette", "ball")

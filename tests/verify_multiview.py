@@ -415,7 +415,8 @@ win.layers.setCurrentItem(win.layers.point_item(win.session.pid_by_name(name)))
 pump(0.1)
 assert win.canvas._guides.lines and not D._guides.lines and not D._guides.preds, \
     "the calibrated cameras keep their guides; the new one has none"
-assert win._need_calibration("3D") is False, "3D still needs every camera"
+assert win._need_calibration("3D") is True, "(I273) 3D runs on the calibrated cameras"
+assert p.name(3) in win.toast.text() and "not calibrated" in win.toast.text(), win.toast.text()
 win._remove_view(3)
 pump(0.2)
 print("G25: a camera added after calibrating leaves the guides and diamonds among the calibrated cameras OK")

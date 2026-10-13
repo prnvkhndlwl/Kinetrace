@@ -315,7 +315,7 @@ ASK["info"] = []
 win.project.calibration = Calibration([cams[0]])               # a 1-camera calibration, then add B
 assert win._add_view(VB)
 pump(0.5)
-assert any("calibration covers" in t for t in ASK["info"]), ASK["info"]
+assert any("not calibrated" in t for t in ASK["info"]), ASK["info"]          # (I273) the new camera is left out
 win.project.calibration = None
 print("adding a camera to a calibrated project says what happens to the calibration (I16) OK")
 

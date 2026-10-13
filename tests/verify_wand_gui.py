@@ -654,7 +654,10 @@ wand_mod.calibrate_wand = _slow
 wz = new_wizard(P_axes)
 goto(wz, wz.page_run)
 wz.page_run._run()
-pump(0.3)
+t_wait = time.time()
+while SLOW["steps"] == 0 and time.time() - t_wait < 60:     # (I274) the timing check runs first
+    pump(0.05)
+pump(0.2)
 th_ = wz.page_run._thread
 assert th_.isRunning()
 t0_ = time.time()
