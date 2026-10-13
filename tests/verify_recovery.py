@@ -523,7 +523,7 @@ check(w._save_project_as() and str(w.project_path) == OTHER and projectfile.load
       "... Yes saves the work AS that project (no folder made inside it) (G55)")
 close(w, None)
 w = window(project=OLD)                                  # the exports below work on the first project
-# exports on save, chosen by real clicks in File -> Keep Exports Up to Date...
+# exports on save, chosen by real clicks in File -> Export -> Keep Exports Up to Date...
 from kinetrace import autoexport  # noqa: E402
 
 
