@@ -300,7 +300,10 @@ else:
         check(o_ == o and g_f is not None and g_f.board.get("gopro_orientation") == o,
               f"GoPro board video (OREN {o}): its mounting tag is kept in the board record", (s_, r_, o_))
     gs = lens.scan_video(os.path.join(OUT, "gopro_U.mp4"), (9, 6), max_candidates=3)
-    check(getattr(gs, "gopro_orientation", None) == "U", "a board scan of GoPro footage records its OREN")
+    check(getattr(gs, "gopro_orientation", None) == "U"
+          and lens.board_record(gs, [], (9, 6), 0.025).get("gopro_orientation") == "U"
+          and "gopro_orientation" not in lens.board_record(scan, [], (9, 6), 0.025),
+          "a board scan of GoPro footage records its OREN in the board record (other footage: no entry)")
 
 # ------------------------------------------------------------------ 4. through the window
 print("\n[4] Load a Lens Profile through the window")

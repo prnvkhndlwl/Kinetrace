@@ -861,6 +861,9 @@ class ScanResult:
     # how far the decoder turned the video's stored pictures clockwise (`video_source.applied_rotation`):
     # the profile fitted from these boards records it (`LensProfile.rotation`)
     rotation: int | None = None
+    # (I275) GoPro footage: the camera's mounting tag OREN (U / D / L / R), "" otherwise; kept in the
+    # board record for tracing only -- the turn comes from the decoder
+    gopro_orientation: str = ""
 
     def thumb_scale(self, i: int) -> float:
         """Pixels of thumbnail per pixel of video, for drawing corners on it."""
@@ -940,8 +943,10 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
                     sample = bgr.copy()
             if progress is not None:
                 progress((k + 1) / len(idx), f"frame {f}: {len(frames)} boards found")
+        from kinetrace import gpmf
+        info = gpmf.read_safe(str(path), sensors=False)         # the header only
         return ScanResult((w, h), fps, n, len(idx), frames, corners, sample,
-                          thumbs, str(path), orient, rotation)
+                          thumbs, str(path), orient, rotation, info.orientation if info is not None else "")
     finally:
         cap.release()
 
@@ -953,9 +958,12 @@ def board_record(scan: ScanResult, used: list[int], pattern: tuple[int, int], sq
     profile's `report["views_used"]` counts the boards the fit was given, not frames: these do."""
     import os
     frames = [int(scan.frames[i]) for i in (used or []) if 0 <= int(i) < len(scan.frames)]
-    return {"video": Path(scan.video).name, "path": os.path.abspath(scan.video) if scan.video else "",
-            "size": [int(v) for v in scan.size], "rotation": scan.rotation, "frames": frames,
-            "pattern": [int(v) for v in pattern], "square_m": float(square_m)}
+    out = {"video": Path(scan.video).name, "path": os.path.abspath(scan.video) if scan.video else "",
+           "size": [int(v) for v in scan.size], "rotation": scan.rotation, "frames": frames,
+           "pattern": [int(v) for v in pattern], "square_m": float(square_m)}
+    if scan.gopro_orientation:                      # (I275) GoPro's mounting tag, for tracing
+        out["gopro_orientation"] = scan.gopro_orientation
+    return out
 
 
 def board_sentence(board: dict) -> str:
