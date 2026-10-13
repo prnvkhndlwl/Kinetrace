@@ -2207,8 +2207,11 @@ Four steps, in this order:
    (wand points, camera pyramids, fields of view, covered space, the Cameras
    menu); there a click on a wand end moves the timeline to that frame, so you
    can look at the clicks behind a red one. After you reopen a project the
-   wand is rebuilt from its two landmarks with the project's calibration; a red
-   end then means one camera disagrees with the others there. The result comes with a verdict. The
+   wand is rebuilt with the project's calibration from its two landmarks (those
+   of your last wand calibration, or two named *wand…*); a red end then means
+   the cameras disagree there. Without such landmarks — an imported
+   calibration, an animal project — the layers show the cameras, their fields
+   of view and the covered space only. The result comes with a verdict. The
    number behind it is the *residual*: for every landmark the 3D point is
    projected back into each camera, and the residual is how far that lands
    from where you tracked it, in pixels — how much the cameras **disagree**.

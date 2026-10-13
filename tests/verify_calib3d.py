@@ -120,6 +120,10 @@ def sec_c():
     rej = {(int(fr), int(e)) for fr, e, st in zip(pic.end_frame, pic.end_which, pic.end_state) if st == 3}
     assert bad_ref <= rej, (sorted(bad_ref), sorted(rej)[:10])
     assert len(rej) <= len(bad_ref) + 3, sorted(rej)
+    # (review) an end's verdict is its RMS over the cameras, as the report's bands mean: a sound calibration
+    # reads green, not two thirds yellow
+    ok_ends = pic.end_state[np.isfinite(pic.end_err) & (pic.end_state != 3)]
+    assert np.mean(ok_ends == 0) >= 0.9, np.bincount(ok_ends.astype(int), minlength=4)
     assert len(pic.cams) == ws.N_CAM and all(c.name for c in pic.cams)
     print(f"C. the 3 moved clicks are marked rejected ({sorted(bad_ref)}), {len(rej) - len(bad_ref)} other(s) OK")
 
@@ -254,7 +258,7 @@ def sec_e():
         assert "2+" in v.info.text() or "cameras see" in v.info.text(), v.info.text()
         # (owner 2026-10-12) the Cameras menu: two cameras unticked -> their fields of view go, the covered
         # space is counted from the three others
-        v.chk_fov.setChecked(True)
+        QTest.mouseClick(v.chk_fov, Qt.LeftButton, pos=QPoint(4, v.chk_fov.height() // 2))
         pump(0.1)
         v._render()
         before = v.last_image.copy()
@@ -295,6 +299,14 @@ def sec_e():
                 break
         assert v.scene.calib is not None and v.scene.calib.source == "tracks", v.scene.calib
         assert v.scene.calib.end_names == ("wand A", "wand B") and len(v.scene.calib.finite_ends()) > 200
+        # (review) Covered by >= was still ticked: the rebuilt picture's covered space is counted too
+        if not v.chk_cover.isChecked():
+            QTest.mouseClick(v.chk_cover, Qt.LeftButton, pos=QPoint(4, v.chk_cover.height() // 2))
+        for _ in range(200):
+            pump(0.05)
+            if v.scene.calib.cover:
+                break
+        assert v.scene.calib.cover, "the reopened picture's covered space was never counted"
         print(f"E. app: 3D View -> Wand calibration, a click on a wand end moves to frame {loc}; covered by >= 3 "
               f"redraws; two cameras unticked: recounted from the others; reopened: rebuilt from the tracks; '{v.info.text()[:60]}' OK")
     finally:
@@ -311,7 +323,44 @@ def sec_e():
             forget_recovery(pth)
 
 
-SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e]
+def sec_f():
+    """(review) No wand landmarks -> cameras, fields of view and covered space from the calibration alone;
+    two names are never guessed from an animal's; a picture arriving after the Covered tick is counted."""
+    from kinetrace import calibview as cv3
+    from kinetrace.view3d import Scene3D, View3D
+    assert cv3.wand_names(["snout", "tail", "paw"]) is None
+    assert cv3.wand_names(["snout", "wand A", "wand B"]) == ("wand A", "wand B")
+    assert cv3.wand_names(["a", "b", "wand 1", "wand 2"], ["a", "b"]) == ("a", "b")       # the last calibration's
+    P = ws.build(no_wand=(), tag="f3d")
+    P.calibration = Calibration([CameraCalibration(c.coefs.copy(), ws.W, ws.H, NoUndistort(), pixel_origin=0.0)
+                                 for c in ws.CAMS], "m")
+    pic = cv3.from_project(P, None, None)
+    assert len(pic.ends) == 0 and len(pic.cams) == ws.N_CAM and all(len(c.fov.border) for c in pic.cams)
+    assert any("No wand landmarks" in ln for ln in pic.lines), pic.lines
+    v = View3D()
+    v.show()
+    try:
+        QTest.mouseClick(v.chk_cover, Qt.LeftButton, pos=QPoint(4, v.chk_cover.height() // 2))   # ticked first
+        sc = Scene3D()
+        sc.calib = pic
+        v.set_scene(sc, "")                                  # ... then the picture comes
+        for _ in range(200):
+            pump(0.05)
+            if pic.cover:
+                break
+        assert pic.cover and pic.coverage.n_cams == ws.N_CAM, "a picture arriving after the tick was not counted"
+        assert not any(ln.startswith("The wand cloud lies") for ln in pic.lines)       # no wand, no wand verdict
+        v._render()
+        assert v.last_image.std() > 5
+    finally:
+        v.close()
+        v.deleteLater()
+        pump(0.1)
+    print("F. no wand landmarks: cameras + fields of view + covered space, no guessed wand; a picture after the "
+          "Covered tick is counted OK")
+
+
+SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f]
 
 if __name__ == "__main__":
     failed = []

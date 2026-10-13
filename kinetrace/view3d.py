@@ -699,6 +699,8 @@ class View3D(QWidget):
         self._base_info = info
         if scene.calib is not old:
             self._picture_changed()
+            if self.chk_cover.isChecked() and scene.calib is not None:
+                self._start_coverage()            # (review) Covered was ticked before this picture came
         self._show_info()
         self.request_render()
 
@@ -718,7 +720,7 @@ class View3D(QWidget):
             boxes[k].blockSignals(True)
             boxes[k].setChecked(True)
             boxes[k].blockSignals(False)
-        self._calib_ticked()
+        self._calib_ticked()                  # counts the covered space when that tick is on
 
     def _calib_on(self) -> bool:
         return any(c.isChecked() for c in (self.chk_calib, self.chk_pyr, self.chk_fov, self.chk_cover))
@@ -730,6 +732,7 @@ class View3D(QWidget):
         self.cam_actions = []
         self._cover_key = None
         self._cover_gen += 1
+        self._hits = {}                 # the last render's ends belong to the old picture
         if pic is None:
             self.scene.calib_views = None
             return
@@ -833,6 +836,7 @@ class View3D(QWidget):
         """The coverage workers: their results are dropped (generation); with `wait`, until all have ended
         (a count takes well under a few seconds; it cannot be interrupted half-way)."""
         self._cover_gen += 1
+        self._cover_key = None          # a dropped count is counted again when asked (review)
         if wait:
             for th in list(self._cover_threads):
                 th.wait()
@@ -874,7 +878,8 @@ class View3D(QWidget):
             t = ev.type()
             if t == QEvent.MouseMove and self._drag is None:
                 k = self._pick(ev.position().x(), ev.position().y())
-                tip = self.scene.calib.hover_text(k) if (k is not None and self.scene.calib is not None) else ""
+                pic = self.scene.calib
+                tip = pic.hover_text(k) if (k is not None and pic is not None and k < len(pic.end_frame)) else ""
                 if tip != self.canvas.toolTip():
                     self.canvas.setToolTip(tip)
                     if tip:
@@ -889,8 +894,9 @@ class View3D(QWidget):
                 self._press_at = None
                 if p0 is not None and abs(ev.position().x() - p0[0]) + abs(ev.position().y() - p0[1]) < 3:
                     k = self._pick(ev.position().x(), ev.position().y())
-                    if k is not None and self.scene.calib is not None:
-                        self.end_clicked.emit(int(self.scene.calib.end_frame[k]))
+                    pic = self.scene.calib
+                    if k is not None and pic is not None and k < len(pic.end_frame):
+                        self.end_clicked.emit(int(pic.end_frame[k]))
         return super().eventFilter(obj, ev)
 
 

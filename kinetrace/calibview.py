@@ -148,7 +148,10 @@ class Coverage:
         return self._surf[n]
 
     def sentences(self, X: np.ndarray) -> list[str]:
-        """The verdict in words, for the wand cloud X."""
+        """The verdict in words, for the wand cloud X (none without a wand)."""
+        X = np.asarray(X, np.float64).reshape(-1, 3)
+        if not np.isfinite(X).all(axis=1).any():
+            return []
         p2 = self.pct(X, 2)
         out = [f"The wand cloud lies {p2:.0f} % inside the space 2+ cameras see ({_cover_word(p2)})"]
         if self.n_cams >= 3:
@@ -262,15 +265,20 @@ class CalibPicture:
 
 def _cameras(cal: Calibration, names: list, ends: np.ndarray, probe) -> tuple[list, list[str]]:
     p = ends[np.isfinite(ends).all(axis=1)]
+    centres = np.array([cal.camera(v).center() for v in cal.views()]).reshape(-1, 3)
     span = float(np.linalg.norm(p.max(axis=0) - p.min(axis=0))) if len(p) else 1.0
-    allp = np.vstack([p] + [cal.camera(v).center()[None] for v in cal.views()]) if len(p) else None
-    scene = float(np.linalg.norm(allp.max(axis=0) - allp.min(axis=0))) if allp is not None else span
+    allp = np.vstack([p, centres]) if len(p) else centres
+    scene = float(np.linalg.norm(allp.max(axis=0) - allp.min(axis=0))) if len(allp) > 1 else span
+    look = np.asarray(probe, np.float64) if probe is not None else (centres.mean(axis=0) if len(centres) else None)
     cams, lines, flat = [], [], []
     for v in cal.views():
         cam = cal.camera(v)
         name = names[v] if names and v < len(names) else f"camera {v + 1}"
         c = cam.center()
-        far = float(np.max(np.linalg.norm(p - c, axis=1))) * FOV_REACH if len(p) else 2.0 * span
+        if len(p):
+            far = float(np.max(np.linalg.norm(p - c, axis=1))) * FOV_REACH
+        else:                       # no wand: past the point the cameras look at
+            far = 1.5 * float(np.linalg.norm(look - c)) if look is not None else 2.0 * span
         # (the far plane at the farthest wand end's distance: every end lies before it)
         pinhole = getattr(cam.undistort, "kind", "none") == "none"
         # the pose pyramid: the four corners only (a wide lens's bent edge is the field of view's job)
@@ -305,8 +313,10 @@ def from_wand_result(res, frames, names: list, end_names: tuple = ("end 1", "end
     scale = np.array([residual_scale(w, h) for w, h in sizes], np.float64)
     kept = err
     with np.errstate(all="ignore"):
-        worst_px = np.nanmax(kept, axis=1)                                 # (F, 2)
-        worst_n = np.nanmax(kept / scale[None, :, None], axis=1)
+        # an end's error = the RMS over the cameras that saw it: what the report's RMSE bands are for (the
+        # worst single camera against them painted most of a GOOD calibration yellow - review of G185)
+        worst_px = np.sqrt(np.nanmean(kept ** 2, axis=1))                  # (F, 2) px
+        worst_n = np.sqrt(np.nanmean((kept / scale[None, :, None]) ** 2, axis=1))
     rej = np.zeros((F, 2), bool)
     for o in res.report.get("outliers", []):
         if o.get("kind") == "wand" and 0 <= int(o.get("row", -1)) < F:
@@ -322,12 +332,23 @@ def from_wand_result(res, frames, names: list, end_names: tuple = ("end 1", "end
                         res.unit, tuple(end_names), "fit", lines, cal)
 
 
-def from_project(project, name_a: str, name_b: str, max_frames: int = 2000) -> CalibPicture:
-    """The picture of the project's calibration, the wand recomputed from its two landmarks (after reopening:
-    nothing of the wand run is saved). An end whose worse camera disagrees past the residual band is marked
-    as disagreeing."""
+def from_project(project, name_a: str | None, name_b: str | None, max_frames: int = 2000) -> CalibPicture:
+    """The picture of the project's calibration (after reopening nothing of the wand run is saved): the
+    cameras, their fields of view and the covered space from the calibration alone; the wand recomputed from
+    its two landmarks when they are given (None: no wand points - an imported calibration, an animal project).
+    An end is judged by its triangulation residual (`calib.residual_bands`); past the usable band it
+    disagrees (red)."""
     from kinetrace.wanddata import _thin, sampling_window
     cal = project.calibration
+    names = [project.name(c) for c in range(project.n_views)]
+    if not name_a or not name_b:
+        probe = working_probe(cal)
+        cams, lines = _cameras(cal, names, np.zeros((0, 3)), probe)
+        empty = np.zeros(0, np.int64)
+        return CalibPicture(cams, np.zeros((0, 3)), empty, empty, np.zeros(0), np.zeros(0, np.int8),
+                            np.zeros((0, 2), np.int64), cal.unit, ("end 1", "end 2"), "tracks",
+                            lines + ["No wand landmarks: the cameras and the space they cover only (the wand "
+                                     "points come with a wand calibration's two landmarks)."], cal)
     t0, t1 = sampling_window(project)
     rec = reconstruct(project.sessions, cal, project.rates, project.offsets, (t0, t1), [name_a, name_b])
     xyz = np.asarray(rec.xyz, np.float64)                                  # (T, 2, 3)
@@ -335,19 +356,27 @@ def from_project(project, name_a: str, name_b: str, max_frames: int = 2000) -> C
     rows = _thin(have, max_frames)
     F = len(rows)
     ends = xyz[rows].reshape(F * 2, 3)
-    pc = np.asarray(rec.per_cam, np.float64)[rows]                         # (F, 2, C)
-    C = pc.shape[2]
-    scale = np.array([residual_scale(project.sessions[c].width, project.sessions[c].height) if c < project.n_views
-                      else 1.0 for c in range(C)])
-    with np.errstate(all="ignore"):
-        worst_px = np.nanmax(pc, axis=2).reshape(-1)
-        worst_n = np.nanmax(pc / scale[None, None, :], axis=2).reshape(-1)
-    good, ok = residual_bands(1920.0)
-    worst_n = np.nan_to_num(worst_n, nan=np.inf)
-    state = _states(worst_n, worst_n > ok, good, ok)
+    res_px = np.asarray(rec.residual, np.float64)[rows].reshape(-1)       # DLTdv's residual per end
+    W = max((s.width for s in project.sessions), default=1920) or 1920
+    Hh = max((s.height for s in project.sessions), default=0) or 0
+    good, ok = residual_bands(W, Hh)
+    r = np.nan_to_num(res_px, nan=np.inf)
+    state = _states(r, r > ok, good, ok)
+    worst_px = res_px
     pairs = np.column_stack([2 * np.arange(F), 2 * np.arange(F) + 1])
     probe = working_probe(cal)
-    cams, lines = _cameras(cal, [project.name(c) for c in range(project.n_views)], ends, probe)
+    cams, lines = _cameras(cal, names, ends, probe)
     frames = (rec.t0 + rows).astype(np.int64)
     return CalibPicture(cams, ends, np.repeat(frames, 2), np.tile([0, 1], F), worst_px, state, pairs,
                         cal.unit, (name_a, name_b), "tracks", lines, cal)
+
+
+def wand_names(tracked: list, saved=None) -> tuple[str, str] | None:
+    """The two wand landmarks for a picture rebuilt from the tracks: those of the last wand calibration
+    (`saved`, display state) when both are tracked, else two tracked names that say "wand" (or "ball"); None
+    otherwise - never just the first two names (an animal's snout and tail are no wand, review of G185)."""
+    saved = list(saved or [])
+    if len(saved) >= 2 and saved[0] in tracked and saved[1] in tracked and saved[0] != saved[1]:
+        return str(saved[0]), str(saved[1])
+    hits = [n for n in tracked if "wand" in n.lower()] or [n for n in tracked if "ball" in n.lower()]
+    return (hits[0], hits[1]) if len(hits) >= 2 else None
