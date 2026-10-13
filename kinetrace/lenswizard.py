@@ -25,7 +25,7 @@ from kinetrace.errors import plain_error
 from kinetrace.video_source import display_rotation
 from kinetrace.boardreview import BoardReview, pixmap
 
-VERDICT_COLORS = {"good": theme.GREEN, "ok": "#FFD60A", "poor": theme.RED}
+VERDICT_COLORS = theme.VERDICT                 # (G192)
 VERDICT_WORDS = {"good": "GOOD — attach this profile to the camera",
                  "ok": "USABLE — but read the notes below",
                  "poor": "NOT GOOD ENOUGH — film the board again as the notes say"}

@@ -71,7 +71,7 @@ class FrameCheckWorker(QThread):
             self.failed.emit(plain_error(e, f"{self.camera}: checking the video's frames failed", short=True))
 
 
-VERDICT_COLOR = {"good": theme.GREEN, "ok": theme.AMBER, "poor": theme.RED}
+VERDICT_COLOR = theme.VERDICT                  # (G192)
 _SIDE = 168                 # pixels per picture in the dialog
 
 

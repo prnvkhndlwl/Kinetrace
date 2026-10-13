@@ -107,6 +107,24 @@ mem = sample_members(np.array([200.0, 200.0], np.float32), 30, 640, 480, tri)
 assert len(mem) >= 4
 print("display filters + polygon member sampling OK")
 
+# ---- (G192) one colour per verdict: every good / ok / poor comes from theme.VERDICT --------------
+import glob  # noqa: E402
+import re as _re  # noqa: E402
+from kinetrace import framecheck, lenswizard, theme, view3d  # noqa: E402
+assert theme.VERDICT == {"good": theme.GREEN, "ok": theme.OK, "poor": theme.RED}
+assert framecheck.VERDICT_COLOR is theme.VERDICT and lenswizard.VERDICT_COLORS is theme.VERDICT
+_ok_bgr = tuple(int(theme.OK[i:i + 2], 16) for i in (5, 3, 1))
+assert tuple(view3d.END_COLOURS[1]) == _ok_bgr, "the 3D view's ok wand ends are theme.OK"
+_stray = []
+for _f in glob.glob(os.path.join(ROOT, "kinetrace", "*.py")):
+    if os.path.basename(_f) == "theme.py":
+        continue
+    _src = open(_f, encoding="utf-8").read()
+    for _m in _re.finditer(r"#FFD60A|#E0A030|[\"']ok[\"']\s*:\s*theme\.AMBER", _src, _re.I):
+        _stray.append(f"{os.path.basename(_f)}:{_src.count(chr(10), 0, _m.start()) + 1}: {_m.group()}")
+assert not _stray, f"a verdict colour written by hand (use theme.OK / theme.VERDICT): {_stray}"
+print("one colour per verdict (G192) OK")
+
 # ---- fake tracks over frames 0..299 for two points ------------------------
 win._on_add(100.0, 100.0)
 win._on_add(300.0, 200.0)

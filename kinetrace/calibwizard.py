@@ -398,18 +398,18 @@ class WandPage(QWizardPage):
                         "Track the wand ends in at least two cameras on the same stretch of the "
                         "recording.</span>")
         elif self._n_frames < GOOD_FRAMES:
-            warn.append(f"<span style='color:#FFD60A'>Under {GOOD_FRAMES} shared frames: it will run, but "
+            warn.append(f"<span style='color:{theme.OK}'>Under {GOOD_FRAMES} shared frames: it will run, but "
                         "the result will be rough. More frames, spread over the recording, help most.</span>")
         if len(views) >= 2:
             weak = [p.name(c) for c in views if shared.get(c, 0) < MIN_FRAMES]
             if weak:
-                warn.append(f"<span style='color:#FFD60A'>{', '.join(weak)} "
+                warn.append(f"<span style='color:{theme.OK}'>{', '.join(weak)} "
                             f"{'shares' if len(weak) == 1 else 'share'} fewer than {MIN_FRAMES} frames with the "
                             "other ticked cameras: untick, or track the wand where it and another ticked "
                             "camera both see it.</span>")
             groups = wd.camera_groups(both, views, MIN_FRAMES)
             if len(groups) > 1:
-                warn.append(f"<span style='color:#FFD60A'>The ticked cameras fall into groups that never see the "
+                warn.append(f"<span style='color:{theme.OK}'>The ticked cameras fall into groups that never see the "
                             "wand together (" + "; ".join(", ".join(p.name(c) for c in g) for g in groups)
                             + "): one calibration cannot join them. Untick one group, or track the wand where "
                             "cameras of both groups see it.</span>")
@@ -465,7 +465,7 @@ class WandPage(QWizardPage):
             lines.append(f"<p>Frames with both ends in this one camera: <b>{both}</b>.</p>")
             self.table.setText("".join(lines))
             self.warn.setText(
-                "<span style='color:#FFD60A'>One camera cannot be calibrated on its own: the wand's two "
+                f"<span style='color:{theme.OK}'>One camera cannot be calibrated on its own: the wand's two "
                 "ends give a direction and a scale only when a second camera sees them too. Add the "
                 "other cameras' wand videos to this project (＋ Add video, then Sync) and track the "
                 "same two names there; this page then counts the shared frames and lets you go on. "
@@ -479,7 +479,7 @@ class WandPage(QWizardPage):
                               "Track the wand ends in at least two cameras on the same stretch of the "
                               "recording.</span>")
         elif self._n_frames < GOOD_FRAMES:
-            self.warn.setText(f"<span style='color:#FFD60A'>Under {GOOD_FRAMES} shared frames: it will run, but "
+            self.warn.setText(f"<span style='color:{theme.OK}'>Under {GOOD_FRAMES} shared frames: it will run, but "
                               "the result will be rough. More frames, spread over the recording, help most."
                               "</span>")
         else:
@@ -1000,7 +1000,7 @@ class FramePage(QWizardPage):
                 self.drop_t0.setValue(int(t0 + hits[0]))
                 self.drop_t1.setValue(int(t0 + hits[-1]))
             self.drop_note.setText(
-                rate + f"<span style='color:#FFD60A'>No free fall of “{nm}” was found: it never moves steadily "
+                rate + f"<span style='color:{theme.OK}'>No free fall of “{nm}” was found: it never moves steadily "
                 "in one direction for 6 frames or more in two cameras. If it really was dropped, set the frames "
                 "of the fall by hand; otherwise choose another way below.</span>")
         self._fall = fall
@@ -1601,7 +1601,7 @@ def gravity_colour(pct_off: float) -> str:
     against sentences that used 2 % / 5 %)."""
     if pct_off <= _wand.G_CONSISTENT_PCT:
         return theme.GREEN
-    return "#FFD60A" if pct_off <= _wand.G_SUSPECT_PCT else theme.RED
+    return theme.OK if pct_off <= _wand.G_SUSPECT_PCT else theme.RED
 
 
 def report_html(report: dict, grav: dict | None, project, unit: str) -> str:

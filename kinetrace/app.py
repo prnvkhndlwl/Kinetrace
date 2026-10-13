@@ -8058,7 +8058,7 @@ class MainWindow(QMainWindow):
         allobs = self._observations(name, self.current, exclude=-1) if (name is not None and visible) else []
         tri = self._triangulate(allobs)
         placed_at = {c: uv for c, _cal, uv in allobs}
-        verdict_col = {"good": theme.GREEN, "ok": theme.AMBER, "poor": theme.RED}
+        verdict_col = theme.VERDICT
         depth, have_depth = None, False     # this instant's, asked once for every camera's lines (R23)
         for t, cv in enumerate(canvases):
             lines, faint, preds, notes = [], [], [], []

@@ -425,7 +425,7 @@ def screen_transform(scene: Scene3D, size: tuple[int, int], azimuth: float, elev
 
 
 # (G185) the wand ends by state (BGR): good, ok, poor, rejected / disagreeing
-END_COLOURS = ((110, 210, 110), (60, 205, 235), (40, 140, 255), (70, 70, 240))
+END_COLOURS = ((110, 210, 110), (10, 214, 255), (40, 140, 255), (70, 70, 240))   # ok = theme.OK (G192)
 CAM_COLOURS = ((255, 170, 80), (120, 220, 255), (200, 120, 255), (120, 255, 170), (255, 120, 170),
                (170, 200, 255), (80, 200, 200), (230, 230, 120), (180, 160, 255), (140, 255, 255))
 

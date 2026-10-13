@@ -62,7 +62,7 @@ def quality(err: float, size: tuple[int, int] | None = None) -> tuple[str, str]:
     if err <= good:
         return f"{err:.2f} px", theme.GREEN
     if err <= ok:
-        return f"{err:.2f} px", "#E0A030"
+        return f"{err:.2f} px", theme.OK             # (G192)
     return f"{err:.2f} px", theme.RED
 
 

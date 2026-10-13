@@ -23,7 +23,11 @@ ACCENT = "#0A84FF"          # systemBlue (dark variant): active / selected / pri
 ACCENT_HOVER = "#3395FF"
 RED = "#FF453A"             # warnings (low confidence)
 GREEN = "#30D158"           # event pending mark; the GPU badge in the status bar
-AMBER = "#FF9F0A"           # systemOrange: the CPU badge (working, but slower)
+AMBER = "#FF9F0A"           # systemOrange: the CPU badge (working, but slower); warnings that are not verdicts
+OK = "#FFD60A"              # systemYellow: the "ok / usable" verdict, between GREEN and RED (G192)
+# (G192) THE verdict colours: every good / ok / poor in the app is drawn from this table (the "ok" was orange on
+# the camera pictures and the frame check, yellow in the wizards and the 3D view, gold on the board tiles)
+VERDICT = {"good": GREEN, "ok": OK, "poor": RED}
 BG_CANVAS = "#161619"       # behind the video: darkest, so frames pop
 BG_WINDOW = "#1E1E23"       # window chrome
 BG_PANEL = "#28282E"        # raised surfaces (menus, list, dialogs)
