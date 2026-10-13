@@ -1042,6 +1042,19 @@ def working_probe(cal: "Calibration") -> np.ndarray | None:
     return probe
 
 
+def calib_frame_ok(cam: CameraCalibration, raw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Raw pixels -> (the undistorted calibration frame (N, 2), (N,) bool where the lens model round-trips
+    them within max(1, 0.001 x width) px): past its boards a lens model can run away, and those points
+    must not be used (the picture's box, the field of view of G186)."""
+    raw = np.asarray(raw, np.float64).reshape(-1, 2)
+    q = cam.to_calib_frame(raw)
+    back = cam.from_calib_frame(q)
+    tol = max(1.0, 1e-3 * cam.width)
+    ok = np.isfinite(q).all(axis=1) & np.isfinite(back).all(axis=1)
+    ok[ok] &= np.linalg.norm(back[ok] - raw[ok], axis=1) < tol
+    return q, ok
+
+
 def _picture_in_calib_frame(cam: CameraCalibration, margin: float) -> tuple:
     """((x0, y0, x1, y1) of the picture plus `margin` in raw Kinetrace pixels,
     (x0, y0, x1, y1) of a box holding it in the undistorted calibration frame).
@@ -1064,11 +1077,7 @@ def _picture_in_calib_frame(cam: CameraCalibration, margin: float) -> tuple:
                             np.column_stack([x0 + t * (x1 - x0), np.full_like(t, y1)]),
                             np.column_stack([np.full_like(t, x0), y0 + t * (y1 - y0)]),
                             np.column_stack([np.full_like(t, x1), y0 + t * (y1 - y0)])])
-        q = cam.to_calib_frame(border)
-        back = cam.from_calib_frame(q)
-        tol = max(1.0, 1e-3 * cam.width)
-        ok = np.isfinite(q).all(axis=1) & np.isfinite(back).all(axis=1)
-        ok[ok] &= np.linalg.norm(back[ok] - border[ok], axis=1) < tol
+        q, ok = calib_frame_ok(cam, border)
         q = q[ok] if ok.sum() >= 8 else cam.to_dlt_pixels(border)
     box = (float(q[:, 0].min()), float(q[:, 1].min()), float(q[:, 0].max()), float(q[:, 1].max()))
     out = (raw, box)

@@ -1077,8 +1077,15 @@ class RunPage(QWizardPage):
         self.btn_save.setEnabled(False)
         self.btn_save.setToolTip("A Kinetrace calibration file (.kcal.json) for other projects, a "
                                  "dltCoefs.csv for DLTdv, and the report as text")
+        # (G185) the calibration as a 3D picture, before it is used
+        self.btn_3d = QPushButton("Show in 3D")
+        self.btn_3d.setEnabled(False)
+        self.btn_3d.setToolTip("The cameras where the calibration put them, their fields of view, every wand "
+                               "position used (coloured by error) and the space the cameras cover - judge it by "
+                               "eye before 'Use this calibration'")
         row.addWidget(self.btn_run)
         row.addWidget(self.btn_save)
+        row.addWidget(self.btn_3d)
         row.addStretch(1)
         lay.addLayout(row)
         self.bar = QProgressBar()
@@ -1109,6 +1116,8 @@ class RunPage(QWizardPage):
         lay.addWidget(self.report, 1)
         self.btn_run.clicked.connect(lambda: self._run())
         self.btn_save.clicked.connect(self._save)
+        self.btn_3d.clicked.connect(self._show_3d)
+        self.view3d = None              # (G185) the 3D window of this run
         self.btn_apply_offsets.clicked.connect(self._apply_offsets)
         self.btn_keep_offsets.clicked.connect(lambda: self._run(check_timing=False))
         self._timing = None            # the last TimingCheck that suggested something
@@ -1172,6 +1181,8 @@ class RunPage(QWizardPage):
             if running:
                 self._thread.cancel()
             self.wiz.result = self.wiz.result_calibration = self.wiz.gravity = None
+            self.btn_3d.setEnabled(False)
+            self._close_3d()
             self._timing = None                       # a suggestion for other settings (ticks, ends) is stale
             self.timing_box.setVisible(False)
             self.btn_save.setEnabled(False)
@@ -1194,6 +1205,8 @@ class RunPage(QWizardPage):
         everyone = views == list(range(p.n_views))
         sel = None if everyone else views
         uv, frames = wd.collect_wand(p, a, b, max_frames=400, views=sel)
+        self._run_frames = np.asarray(frames, np.int64)            # (G185) each wand row's reference frame
+        self._run_ends = (a, b)
         extras = w.page_cams.extra_names()
         bg = wd.collect_extra_points(p, extras, views=sel) if extras else None
         if bg is not None and bg.shape[0] == 0:
@@ -1256,6 +1269,8 @@ class RunPage(QWizardPage):
         self.wiz.result = None
         self.wiz.result_calibration = None
         self.wiz.gravity = None
+        self.btn_3d.setEnabled(False)
+        self._close_3d()
         self.completeChanged.emit()
         summ = w.page_cams.lens_summaries()
         timing = ({"project": p, "a": a, "b": b, "views": list(views), "models": w.page_cams.lens_models()}
@@ -1349,6 +1364,10 @@ class RunPage(QWizardPage):
         cal = spread_calibration(res.to_calibration(), views, p.n_views)      # (I272) None = left out
         res.report["project_views"] = list(views)
         res.report["project_names"] = [p.name(c) for c in range(p.n_views)]
+        # (G185) what the 3D picture needs of this run beside the result (not part of the saved report)
+        res.frame_ids = getattr(self, "_run_frames", None)
+        res.wand_names = getattr(self, "_run_ends", ("end 1", "end 2"))
+        self.btn_3d.setEnabled(True)
         self.wiz.result_calibration = cal
         self.report.setHtml(report_html(res.report, grav, self.wiz.project, cal.unit))
         self.completeChanged.emit()
@@ -1378,6 +1397,31 @@ class RunPage(QWizardPage):
         if note:
             msg += ". " + note
         self.status.setText(msg)
+
+    def _show_3d(self) -> None:
+        """(G185) This run's calibration as a 3D picture: the wand points, the camera pyramids and their
+        fields of view drawn; the covered space one tick away."""
+        res = self.wiz.result
+        if res is None:
+            return
+        from kinetrace import calibview
+        from kinetrace.view3d import View3D
+        pic = calibview.from_wand_result(res, getattr(res, "frame_ids", None),
+                                         list(res.report.get("camera_names") or []),
+                                         tuple(getattr(res, "wand_names", ("end 1", "end 2"))))
+        if self.view3d is None:
+            self.view3d = View3D(self.wiz)
+            self.view3d.setWindowTitle("3D view of this calibration")
+        self.view3d.scene.unit = res.unit
+        self.view3d.set_calib_picture(pic, ("points", "pyramids", "fov"))
+        self.view3d.show()
+        self.view3d.raise_()
+
+    def _close_3d(self) -> None:
+        if self.view3d is not None:
+            self.view3d.close()
+            self.view3d.deleteLater()
+            self.view3d = None
 
     def isComplete(self) -> bool:
         return self.wiz.result_calibration is not None
@@ -1697,4 +1741,5 @@ class WandWizard(QWizard):
     def done(self, r):
         # a running solve is CANCELLED first and waited for (I36, I200): `stop_page_threads`
         stop_page_threads(self)
+        self.page_run._close_3d()                    # (G185) its 3D window and its worker go with it
         super().done(r)

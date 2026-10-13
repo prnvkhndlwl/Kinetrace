@@ -2022,6 +2022,25 @@ five pages and explains each one:
    agrees, and says when the wand cannot time a camera (too few frames shared
    with the others). Then read the report. (*Save calibration files…* on this
    page writes the same files as 3D → Export Calibration.)
+   **Show in 3D** opens this calibration as a picture you can turn, before you
+   use it: each camera as a small pyramid where it stands, pointing where it
+   looks, its whole **field of view** (as Blender draws a camera: the picture's
+   edges, the lens bend included, out to a flat plane past the wand), and every
+   wand position the calibration used, both ends joined by a line, coloured by
+   how well the cameras agree on it: **green** good, **yellow** ok, **orange**
+   poor, **red** a click the fit set aside. Hover over a wand end to see its
+   frame and error. Tick **Covered by ≥ 2** (or 3, or all) to see the space at
+   least that many cameras see — where 3D is possible, and where it is well
+   determined — and the line above the picture says how much of the wand
+   cloud lies inside it, with a verdict (90 % or more good, 70 % ok, less
+   poor). **Cameras ▾** chooses which cameras are drawn and counted: untick
+   some to see what the others cover together. Each layer (wand points,
+   camera pyramids, fields of view, covered space) has its own tick. Hand
+   check: the pyramids should sit where your cameras stand and point into
+   the volume; a camera's field-of-view corner edge passes through what that
+   camera shows at that corner of its picture. A camera with no lens
+   correction is drawn as a straight pinhole pyramid, and the line says so (a
+   wide lens sees a little more near the corners).
 
 **Reading the report.** The top line is a verdict in plain words:
 
@@ -2183,7 +2202,16 @@ Four steps, in this order:
    calibration's units (metres if the wand was measured in metres). The **3D
    view** window opens (**3D → Show 3D View**, **Ctrl+5**, opens and closes it
    later): drag to turn it, wheel to zoom, middle-drag or Shift+drag to pan,
-   double-click to reset. It follows the frame you are on. The result comes with a verdict. The
+   double-click to reset. It follows the frame you are on. With a calibration
+   it also offers the **wand calibration** layers of the wizard's *Show in 3D*
+   (wand points, camera pyramids, fields of view, covered space, the Cameras
+   menu); there a click on a wand end moves the timeline to that frame, so you
+   can look at the clicks behind a red one. After you reopen a project the
+   wand is rebuilt with the project's calibration from its two landmarks (those
+   of your last wand calibration, or two named *wand…*); a red end then means
+   the cameras disagree there. Without such landmarks — an imported
+   calibration, an animal project — the layers show the cameras, their fields
+   of view and the covered space only. The result comes with a verdict. The
    number behind it is the *residual*: for every landmark the 3D point is
    projected back into each camera, and the residual is how far that lands
    from where you tracked it, in pixels — how much the cameras **disagree**.
@@ -3675,10 +3703,10 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Ctrl+1** | show / hide the right panel |
 | **Ctrl+2** | show only the camera you are working on (the same as **M**) |
 | **Ctrl+Shift+2** | Active view only: only the working camera reads its video; the others stay where they are until Sync all views (again: back to Sync all views; also *View → Other cameras*) |
-| **Ctrl+3** | reconstruct the 3D landmarks (needs a calibration of every camera) and show the 3D view |
+| **Ctrl+3** | reconstruct the 3D landmarks (needs two or more calibrated cameras) and show the 3D view |
 | **Ctrl+4** | carve the animal's volume at this frame from the cameras' outlines |
 | **3D → Set World Axes…** | choose the 3D world's origin, +X and +Y from three landmarks of the 3D result (+Z by the right-hand rule) |
-| **Ctrl+5** | show / hide the 3D view (drag to turn it, wheel to zoom, double-click to reset) |
+| **Ctrl+5** | show / hide the 3D view (drag to turn it, wheel to zoom, double-click to reset; with a calibration: the wand calibration layers, a click on a wand end goes to its frame) |
 | **Ctrl+6** | show / hide the body side-by-side view (drag the pose to turn it round) |
 | **Shift+C** | fix a stale or garbled picture |
 

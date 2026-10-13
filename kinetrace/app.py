@@ -173,7 +173,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>3D menu</td><td><b>Sync Cameras (Sound / Motion)</b> (whole-frame offsets from the sound tracks or the pictures, with a noise filter) · <b>Calibrate a Lens (checkerboard)</b> (how a wide-angle lens bends the picture; opens with or without a video — with nothing open, save the lens file and attach it later) · <b>Calibrate Cameras with a Wand</b> · <b>Import Calibration</b> (a Kinetrace .kcal.json, DLT coefficients from DLTdv / easyWand / Argus, K + R/t, or a DLTdv8 project with its lens undistortion) · <b>Export Calibration</b> · <b>Estimate Sub-frame Offsets</b> (fractional sync from the tracks) · <b>Re-track Disagreeing Stretches</b> (a camera's landmark put back on the other cameras' rays and re-tracked, before / after verdict) · <b>Export Mesh of This Frame</b>. Entries that need more (a video, a second camera, a calibration) open anyway and say what is missing</td></tr>
 <tr><td class=k>Ctrl+3</td><td>reconstruct the 3D landmarks (matched by name across cameras) and open the 3D view</td></tr>
 <tr><td class=k>Ctrl+4</td><td>carve the volume hull at this frame from every camera's silhouette</td></tr>
-<tr><td class=k>Ctrl+5</td><td>show / hide the 3D view (drag to orbit, wheel to zoom, middle-drag to pan, double-click to reset)</td></tr>
+<tr><td class=k>Ctrl+5</td><td>show / hide the 3D view (drag to orbit, wheel to zoom, middle-drag to pan, double-click to reset; with a calibration: the wand calibration layers - wand points, camera pyramids, fields of view, covered space - and a click on a wand end goes to its frame)</td></tr>
 <tr><td class=k>Ctrl+6</td><td>show / hide the body side-by-side view (footage + skeleton | the pose on its own | joint angles over time)</td></tr>
 </table>
 <h3>Events &amp; timeline</h3><table>
@@ -612,7 +612,7 @@ class _SaveWorker(QThread):
 # carried across a camera switch (I50). Frame, selection and zoom stay per camera.
 GLOBAL_UI_KEYS = ("follow", "autopause", "roi", "track_mode", "track_all", "marker_size", "show_mask", "mask_opacity",
                   "show_midline", "show_bones", "seg_backend", "point_backend", "trail_len",
-                  "trail_future", "onion", "loupe", "epipolar", "display_filter", "region_shape")
+                  "trail_future", "onion", "loupe", "epipolar", "display_filter", "region_shape", "wand_ends")
 
 
 class _ResizeHook(QObject):
@@ -723,6 +723,8 @@ class MainWindow(QMainWindow):
         self.project: Project | None = None
         self._views: list[_ViewRuntime] = []
         self.view3d: View3D | None = None          # the floating 3D window (created on demand)
+        self._calib_pic = None      # (G185) (calibration, timing key, calibview.CalibPicture or None) for the 3D window
+        self._wand_cal = None       # the calibration the wand wizard made this session (its result is exact)
         self._hull_cache: dict[int, tuple] = {}    # reference frame -> (verts, faces, Hull)
         # hotkeys are offered to `_hotkey` before the focused widget sees them
         # (see eventFilter): a click on a spin box or a list must never kill F
@@ -1767,7 +1769,7 @@ class MainWindow(QMainWindow):
                                  triggered=self._reconstruct_3d)
         self.act_recon.setToolTip("Turn the landmarks tracked in two or more cameras (matched by name) into\n"
                                   "3D positions with the calibration, and say how well the cameras agree\n"
-                                  "(GOOD / USABLE / NOT TRUSTWORTHY). Needs every camera calibrated.")
+                                  "(GOOD / USABLE / NOT TRUSTWORTHY). Needs two or more calibrated cameras.")
         self.act_set_axes = QAction("Set World &Axes…", self, triggered=self._set_world_axes)      # (I170)
         self.act_set_axes.setToolTip("Choose the 3D world yourself: three landmarks give the origin, the +X and the\n"
                                      "+Y direction (+Z follows the right-hand rule). The calibration and the 3D\n"
@@ -4364,6 +4366,7 @@ class MainWindow(QMainWindow):
         if self.view3d is not None:
             self.view3d.hide()
             self.act_view3d.setChecked(False)
+        self._calib_pic = self._wand_cal = None                 # (G185) the old project's picture
         self._end_run_cleanup()
         self._pending_event = None
         self.timeline.set_pending_event(None)
@@ -10514,6 +10517,7 @@ class MainWindow(QMainWindow):
         if had_hull is None:
             had_hull = bool(self._hull_cache)
         self._hull_cache.clear()
+
         if replacement is None and not (had or had_hull):
             return False
         self._update_disagreement()
@@ -11314,6 +11318,12 @@ class MainWindow(QMainWindow):
             return
         p.calibration = wiz.result_calibration
         self._wand_result = (wiz.result, wiz.gravity)
+        self._wand_cal = p.calibration                          # (G185) its picture comes from the run
+        self.__dict__["_wand_key"] = self._calib_key()          # ... while the timing is the run's
+        ends = getattr(wiz.result, "wand_names", None)
+        if ends:
+            for sv in p.sessions:                               # display state (view.json), not dirty
+                sv.ui_state["wand_ends"] = list(ends)
         rec = self.__dict__.get("_undo_timing")
         if rec is not None and rec.get("after") is not None and all(
                 abs(a - b) <= 1e-9 for a, b in zip(rec["after"], p.offsets)):
@@ -11862,6 +11872,8 @@ class MainWindow(QMainWindow):
             if self.view3d is None:
                 self.view3d = View3D(self)
                 self.view3d.closed.connect(lambda: self.act_view3d.setChecked(False))
+                self.view3d.end_clicked.connect(self._goto_reference)              # (G185)
+                self.view3d.calib_wanted.connect(lambda: QTimer.singleShot(0, self._make_calib_picture))
             self.view3d.show()
             self._refresh_view3d(force=True)
         elif self.view3d is not None:
@@ -11900,7 +11912,85 @@ class MainWindow(QMainWindow):
             scene.mesh = (verts, faces)
             unit = p.calibration.unit if p.calibration else ""
             info += f" · hull {h.volume():.3g} {unit}³ from {h.n_views} cameras"
+        # (G185, G186) the wand calibration's picture, when one is made for THIS calibration
+        cal = p.calibration
+        self.view3d.set_calib_available(cal is not None and sum(cal.camera(v) is not None
+                                                                for v in range(p.n_views)) >= 2)
+        cp = self._calib_pic
+        scene.calib = cp[2] if (cp is not None and cp[0] is cal and cp[1] == self._calib_key()) else None
+        if scene.unit == "" and cal is not None:
+            scene.unit = cal.unit
         self.view3d.set_scene(scene, info)
+        made = cp is not None and cp[0] is cal and cp[1] == self._calib_key()     # (a failed one: not again)
+        if scene.calib is None and not made and self.view3d._calib_on():
+            QTimer.singleShot(0, self._make_calib_picture)
+
+    def _calib_key(self) -> tuple:
+        """What a wand calibration picture depends on besides the calibration: the cameras' timing."""
+        p = self.project
+        return (tuple(float(o) for o in p.offsets), tuple(float(r) for r in p.rates)) if p is not None else ()
+
+    def _goto_reference(self, t: int) -> None:
+        """(G185) A click on a wand end in the 3D window: the working camera shows that instant."""
+        p = self.project
+        if p is None or self.session is None:
+            return
+        f = int(p.local_index(p.active, int(t)))
+        if 0 <= f < self.session.n_frames:
+            self._goto(f, force=True)
+        else:
+            self.statusBar().showMessage(f"{p.name(p.active)} has no frame at that instant (reference frame "
+                                         f"{int(t)})", 5000)
+
+    def _wand_end_names(self) -> tuple[str, str] | None:
+        """The two wand landmarks (`calibview.wand_names`): the last wand calibration's (display state), else
+        two tracked names that say wand / ball; None = draw the cameras and the covered space only."""
+        from kinetrace import calibview
+        from kinetrace import wanddata as _wd
+        p, s = self.project, self.session
+        if p is None:
+            return None
+        return calibview.wand_names(_wd.common_point_names(p), s.ui_state.get("wand_ends") if s is not None else None)
+
+    def _make_calib_picture(self) -> None:
+        """(G185, G186) The 3D picture of the project's calibration: this session's wand run when it made
+        the calibration (its own errors and rejected clicks), else the wand recomputed from its two
+        landmarks (after reopening nothing of the run is saved)."""
+        from kinetrace import calibview
+        p = self.project
+        v3 = self.view3d
+        if p is None or v3 is None or p.calibration is None or not v3._calib_on():
+            return
+        cal = p.calibration
+        key = self._calib_key()
+        cp = self._calib_pic
+        if cp is not None and cp[0] is cal and cp[1] == key:
+            self._refresh_view3d(force=True)
+            return
+        if self.__dict__.get("_calib_pic_busy"):
+            return                              # (review) one rebuild at a time, not one per frame step
+        res = self._wand_result[0] if self._wand_result else None
+        self.__dict__["_calib_pic_busy"] = True
+        try:
+            # this session's run made the calibration AT these offsets: its own errors and rejected clicks
+            if res is not None and self._wand_cal is cal and self.__dict__.get("_wand_key") == key:
+                pic = calibview.from_wand_result(res, getattr(res, "frame_ids", None),
+                                                 list(res.report.get("camera_names") or []),
+                                                 tuple(getattr(res, "wand_names", ("end 1", "end 2"))))
+            else:
+                names = self._wand_end_names() or (None, None)
+                pic = self._in_background("Drawing the wand calibration",
+                                          lambda: calibview.from_project(p, names[0], names[1]))
+        except Exception as e:      # noqa: BLE001 - said, never a crash
+            self.toast.show_message(_plain_error(e, "The wand calibration picture could not be made"), "warn", 9000)
+            self._calib_pic = (cal, key, None)       # said once; asked again only for another calibration / timing
+            return
+        finally:
+            self.__dict__["_calib_pic_busy"] = False
+        if p is not self.project or p.calibration is not cal:
+            return
+        self._calib_pic = (cal, key, pic)
+        self._refresh_view3d(force=True)
 
     # ------------------------------------------------------------------ body
 
@@ -12717,6 +12807,8 @@ class MainWindow(QMainWindow):
             _retire(self._preview)
 
     def closeEvent(self, ev):
+        if self.view3d is not None:
+            self.view3d.stop_threads()           # (G186) the covered-space worker ends before the window
         if self._first_frame_token is not None:
             self._first_frame_arrived()      # only waiting for a picture: nothing half-built
         if self._loading:
