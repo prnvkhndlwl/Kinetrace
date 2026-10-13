@@ -432,10 +432,19 @@ def sec_g():
         scene = float(np.linalg.norm(allp.max(axis=0) - allp.min(axis=0)))
         frac = pic.cams[0].pose.depth / scene
         assert abs(frac - 0.03) < 1e-9, f"pose pyramid depth {frac:.4f} of the scene, want 0.03"
-        # only the fields of view: a pixel well inside one side of one camera is 10 % that camera's colour
+        # only the fields of view, of one camera (Cameras menu), the view reset (double-click): a pixel well
+        # inside exactly one of its sides is 10 % that camera's colour
         _click_tick(v.chk_calib)
         _click_tick(v.chk_fov)
         assert v.chk_fov.isChecked() and not v.chk_calib.isChecked() and not v.chk_pyr.isChecked()
+        QTest.mouseDClick(v, Qt.LeftButton,                          # the window takes it (as the wheel)
+                          pos=v.canvas.mapTo(v, QPoint(v.canvas.width() // 2, v.canvas.height() // 2)))
+        pump(0.1)
+        assert abs(v.zoom - 1.0) < 1e-9, v.zoom
+        for a in v.cam_actions[1:]:                                  # Cameras > every camera but the first, off
+            a.trigger()
+        pump(0.2)
+        assert v.scene.calib_views == {int(v.cam_actions[0].data())}, v.scene.calib_views
         v._render()
         img = v.last_image
         H_, W_ = img.shape[:2]
@@ -443,6 +452,8 @@ def sec_g():
                                               v.chk_cams.isChecked(), True)
         polys = []                                                   # (camera k, side, screen polygon)
         for kc, cd in enumerate(pic.cams):
+            if cd.view not in v.scene.calib_views:
+                continue
             f = cd.fov
             side = _side_of(f.raw, ws.W, ws.H)
             cs = to_screen(cd.centre)[0][0]
