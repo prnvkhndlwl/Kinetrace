@@ -67,8 +67,10 @@ AllTracker with the same coordinates as on the CPU, 0.74 px on 4K; ball markers
 says **Ctrl**, press **⌘**.
 [All models, every system](docs/INSTALL.md#which-models-run-on-which-computer).
 
-New to tracking? The **[user manual](docs/MANUAL.md)** (also **F1** in the app)
-walks you through your first session.
+New to tracking? The first start offers a one-minute **tour of the window** on a
+demo video (again any time from Help → Take the Interface Tour), and the
+**[user manual](docs/MANUAL.md)** (also **F1** in the app) walks you through your
+first session.
 
 ## Works with
 

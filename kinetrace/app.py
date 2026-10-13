@@ -244,6 +244,19 @@ class _VideoProbe(QThread):
             self.done.emit(str(e))
 
 
+class _DemoMaker(QThread):
+    """(G183) Makes the tour's demo video off the GUI thread (`demo.ensure_video`: it writes and counts frames
+    with cv2). `done` = the path, or the sentence saying why it could not be made."""
+    done = Signal(object)
+
+    def run(self):
+        from kinetrace import demo
+        try:
+            self.done.emit(demo.ensure_video())
+        except Exception as e:  # noqa: BLE001 - said to the user, the tour then shows the empty window
+            self.done.emit(_plain_error(e, "The tour's demo video could not be made"))
+
+
 def on_network_drive(path: str) -> bool:
     """A UNC path or a mapped network drive: opening and scrubbing are several
     times slower there (measured: a cold model load 126 s vs 7 s, 4K tracking
@@ -749,6 +762,9 @@ class MainWindow(QMainWindow):
         self._camera_entries: list = []
         self._project_dir: Path | None = None
         self._after_open = None          # (video path, job): runs once that video has opened
+        self._tour = None                # (G183) the interface tour while it is up (tour.TourOverlay)
+        self._demo_maker = None          # (G183) the thread making the tour's demo video
+        self._demo_path: str | None = None   # the demo video the tour opened (its own note after the tour)
         self._undo_snap = None
         self._epi_probe = None           # (view, x, y): a look-here Alt+click (G19, G21)
         # the other cameras (G24): "all" = follow the playhead; "active" = only the
@@ -1841,11 +1857,16 @@ class MainWindow(QMainWindow):
 
     def _build_help_menu(self) -> None:
         """Help menu."""
-        m_help = self.menuBar().addMenu("&Help")
+        m_help = self.m_help = self.menuBar().addMenu("&Help")
         self.act_manual = QAction("&User Manual…", self, shortcut=QKeySequence("F1"),
                                   triggered=self._show_manual)
         self.act_manual.setToolTip("The full manual, written for someone new to tracking")
         m_help.addAction(self.act_manual)
+        self.act_tour = QAction("Take the Interface &Tour…", self, triggered=lambda: self._start_tour())
+        self.act_tour.setToolTip("A one-minute tour: each part of the window is lit in turn and a card says what "
+                                 "it is for. With no video open it opens a short demo video first. Nothing you "
+                                 "have set up is changed; Esc leaves it")
+        m_help.addAction(self.act_tour)
         self.act_help_models = QAction("Which &Point Model Should I Use?", self,
                                        triggered=lambda: self._show_manual(MANUAL_WHICH_MODEL))
         self.act_help_models.setToolTip("A visible shape (an animal, an object) -> AllTracker + Segment, no extra "
@@ -2198,7 +2219,9 @@ class MainWindow(QMainWindow):
         else:
             hint = "All set — refine, mark events, export (Ctrl+E)"
         self.onboarding.set_state(done, hint)
-        if tracked and self.onboarding.isVisible() and not getattr(self, "_onboarding_auto_hidden", False):
+        # the demo comes tracked (G183): the strip must still be there for the user's own first video
+        if (tracked and self.onboarding.isVisible() and not getattr(self, "_onboarding_auto_hidden", False)
+                and not self._on_demo()):
             self._onboarding_auto_hidden = True
             self.onboarding.hide()
             self.act_onboarding.setChecked(False)
@@ -2948,6 +2971,137 @@ class MainWindow(QMainWindow):
         if section:
             QTimer.singleShot(0, lambda: dlg.go_to_heading(section))
 
+    # ------------------------------------------------------- the interface tour (G183)
+
+    def _on_demo(self) -> bool:
+        """The open video is the tour's demo video."""
+        s = self.session
+        if self._demo_path is None or s is None:
+            return False
+        return os.path.normcase(os.path.abspath(s.video_path)) == os.path.normcase(os.path.abspath(self._demo_path))
+
+    def _start_tour(self, demo_ok: bool = True) -> None:
+        """Help → Take the Interface Tour (and Take the tour at the first start). Over the window as it is; an
+        empty window first gets the demo video (`_make_demo`). Never during a run: the tour holds the keys
+        back, and X / Space must always pause (owner's hard rule)."""
+        if self._tour is not None or (self._demo_maker is not None and self._demo_maker.isRunning()):
+            return
+        if self.state == TRACKING:
+            self.toast.show_message("The tour starts once tracking has stopped: press X (or Space) to pause, "
+                                    "then Help → Take the Interface Tour.", "info", 8000)
+            return
+        if self._loading:
+            self.statusBar().showMessage("The tour can start once the video has opened", 5000)
+            return
+        if self.state == IDLE and demo_ok:
+            self._make_demo()
+            return
+        self._show_tour()
+
+    def _make_demo(self) -> None:
+        """Make the demo video on a worker (about a second, once), open it, fill it (`_fill_demo`), tour it."""
+        tok = self._busy_push("Making the demo video",
+                              "Kinetrace draws a short video of an animal for the tour…",
+                              hint="Made once and kept in the Kinetrace folder (demo)")
+        maker = _DemoMaker()
+        self._demo_maker = maker
+
+        def done(result):
+            maker.wait(1000)
+            self._busy_pop(tok)
+            if isinstance(result, str):
+                QMessageBox.warning(self, "No demo video", f"{result}\n\nThe tour shows the empty window instead.")
+                self._show_tour()
+                return
+            self._demo_path = str(result)
+            self._after_open = (str(result), self._fill_demo)
+            self._open_video(str(result), title="Opening the demo video", hint="")
+
+        maker.done.connect(done)
+        maker.start()
+
+    def _fill_demo(self) -> None:
+        """The demo, pre-filled from its own truth (kinetrace/demo.py; no model run): one animal with a named
+        skeleton, its points tracked and its silhouette outlined on the first `demo.N_FILLED` frames, the
+        rest left for Track. Nothing to save afterwards: it is a fresh demo, not the user's work. A demo
+        reopened from its recovery copy (the user changed it last time) is shown as it is."""
+        from kinetrace import demo
+        s = self.session
+        if s is None or self.state != READY or not self._on_demo():
+            return
+        if s.n_points == 0 and s.n_segments == 0:
+            names = list(demo.PARTS)
+            k = s.add_segment(demo.ANIMAL)
+            pids = s.apply_skeleton({"name": "demo lizard", "head": "snout", "landmarks": names,
+                                     "bones": [["snout", "tail tip"], ["left fore foot", "right fore foot"]]},
+                                    segment=k)
+            n = demo.N_FILLED
+            xy = np.zeros((n, len(pids), 2), np.float32)
+            for f in range(n):
+                parts, mask = demo.truth(f)
+                xy[f] = [parts[p] for p in names]
+                s.seg_masks[k].set(f, mask, 1.0)
+            s.write_segment(0, xy, np.ones((n, len(pids)), bool), pids)
+            self.project.dirty = False             # no autosave, no recovery copy, no "Save changes?"
+            self._undo_snap = None
+            self.selected = None
+            self.timeline.set_session(s)
+            self._refresh_point_list()
+            self._refresh_animal_panel()
+            self._refresh_skeleton_menu()
+            self._refresh_overlay()
+            self._refresh_cameras()
+            self._fit_timeline_height()
+            # on its last tracked frame (owner 2026-10-12): Track carries on from there, not over 0..99 again
+            self._goto(n - 1, force=True)
+            # its five points selected (owner 2026-10-12): Track carries them on at the first press. Not the
+            # animal row -- that would be a silhouette run, which needs the SAM weights
+            self.layers.select_only(pids, (), current=pids[0])
+            self._on_point_selection_changed()
+            self.project.dirty = False             # a selection is not a change
+            self._update_frame_label()
+            self._apply_state()
+        self._show_tour()
+
+    def _show_tour(self) -> None:
+        from kinetrace import tour
+        ov = tour.TourOverlay(self, tour.stops(self))
+        ov.finished.connect(self._tour_finished)
+        self._tour = ov
+        ov.start()
+
+    def _tour_finished(self, completed: bool) -> None:
+        """The tour closed (Done = completed, Skip / Esc): not offered at a start again; after a tour of the
+        demo, a note says what the demo is and how to go on (owner 2026-10-12)."""
+        from kinetrace import tour
+        self._tour = None
+        try:
+            if str(self._settings().value(tour.OFFERED_KEY, "") or "") != "never":
+                self._set_setting(tour.OFFERED_KEY, "done")
+        except Exception:      # noqa: BLE001 - unreadable settings: the offer may come again, harmless
+            pass
+        if self._on_demo():
+            QTimer.singleShot(0, self._demo_note)
+
+    def _demo_note(self) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("The demo video")
+        box.setIcon(QMessageBox.Information)
+        box.setTextFormat(Qt.RichText)
+        box.setText(
+            "<p><b>This is Kinetrace's demo video</b>: a made-up animal with five points already tracked on "
+            "the first frames and its silhouette outlined.</p>"
+            "<p><b>Keep playing with it</b>: drag along the timeline, press <b>Track</b> to carry its points "
+            "on (they are already selected in LAYERS), click on the video to correct one, try File → Export. "
+            "Nothing is "
+            "saved unless you choose Save.</p>"
+            "<p><b>To work on your own footage</b>, open it with <b>File → Open Video</b> (Ctrl+O): it takes "
+            "the demo's place. If you changed the demo, Kinetrace asks whether to keep the changes — "
+            "Discard is fine.</p>")
+        box.setStandardButtons(QMessageBox.Ok)
+        box.exec()
+        box.deleteLater()
+
     def _show_hotkeys(self):
         dlg = getattr(self, "_hotkeys_dlg", None)
         if dlg is None:
@@ -3420,7 +3574,8 @@ class MainWindow(QMainWindow):
         if self.session is not None and self.session.n_points > 3:
             QTimer.singleShot(0, self._fit_timeline_height)
         self.setWindowTitle(f"{APP_NAME} — {Path(info.path).name}")
-        if self.session is not None and self.session.n_points == 0 and self.session.animal is None:
+        if (self.session is not None and self.session.n_points == 0 and self.session.animal is None
+                and not self._on_demo()):           # the demo is filled next (G183): the hint would be wrong
             self.toast.show_message(
                 "Press <b>S</b> and click the segment — or <b>N</b> and click a point. "
                 "New to tracking? <b>F1</b> opens the manual, written from scratch.",
@@ -4429,8 +4584,50 @@ class MainWindow(QMainWindow):
         return [w for w in (self.view3d, getattr(self, "dock", None), getattr(self, "body_win", None))
                 if w is not None]
 
+    def _drop_tour(self) -> None:
+        """Close a tour that is up without its after-tour note (a run starting, the window closing)."""
+        ov, self._tour = self._tour, None
+        if ov is not None:
+            ov.blockSignals(True)
+            ov.skip()
+
+    def _tour_owns(self, obj) -> bool:
+        """`obj` is the tour's overlay or part of its card (those take clicks while the tour is up)."""
+        tour = self._tour
+        return tour is not None and isinstance(obj, QWidget) and (obj is tour or tour.isAncestorOf(obj))
+
+    def _tour_filter(self, obj, ev) -> bool:
+        """(G183) While the tour is up, nothing reaches the window but the tour: keys go to `TourOverlay.key`;
+        clicks, the wheel and every shortcut (arrows, Ctrl+O, F1) are held back WITHOUT disabling anything
+        (the menus it shows stay as the user had them). A ShortcutOverride accepted here makes Qt deliver the
+        key as a plain key press -- to the tour -- instead of firing the shortcut. True = eaten.
+        A run never shares the window with the tour: X / Space must always pause (owner's hard rule), so
+        during a run the tour is dropped and the key goes on as usual."""
+        t = ev.type()
+        if self.state == TRACKING:
+            self._drop_tour()
+            return False
+        ours = (self, *self._other_app_windows())     # T in the 3D view / Body window must not start a run
+        if t in (QEvent.ShortcutOverride, QEvent.Shortcut, QEvent.KeyPress):
+            if QApplication.activeWindow() not in ours:
+                return False
+            if t == QEvent.ShortcutOverride:
+                ev.accept()
+            elif t == QEvent.KeyPress and not ev.isAutoRepeat():
+                if ev.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
+                    # a shortcut held back says so (I265): Ctrl+S must not look like it saved
+                    self.statusBar().showMessage("The interface tour is open: Esc leaves it, then try again", 5000)
+                else:
+                    self._tour.key(ev)
+            return True
+        if t in self._INPUT_EVENTS and isinstance(obj, QWidget) and obj.window() in ours:
+            return not self._tour_owns(obj)
+        return False
+
     def eventFilter(self, obj, ev):
         t = ev.type()
+        if self._tour is not None and QApplication.activeModalWidget() is None and self._tour_filter(obj, ev):
+            return True
         if t in self._INPUT_EVENTS and self._loading and QApplication.activeModalWidget() is None:
             # opening: the window is half-built -- keys do nothing, Esc = Cancel where allowed.
             # In EVERY window of the app (G71): T in the floated panel / the 3D view / the Body
@@ -8243,6 +8440,7 @@ class MainWindow(QMainWindow):
             return
         if self._loading:                            # (G71) a video / project is opening: nothing starts
             return
+        self._drop_tour()                            # (G183) a run never shares the window with the tour
         self._update_track_button()                  # the reason must be about THIS frame
         blocked = getattr(self, "_track_blocked", None)
         if blocked is not None:
@@ -12831,6 +13029,7 @@ class MainWindow(QMainWindow):
             _retire(self._preview)
 
     def closeEvent(self, ev):
+        self._drop_tour()                    # (G183) a tour left open: gone quietly, input back to the window
         if self.view3d is not None:
             self.view3d.stop_threads()           # (G186) the covered-space worker ends before the window
         if self._first_frame_token is not None:
@@ -12903,7 +13102,7 @@ class MainWindow(QMainWindow):
         for modname in ("kinetrace.pointtest", "kinetrace.syncdialog"):
             mod = sys.modules.get(modname)
             later += list(getattr(mod, "_ORPHANS", []) if mod is not None else [])
-        for th in [getattr(self, "_probe", None)] + list(_ORPHANS) + later:
+        for th in [getattr(self, "_probe", None), getattr(self, "_demo_maker", None)] + list(_ORPHANS) + later:
             try:
                 if th is not None and th.isRunning():
                     th.wait(30000)
@@ -13021,6 +13220,34 @@ class _WorldAxesDialog(QDialog):
         self.accept()
 
 
+def start_pop_ups(win, installed: bool, offer: bool) -> None:
+    """The pop-ups of a start, one after the other (never stacked): the install pop-up (G178), then the tour
+    offer (G183, owner: "keep them separate"). The update reminder (G179) waits for the next start after an
+    install or a tour taken; after Not now / Don't ask again it comes as usual -- Not now at every start must
+    never switch it off."""
+    from kinetrace import tour
+    if installed:
+        show_install_welcome(win)
+    if not offer:
+        return
+    answer = tour.offer_tour(win)
+    if answer == "take":
+        _start_tour_when_open(win)
+        return
+    if answer == "never":
+        win._set_setting(tour.OFFERED_KEY, "never")
+    if not installed:
+        QTimer.singleShot(900, win._remind_updates)
+
+
+def _start_tour_when_open(win, tries: int = 300) -> None:
+    """Take the tour once a video given on the command line has finished opening (the tour waits for it)."""
+    if win._loading and tries > 0:
+        QTimer.singleShot(200, lambda: _start_tour_when_open(win, tries - 1))
+        return
+    win._start_tour()
+
+
 def show_install_welcome(win) -> None:
     """(G178) The pop-up the first time Kinetrace opens after an install (the launcher's flag,
     `welcome.take_pending`): it is installed, how to begin and to start it next time, which window
@@ -13083,9 +13310,11 @@ def main():
     win = MainWindow()
     crashlog.attach(win._error_context, win._on_error_logged)
     win.show()
-    from kinetrace import welcome
-    if welcome.take_pending():          # (G178) the first start after an install, once
-        QTimer.singleShot(600, lambda: show_install_welcome(win))
+    from kinetrace import tour, welcome
+    installed = welcome.take_pending()  # (G178) the first start after an install, once
+    offer = tour.offer_due(win._settings())
+    if installed or offer:
+        QTimer.singleShot(600, lambda: start_pop_ups(win, installed, offer))
     else:
         QTimer.singleShot(1500, win._remind_updates)      # (G179) no check for a month: a note, offline
     if len(sys.argv) > 1 and Path(sys.argv[1]).exists():

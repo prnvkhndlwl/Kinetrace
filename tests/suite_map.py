@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUI = ["verify_gui", "verify_oob", "verify_keys_follow", "verify_timeline_events", "verify_semiauto_pan", "verify_stress",
        "verify_annotate", "verify_ui_focus", "verify_display", "verify_segment_panel", "verify_point_menu",
        "verify_sweep_fixes", "verify_review_app1", "verify_review_app2", "verify_review_app3", "verify_review_leftovers",
-       "verify_review_ui", "verify_camera_views"]
+       "verify_review_ui", "verify_camera_views", "verify_tour"]
 SAVE = ["verify_projectfile", "verify_recovery", "verify_loading", "verify_open_replace", "verify_review_persist",
         "verify_save_during_run"]
 INSTALL = ["verify_portable", "verify_install_paths", "verify_update", "verify_downloads", "verify_crashlog",
@@ -38,6 +38,7 @@ MAP = [
                           "verify_segment_targets", "verify_projectfile", "verify_annotate"]),
     ([K + f for f in ("app.py", "canvas.py", "timeline.py", "widgets.py", "viewgrid.py", "camerapanel.py", "theme.py",
                       "icons.py")], GUI),
+    ([K + "tour.py", K + "demo.py"], ["verify_tour", "verify_ui_focus", "verify_keys_follow"]),
     ([K + "layers.py"], ["verify_layers", "verify_segment_panel", "verify_segment_targets", "verify_animal_gui"]),
     ([K + "project.py", K + "folderimport.py", K + "cameraorder.py"],
      ["verify_multicam", "verify_shared_landmarks", "verify_multiview", "verify_camera_views", "verify_projectfile",
