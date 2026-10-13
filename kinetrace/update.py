@@ -15,7 +15,7 @@ Installing it depends on how the folder was obtained:
 * a ZIP download -> download the release's ZIP into `update/`, check it really
   is a Kinetrace release, and write ONLY the files that changed. What each user
   owns is never touched (`PROTECTED`: the environment, models, recovery copies,
-  logs, saved skeletons, footage). Files the previous release had and this one
+  logs, saved skeletons, the tour's demo video, footage). Files the previous release had and this one
   dropped are removed, using the list kept in `MANIFEST`.
 
 When `requirements.txt` or `install.py` changed, the install marker
@@ -50,7 +50,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ".kinetrace-release.json"      # the files the installed release put here
 STAGING = "update"                         # download + unpack folder, inside the install
 # top-level folders (and files) an update never writes or removes: each user's own
-PROTECTED = (".venv", "models", "recovery", "logs", "skeletons", "test_videos", "tests/out",
+PROTECTED = (".venv", "models", "recovery", "logs", "skeletons", "demo", "test_videos", "tests/out",
              ".git", STAGING, MANIFEST, "settings.ini")
 # a changed one of these means the environment may need something new (I142)
 INSTALL_INPUTS = ("requirements.txt", "install.py")

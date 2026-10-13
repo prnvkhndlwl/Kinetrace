@@ -3,7 +3,7 @@
 `python -m kinetrace --paths` (also run.sh / run.bat --paths) prints them with
 their sizes; Help -> Kinetrace's Folders shows the same list with buttons that
 open each one. Inside the Kinetrace folder: the environment, models, logs,
-recovery copies, skeletons and settings.ini -- deleting the folder removes
+recovery copies, skeletons, the tour's demo video and settings.ini -- deleting the folder removes
 them. Outside it: only the per-user fallback folder (used when the Kinetrace
 folder cannot be written), settings Kinetrace 0.4.1 and earlier kept in the
 registry / a macOS plist / ~/.config, PyTorch's compile cache in the temp
@@ -82,7 +82,7 @@ def _start_menu() -> Place | None:
 
 
 def places() -> list[Place]:
-    from kinetrace import crashlog, recovery
+    from kinetrace import crashlog, demo, recovery
     rec, rec_fallback = recovery.folder()
     out = [
         Place("Kinetrace folder (the app)", ROOT, True, "deleting it uninstalls Kinetrace"),
@@ -94,6 +94,8 @@ def places() -> list[Place]:
         Place("Settings (your name for notes)", recovery.settings_path(),
               recovery.settings_path().is_relative_to(ROOT)),
         Place("Saved skeletons", ROOT / "skeletons", True),
+        Place("The tour's demo video", demo.demo_folder(), demo.demo_folder().is_relative_to(ROOT),
+              "made by Help -> Take the Interface Tour; safe to delete: it is made again when needed"),
     ]
     fallback = recovery._user_dir().parent
     if fallback.exists() and not any(p.path.is_relative_to(fallback) for p in out):

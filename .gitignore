@@ -28,6 +28,8 @@ logs/
 # skeletons a user saves from the app; the app's settings (the annotator's name)
 skeletons/
 /settings.ini
+# the interface tour's demo video, made by the app on first use (kinetrace/demo.py)
+/demo/
 # Kinetrace.app, written on a Mac by run.sh (kinetrace/macapp.py)
 /Kinetrace.app/
 # Kinetrace.lnk, written on Windows by run.bat (kinetrace/winapp.py)

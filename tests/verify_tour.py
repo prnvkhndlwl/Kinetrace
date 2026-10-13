@@ -98,8 +98,16 @@ def rect_of(win, w) -> QRect:
 # ---------------------------------------------------------------- [1] the demo itself
 print("[1] the demo video")
 folder = demo.demo_folder()
-check(str(folder).startswith(os.path.realpath(os.environ.get("TEMP", "/tmp"))[:3]) or "kinetrace" in str(folder).lower(),
-      "the offscreen tests make the demo outside the user's folder", str(folder))
+import tempfile  # noqa: E402
+check(os.path.commonpath([os.path.realpath(folder), os.path.realpath(tempfile.gettempdir())])
+      == os.path.realpath(tempfile.gettempdir()),
+      "the offscreen tests make the demo in the temp folder, not the user's Kinetrace folder", str(folder))
+in_frame = True
+for t in range(0, demo.N_FRAMES, 5):
+    _, m = demo.truth(t)
+    if m[0].any() or m[-1].any() or m[:, 0].any() or m[:, -1].any():
+        in_frame = False
+check(in_frame, "the whole animal stays inside the picture")
 vpath = demo.video_path()
 if vpath.exists():
     vpath.unlink()
