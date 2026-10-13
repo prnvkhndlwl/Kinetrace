@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, Q
 
 from kinetrace import APP_NAME, APP_TAGLINE, APP_VERSION, theme
 from kinetrace import alltracker_backend
+from kinetrace import threads as _threads
 from kinetrace.camerapanel import CameraPanel
 from kinetrace.layers import LayersPanel, ROLE_HAS, ROLE_NAME
 from kinetrace.view3d import CalibrationDialog, Scene3D, View3D
@@ -586,22 +587,10 @@ class _ViewRuntime:
             self.seek = None
 
 
-# QThreads that did not stop within their wait: dropping the last reference to
-# a running QThread aborts the process (0xC0000409) when it finishes. They are
-# kept here until their `finished` fires; closeEvent waits for them (I112).
-_ORPHANS: list = []
-
-
-def _retire(th) -> None:
-    if th is None:
-        return
-    try:
-        running = th.isRunning()
-    except RuntimeError:
-        return
-    if running and th not in _ORPHANS:
-        _ORPHANS.append(th)
-        th.finished.connect(lambda t=th: _ORPHANS.remove(t) if t in _ORPHANS else None)
+# QThreads that did not stop within their wait are kept until their `finished` fires, and closeEvent waits
+# for them (I112): the one registry of the whole app is kinetrace.threads (R24); these names are it
+_ORPHANS = _threads.ORPHANS
+_retire = _threads.retire
 
 
 class _SaveWorker(QThread):
@@ -13115,21 +13104,15 @@ class MainWindow(QMainWindow):
             probe.wait(30000)
             _retire(probe)
         # the video probe (a slow frame-count check on a 4K file or a share) and
-        # any thread that outlived its earlier wait (I109, I112), also the ones the folder import,
-        # the point-model test and the sync dialog keep for the same reason (I198)
-        later = []
-        for modname in ("kinetrace.pointtest", "kinetrace.syncdialog"):
-            mod = sys.modules.get(modname)
-            later += list(getattr(mod, "_ORPHANS", []) if mod is not None else [])
-        for th in [getattr(self, "_probe", None), getattr(self, "_demo_maker", None)] + list(_ORPHANS) + later:
+        for th in (getattr(self, "_probe", None), getattr(self, "_demo_maker", None)):
             try:
                 if th is not None and th.isRunning():
                     th.wait(30000)
             except RuntimeError:
                 pass
-        fi = sys.modules.get("kinetrace.folderimport")
-        if fi is not None:
-            fi.wait_orphans(30000)
+        # any thread that outlived its earlier wait: the window's, the folder import's, the point-model
+        # test's and the sync dialog's, all in one registry (I109, I112, I198, R24)
+        _threads.wait_all(30000)
         ev.accept()
 
 

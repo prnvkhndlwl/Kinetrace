@@ -20,12 +20,11 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout
                                QProgressBar, QPushButton, QRadioButton, QSizePolicy, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
-from kinetrace import audiosync, gpmf, sync, theme
+from kinetrace import audiosync, gpmf, sync, theme, threads
 from kinetrace.errors import plain_error
 
 VERDICT_WORDS = {"clear": "CLEAR - use it", "weak": "WEAK - check by eye first",
                  "none": "NONE - do not apply"}
-_ORPHANS: list = []         # a sync thread that outlived its dialog, kept referenced until it ends (G96)
 
 
 class _SyncThread(QThread):
@@ -388,10 +387,5 @@ class SyncDialog(QDialog):
                     except (RuntimeError, TypeError):
                         pass
             self.hide()
-            try:
-                from kinetrace.app import _retire       # closeEvent waits for what is kept there
-                _retire(th)
-            except ImportError:
-                _ORPHANS.append(th)
-                th.finished.connect(lambda t=th: _ORPHANS.remove(t) if t in _ORPHANS else None)
+            threads.retire(th)          # kept until it ends; closeEvent waits for it (G96, R24)
         super().done(code)

@@ -17,17 +17,15 @@ verdict.
 """
 from __future__ import annotations
 
-import sys
 
 import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QHBoxLayout, QHeaderView, QLabel,
                                QProgressBar, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout)
 
-from kinetrace import spots
+from kinetrace import spots, threads
 
 MODEL_LABELS = {"alltracker": "AllTracker", "cotracker3": "CoTracker3", "spot": "Moving spot"}
-_ORPHANS: list = []          # a test thread that outlived the dialog's wait: kept until it ends
 
 
 class _ModelError(Exception):
@@ -385,18 +383,13 @@ class PointModelTest(QDialog):
         close() calls it again through closeEvent -- a thread already handed on is not waited
         for twice (up to 10 s frozen), nor registered twice."""
         th = self._thread
-        if th is None or not th.isRunning() or th in _ORPHANS:
+        if th is None or not th.isRunning() or th in threads.ORPHANS:
             return
         th.cancel()
         if not th.wait(5000):
-            # a model step can take a moment: keep the thread referenced until it
-            # ends -- dropping a running QThread aborts the program (I133). The app's own
-            # registry (what its closeEvent waits for, I112) takes it too when the app is loaded.
-            _ORPHANS.append(th)
-            th.finished.connect(lambda: _ORPHANS.remove(th) if th in _ORPHANS else None)
-            app = sys.modules.get("kinetrace.app")
-            if app is not None and hasattr(app, "_retire"):
-                app._retire(th)
+            # a model step can take a moment: keep the thread referenced until it ends --
+            # dropping a running QThread aborts the program (I133); the app's close waits for it (R24)
+            threads.retire(th)
 
     def reject(self) -> None:
         self._stop_thread()
