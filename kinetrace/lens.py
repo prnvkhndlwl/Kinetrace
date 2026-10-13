@@ -520,6 +520,17 @@ def fit_profile(prof: LensProfile, cam_size: tuple[int, int], cam_rotation: int 
                  "pictures (exact: the same lens, its numbers moved to the turned picture's pixels).")
 
 
+def kinetrace_lens_file(path: str | Path) -> bool:
+    """`path` is a lens file Kinetrace wrote (the "kinetrace_lens" key): its profile was measured on the
+    pictures Kinetrace's decoder shows, so the turn that decoder gives its board video IS the profile's
+    (`record_turn`). Another program's file may have been fitted on the stored pictures: never offered."""
+    try:
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(d, dict) and "kinetrace_lens" in d
+
+
 def record_turn(prof: LensProfile, video: str, size: tuple[int, int], rotation: int | None, oren: str = ""
                 ) -> tuple[LensProfile | None, str]:
     """(I275) `prof`, which does not record its checkerboard video's turn, with the turn read from
@@ -533,21 +544,21 @@ def record_turn(prof: LensProfile, video: str, size: tuple[int, int], rotation: 
     w, h = int(prof.width), int(prof.height)
     if prof.rotation is not None:
         return None, "This lens profile already records which way its checkerboard video was turned: nothing to read."
-    if (int(size[0]), int(size[1])) != (w, h):
-        return None, (f"{name}'s pictures are {int(size[0])} x {int(size[1])} and the lens profile's are {w} x {h}: it "
-                      "is not the video this profile was measured on. Choose the checkerboard video of the profile.")
+    # the decoder first: a backend that cannot say the turn also hands out the STORED size, which would
+    # read as "not this profile's video" when it is
     if rotation is None or int(rotation) % 360 not in QUARTER_TURNS:
         return None, (f"The decoder cannot say which way {name} is turned, so the profile's turn cannot be read from "
                       "it. Open the videos with the default decoder (KINETRACE_DECODE not set) and try again.")
+    if (int(size[0]), int(size[1])) != (w, h):
+        return None, (f"{name}'s pictures are {int(size[0])} x {int(size[1])} and the lens profile's are {w} x {h}: it "
+                      "is not the video this profile was measured on. Choose the checkerboard video of the profile.")
     rot = int(rotation) % 360
     out = copy.deepcopy(prof)
     out.rotation = rot
     out.board = {"video": name, "path": os.path.abspath(video), "size": [w, h], "rotation": rot, "named_later": True}
     if oren:
         out.board["gopro_orientation"] = str(oren)
-    turned = _TURNED[rot]
-    said = (f"The turn was read from its checkerboard video {name} ({w} x {h} pictures {turned}"
-            + (f"; GoPro mounting tag {oren}" if oren else "") + "), chosen afterwards: the profile did not record it.")
+    said = board_sentence(out.board) + " The profile did not record which way that video was turned: read from it now."
     reasons = out.report.get("verdict_reasons") if isinstance(out.report, dict) else None
     if isinstance(reasons, list):
         reasons.append(said)

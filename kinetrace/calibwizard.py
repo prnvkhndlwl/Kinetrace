@@ -601,9 +601,10 @@ class CamerasPage(QWizardPage):
         if which:
             prof.source = f"{Path(path).name}{which}"
         fitted, bad = lens_for_camera(prof, p.sessions[c], p.name(c))
-        if fitted is None and not which and lens_turn_unknown(prof, p.sessions[c]):
+        read = ""
+        if fitted is None and lens_turn_unknown(prof, p.sessions[c]) and _lens.kinetrace_lens_file(path):
             from kinetrace.lensattach import offer_board_turn
-            filled = offer_board_turn(self, prof, path, [p.name(c)])     # (G184) its turn, from its board video
+            filled, read = offer_board_turn(self.wiz, prof, path, [p.name(c)])  # (G184) its turn, from its board video
             if filled is not None:
                 fitted, bad = lens_for_camera(filled, p.sessions[c], p.name(c))
         if fitted is None:
@@ -612,8 +613,8 @@ class CamerasPage(QWizardPage):
         p.lenses[c] = fitted
         p.dirty = True
         self._refresh_lens_rows()
-        if bad and c < len(self.lens_labels):       # turned for a camera filmed on its side: said
-            self.lens_labels[c].setText(self.lens_labels[c].text() + " — " + bad)
+        if (bad or read) and c < len(self.lens_labels):     # turned for a camera filmed on its side: said
+            self.lens_labels[c].setText(self.lens_labels[c].text() + "".join(" — " + t for t in (read, bad) if t))
 
     def _remove_lens(self, c: int):
         p = self.wiz.project

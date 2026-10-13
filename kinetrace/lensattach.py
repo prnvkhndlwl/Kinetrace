@@ -22,12 +22,13 @@ COLUMNS = ("Camera", "Recording", "Lens profile now", "With this file")
 BOARD_VIDEO_FILTER = "Videos (*.mp4 *.avi *.mov *.mkv *.m4v *.mpg);;All files (*)"
 
 
-def offer_board_turn(parent, prof, lens_path: str, cameras: list[str]):
+def offer_board_turn(parent, prof, lens_path: str, cameras: list[str]) -> tuple[object | None, str]:
     """(G184) `prof` (read from `lens_path`) does not record which way its checkerboard video was turned,
     so it cannot be turned for `cameras` (filmed on their side, `lens.turn_unknown`). Offer to read the
     turn from that video: asked first; the video chosen; its size and turn read on a worker
-    (`lens.video_turn`, a VideoCapture) and written into a copy (`lens.record_turn`). -> the copy, or
-    None when declined or refused (a refusal is said). The ONE step of every place that attaches a
+    (`lens.video_turn`, a VideoCapture) and written into a copy (`lens.record_turn`). -> (the copy, the
+    sentence naming the video and its turn, for the caller's message) or (None, "") when declined or
+    refused (a refusal is said). Only for a lens file Kinetrace wrote (`lens.kinetrace_lens_file`). The ONE step of every place that attaches a
     lens file: the wand wizard's Load file…, Load a Lens Profile (one camera) and for Cameras…."""
     from kinetrace.lenswizard import _off_thread
     names = ", ".join(cameras)
@@ -39,21 +40,22 @@ def offer_board_turn(parent, prof, lens_path: str, cameras: list[str]):
             f"{'its' if one else 'their'} side.\n\nKinetrace can read the turn from that checkerboard video (it "
             f"has {int(prof.width)} x {int(prof.height)} pictures). Find the checkerboard video now?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
-        return None
+        return None, ""
     video, _ = QFileDialog.getOpenFileName(parent, f"Checkerboard video of {Path(lens_path).name}",
                                            str(Path(lens_path).parent), BOARD_VIDEO_FILTER)
     if not video:
-        return None
+        return None, ""
     try:
         size, rotation, oren = _off_thread(parent, lambda: lens.video_turn(video))
     except Exception as e:      # noqa: BLE001 - not a video, a damaged one: said
         QMessageBox.warning(parent, "Turn not read", plain_error(e, f"{Path(video).name} could not be read",
                                                                  reading=True))
-        return None
+        return None, ""
     filled, said = lens.record_turn(prof, video, size, rotation, oren)
     if filled is None:
         QMessageBox.warning(parent, "Turn not read", said)
-    return filled
+        return None, ""
+    return filled, said
 
 
 @dataclass

@@ -405,7 +405,8 @@ check(len(ASK["asked"]) == n_asked + 1 and "checkerboard video" in "".join(ASK["
       ASK["asked"][n_asked:])
 check(ident(got, WANT_SIDE) and got is not None and got.rotation == 270 and len(ASK["warn"]) == n_warn,
       "...Yes + the level board video: attached, turned exactly (bit for bit turn_profile)", ASK["warn"][n_warn:])
-check(page.lens_labels and "turned" in page.lens_labels[0].text(), "...and its row says it was turned",
+check(page.lens_labels and "turned" in page.lens_labels[0].text() and "level.mp4" in page.lens_labels[0].text(),
+      "...and its row says it was turned and names the checkerboard video the turn came from",
       page.lens_labels[0].text() if page.lens_labels else "")
 p.lenses = [None, None, None]
 page._refresh_lens_rows()
@@ -420,6 +421,22 @@ QTest.mouseClick(page.lens_buttons[0][1], Qt.LeftButton)
 pump(0.3)
 check(p.lenses[0] is None and any("640 x 480" in t for t in ASK["warn"][n_warn:]),
       "...a board video of another size: refused in words, nothing attached", ASK["warn"][n_warn:])
+# a lens file from another program (OpenCV .yml, same numbers): it may have been fitted on the STORED
+# pictures, so the turn Kinetrace's decoder gives a board video is not known to be its: never offered
+from kinetrace import calibio  # noqa: E402
+
+OCV_FILE = os.path.join(OUT, "old_board_opencv.yml")
+calibio.write_lens(OLD, OCV_FILE)
+p.lenses = [None, None, None]
+page._refresh_lens_rows()
+ASK.update(open=[OCV_FILE, LEVEL], question=QMessageBox.Yes)
+n_asked = len(ASK["asked"])
+QTest.mouseClick(page.lens_buttons[0][1], Qt.LeftButton)
+pump(0.2)
+ASK["open"] = ""
+check(len(ASK["asked"]) == n_asked and p.lenses[0] is None and "not known" in page.lens_labels[0].text(),
+      "an OpenCV lens file from another program is not offered a checkerboard video: refused as before",
+      (ASK["asked"][n_asked:], page.lens_labels[0].text()))
 wiz.reject()
 wiz.deleteLater()
 pump(0.2)
@@ -440,6 +457,16 @@ check(len(ASK["asked"]) == n_asked + 1 and seen["rows"][0][1] and "turned" in se
 check(ident(p.lenses[0], WANT_SIDE) and ident(p.lenses[2], OLD) and p.lenses[2].rotation == 0 and p.lenses[1] is None,
       "...it gets the exact turn, the level camera the profile's own numbers, the unticked camera nothing",
       [None if x is None else (x.width, x.height, x.rotation) for x in p.lenses])
+# with its turn known the profile follows I269 like one made today: the upside-down camera (tag 180) is offered
+# it turned 180 (before, the unknown turn attached it unturned, centre on the wrong side)
+check(seen["rows"][1][1] and "turned" in seen["rows"][1][0],
+      "...and the upside-down camera's row reads 'fits, turned' (I269's rule, now that the turn is known)", seen)
+OCV_N = len(ASK["asked"])
+ASK.update(open=[OCV_FILE], question=QMessageBox.Yes)
+w.act_load_lens.trigger()
+pump(0.3)
+check(len(ASK["asked"]) == OCV_N and "not known" in _lens_attach.STATE["seen"][-1]["rows"][0][0],
+      "Load a Lens Profile for Cameras: an OpenCV file is not offered either", _lens_attach.STATE["seen"][-1])
 
 w.project.dirty = False
 w.close()
