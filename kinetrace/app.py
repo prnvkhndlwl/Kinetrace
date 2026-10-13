@@ -43,7 +43,7 @@ from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_
 from kinetrace import gpmf, projectfile, recovery, trackio
 from kinetrace.lens import lens_label
 from kinetrace.errors import cap_first, plain_error as _plain_error
-from kinetrace.session import TrackingSession
+from kinetrace.session import TRACKER_NAMES, TrackingSession
 from kinetrace.viewgrid import ViewGrid, caption_for
 from kinetrace.skeletons import all_templates, save_user_template
 from kinetrace.theme import apply_theme
@@ -2125,7 +2125,7 @@ class MainWindow(QMainWindow):
         self.cameras.setEnabled(has_video and not tracking)
         self._refresh_cameras()
         s = self.session
-        exportable = s is not None and (s.n_points > 0 or any(m.n_masked() > 0 for m in s.seg_masks))  # (G151m)
+        exportable = s is not None and (s.n_points > 0 or s.any_masked())  # (G151m)
         self.act_export.setEnabled(has_video and not tracking and exportable)
         self.act_overlay.setEnabled(has_video and not tracking and self._overlay is None)
         # 3D layer: needs several cameras, then a calibration, then a result
@@ -3717,7 +3717,7 @@ class MainWindow(QMainWindow):
                 make = False
             else:
                 make = True
-            data = bool(s.tracked.any()) or any(m.n_masked() > 0 for m in s.seg_masks)
+            data = bool(s.tracked.any()) or s.any_masked()
             th = FrameCheckWorker(rt.info.path, rt.info.n_frames, s.fingerprint, name, make_missing=make,
                                   force=by_user, data_before=data)
             th.seeks_checked.connect(lambda plan, r=rt: self._fc_seeks(r, plan))
@@ -9425,7 +9425,7 @@ class MainWindow(QMainWindow):
             on_click=lambda: self._show_manual(MANUAL_WHICH_MODEL))     # (item 3)
 
     TRACKER_TAGS = {"alltracker": "AT", "cotracker3": "CT", "spot": "MS"}
-    TRACKER_NAMES = {"alltracker": "AllTracker", "cotracker3": "CoTracker3", "spot": "Moving spot"}
+    TRACKER_NAMES = TRACKER_NAMES
 
     def _set_tracker(self, pids, key: str, undo: bool = True) -> None:
         """Give these points their own tracker, in every camera (by name: a landmark
@@ -12210,7 +12210,7 @@ class MainWindow(QMainWindow):
         if s is None or self.state != READY or self._body_worker is not None:
             return
         # (G151l) the silhouette that can drive the run: the segment the user names when several have one
-        with_sil = [k for k in range(s.n_segments) if s.seg_masks[k].n_masked() > 0]
+        with_sil = s.segments_with_masks()
         if len(with_sil) > 1:
             k = self._pick_segment("Find the person inside the silhouette of")
             if k is None:
@@ -12545,12 +12545,11 @@ class MainWindow(QMainWindow):
     def _dlc_scorer(self) -> str:
         """The DeepLabCut 'scorer' name (R12: the one rule): the tracker every plain point was tracked
         with when they all share one, else the project's default point model."""
-        names = {"alltracker": "AllTracker", "cotracker3": "CoTracker3", "spot": "MovingSpot"}
         s = self.session
         kinds = ({self._tracker_of(i, s) for i in range(s.n_points)
                   if not (s.points[i].derived or s.points[i].is_ball)} if s is not None else set())
         kind = next(iter(kinds)) if len(kinds) == 1 else self._point_backend
-        return "Kinetrace_" + names.get(kind, "Kinetrace")
+        return "Kinetrace_" + TRACKER_NAMES.get(kind, "Kinetrace").replace(" ", "")    # no space: a DLC id
 
     def _points_models(self):
         """(I170) The exported cameras' models for the 3D points that go out beside them: 3D points are
@@ -12571,6 +12570,20 @@ class MainWindow(QMainWindow):
             return None, (f"The points were written in Kinetrace's own world, not the exported cameras' "
                           f"({e}).")
 
+    def _nothing_to_write(self, key: str) -> str | None:
+        """Why export `key` has nothing to write now, or None (R26: Ctrl+E said it, Everything repeated
+        each rule to skip the format): no 3D result, no silhouette, no animal with points (G159)."""
+        s, p = self.session, self.project
+        if key in ("xyz", "xyz_anipose", "xyz_dltdv", "kin") and (p is None or p.reconstruction is None):
+            return "No 3D reconstruction yet: run 3D -> Reconstruct 3D Landmarks (Ctrl+3) first."
+        if key in ("sil_json", "sil_png") and not s.any_masked():
+            return "No silhouette to export: segment the animal first (S)."
+        if key in ("dlc_ma", "sleap") and not any(s.points_of(k) for k in range(s.n_segments)):
+            # (G159) individuals = the animals: nothing to write without one
+            return ("No animal has points: make an animal (＋ Animal in LAYERS) and give it points first; "
+                    "the plain DeepLabCut / Wide CSV exports write points of no animal.")
+        return None
+
     def _export_one(self, key: str, path: str, cutoff="auto", sidecars: bool = True,
                     report=None, cancelled=None) -> tuple[list[str], list[str]]:
         """Write one format -> (the files written, sentences for the user). Runs on a worker thread
@@ -12583,18 +12596,15 @@ class MainWindow(QMainWindow):
         p = self.project
         written = [path]
         notes: list[str] = []
-        no_3d = "No 3D reconstruction yet: run 3D -> Reconstruct 3D Landmarks (Ctrl+3) first."
-        no_sil = "No silhouette to export: segment the animal first (S)."
-        any_sil = any(m.n_masked() > 0 for m in s.seg_masks)        # (G149) any segment
+        why = self._nothing_to_write(key)
+        if why:
+            return [], [why]                       # nothing is written, not even an empty file (G108)
+        any_sil = s.any_masked()        # (G149) any segment
         if key == "wide":
             s.export_csv(path)
         elif key == "dlc":
             s.export_dlc_csv(path, scorer=self._dlc_scorer())
         elif key in ("dlc_ma", "sleap"):
-            # (G159) individuals = the animals: nothing to write without one
-            if not s.segments or not any(s.points_of(k) for k in range(s.n_segments)):
-                return [], ["No animal has points: make an animal (＋ Animal in LAYERS) and give it points first; "
-                            "the plain DeepLabCut / Wide CSV exports write points of no animal."]
             if key == "dlc_ma":
                 s.export_dlc_multi_csv(path, scorer=self._dlc_scorer())
             else:
@@ -12612,9 +12622,7 @@ class MainWindow(QMainWindow):
             return p.export_multi_dltdv(path), notes
         elif key in ("xyz", "xyz_anipose", "xyz_dltdv"):
             from kinetrace import calibio
-            r = p.reconstruction if p else None
-            if r is None:
-                return [], [no_3d]
+            r = p.reconstruction
             models, mnote = self._points_models()
             if mnote:
                 notes.append(mnote)
@@ -12634,9 +12642,7 @@ class MainWindow(QMainWindow):
         elif key in ("sil_json", "sil_png"):
             # (G151m) every segment with silhouettes, one file / folder each (a "_<segment>" suffix
             # when there are several); it used to be the active segment's alone
-            ks = [k for k in range(s.n_segments) if s.seg_masks[k].n_masked() > 0]
-            if not ks:
-                return [], [no_sil]                  # nothing is written, not even an empty file (G108)
+            ks = s.segments_with_masks()
             stem, suf = str(Path(path).with_suffix("")), Path(path).suffix
 
             def tagged(k):
@@ -12667,9 +12673,7 @@ class MainWindow(QMainWindow):
             return files, notes                      # the files written: here the folders that hold them
         elif key == "kin":
             from kinetrace.kinematics import export_kinematics
-            r = p.reconstruction if p else None
-            if r is None:
-                return [], [no_3d]
+            r = p.reconstruction
             fps = float(p.sessions[0].fps) if p.sessions else float(self.info.fps)
             unit = (p.calibration.unit if p.calibration is not None and p.calibration.unit else "") or r.unit or ""
             return export_kinematics(path, r, fps, unit, cutoff), notes
@@ -12732,15 +12736,9 @@ class MainWindow(QMainWindow):
                 for lab, suf, k in self.EXPORT_FORMATS:
                     if k == "all" or (k == "multi" and self.project.n_views < 2):
                         continue    # the all-cameras file is meaningless for one camera
-                    if k in ("xyz", "kin", "xyz_anipose", "xyz_dltdv") and self.project.reconstruction is None:
-                        continue    # no 3D yet: nothing to write
-                    if k == "sil_png" or (k == "sil_json" and not any(m.n_masked() for m in self.session.seg_masks)):
-                        continue    # a PNG per frame is its own export (it can be many thousand files)
-                    if k == "dltdv_bl":
-                        continue    # "Everything" writes the DLTdv8 convention once, not both
-                    if k in ("dlc_ma", "sleap") and not any(self.session.points_of(j)
-                                                            for j in range(self.session.n_segments)):
-                        continue    # individuals = animals with points (G159)
+                    if k in ("sil_png", "dltdv_bl") or self._nothing_to_write(k):
+                        continue    # a PNG per frame is its own export (it can be many thousand files);
+                                    # "Everything" writes the DLTdv8 convention once, not both
                     tag = {"wide": "", "dlc": "_dlc", "dlc_ma": "_dlc_multi", "sleap": "_sleap", "dltdv": "_dltdv",
                            "sparse": "", "mat": "", "multi": "_allcams", "xyz": "_xyz", "kin": "_kinematics",
                            "xyz_anipose": "_points3d_anipose", "xyz_dltdv": "_xyzpts", "sil_json": "_silhouette"}[k]

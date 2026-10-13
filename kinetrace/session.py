@@ -93,6 +93,8 @@ DEFAULT_UI_STATE: dict = {
 
 SOURCES = ("track", "silhouette", "ball")
 TRACKERS = ("alltracker", "cotracker3", "spot")   # a point's own tracker (G62); "" = the project default
+# their names for the user: point menu, LAYERS tooltips, the model test, the DLC scorer (R26: three copies)
+TRACKER_NAMES = {"alltracker": "AllTracker", "cotracker3": "CoTracker3", "spot": "Moving spot"}
 # below this confidence a tracked, not hidden cell is doubtful: the timeline's red and J's stops (G193)
 LOW_CONF = 0.5
 
@@ -856,6 +858,14 @@ class TrackingSession:
     def has_silhouette(self, k: int) -> bool:
         """Animal k has (or can make) a silhouette: clicks or stored silhouettes (G153: optional)."""
         return 0 <= k < self.n_segments and bool(self.segments[k].n_prompts() or self.seg_masks[k].n_masked())
+
+    def segments_with_masks(self) -> list[int]:
+        """The animals with at least one stored silhouette (R26: the exports and Body asked it four ways)."""
+        return [k for k in range(self.n_segments) if self.seg_masks[k].n_masked() > 0]
+
+    def any_masked(self) -> bool:
+        """Any animal has a stored silhouette."""
+        return any(m.n_masked() > 0 for m in self.seg_masks)
 
     def _new_masks(self) -> MaskTrack:
         m = MaskTrack(self.n_frames)

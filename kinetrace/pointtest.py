@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QHBoxLayou
 
 from kinetrace import spots, threads
 
-MODEL_LABELS = {"alltracker": "AllTracker", "cotracker3": "CoTracker3", "spot": "Moving spot"}
+from kinetrace.session import TRACKER_NAMES as MODEL_LABELS  # noqa: E402  (R26: the one table)
 
 
 class _ModelError(Exception):
