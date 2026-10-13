@@ -145,7 +145,13 @@ def sec_d():
         v._render()
         pts = v.end_screen_points()
         k = int(np.nanargmin(np.abs(pts[:, 0] - v.canvas.width() / 2) + np.abs(pts[:, 1] - v.canvas.height() / 2)))
-        QTest.mouseMove(v.canvas, QPoint(int(round(pts[k, 0])), int(round(pts[k, 1]))))
+        # the mouse moving over that end (sent to the picture itself: offscreen, overlapping windows swallow
+        # QTest's cursor moves - .claude/rules/tests.md)
+        from PySide6.QtCore import QEvent, QPointF
+        from PySide6.QtGui import QMouseEvent
+        hp = QPointF(float(round(pts[k, 0])), float(round(pts[k, 1])))
+        ws.app.sendEvent(v.canvas, QMouseEvent(QEvent.MouseMove, hp, v.canvas.mapToGlobal(hp), Qt.NoButton,
+                                               Qt.NoButton, Qt.NoModifier))
         pump(0.1)
         tip = v.canvas.toolTip()
         assert "frame" in tip and str(int(v.scene.calib.end_frame[k])) in tip, tip
