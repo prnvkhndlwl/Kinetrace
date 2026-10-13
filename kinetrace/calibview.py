@@ -28,7 +28,7 @@ from kinetrace.calib import (Calibration, CameraCalibration, calib_frame_ok, dlt
 GOOD, OK, POOR, REJECTED = 0, 1, 2, 3
 STATE_WORDS = {GOOD: "good", OK: "ok", POOR: "poor", REJECTED: "rejected by the fit"}
 COVER_GOOD_PCT, COVER_OK_PCT = 90.0, 70.0      # share of the wand cloud inside the covered space
-POSE_FRAC = 0.06                               # the pose pyramid's depth, of the scene (wand + cameras) size
+POSE_FRAC = 0.03                               # the pose pyramid's depth, of the scene (wand + cameras) size (G187)
 FOV_REACH = 1.15                               # the field of view reaches this far past the farthest wand end
 WAND_RMSE_GOOD_PX, WAND_RMSE_OK_PX = 1.0, 2.5  # the wand report's bands at 1080p (wand.RMSE_GOOD_PX / _OK_PX)
 
@@ -42,7 +42,8 @@ class Fov:
     """One camera's viewing pyramid cut by a flat far plane `depth` in front of it along its viewing axis (as
     Blender draws a camera): `border` (M, 3) world points of the picture's border loop,
     `raw` (M, 2) the border pixels they come from, `rays` the four corners as (centre, point) segments,
-    `pinhole` = the camera has no lens correction."""
+    `pinhole` = the camera has no lens correction, `side` (M,) the picture side each border point lies on
+    (0 top, 1 right, 2 bottom, 3 left; G187: one translucent face per side)."""
     centre: np.ndarray
     border: np.ndarray
     raw: np.ndarray
@@ -50,6 +51,7 @@ class Fov:
     pinhole: bool
     axis: np.ndarray | None = None       # the viewing axis (unit) the far plane is perpendicular to
     depth: float = 0.0
+    side: np.ndarray | None = None
 
 
 def _border_loop(w: int, h: int, n: int) -> tuple[np.ndarray, list[int]]:
@@ -79,8 +81,9 @@ def fov(cam: CameraCalibration, depth: float, probe, n: int = 24) -> Fov:
     pts[sub[good]] = c + d[good] * (float(depth) / along[good])[:, None]
     rays = [(c, pts[k]) for k in corners if ok[k]]
     keep = ok
+    side = np.repeat(np.arange(4), n)                     # _border_loop's order: n points per side
     return Fov(np.asarray(c, np.float64), pts[keep], raw[keep], rays,
-               getattr(cam.undistort, "kind", "none") == "none", axis[0], float(depth))
+               getattr(cam.undistort, "kind", "none") == "none", axis[0], float(depth), side[keep])
 
 
 def seen_by(cal: Calibration, X: np.ndarray, probe=None, reach: dict | None = None) -> np.ndarray:
