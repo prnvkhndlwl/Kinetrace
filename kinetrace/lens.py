@@ -423,6 +423,16 @@ def turn_needed(size: tuple[int, int], rotation: int | None, cam_size: tuple[int
     return (None, bad) if bad else (0, None)
 
 
+def turn_unknown(prof: LensProfile, cam_size: tuple[int, int], cam_rotation: int | None) -> bool:
+    """`turn_needed` refuses `prof` for this camera ONLY because the profile does not record its
+    checkerboard video's turn (a profile made before Kinetrace recorded it, I269): the camera's
+    pictures are the profile's turned a quarter, and the camera's own turn is known. That one fact
+    can be read from the board video afterwards (`record_turn`, I275)."""
+    w, h = int(prof.width), int(prof.height)
+    cw, ch = int(cam_size[0]), int(cam_size[1])
+    return prof.rotation is None and cam_rotation is not None and (w, h) == (ch, cw) and (w, h) != (cw, ch)
+
+
 def _turn_cw_once(prof: LensProfile) -> LensProfile:
     """`prof` for its pictures turned 90 degrees clockwise: pixel (x, y) moves to (h - 1 - y, x),
     the ray (x, y, 1) to (-y, x, 1). Radial distortion does not change; the tangential pair goes
@@ -506,6 +516,40 @@ def fit_profile(prof: LensProfile, cam_size: tuple[int, int], cam_rotation: int 
                  f"{_TURNED[int(prof.rotation)]} and {cam_name}'s pictures are {_TURNED[int(cam_rotation) % 360]}, "
                  f"so the profile was turned {_TURN[turn]} to fit its {int(cam_size[0])} x {int(cam_size[1])} "
                  "pictures (exact: the same lens, its numbers moved to the turned picture's pixels).")
+
+
+def record_turn(prof: LensProfile, video: str, size: tuple[int, int], rotation: int | None, oren: str = ""
+                ) -> tuple[LensProfile | None, str]:
+    """(I275) `prof`, which does not record its checkerboard video's turn, with the turn read from
+    that video afterwards (`video_turn`: its pictures' size, the decoder's turn, GoPro's mounting tag
+    OREN or ""): -> (a copy that records it, the sentence saying so) or (None, why not). Only the
+    turn and the board record change; K, dist and the picture size are the profile's own. The video
+    must have the profile's picture size (the one check there is that it is the board video)."""
+    import copy
+    import os
+    name = Path(video).name
+    w, h = int(prof.width), int(prof.height)
+    if prof.rotation is not None:
+        return None, "This lens profile already records which way its checkerboard video was turned: nothing to read."
+    if (int(size[0]), int(size[1])) != (w, h):
+        return None, (f"{name}'s pictures are {int(size[0])} x {int(size[1])} and the lens profile's are {w} x {h}: it "
+                      "is not the video this profile was measured on. Choose the checkerboard video of the profile.")
+    if rotation is None or int(rotation) % 360 not in QUARTER_TURNS:
+        return None, (f"The decoder cannot say which way {name} is turned, so the profile's turn cannot be read from "
+                      "it. Open the videos with the default decoder (KINETRACE_DECODE not set) and try again.")
+    rot = int(rotation) % 360
+    out = copy.deepcopy(prof)
+    out.rotation = rot
+    out.board = {"video": name, "path": os.path.abspath(video), "size": [w, h], "rotation": rot, "named_later": True}
+    if oren:
+        out.board["gopro_orientation"] = str(oren)
+    turned = _TURNED[rot]
+    said = (f"The turn was read from its checkerboard video {name} ({w} x {h} pictures {turned}"
+            + (f"; GoPro mounting tag {oren}" if oren else "") + "), chosen afterwards: the profile did not record it.")
+    reasons = out.report.get("verdict_reasons") if isinstance(out.report, dict) else None
+    if isinstance(reasons, list):
+        reasons.append(said)
+    return out, said
 
 
 # ---------------------------------------------------------- checkerboard
@@ -825,21 +869,44 @@ class ScanResult:
         return float(self.thumbs[i].shape[1]) / max(1, self.size[0])
 
 
+def _capture_turn(cap) -> tuple[tuple[int, int], int | None]:
+    """The size of the pictures `cap` hands out and the turn it gave them (`applied_rotation`): what
+    a board scan records, so the profile fitted from that video records it too."""
+    from kinetrace.video_source import applied_rotation
+    rotation = applied_rotation(cap)
+    return (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))), rotation
+
+
+def video_turn(path: str | Path) -> tuple[tuple[int, int], int | None, str]:
+    """(I275) A checkerboard video's (picture size, the decoder's turn, GoPro's mounting tag OREN or
+    "") -- the same size and turn a board scan of it records (`_capture_turn`). Opens its own
+    VideoCapture: never on the GUI thread. Raises OSError for a file that does not open."""
+    from kinetrace import gpmf
+    from kinetrace.video_source import open_capture
+    cap = open_capture(str(path))
+    if not cap.isOpened():
+        raise OSError(f"could not open {Path(path).name} as a video")
+    try:
+        size, rotation = _capture_turn(cap)
+    finally:
+        cap.release()
+    info = gpmf.read_safe(str(path), sensors=False)
+    return size, rotation, (info.orientation if info is not None else "")
+
+
 def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int = 240,
                progress=None, should_cancel=None, downscale_max: int = 1280) -> ScanResult:
     """Look for the board in up to `max_candidates` frames spread over the
     video. Detection runs on a downscaled copy for speed, then the corners
     are refined at full resolution. Own VideoCapture (one per thread)."""
-    from kinetrace.video_source import applied_rotation, open_capture, seek_capture
+    from kinetrace.video_source import open_capture, seek_capture
     cap = open_capture(str(path))
     if not cap.isOpened():
         raise OSError(f"could not open {path}")
     try:
-        rotation = applied_rotation(cap)
+        (w, h), rotation = _capture_turn(cap)
         n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if n <= 0:
             raise OSError("the video reports no frames")
         idx = np.unique(np.linspace(0, n - 1, min(n, int(max_candidates))).round().astype(int))
@@ -895,6 +962,12 @@ def board_sentence(board: dict) -> str:
     """The `board` record in words, for the report: which video and frames the lens was measured on."""
     if not board or not board.get("video"):
         return ""
+    if board.get("named_later"):            # (I275) only the video's turn was read from it, afterwards
+        size = board.get("size") or ["?", "?"]
+        return (f"Its checkerboard video was named afterwards: {board['video']} ({size[0]} x {size[1]}, "
+                + (turn_words(board.get("rotation")) or "not turned")
+                + (f", GoPro mounting tag {board['gopro_orientation']}" if board.get("gopro_orientation") else "")
+                + "); the boards it was measured on are not recorded.")
     fr = board.get("frames") or []
     return (f"Measured on {len(fr)} boards in {board['video']} ({board['size'][0]} x {board['size'][1]}), at frames "
             f"{', '.join(str(f) for f in fr)} (0 = the video's first frame). The file keeps the video's name, path "
