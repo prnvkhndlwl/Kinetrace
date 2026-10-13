@@ -8189,11 +8189,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------- automatic epipolar re-tracking
 
     def _disagree_thresholds(self) -> list[float]:
-        """The timeline's band threshold per camera: 5 px at 1920 wide, scaled -- the timeline's own
-        rule (`disagree_threshold`), so the band drawn and the stretches re-tracked are one
-        (R6, G83)."""
+        """The timeline's band threshold per camera: 5 px at 1920 on the long side, scaled -- the
+        timeline's own rule (`disagree_threshold`), so the band drawn and the stretches re-tracked
+        are one (R6, G83, I280)."""
         from kinetrace.timeline import disagree_threshold
-        return [disagree_threshold(s.width or 1920) for s in self.project.sessions]
+        return [disagree_threshold(s.width or 1920, s.height or 0) for s in self.project.sessions]
 
     def _retrack_dialog(self):
         """3D → Re-track Disagreeing Stretches: explain, list, ask, run."""

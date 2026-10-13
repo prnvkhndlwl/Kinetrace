@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from kinetrace.calib import sample_tracks_at
+from kinetrace.calib import residual_scale, sample_tracks_at
 
 
 def raw_track(session, j: int) -> np.ndarray:
@@ -437,14 +437,15 @@ def timing_check(project, name_a: str, name_b: str, views: list[int], lens_model
         b = sample_tracks_at(tracks[v][1], local)[:, 0]
         return a, b
 
-    long_side = {v: max(project.sessions[v].width, project.sessions[v].height) or 1920 for v in views}
+    # (I280) the one pixel scale (long side / 1920, never below 1) every residual verdict uses
+    scale = {v: residual_scale(project.sessions[v].width, project.sessions[v].height) for v in views}
     have = [v for v in views if v in tracks]
     pairs = [(i, j) for k, i in enumerate(have) for j in have[k + 1:]]
     for n_done, (i, j) in enumerate(pairs):
         if progress is not None:
             progress(n_done / max(len(pairs), 1), f"Checking the timing of {project.name(i)} and {project.name(j)}")
         ai, bi = sample(i, 0)
-        thr = TIMING_THR_PX * max(long_side[i], long_side[j]) / 1920.0
+        thr = TIMING_THR_PX * max(scale[i], scale[j])
         shares, rows = {}, 0
 
         def score(d):

@@ -79,7 +79,7 @@ from scipy.optimize import least_squares
 from scipy.sparse import coo_matrix
 
 from .calib import (Calibration, CameraCalibration, NoUndistort, OpenCVUndistort,
-                    dlt_from_camera)
+                    dlt_from_camera, residual_scale)
 
 FOCAL_GRID = (0.25, 0.4, 0.55, 0.75, 1.0, 1.3, 1.7, 2.2)   # initial f as a multiple of image width
 OUTLIER_FLOOR_PX = 2.0      # automatic rejection threshold floor at 1080p (scaled by max(w, h) / 1920):
@@ -129,8 +129,7 @@ def _px_scale(sizes) -> np.ndarray:
     LONGER side (I250: a portrait 4K clip is as sharp as a landscape one, and
     max(1, width / 1920) judged it 1.8 x stricter). The one rule for the
     outlier floor, the soft-L1 knee and the reprojection verdict."""
-    s = np.asarray([[w, h] for w, h in sizes], np.float64)
-    return np.maximum(1.0, s.max(axis=1) / 1920.0)
+    return np.array([residual_scale(w, h) for w, h in sizes], np.float64)     # (I280) the one rule
 
 
 def _per_camera(value, C: int, what: str, dtype=bool) -> np.ndarray:

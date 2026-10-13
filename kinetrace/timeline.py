@@ -73,11 +73,13 @@ STRIP_TRACK = _t.with_alpha("#FFFFFF", 22)           # scroll strip background
 STRIP_THUMB = _t.with_alpha(_t.ACCENT, 160)          # scroll strip view window
 
 
-def disagree_threshold(width: float) -> float:
-    """The px above which a camera "disagrees" with the others in 3D: 5 px at
-    1920 px wide, more for a wider picture (the Reconstruct bands scale the same
-    way). The one rule: the timeline's band and the app's reports use it."""
-    return 5.0 * max(1.0, float(width) / 1920.0)
+def disagree_threshold(width: float, height: float = 0.0) -> float:
+    """The px above which a camera "disagrees" with the others in 3D: the Reconstruct
+    verdict's "usable" limit (`calib.residual_bands`: 5 px at 1920 on the LONG side, I280 --
+    a portrait 4K camera is judged like a landscape one). The timeline's band and the
+    app's reports use it."""
+    from kinetrace.calib import residual_bands
+    return residual_bands(width, height)[1]
 
 
 class TimelinePanel(QWidget):
@@ -166,13 +168,13 @@ class TimelinePanel(QWidget):
     def set_disagreement(self, arr: np.ndarray | None, threshold_px: float | None = None) -> None:
         """(T, N) per-cell reprojection error of THIS camera against the others
         (NaN = no 3D), from the app after a reconstruction; cells above the
-        threshold (default `disagree_threshold`: 5 px scaled by picture width /
-        1920) get a magenta band. None clears it."""
+        threshold (default `disagree_threshold`: 5 px scaled by the picture's long
+        side / 1920) get a magenta band. None clears it."""
         self._disagree = None if arr is None else np.asarray(arr, np.float32)
         if threshold_px is not None:
             self._disagree_px = float(threshold_px)
         elif self.session is not None and getattr(self.session, "width", 0):
-            self._disagree_px = disagree_threshold(self.session.width)
+            self._disagree_px = disagree_threshold(self.session.width, getattr(self.session, "height", 0))
         self._cache_key = None
         self.update()
 

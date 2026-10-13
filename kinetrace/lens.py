@@ -52,18 +52,12 @@ OUTLIER_FLOOR_PICK_PX = 0.5
 QUARTER_TURNS = (0, 90, 180, 270)   # the turns a video's rotation tag can ask for
 
 
-def px_scale(width: float, height: float) -> float:
-    """How many times a 1080p pixel one of this picture's pixels is, by the
-    LONGER side (I250: a portrait 4K clip was judged ~1.8 x stricter than the
-    same lens in landscape by max(1, width / 1920))."""
-    return max(1.0, max(float(width), float(height)) / 1920.0)
-
-
 def rms_limits(width: float, height: float) -> tuple[float, float]:
     """(good, ok) limits of one reprojection error in px for a picture of this
     size: at or under the first reads good, over the second poor. The ONE rule
     behind the report's fit verdict and the review board's tile colours."""
-    s = px_scale(width, height)
+    from kinetrace.calib import residual_scale
+    s = residual_scale(width, height)              # (I250) by the longer side
     return 0.6 * s, 1.2 * s
 
 
@@ -1443,7 +1437,8 @@ def lens_report(prof: LensProfile, views: list[np.ndarray], per_view: list[float
                 rms_by_model: dict, errors: dict, model_requested: str,
                 fisheye_runaway: dict | None = None, curve_known: bool = False) -> dict:
     w, h = prof.width, prof.height
-    scale = px_scale(w, h)                                  # (I250) by the longer side
+    from kinetrace.calib import residual_scale
+    scale = residual_scale(w, h)                            # (I250) by the longer side
     cov = coverage_pct(views, (w, h))
     reach = edge_reach_pct(views, (w, h))
     # (I179) views of one held pose are ONE pose: the view and tilt rules count distinct poses
