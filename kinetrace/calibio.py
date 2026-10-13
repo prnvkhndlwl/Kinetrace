@@ -152,8 +152,7 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
     probe = probe if probe is not None else working_probe(cal)
     Ps = []
     for cam in cams:
-        P = cam.pixel_matrix() @ dlt_matrix(cam.coefs)
-        P = P * front_sign(cam.coefs, probe)           # third row = depth, positive in front
+        P = dlt_matrix(cam.coefs) * front_sign(cam.coefs, probe)   # third row = depth, positive in front
         Ps.append(P)
     mirrored = world_is_left_handed(cal, probe)        # the one handedness test (calib)
     F = np.diag([1.0, 1.0, -1.0]) if mirrored else np.eye(3)
@@ -229,9 +228,7 @@ def _fit_lens(cam: CameraCalibration, K0: np.ndarray, fisheye: bool):
     W, H = cam.width, cam.height
     gx, gy = np.meshgrid(np.linspace(0, W - 1, 41), np.linspace(0, H - 1, 31))
     raw = np.column_stack([gx.ravel(), gy.ravel()])
-    und_file = cam.to_calib_frame(raw)                  # the calibration's own undistorted pixels
-    A = cam.pixel_matrix()
-    und = und_file @ A[:2, :2].T + A[:2, 2]
+    und = cam.to_calib_frame(raw)                       # the calibration's own undistorted pixels
     ok = np.isfinite(und).all(axis=1)
     raw, und = raw[ok], und[ok]
     n = np.column_stack([und, np.ones(len(und))]) @ np.linalg.inv(K0).T
@@ -681,8 +678,8 @@ def dlt_columns(cal, names: list[str] | None = None) -> list[str] | None:
 
 def dlt_csv_matlab(cal, path, pixel_origin_out: float = 1.0) -> None:
     """dltCoefs.csv for DLTdv / easyWand users: 11 rows, one column per camera,
-    converted to MATLAB's 1-based pixels when the calibration was fitted on
-    0-based ones (u' = u + 1: L1..L3 += L9..L11, L4 += 1; same for v).
+    converted to MATLAB's 1-based pixels (every calibration is 0-based inside
+    Kinetrace, I278: u' = u + 1: L1..L3 += L9..L11, L4 += 1; same for v).
     `pixel_origin_out` = the convention written (1.0 = MATLAB, 0.0 = Kinetrace's own); (R20)
     `wand.export_dlt_csv` is this function. (I273) Only the calibrated cameras have a column, in
     camera order (`dlt_columns` says which camera each column is)."""

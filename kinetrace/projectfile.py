@@ -1861,6 +1861,7 @@ def _read_calibration(src: _Source):
         cal = Calibration.from_arrays({"calib_coefs": coefs, "calib_meta": json.dumps(c)}, "calib_")
         if cal is not None:
             cal.notes = list(notes or [])
+            cal = cal.to_internal()        # (I278) a file saved 1-based: the same cameras in Kinetrace's pixels
     return cal
 
 

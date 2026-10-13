@@ -351,7 +351,9 @@ def t_dialog_convention_reset():
     dlg = CalibrationDialog(None, ["a", "b"], [(1920, 1080), (848, 480)])
     assert dlg.load(kc) and dlg.conv.currentIndex() == 2 and not dlg.conv.isEnabled()
     assert dlg.load(dl)
-    assert dlg.conv.currentIndex() == 0 and dlg.conv.isEnabled(), (dlg.conv.currentIndex(), dlg.conv.isEnabled())
+    # (I278) a dltCoefs.csv does not say: the choice is RESET to none, and OK waits for it
+    assert dlg.conv.currentIndex() == -1 and dlg.conv.isEnabled(), (dlg.conv.currentIndex(), dlg.conv.isEnabled())
+    assert not dlg.buttons.button(dlg.buttons.StandardButton.Ok).isEnabled()
     dlg.deleteLater()
 
 
@@ -810,12 +812,12 @@ def t_pixel_convention_one_place():
         assert np.allclose(cam.from_dlt_pixels(q), pts, atol=1e-9)
         hom = np.column_stack([q, np.ones(20)]) @ cam.pixel_matrix().T
         assert np.allclose(hom[:, :2], pts, atol=1e-9), (po, flip)
-        # the MATLAB-side coefficients project the 1-based pixels of the same points
-        L1 = cam.coefs_for_origin(1.0)
+        # (I278) the camera in Kinetrace's pixels puts every point where the file's DLT did, and its
+        # MATLAB-side coefficients (the dltCoefs.csv export) project the 1-based pixels of the same points
+        cami = cam.to_internal()
         X = rng.uniform(-0.3, 0.3, (10, 3))
-        want = cam.to_dlt_pixels(cam.project(X))
-        got = dlt_project(L1, X)
-        assert np.allclose(got - (1.0 - po), want - 0.0, atol=1e-6) or np.allclose(got, want + (1.0 - po), atol=1e-6)
+        assert np.allclose(cam.to_dlt_pixels(cami.project(X)), dlt_project(cam.coefs, X), atol=1e-6), (po, flip)
+        assert np.allclose(dlt_project(cami.coefs_for_origin(1.0), X), cami.project(X) + 1.0, atol=1e-6)
         # one DLT matrix / denominator / front rule
         assert np.allclose(calib.dlt_denominator(cam.coefs, X), calib.dlt_matrix(cam.coefs)[2] @ np.vstack([X.T, np.ones(10)]))
 
@@ -847,6 +849,60 @@ def t_dead_code_gone():
 check("I250", "the verdict bands scale with the LONG side: portrait 4K judged like landscape 4K", t_report_long_side)
 check("R14", "one pixel-convention transform (matrix / affine / coefficient shift agree), one DLT matrix",
       t_pixel_convention_one_place)
+
+
+def t_to_internal_lens_models():
+    from kinetrace.calib import LWMUndistort
+    L0 = rig(1).cameras[0].coefs
+    # control points as clicked (a jittered grid): on an exact grid the 12-nearest-neighbour choice has ties
+    # that a flip breaks differently (up to 6e-4 px; DLTdv8 projects are never flipped)
+    g = np.stack(np.meshgrid(np.linspace(0, W, 9), np.linspace(0, H, 7)), -1).reshape(-1, 2)
+    g = g + rng.uniform(-4.0, 4.0, g.shape)
+    X = rng.uniform(-0.3, 0.3, (40, 3))
+    q = rng.uniform([0.1 * W, 0.1 * H], [0.9 * W, 0.9 * H], (40, 2))
+    for po, flip in ((1.0, False), (1.0, True)):
+        proto = CameraCalibration(L0, W, H, NoUndistort(), po, flip)
+        raw = proto.to_dlt_pixels(g)                  # control points in the FILE's pixels (DLTdv8: 1-based)
+        und = raw + 1e-3 * (raw - [W / 2, H / 2]) * np.linalg.norm(raw - [W / 2, H / 2], axis=1)[:, None] / W
+        cam = CameraCalibration(L0, W, H, LWMUndistort(raw, und, 12), po, flip)
+        new = cam.to_internal()
+        assert new.is_internal() and isinstance(new.undistort, LWMUndistort)
+        # the old pipeline: file pixels in, undistorted, DLT; and back
+        old_xy = cam.from_dlt_pixels(cam.undistort.distort(dlt_project(cam.coefs, X)))
+        ok = np.isfinite(old_xy).all(1)
+        assert ok.sum() > 20 and np.abs(new.project(X)[ok] - old_xy[ok]).max() < 1e-6, (
+            po, flip, int(ok.sum()), float(np.nanmax(np.abs(new.project(X) - old_xy))))
+        old_u = cam.from_dlt_pixels(cam.undistort.undistort(cam.to_dlt_pixels(q)))
+        assert np.nanmax(np.abs(new.to_calib_frame(q) - old_u)) < 1e-6, (po, flip)
+    # an OpenCV model fitted 1-based: its principal point moves
+    K = np.array([[600.0, 0, W / 2 + 1], [0, 600.0, H / 2 + 1], [0, 0, 1]])
+    cam = CameraCalibration(L0, W, H, OpenCVUndistort(K, np.array([-0.1, 0.01, 0, 0, 0])), 1.0, False)
+    new = cam.to_internal()
+    assert np.allclose(new.undistort.K[:2, 2], [W / 2, H / 2]) and new.undistort.P is new.undistort.K
+    old_xy = cam.from_dlt_pixels(cam.undistort.distort(dlt_project(cam.coefs, X)))
+    assert np.nanmax(np.abs(new.project(X) - old_xy)) < 1e-6
+    # a bottom-left file needs its picture height; a 1-based one does not
+    for c, refused in ((CameraCalibration(L0, W, 0, NoUndistort(), 1.0, True), True),
+                       (CameraCalibration(L0, W, 0, NoUndistort(), 1.0, False), False)):
+        try:
+            c.to_internal()
+            said = ""
+        except ValueError as e:
+            said = str(e)
+        assert bool(said) == refused and (not said or "picture height" in said), said
+    # the project accepts only Kinetrace pixels
+    p = Project([TrackingSession("a.mp4", 10, 30.0, W, H)], ["a"])
+    try:
+        p.calibration = Calibration([CameraCalibration(L0, W, H, NoUndistort(), 1.0, False)])
+        raised = False
+    except ValueError:
+        raised = True
+    assert raised and p.calibration is None
+
+
+check("I278", "to_internal: an LWM / OpenCV lens model moves with the pixels (every point where it was), a "
+      "bottom-left file without its height is refused in words, the project takes Kinetrace pixels only",
+      t_to_internal_lens_models)
 check("R14", "triangulate() is triangulate_batch() for one point", t_single_equals_batch)
 check("R14", "dead code removed (reference_time, sample_track, Reconstruction.valid / to_mat_dict, reference=)",
       t_dead_code_gone)

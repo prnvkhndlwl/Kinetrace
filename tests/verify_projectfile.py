@@ -135,7 +135,7 @@ def make_project():
                LWMUndistort(rng.uniform(0, 640, (30, 2)), rng.uniform(0, 640, (30, 2)), 12)][i]
         cams.append(CameraCalibration(dlt_from_camera(K, R, -R @ pos), 640, 480, und, pixel_origin=float(i % 2),
                                       rmse=0.25 * i if i else float("nan")))
-    p.calibration = Calibration(cams, "m", "unit test")
+    p.calibration = Calibration(cams, "m", "unit test").to_internal()   # camera 2 was fitted 1-based (I278)
     p.calibration.origin_shift = np.array([0.1, -0.2, 0.3])
     p.calibration.notes = ["could not read the lens store"]
     p.lenses = [LensProfile(640, 480, K, np.array([-0.2, 0.05, 0.0, 0.0, 0.0]), rms=0.31, n_views=20,
@@ -275,6 +275,20 @@ check(qd.sessions[0].fingerprint is None and "fingerprint" in qd.sessions[0].fin
       and qd.sessions[0].n_points == p.sessions[0].n_points,
       "a damaged fingerprint never stops the project from opening; the reason is kept to be said")
 pf.write_folder(pf.freeze(p, STATE, pid, target=path), path)
+# (I278) a calibration.json saved in MATLAB's 1-based pixels (an older save) opens as the same cameras in
+# Kinetrace's own pixels: the first camera written 1-based comes back 0-based, every pixel where it was
+cpath = os.path.join(OUT, "kitchen-1based.kinetrace")
+shutil.copytree(path, cpath, dirs_exist_ok=True)
+with open(os.path.join(cpath, "calibration.json"), encoding="utf-8") as fh:
+    cj = json.load(fh)
+cj["coefs"][0] = [float(v) for v in p.calibration.cameras[0].coefs_for_origin(1.0)]
+cj["cams"][0]["pixel_origin"] = 1.0
+with open(os.path.join(cpath, "calibration.json"), "w", encoding="utf-8") as fh:
+    json.dump(cj, fh)
+q4, _, _ = pf.read(cpath)
+_c0, _X = q4.calibration.cameras[0], rng.normal(size=(8, 3)) * 0.3
+check(q4.calibration.is_internal() and np.abs(_c0.project(_X) - p.calibration.cameras[0].project(_X)).max() < 1e-9,
+      "(I278) a 1-based calibration.json opens in Kinetrace's pixels, every point projecting where it did")
 
 # ----------------------------------------------------------------- 2. nothing silently left out
 print("\n[2] field coverage")
@@ -292,7 +306,7 @@ PERSISTED = {
                         "masks", "body", "current_frame", "ui_state", "_name_counter", "_event_counter",
                         "segments", "seg_masks",       # (G149) every segment and its silhouettes
                         "fingerprint"},                # (I266) cameras/<cam>/fingerprint/
-    "Project": {"sessions", "names", "offsets", "rates", "active", "calibration", "reconstruction", "lenses",
+    "Project": {"sessions", "names", "offsets", "rates", "active", "_calibration", "reconstruction", "lenses",
                 "exports"},
     "MaskTrack": {"n_frames", "bbox", "area", "centroid", "score", "contours", "midline"},
     "BodyTrack": {"joints3d", "joints2d", "conf", "score", "bbox", "focal", "cam_t", "names", "backend", "runs",

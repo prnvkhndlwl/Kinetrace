@@ -166,8 +166,11 @@ class CalibrationDialog(QDialog):
         self.conv = QComboBox()
         for label, _, _ in CONVENTIONS:
             self.conv.addItem(label)
+        self.conv.setPlaceholderText("Choose how this file numbers pixels")
+        self.conv.setCurrentIndex(-1)
         self.conv.setToolTip("How the calibration software counted pixels. Wrong by one pixel or a\n"
                              "flipped y and every 3D point is off — this is the usual mistake.")
+        self.conv.currentIndexChanged.connect(lambda _i: self._update_ok())
         form.addRow("Pixel convention", self.conv)
         lay.addLayout(form)
         self.grid = QGridLayout()
@@ -200,25 +203,23 @@ class CalibrationDialog(QDialog):
         self._loaded = cal
         self.path_label.setText(Path(path).name)
         self.path_label.setToolTip(path)
-        # a Kinetrace file states its own convention, and a K + R/t file (JSON or
-        # the plain-text form) is OpenCV's by construction: no guessing to offer.
-        # (I96) the .txt form used to keep the MATLAB default, and every track
-        # was triangulated from (x + 1, y + 1) with a perfect-looking residual.
+        # (I278) a Kinetrace file, a K + R/t / OpenCV / Anipose / MATLAB-cameras file and a DLTdv8
+        # project state their convention (the importer says so: `convention_stated`); a bare
+        # dltCoefs.csv (DLTdv, easyWand or Argus wrote it) and an easyWand file (y from the top
+        # or the bottom) do not, and the user is ASKED -- never a default (I96: a guessed
+        # convention moved every 3D point by a pixel with a perfect-looking residual)
         low = path.lower()
-        # K + R/t cameras (Anipose, OpenCV, MATLAB cameras) are always OpenCV pixels;
-        # from_krt is the only importer that moves the origin, so it marks them
-        self._self_described = low.endswith((".json", ".txt")) or cal.origin_shift is not None
+        self._self_described = bool(getattr(cal, "convention_stated", True))
         # (I273) the file's calibrated cameras (a .kcal.json may leave cameras out: null)
         cols = cal.views()
         fcams = [cal.camera(k) for k in cols]
-        if fcams:
-            # (I171) ALWAYS take the importer's own convention: a self-described file locks it, and
-            # a file that is not (dltCoefs.csv, easyWand, a DLTdv project: MATLAB's 1-based pixels)
-            # must RESET it -- a previous self-described file left OpenCV's selected, and the
-            # next dltCoefs.csv was then imported 0-based: the I96 one-pixel error
+        if fcams and self._self_described:
             c0 = fcams[0]
             match = [k for k, (_, o, f) in enumerate(CONVENTIONS) if o == c0.pixel_origin and f == c0.y_flip]
-            self.conv.setCurrentIndex(match[0] if match else (2 if c0.pixel_origin == 0.0 else 0))
+            self.conv.setCurrentIndex(match[0] if match else -1)
+        else:
+            # (I171) a file that does not say RESETS the choice: the previous file's must not carry over
+            self.conv.setCurrentIndex(-1)
         self.conv.setEnabled(not self._self_described)
         # per-view mapping to a calibration column
         while self.grid.count():
@@ -281,14 +282,28 @@ class CalibrationDialog(QDialog):
             parts.append("No undistortion in this file: the tracks are used as filmed. Fine for "
                          "rectilinear lenses; a GoPro-style lens needs the DLTdv project file.")
         parts += notes
+        if not self._self_described:
+            parts.append("This file does not say how its pixels were numbered, so choose it above: DLTdv8 and "
+                         "easyWand (MATLAB) count the first pixel as 1, y down from the top; files from older "
+                         "DLTdv versions may measure y from the bottom edge; OpenCV and Python count from 0. "
+                         "A wrong choice moves every 3D point by about a pixel's worth (or turns the picture "
+                         "upside down) while the residual still looks normal, so Kinetrace asks instead of "
+                         "guessing.")
         if cal.unit:
             parts.append(f"World unit: {cal.unit}.")
         rm = [c.rmse for c in fcams if np.isfinite(c.rmse)]
         if rm:
             parts.append(f"Calibration RMSE per camera: {', '.join(f'{r:.2f}' for r in rm)} px.")
         self.info.setText(" ".join(parts))
-        self.buttons.button(QDialogButtonBox.Ok).setEnabled(len(fcams) >= 2)
+        self._n_file_cams = len(fcams)
+        self._update_ok()
         return True
+
+    def _update_ok(self) -> None:
+        """OK needs a file of two or more cameras and its pixel convention (I278: asked when the
+        file does not say)."""
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(
+            self._loaded is not None and getattr(self, "_n_file_cams", 0) >= 2 and self.conv.currentIndex() >= 0)
 
     def _accept(self) -> None:
         if self._loaded is None:
@@ -334,6 +349,8 @@ class CalibrationDialog(QDialog):
                     "videos were resized after calibrating). Use this mapping anyway?",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
+        if self.conv.currentIndex() < 0:
+            return                                      # (I278) OK is grey until the convention is chosen
         label, origin, flip = CONVENTIONS[self.conv.currentIndex()]
         cams = []
         for i, k in enumerate(chosen):
@@ -346,11 +363,14 @@ class CalibrationDialog(QDialog):
                 origin, flip = src.pixel_origin, src.y_flip
             cams.append(CameraCalibration(src.coefs.copy(), int(w), int(h), src.undistort,
                                           origin, flip, src.rmse))
-        self.result_calibration = Calibration(cams, self._loaded.unit, self._loaded.source)
-        # (I96) a K + R/t file moved the world origin; 3D results need the shift
-        # to return to the file's frame, so it must survive the re-mapping
-        self.result_calibration.origin_shift = self._loaded.origin_shift
-        self.result_calibration.notes = list(getattr(self._loaded, "notes", []) or [])
+        # (I96) a K + R/t file moved the world origin; 3D results need the shift to return to the
+        # file's frame, so it survives the re-mapping, with the notes and the quality report
+        try:
+            # (I278) into Kinetrace's own pixels, once, here: the videos' heights are known
+            self.result_calibration = self._loaded.with_cameras(cams).to_internal()
+        except ValueError as e:
+            QMessageBox.warning(self, "Import camera calibration", f"This calibration cannot be used: {e}.")
+            return
         self.accept()
 
 

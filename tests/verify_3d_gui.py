@@ -199,6 +199,33 @@ assert not _asked and dlg.result_calibration is not None, _asked
 assert dlg.result_calibration.cameras[1].width == 848 and np.allclose(dlg.result_calibration.cameras[1].coefs,
                                                                        cams[2].coefs)
 dlg.deleteLater()
+# (I278) a dltCoefs.csv does not say how it numbered pixels: the choice starts EMPTY, OK stays grey and
+# the dialog says why; choosing DLTdv8 / easyWand (1-based) brings the cameras into Kinetrace's own pixels.
+# This csv was written 0-based, so the MATLAB choice puts every point one pixel up and left: what a wrong
+# choice does, and why it is asked
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QDialogButtonBox  # noqa: E402
+dlg = v3.CalibrationDialog(win, ["A", "B", "C"], [(W, H)] * 3)
+dlg.show()
+assert dlg.load(csv)
+_okb = dlg.buttons.button(QDialogButtonBox.Ok)
+assert dlg.conv.currentIndex() == -1 and not _okb.isEnabled(), (dlg.conv.currentIndex(), _okb.isEnabled())
+assert "does not say how its pixels were numbered" in dlg.info.text() and "asks instead of guessing" in dlg.info.text()
+QTest.mouseClick(_okb, Qt.LeftButton)
+pump(0.05)
+assert dlg.result_calibration is None, "OK did something before the convention was chosen"
+dlg.conv.setFocus()
+QTest.keyClick(dlg.conv, Qt.Key_Down)                 # the first choice: DLTdv8 / easyWand, MATLAB pixels
+pump(0.05)
+assert dlg.conv.currentIndex() == 0 and _okb.isEnabled(), (dlg.conv.currentIndex(), _okb.isEnabled())
+QTest.mouseClick(_okb, Qt.LeftButton)
+pump(0.05)
+_rc = dlg.result_calibration
+_Xi = np.array([[0.05, -0.1, 0.2], [-0.2, 0.1, 0.0]])
+assert _rc is not None and _rc.is_internal() and len(_rc) == 3
+assert np.abs(_rc.cameras[0].project(_Xi) - (cams[0].project(_Xi) - 1.0)).max() < 1e-5      # the csv has 10 digits
+dlg.deleteLater()
 # (I102) a DLTdv project whose lens store cannot be read SAYS so, instead of
 # telling the user to use the DLTdv project file they just chose
 from scipy.io import savemat as _savemat  # noqa: E402

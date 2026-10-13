@@ -117,12 +117,27 @@ class Project:
             self.rates[REFERENCE_VIEW] = 1.0
         self.active = int(np.clip(active, 0, max(n - 1, 0)))
         self.path: str | None = None       # where this project was last saved
-        self.calibration: Calibration | None = None    # DLT per view, view order
+        self.calibration = None                         # the property below (I278)
         self.reconstruction: Reconstruction | None = None   # last 3D result
         self.lenses: list = [None] * n                  # lens.LensProfile per view (or None)
         # the formats written into the project's exports/ folder at every save (G42)
         self.exports: list[str] = []
         self._normalize()
+
+    @property
+    def calibration(self) -> Calibration | None:
+        """DLT per view, view order; every camera in Kinetrace's own pixels (I278)."""
+        return self._calibration
+
+    @calibration.setter
+    def calibration(self, cal: Calibration | None) -> None:
+        # (I278) a calibration in a file's own pixel convention must have gone through
+        # `Calibration.to_internal` where it came in; one that did not would be a pixel off
+        # everywhere with a normal-looking residual, so it is refused here, loudly
+        if cal is not None and not cal.is_internal():
+            raise ValueError("internal error: a calibration in its file's pixel convention reached the "
+                             "project (it must go through Calibration.to_internal first)")
+        self._calibration = cal
 
     # -------------------------------------------------------------- accessors
 

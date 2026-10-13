@@ -151,13 +151,19 @@ for _f, _k in ((1300.0, (-0.25, 0.08)), (1100.0, (-0.30, 0.10))):
     assert not _chk["runaway"] and _chk["valid_frac"] == 1.0, (_f, _chk)
 print("OpenCV undistortion converges at the edges of wide lenses OK (I73)")
 
-# a calibration in MATLAB convention (1-based, y up) must map Kinetrace pixels correctly
+# a calibration in MATLAB convention (1-based, y up) maps Kinetrace pixels correctly, and (I278) becomes
+# the same camera in Kinetrace's own pixels: a Kinetrace pixel lands where the file's pixel did
 calm = CameraCalibration(cams[0].coefs, W, H, NoUndistort(), pixel_origin=1.0, y_flip=True)
 p = np.array([[100.0, 50.0]])
-q = calm.to_calib_frame(p)
+q = calm.to_dlt_pixels(p)
 assert np.allclose(q, [[101.0, H - 50.0]]), q         # x + 1; y from the bottom, 1-based
-assert np.allclose(calm.from_calib_frame(q), p), "convention round trip"
-print("coordinate conventions OK (pixel origin, y flip)")
+assert np.allclose(calm.from_dlt_pixels(q), p), "convention round trip"
+cami = calm.to_internal()
+assert cami.is_internal() and not calm.is_internal() and cami.to_internal() is cami
+_Xw = np.array([[0.1, -0.2, 0.3], [-0.4, 0.25, -0.1], [0.3, 0.3, 0.05]])
+assert np.abs(cami.project(_Xw) - calm.from_dlt_pixels(dlt_project(calm.coefs, _Xw))).max() < 1e-9
+assert np.abs(cami.center() - calm.center()).max() < 1e-12
+print("coordinate conventions OK (pixel origin, y flip; to_internal keeps every pixel and the centre)")
 
 # ---- files: dltCoefs.csv + easyWand .mat + npz persistence -----------------
 csv = os.path.join(OUT, "test_dltCoefs.csv")

@@ -6,7 +6,7 @@ no window, no Qt widgets.
     python -m kinetrace.convert check    FILE                  (exit 0 clean, 1 warnings, 2 errors)
     python -m kinetrace.convert calibration IN OUT [--to F] [--size WxH ...] [--pixels P] [--names a,b,c]
     python -m kinetrace.convert tracks   IN OUT (--video V | --size WxH --frames N) [--to F] [--camera K]
-    python -m kinetrace.convert points3d IN OUT [--to F] [--calibration CAL [--size WxH ...]]
+    python -m kinetrace.convert points3d IN OUT [--to F] [--calibration CAL [--size WxH ...] [--pixels P]]
     python -m kinetrace.convert masks    PROJECT OUT [--camera NAME] [--animal NAME] [--to json|png]
     python -m kinetrace.convert offsets  PROJECT OUT
     python -m kinetrace.convert import   PROJECT --tracks FILE [--camera NAME] [--out NEW.kinetrace]
@@ -32,6 +32,11 @@ TRACK_FORMATS = {"dlc": "DeepLabCut CSV", "dltdv": "DLTdv8 xypts (first pixel 1,
                  "sparse": "sparse TSV", "kinetrace": "a Kinetrace project (.kinetrace)"}
 P3_FORMATS = {"kinetrace": "Kinetrace xyz CSV", "dltdv": "DLTdv xyzpts", "anipose": "Anipose points_3d CSV"}
 PIXELS = {"matlab": (1.0, False), "bottom-left": (1.0, True), "opencv": (0.0, False)}
+# (I278) said when a file does not state its pixel convention (the import dialog's sentence)
+ASK_PIXELS = ("does not say how its pixels were numbered: give --pixels matlab (DLTdv8 / easyWand: the first "
+              "pixel is 1, y down from the top), --pixels bottom-left (older DLTdv: y from the bottom edge) or "
+              "--pixels opencv (0-based). A wrong choice moves every 3D point by about a pixel's worth while "
+              "the residual still looks normal, so it is not guessed")
 
 
 class Failure(Exception):
@@ -68,18 +73,33 @@ def _sizes(values, n: int):
 
 
 # ------------------------------------------------------------------ calibration
-def cmd_calibration(a) -> int:
+def _calibration_in(path, pixels, size_values):
+    """A calibration file -> (calibration in Kinetrace's own pixels, its calibrated cameras): the
+    pixel convention from `--pixels` (refused when the file does not state it and none is given),
+    picture sizes from `--size`, then `to_internal` (I278); the writers convert back."""
     from kinetrace import calibio
-    cal = calibio.load_calibration(a.input)
+    cal = calibio.load_calibration(path)
     cams = [cal.camera(v) for v in cal.views()]          # (I273) a .kcal.json may leave cameras out
-    if a.pixels:
-        po, flip = PIXELS[a.pixels]
+    if pixels:
+        po, flip = PIXELS[pixels]
         for c in cams:
             c.pixel_origin, c.y_flip = po, flip
-    sizes = _sizes(a.size, len(cams))
+    elif not getattr(cal, "convention_stated", True):
+        raise Failure(f"{Path(path).name} {ASK_PIXELS}")
+    sizes = _sizes(size_values, len(cams))
     if sizes:
         for c, (w, h) in zip(cams, sizes):
             c.width, c.height = w, h
+    try:
+        cal = cal.to_internal()
+    except ValueError as e:
+        raise Failure(f"{Path(path).name}: {e}") from None
+    return cal, [cal.camera(v) for v in cal.views()]
+
+
+def cmd_calibration(a) -> int:
+    from kinetrace import calibio
+    cal, cams = _calibration_in(a.input, a.pixels, a.size)
     to = a.to or _guess(a.output, CAL_FORMATS, {".kcal.json": "kcal", ".toml": "anipose", ".yml": "opencv-yaml",
                                                 ".yaml": "opencv-yaml", ".json": "opencv-json", ".mat": "matlab",
                                                 ".py": "blender", ".csv": "dlt"})
@@ -163,12 +183,7 @@ def cmd_points3d(a) -> int:
         # (I170) cameras and points exported by one program must share ONE world: the points go
         # through the same models `convert calibration` writes for this calibration (mirrored in Z
         # for a left-handed easyWand / DLTdv world, the file's origin for a K + R/t rig)
-        cal = calibio.load_calibration(a.calibration)
-        cams = [cal.camera(v) for v in cal.views()]
-        sizes = _sizes(a.size, len(cams))
-        if sizes:
-            for c, (w, h) in zip(cams, sizes):
-                c.width, c.height = w, h
+        cal, cams = _calibration_in(a.calibration, a.pixels, a.size)
         if any(c.width <= 0 or c.height <= 0 for c in cams):
             raise Failure(f"{Path(a.calibration).name} does not record the cameras' picture sizes: give --size "
                           "WIDTHxHEIGHT, once for all cameras or once per camera")
@@ -355,8 +370,10 @@ def _describe(path: str) -> tuple[list[str], list[str]]:
     cal = calibio.load_calibration(path)
     lines = [f"calibration ({cal.source or p.name}): {len(cal.cameras)} camera(s), unit {cal.unit or '?'}"]
     lines += [f"  camera {i + 1}: not calibrated" if c is None else
-              f"  camera {i + 1}: {c.width}x{c.height}, pixels from {c.pixel_origin:g}"
-              f"{', y from the bottom' if c.y_flip else ''}, lens correction: {getattr(c.undistort, 'kind', 'none')}"
+              f"  camera {i + 1}: {c.width}x{c.height}, "
+              + (f"pixels from {c.pixel_origin:g}{', y from the bottom' if c.y_flip else ''}"
+                 if getattr(cal, "convention_stated", True) else "pixel convention not stated (asked on import)")
+              + f", lens correction: {getattr(c.undistort, 'kind', 'none')}"
               for i, c in enumerate(cal.cameras)]
     return lines, cal.notes
 
@@ -401,7 +418,8 @@ def main(argv=None) -> int:
     s.add_argument("--to", choices=list(CAL_FORMATS))
     s.add_argument("--size", action="append", help="WIDTHxHEIGHT, once for all cameras or once per camera "
                                                    "(a dltCoefs.csv records no sizes)")
-    s.add_argument("--pixels", choices=list(PIXELS), help="how a dltCoefs.csv counted pixels (default matlab)")
+    s.add_argument("--pixels", choices=list(PIXELS), help="how a dltCoefs.csv / easyWand file counted pixels "
+                                                          "(needed: those files do not say)")
     s.add_argument("--names", help="camera names, comma separated")
     s = sub.add_parser("tracks", help="2D tracks from one program's format into another's")
     s.add_argument("input")
@@ -420,6 +438,8 @@ def main(argv=None) -> int:
                                          "world of the cameras `convert calibration` exports from it")
     s.add_argument("--size", action="append", help="WIDTHxHEIGHT, once for all cameras or once per camera "
                                                    "(with --calibration, for a file that records no sizes)")
+    s.add_argument("--pixels", choices=list(PIXELS), help="with --calibration: how a dltCoefs.csv / easyWand "
+                                                          "file counted pixels (needed: those files do not say)")
     s = sub.add_parser("masks", help="a project's silhouettes as polygons (JSON) or PNG masks")
     s.add_argument("project")
     s.add_argument("output", help="a .json file, or a folder for PNGs")
