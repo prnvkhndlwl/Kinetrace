@@ -3040,7 +3040,8 @@ class MainWindow(QMainWindow):
             self._refresh_overlay()
             self._refresh_cameras()
             self._fit_timeline_height()
-            self._goto(self.current, force=True)
+            # on its last tracked frame (owner 2026-10-12): Track carries on from there, not over 0..99 again
+            self._goto(n - 1, force=True)
             # its five points selected (owner 2026-10-12): Track carries them on at the first press. Not the
             # animal row -- that would be a silhouette run, which needs the SAM weights
             self.layers.select_only(pids, (), current=pids[0])

@@ -263,8 +263,8 @@ class TourOverlay(QWidget):
                 x, y = r.right() + gap, r.top()
             elif r.left() - gap - cw >= m:
                 x, y = r.left() - gap - cw, r.top()
-            else:                                    # a large area (the video): in its lower-left corner,
-                x, y = r.left() + 16, r.bottom() - 16 - ch       # off the middle, where the subject usually is
+            else:                                    # a large area (the video): in its upper-right corner, off the
+                x, y = r.right() - 16 - cw, r.top() + 16          # middle and off the demo's animal at frame 99
         self.card.move(max(m, min(x, W - cw - m)), max(m, min(y, H - ch - m)))
         self.card.raise_()
 

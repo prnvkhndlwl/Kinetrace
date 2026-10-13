@@ -382,8 +382,8 @@ for you (a made-up animal walking; about a second the first time, kept in the
 *demo* folder inside the Kinetrace folder). It comes with five points already
 tracked on the first 100 frames and the animal's outline drawn, so every panel
 has something in it. After the tour it stays open for you to try things —
-its five points come already selected, so **Track** carries them on at the
-first press; click to correct one, export. Nothing is
+it opens on frame 99, the last tracked one, with its five points already
+selected, so **Track** carries them on from there at the first press; click to correct one, export. Nothing is
 saved unless you choose Save; open your own video with **File → Open Video**
 and it takes the demo's place.
 

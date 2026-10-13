@@ -170,6 +170,9 @@ if sess is not None:
           (win.layers.selected_pids(), win.layers.selected_animals()))
     check(win._track_blocked is None and win.btn_track.isEnabled(), "Track works at the first press on the demo",
           win._track_blocked)
+    check(win.current == demo.N_FILLED - 1 and win.spin.value() == demo.N_FILLED - 1,
+          f"the demo opens on frame {demo.N_FILLED - 1}, its last tracked one (Track carries on from there)",
+          (win.current, win.spin.value()))
 
 # ---------------------------------------------------------------- [3] walking the stops
 print("[3] walking the stops")
