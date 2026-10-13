@@ -584,7 +584,7 @@ class CamerasPage(QWizardPage):
             else:
                 # the picture size (and an Argus file's line) in the row, so a wrong profile shows (I31)
                 text = f"{prof.summary()}; for {int(prof.width)}×{int(prof.height)} pictures"
-                if "line " in str(prof.source):
+                if " line" in str(prof.source) or "(line " in str(prof.source):    # (I282) "its only line" too
                     text += f" ({prof.source})"
                 twins = [p.name(j) for j in range(p.n_views) if j != c and j < len(p.lenses)
                          and _same_lens(p.lenses[j], prof)]
@@ -702,8 +702,6 @@ class CamerasPage(QWizardPage):
         if prof is None:
             self._refuse_lens(c, which)
             return
-        if which:
-            prof.source = f"{Path(path).name}{which}"
         fitted, bad = lens_for_camera(prof, p.sessions[c], p.name(c))
         read = ""
         if fitted is None and lens_turn_unknown(prof, p.sessions[c]) and _lens.kinetrace_lens_file(path):
