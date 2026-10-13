@@ -4942,8 +4942,7 @@ class MainWindow(QMainWindow):
             if f is None:                    # this camera was not recording yet
                 rt.want_frame = None
                 cv.set_points(np.zeros((0, 2), np.float32), np.zeros(0, bool), [], None)
-                cv.set_mask(None)
-                cv.set_midline(None)
+                cv.clear_masks()                # every animal's silhouette (G189)
                 continue
             f = min(f, rt.n_frames - 1)
             if rt.want_frame != f and not cv.is_stale():

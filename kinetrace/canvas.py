@@ -637,8 +637,7 @@ class VideoCanvas(QGraphicsView):
         self._place_zoom_bar()
         self.set_points(np.zeros((0, 2)), np.zeros(0, bool), [], None)
         self.clear_group_members()
-        self.set_mask(None)
-        self.set_midline(None)
+        self.clear_masks()
         self.set_prompts([], None)
         self.set_guides([])
         self.set_stale(False)
@@ -706,6 +705,10 @@ class VideoCanvas(QGraphicsView):
         item.setPen(pen)
         item.setPath(path)
         item.setVisible(True)
+
+    def clear_masks(self) -> None:
+        """No silhouette of any animal, and no midline (G189: `set_mask(None)` hid only the first)."""
+        self.set_masks([])
 
     def set_masks(self, layers, opacity: float = 0.35) -> None:
         """(G149) Every segment's silhouette on this frame: `layers` = [(outline polygons or None,
