@@ -445,14 +445,22 @@ FOV_SIDE_ALPHA = 0.10          # (G187, owner 2026-10-12) each field-of-view sid
 
 
 def _px(v: float, px: float) -> int:
-    """A size of `v` screen pixels at the display's pixel density `px` (at least 1)."""
-    return max(1, int(round(v * px)))
+    """A size of `v` screen pixels at the display's pixel density `px` (at least 1; halves round up, never to
+    even - the same at 150 % as at 250 %)."""
+    return max(1, int(np.floor(v * px + 0.5)))
+
+
+SCREEN_CLAMP = 1e7              # px: a far-plane point of a ray near 90 degrees, zoomed far in, stays in int32
+
+
+def _to_int_px(scr: np.ndarray) -> np.ndarray:
+    return np.round(np.clip(scr, -SCREEN_CLAMP, SCREEN_CLAMP)).astype(np.int32)
 
 
 def _draw_poly(img, scr: np.ndarray, colour, closed: bool, thickness: int = 1) -> None:
     ok = np.isfinite(scr).all(axis=1)
     if ok.sum() >= 2:
-        cv2.polylines(img, [np.round(scr[ok]).astype(np.int32)], closed, colour, thickness, cv2.LINE_AA)
+        cv2.polylines(img, [_to_int_px(scr[ok])], closed, colour, thickness, cv2.LINE_AA)
 
 
 def _fov_sides(cd, to_screen) -> list:
@@ -472,7 +480,7 @@ def _fov_sides(cd, to_screen) -> list:
         poly = np.vstack([f.centre[None], pts] + ([nxt[None]] if nxt is not None else []))
         scr, depth = to_screen(poly)
         if len(scr) >= 3 and np.isfinite(scr).all():
-            out.append((float(depth.mean()), np.round(scr).astype(np.int32)))
+            out.append((float(depth.mean()), _to_int_px(scr)))
     return out
 
 
