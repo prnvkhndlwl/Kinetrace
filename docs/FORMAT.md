@@ -258,7 +258,10 @@ stored pictures by the file's rotation tag (a camera filmed on its side). `board
 (empty for a profile not fitted from a checkerboard in Kinetrace) says where it was
 measured: `video` (file name), `path`, `size`, `rotation`, `frames` (the video frame
 numbers of the boards the fit used, 0 = the first frame), `pattern` (inner corners) and
-`square_m`. (The lens wizard's own list positions of those boards are not written: without
+`square_m`, plus `gopro_orientation` (GoPro's mounting tag U / D / L / R) for GoPro footage. A
+profile whose turn was read afterwards from its checkerboard video (it did not record it) has
+only `video`, `path`, `size`, `rotation`, `gopro_orientation` when known, and `named_later: true`.
+(The lens wizard's own list positions of those boards are not written: without
 its scan they say nothing.) A
 `.klens.json` file holds the same fields, for the pictures of its checkerboard video.
 

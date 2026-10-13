@@ -12,6 +12,9 @@ fitting rule, the file round trip; the decoder's turn on ffmpeg-tagged clips (an
 the picture really is the stored one turned that way); a board scan records its video's turn.
 Through the window (offscreen): 3D -> Load a Lens Profile for Cameras... on a camera filmed on its
 side and on an upside-down one, an unknown turn refused, the wand wizard's "Use for all" targets.
+(I275, G184) A profile made before the turn was recorded gets it from its checkerboard video: the pure
+step (size check, refusals, GoPro OREN kept), then the offer through the wand wizard's "Load file...",
+Load a Lens Profile for Cameras... and the one-camera entry.
 
 .venv\\Scripts\\python.exe tests\\verify_lens_turn.py
 """
@@ -36,12 +39,15 @@ import imageio_ffmpeg  # noqa: E402
 import numpy as np  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 
-ASK = {"open": "", "question": QMessageBox.Yes, "warn": []}
-QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (ASK["open"], ""))
+ASK = {"open": "", "question": QMessageBox.Yes, "warn": [], "asked": []}
+# a list answers one dialog after the other (the lens file, then its checkerboard video: I275)
+QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (ASK["open"].pop(0) if isinstance(ASK["open"], list)
+                                                            else ASK["open"], ""))
 QMessageBox.warning = staticmethod(lambda *a, **k: (ASK["warn"].append(str(a[2]) if len(a) > 2 else ""),
                                                     QMessageBox.Ok)[1])
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
-QMessageBox.question = staticmethod(lambda *a, **k: ASK["question"])
+QMessageBox.question = staticmethod(lambda *a, **k: (ASK["asked"].append(str(a[2]) if len(a) > 2 else ""),
+                                                     ASK["question"])[1])
 app = QApplication.instance() or QApplication([])
 import _lens_attach  # noqa: E402  (the camera list: the working camera stays ticked)
 
@@ -227,6 +233,77 @@ BOARD = tagged(write_video(os.path.join(OUT, "board_level.mp4"), bframes), 90, o
 scan = lens.scan_video(BOARD, (9, 6), max_candidates=6)
 check(scan.rotation == 270 and scan.size == (480, 640) and len(scan.corners) >= 3,
       "a board video filmed on its side: the scan records its turn", (scan.rotation, scan.size, len(scan.corners)))
+BOARD_LEVEL = os.path.join(OUT, "board_level.mp4")
+
+
+def ident(a, b):
+    """The same numbers, bit for bit (Tier A: a recorded turn must not move the lens)."""
+    return (a is not None and b is not None and (a.width, a.height, a.fisheye) == (b.width, b.height, b.fisheye)
+            and np.array_equal(a.K, b.K) and np.array_equal(np.ravel(a.dist), np.ravel(b.dist)))
+
+
+# ------------------------------------------------------------------ 5. the turn read from the board video
+print("\n[5] a profile with no turn recorded gets it from its checkerboard video (I275)")
+OLD = lens.LensProfile(320, 240, np.array([[300.0, 0, 163.5], [0, 302.0, 117.0], [0, 0, 1]]),
+                       np.array([-0.2, 0.04, 0.001, -0.002, 0.0]), False, 0.3, 20, "checkerboard (made before I269)",
+                       {"verdict": "good", "verdict_reasons": ["clean"], "principal_px": [163.5, 117.0]})
+check(OLD.rotation is None, "the old profile records no turn")
+tu = getattr(lens, "turn_unknown", None)
+check(tu is not None and tu(OLD, (240, 320), 270) and not tu(OLD, (320, 240), 0) and not tu(OLD, (240, 320), None)
+      and not tu(lens.turn_profile(MODELS["standard"], 0), (2160, 3840), 270) and not tu(OLD, (640, 480), 0),
+      "turn_unknown: only an unknown PROFILE turn on a quarter-turned camera whose own turn is known")
+vt, rt_ = getattr(lens, "video_turn", None), getattr(lens, "record_turn", None)
+if vt is None or rt_ is None:
+    check(False, "lens.video_turn / lens.record_turn exist")
+else:
+    size, rot, oren = vt(LEVEL)
+    check(size == (320, 240) and rot == 0 and oren == "", "video_turn: the level video, not GoPro footage",
+          (size, rot, oren))
+    filled, said = rt_(OLD, LEVEL, size, rot, oren)
+    check(filled is not None and filled.rotation == 0 and ident(filled, OLD) and filled is not OLD and OLD.rotation is None
+          and filled.board.get("named_later") and filled.board.get("video") == "level.mp4"
+          and "level.mp4" in said, "the level board video: turn 0 recorded in a copy, the lens numbers untouched", said)
+    check(filled is not None and "named afterwards" in lens.board_sentence(filled.board)
+          and "0 boards" not in lens.board_sentence(filled.board), "the report says the video was named afterwards",
+          lens.board_sentence(filled.board) if filled is not None else None)
+    if filled is not None:
+        got, said = lens.fit_profile(filled, (240, 320), 270, "CAM1")
+        check(ident(got, lens.turn_profile(OLD, 270)) and "turned" in said,
+              "...then fits the camera filmed on its side, bit for bit the exact turn", said)
+        rt2 = lens.LensProfile.from_json(filled.to_json())
+        check(rt2.rotation == 0 and rt2.board.get("named_later") and ident(rt2, OLD), "the recorded turn is saved")
+        again, said = rt_(filled, LEVEL, size, rot, oren)
+        check(again is None and "already" in said, "a profile that records its turn is not changed", said)
+    for vid, what in ((SIDE, "240 x 320"), (BOARD_LEVEL, "640 x 480")):
+        s_, r_, o_ = vt(vid)
+        bad, said = rt_(OLD, vid, s_, r_, o_)
+        check(bad is None and what in said and "320 x 240" in said,
+              f"{os.path.basename(vid)}: another picture size is not this profile's video, in words", said)
+    bad, said = rt_(OLD, LEVEL, (320, 240), None, "")
+    check(bad is None and "cannot say" in said, "a decoder that cannot say the turn: refused, in words", said)
+    side_old = lens.LensProfile(240, 320, np.array([[302.0, 0, 117.0], [0, 300.0, 163.5], [0, 0, 1]]),
+                                OLD.dist.copy(), False, 0.3, 20, "measured on a board filmed on its side")
+    s_, r_, o_ = vt(SIDE)
+    side_f, said = rt_(side_old, SIDE, s_, r_, o_)
+    check(side_f is not None and side_f.rotation == 270, "measured on a board filmed on its side: turn 270", said)
+    if side_f is not None:
+        lev, _ = lens.fit_profile(side_f, (320, 240), 0, "CAM2")
+        sid, _ = lens.fit_profile(side_f, (240, 320), 270, "CAM1")
+        check(ident(lev, lens.turn_profile(side_old, 90)) and sid is side_f,
+              "...fits a level camera turned 90 and the camera on its side as it is")
+    import _synth_gopro  # noqa: E402
+    for o in ("U", "L"):
+        gp_vid = _synth_gopro.make_gopro_video(os.path.join(OUT, f"gopro_{o}.mp4"), 320, 240, seconds=1, fps=10,
+                                               header={"oren": o}, with_sensors=False)
+        s_, r_, o_ = vt(gp_vid)
+        g_f, _ = rt_(OLD, gp_vid, s_, r_, o_)
+        check(o_ == o and g_f is not None and g_f.board.get("gopro_orientation") == o,
+              f"GoPro board video (OREN {o}): its mounting tag is kept in the board record", (s_, r_, o_))
+    gs = lens.scan_video(os.path.join(OUT, "gopro_U.mp4"), (9, 6), max_candidates=3)
+    check(getattr(gs, "gopro_orientation", None) == "U"
+          and lens.board_record(gs, [], (9, 6), 0.025).get("gopro_orientation") == "U"
+          and "gopro_orientation" not in lens.board_record(scan, [], (9, 6), 0.025),
+          "a board scan of GoPro footage records its OREN in the board record (other footage: no entry)")
 
 # ------------------------------------------------------------------ 4. through the window
 print("\n[4] Load a Lens Profile through the window")
@@ -287,20 +364,135 @@ w._set_active_view(0)
 pump(0.3)
 before = p.lenses[0]
 ASK["open"] = argus
+n_asked = len(ASK["asked"])
 w.act_load_lens.trigger()
 pump(0.1)
 seen = _lens_attach.STATE["seen"][-1]
 check(p.lenses[0] is before and "not known" in seen["rows"][0][0] and not seen["rows"][0][1],
       "a profile that does not record its turn cannot be ticked for the turned camera, in words", seen)
+check(len(ASK["asked"]) == n_asked, "an Argus file (one line per camera) is not offered a checkerboard video (G184)",
+      ASK["asked"][n_asked:])
 
 # the wand wizard's "Use for all": the level camera's profile reaches the turned cameras, turned
 p.lenses = [None, None, small]
 fill, replace = share_targets(p, 2)
 check(sorted(fill) == [0, 1] and replace == [], "Use for all: the same camera filmed turned is a target", (fill, replace))
 
+# ------------------------------------------------------------------ 6. the offer, through the user's clicks
+print("\n[6] the offer to read the turn from the checkerboard video (G184)")
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+
+from kinetrace import calibwizard as cw  # noqa: E402
+
+OLD_FILE = OLD.save(os.path.join(OUT, "old_board.klens.json"))
+WANT_SIDE = lens.turn_profile(OLD, 270)
+
+# (a) the wand wizard's Cameras page: the camera filmed on its side, "Load file..."
+p.lenses = [None, None, None]
+wiz = cw.WandWizard(w, p, OUT)
+wiz.show()
+page = wiz.page_cams
+page._refresh_lens_rows()
+pump(0.1)
+ASK.update(open=[OLD_FILE, LEVEL], question=QMessageBox.Yes)
+n_asked, n_warn = len(ASK["asked"]), len(ASK["warn"])
+QTest.mouseClick(page.lens_buttons[0][1], Qt.LeftButton)
+pump(0.3)
+got = p.lenses[0] if p.lenses else None
+check(len(ASK["asked"]) == n_asked + 1 and "checkerboard video" in "".join(ASK["asked"][n_asked:]),
+      "wand wizard: an old profile on the camera filmed on its side -> asked to find its checkerboard video",
+      ASK["asked"][n_asked:])
+check(ident(got, WANT_SIDE) and got is not None and got.rotation == 270 and len(ASK["warn"]) == n_warn,
+      "...Yes + the level board video: attached, turned exactly (bit for bit turn_profile)", ASK["warn"][n_warn:])
+check(page.lens_labels and "turned" in page.lens_labels[0].text() and "level.mp4" in page.lens_labels[0].text(),
+      "...and its row says it was turned and names the checkerboard video the turn came from",
+      page.lens_labels[0].text() if page.lens_labels else "")
+p.lenses = [None, None, None]
+page._refresh_lens_rows()
+ASK.update(open=[OLD_FILE], question=QMessageBox.No)
+QTest.mouseClick(page.lens_buttons[0][1], Qt.LeftButton)
+pump(0.2)
+check(p.lenses[0] is None and "not known" in page.lens_labels[0].text(),
+      "...No: not attached, the old refusal on the row", page.lens_labels[0].text())
+ASK.update(open=[OLD_FILE, BOARD_LEVEL], question=QMessageBox.Yes)
+n_warn = len(ASK["warn"])
+QTest.mouseClick(page.lens_buttons[0][1], Qt.LeftButton)
+pump(0.3)
+check(p.lenses[0] is None and any("640 x 480" in t for t in ASK["warn"][n_warn:]),
+      "...a board video of another size: refused in words, nothing attached", ASK["warn"][n_warn:])
+# a lens file from another program (OpenCV .yml, same numbers): it may have been fitted on the STORED
+# pictures, so the turn Kinetrace's decoder gives a board video is not known to be its: never offered
+from kinetrace import calibio  # noqa: E402
+
+OCV_FILE = os.path.join(OUT, "old_board_opencv.yml")
+calibio.write_lens(OLD, OCV_FILE)
+p.lenses = [None, None, None]
+page._refresh_lens_rows()
+ASK.update(open=[OCV_FILE, LEVEL], question=QMessageBox.Yes)
+n_asked = len(ASK["asked"])
+QTest.mouseClick(page.lens_buttons[0][1], Qt.LeftButton)
+pump(0.2)
+ASK["open"] = ""
+check(len(ASK["asked"]) == n_asked and p.lenses[0] is None and "not known" in page.lens_labels[0].text(),
+      "an OpenCV lens file from another program is not offered a checkerboard video: refused as before",
+      (ASK["asked"][n_asked:], page.lens_labels[0].text()))
+wiz.reject()
+wiz.deleteLater()
+pump(0.2)
+
+# (b) 3D -> Load a Lens Profile for Cameras... (three cameras)
+p.lenses = [None, None, None]
+w._set_active_view(0)
+pump(0.3)
+ASK.update(open=[OLD_FILE, LEVEL], question=QMessageBox.Yes)
+n_asked = len(ASK["asked"])
+_lens_attach.STATE["do"] = lambda dlg: _lens_attach.tick(dlg, 2)
+w.act_load_lens.trigger()
+pump(0.3)
+_lens_attach.STATE["do"] = None
+seen = _lens_attach.STATE["seen"][-1]
+check(len(ASK["asked"]) == n_asked + 1 and seen["rows"][0][1] and "turned" in seen["rows"][0][0],
+      "Load a Lens Profile for Cameras: asked, then the camera on its side can be ticked, 'fits, turned'", seen)
+check(ident(p.lenses[0], WANT_SIDE) and ident(p.lenses[2], OLD) and p.lenses[2].rotation == 0 and p.lenses[1] is None,
+      "...it gets the exact turn, the level camera the profile's own numbers, the unticked camera nothing",
+      [None if x is None else (x.width, x.height, x.rotation) for x in p.lenses])
+# with its turn known the profile follows I269 like one made today: the upside-down camera (tag 180) is offered
+# it turned 180 (before, the unknown turn attached it unturned, centre on the wrong side)
+check(seen["rows"][1][1] and "turned" in seen["rows"][1][0],
+      "...and the upside-down camera's row reads 'fits, turned' (I269's rule, now that the turn is known)", seen)
+OCV_N = len(ASK["asked"])
+ASK.update(open=[OCV_FILE], question=QMessageBox.Yes)
+w.act_load_lens.trigger()
+pump(0.3)
+check(len(ASK["asked"]) == OCV_N and "not known" in _lens_attach.STATE["seen"][-1]["rows"][0][0],
+      "Load a Lens Profile for Cameras: an OpenCV file is not offered either", _lens_attach.STATE["seen"][-1])
+
 w.project.dirty = False
 w.close()
 pump(0.3)
 w._dev_probe.wait(10000)
+
+# (d) one camera: 3D -> Load a Lens Profile for This Camera...
+w2 = MainWindow()
+w2.resize(1200, 800)
+w2.show()
+w2._open_video(SIDE)
+for _ in range(300):
+    pump(0.05)
+    if w2.state == READY and w2.project is not None and not w2._loading:
+        break
+pump(0.3)
+ASK.update(open=[OLD_FILE, LEVEL], question=QMessageBox.Yes)
+n_asked, n_warn = len(ASK["asked"]), len(ASK["warn"])
+w2.act_load_lens.trigger()
+pump(0.3)
+got = w2.project.lenses[0] if w2.project.lenses else None
+check(len(ASK["asked"]) == n_asked + 1 and ident(got, WANT_SIDE) and len(ASK["warn"]) == n_warn,
+      "one camera: asked, then attached with the exact turn", (ASK["asked"][n_asked:], ASK["warn"][n_warn:]))
+w2.project.dirty = False
+w2.close()
+pump(0.3)
+w2._dev_probe.wait(10000)
 print("\nverify_lens_turn: " + ("PASSED" if not FAILS else f"FAILED ({len(FAILS)}): " + "; ".join(FAILS)))
 sys.exit(1 if FAILS else 0)

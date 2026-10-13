@@ -60,6 +60,15 @@ def lens_for_camera(prof, session, cam_name: str) -> tuple[object | None, str]:
                              display_rotation(session.video_path), cam_name, "this lens profile was measured on")
 
 
+def lens_turn_unknown(prof, session) -> bool:
+    """`lens_for_camera` refuses `prof` for the camera of `session` only because the profile does not
+    record its checkerboard video's turn (`lens.turn_unknown`): the turn can still be read from that
+    video (`lensattach.offer_board_turn`, G184)."""
+    return (prof is not None and bool(session.width) and bool(session.height)
+            and _lens.turn_unknown(prof, (int(session.width), int(session.height)),
+                                   display_rotation(session.video_path)))
+
+
 def _same_lens(a, b) -> bool:
     return _lens.same_profile(a, b)
 
@@ -710,14 +719,20 @@ class CamerasPage(QWizardPage):
         if which:
             prof.source = f"{Path(path).name}{which}"
         fitted, bad = lens_for_camera(prof, p.sessions[c], p.name(c))
+        read = ""
+        if fitted is None and lens_turn_unknown(prof, p.sessions[c]) and _lens.kinetrace_lens_file(path):
+            from kinetrace.lensattach import offer_board_turn
+            filled, read = offer_board_turn(self.wiz, prof, path, [p.name(c)])  # (G184) its turn, from its board video
+            if filled is not None:
+                fitted, bad = lens_for_camera(filled, p.sessions[c], p.name(c))
         if fitted is None:
             self._refuse_lens(c, bad)
             return
         p.lenses[c] = fitted
         p.dirty = True
         self._refresh_lens_rows()
-        if bad and c < len(self.lens_labels):       # turned for a camera filmed on its side: said
-            self.lens_labels[c].setText(self.lens_labels[c].text() + " — " + bad)
+        if (bad or read) and c < len(self.lens_labels):     # turned for a camera filmed on its side: said
+            self.lens_labels[c].setText(self.lens_labels[c].text() + "".join(" — " + t for t in (read, bad) if t))
 
     def _remove_lens(self, c: int):
         p = self.wiz.project

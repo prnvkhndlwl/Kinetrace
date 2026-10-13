@@ -1752,7 +1752,12 @@ close it without saving, the program offers to save it for you. The wizard:
    fit the camera exactly (the attach message says so). The same goes for a
    camera mounted upside down. A lens file from another program, or one saved
    before Kinetrace recorded the turn, cannot be turned safely (which way is
-   not known): measure the lens again here.
+   not known). For a Kinetrace lens file of that kind, attaching it to a camera
+   filmed on its side asks whether to **find its checkerboard video**: choose
+   the video the profile was measured on and Kinetrace reads how that video was
+   turned (and, for a GoPro, its mounting tag), checks it has the profile's
+   picture size, and attaches the profile turned (the report names the video).
+   Without that video, measure the lens again here.
 4. **Check the boards.** The next page shows you every board it found, so you
    can see for yourself what the calibration is being built from — see below.
 5. The last page shows the verdict with its reasons, a before/after picture,

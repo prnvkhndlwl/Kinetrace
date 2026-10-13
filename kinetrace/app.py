@@ -11217,7 +11217,15 @@ class MainWindow(QMainWindow):
         if prof is None:
             QMessageBox.warning(self, "Lens profile not loaded", which)
             return
-        prof, said = self._lens_fit(prof, v)
+        fitted, said = self._lens_fit(prof, v)
+        if fitted is None and self._lens_turn_unknown(prof, v) and lens_mod.kinetrace_lens_file(path):
+            from kinetrace.lensattach import offer_board_turn
+            filled, read = offer_board_turn(self, prof, path, [p.name(v)])  # (G184) its turn, from its board video
+            if filled is None:
+                return              # declined (the question said why), or the refusal was said
+            fitted, said = self._lens_fit(filled, v)
+            said = " ".join(t for t in (read, said) if t)
+        prof = fitted
         if prof is None:
             QMessageBox.warning(self, "Lens profile not attached", said)
             return
@@ -11237,7 +11245,8 @@ class MainWindow(QMainWindow):
         """(G176) Lens file `path` for the cameras the user ticks in `LensAttachDialog`: each gets its own
         line of an Argus file and its own turn; the ticks are the consent to replace a profile (the row
         says it replaces, in amber); what was done is said in a toast."""
-        from kinetrace.lensattach import LensAttachDialog, attach_rows
+        from kinetrace import lens as lens_mod
+        from kinetrace.lensattach import LensAttachDialog, attach_rows, offer_board_turn
         p = self.project
         recordings = []
         for k in range(p.n_views):
@@ -11245,7 +11254,15 @@ class MainWindow(QMainWindow):
             s = p.sessions[k]
             recordings.append(g.label if g is not None else f"{int(s.width)} x {int(s.height)}, {s.fps:g} fps")
         try:
-            rows = attach_rows(p, path, recordings)
+            # (G184) a one-profile file that does not record its board video's turn, and cameras filmed on
+            # their side it could be turned for: offered to read the turn from that video first
+            needy, filled, read = [], None, ""
+            if lens_mod.kinetrace_lens_file(path):         # one profile for every camera
+                one, _ = lens_mod.read_lens_for(path, p.active, p.name(p.active))
+                needy = [k for k in range(p.n_views) if self._lens_turn_unknown(one, k)]
+                if needy:
+                    filled, read = offer_board_turn(self, one, path, [p.name(k) for k in needy])
+            rows = attach_rows(p, path, recordings, profile=filled)
         except Exception as e:      # noqa: BLE001 - not a lens file, a damaged one: said
             QMessageBox.warning(self, "Lens profile not loaded",
                                 _plain_error(e, f"{Path(path).name} could not be read", reading=True))
@@ -11262,7 +11279,8 @@ class MainWindow(QMainWindow):
         self.toast.show_message(
             f"Lens profile {Path(path).name} attached to {', '.join(p.name(k) for k in views)}"
             + (f" (turned to fit {', '.join(turned)}, filmed turned)" if turned else "")
-            + ". The wand calibration will use it; save the project to keep it.", "success", 12000)
+            + ". " + (read + " " if read else "")
+            + "The wand calibration will use it; save the project to keep it.", "success", 14000 if read else 12000)
 
     def _lens_fit(self, prof, v: int) -> tuple[object | None, str]:
         """Lens profile `prof` made fit for camera v (`calibwizard.lens_for_camera`): (the profile to
@@ -11273,6 +11291,12 @@ class MainWindow(QMainWindow):
         p = self.project
         fitted, said = lens_for_camera(prof, p.sessions[v], p.name(v))
         return fitted, (said[0].upper() + said[1:] if said else "")
+
+    def _lens_turn_unknown(self, prof, v: int) -> bool:
+        """`_lens_fit` refuses `prof` for camera v only because the profile does not record its board
+        video's turn (`calibwizard.lens_turn_unknown`, G184)."""
+        from kinetrace.calibwizard import lens_turn_unknown
+        return lens_turn_unknown(prof, self.project.sessions[v])
 
     def _set_lenses(self, by_view: dict) -> None:
         """Attach lens profiles {camera: profile} to the project (the list padded to the cameras)."""
