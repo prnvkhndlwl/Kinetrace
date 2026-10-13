@@ -2291,9 +2291,10 @@ Four steps, in this order:
 Most entries of the **3D** menu can be clicked as soon as a video is open (the
 two calibration wizards even before): if something is still missing — a second
 camera, a calibration — the entry says what, and how to get it, instead of doing
-nothing. Three stay grey until they have something to work on: *Show 3D View*
-needs a calibration, *Re-track Disagreeing Stretches* a reconstruction, and
-*Export Mesh of This Frame* a volume carved at this frame.
+nothing. Two stay grey until they have something to work on: *Show 3D View*
+needs a calibration and *Re-track Disagreeing Stretches* a reconstruction; and
+**File → Export → Mesh of This Frame…** stays grey until a volume is carved at
+this frame.
 
 **A calibration must cover every camera.** If you add a camera to a project
 that is already calibrated, the calibration is kept, in the project and in its

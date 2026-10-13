@@ -15,7 +15,7 @@ project opens fast because Kinetrace keeps binary copies of the tables in
 `.cache/`; a CSV edited by hand is read from its text, so the CSV is always
 what counts.
 
-**One file** for e-mail or archiving: File → Export Project as One File (or
+**One file** for e-mail or archiving: File → Export → Project as One File (or
 `python -m kinetrace.convert pack FOLDER name.kinetrace`) writes the same
 files as an ordinary **zip archive** named `name.kinetrace`; Kinetrace opens
 it like the folder, and `convert unpack` turns it back into a folder.
@@ -131,7 +131,7 @@ any more.
 * `fps` = the rate the camera really recorded at; `file_fps` = the rate its
   file says (they differ for slow-motion files; Frame rate… in the camera panel).
 * `exports_on_save` = the formats written into `exports/` at every save
-  (File → Keep Exports Up to Date…): `dltdv_all`, `dltdv`, `dlc`, `mat`, `wide`, `xyz_dltdv`.
+  (File → Export → Keep Exports Up to Date…): `dltdv_all`, `dltdv`, `dlc`, `mat`, `wide`, `xyz_dltdv`.
 * `offset` = the frame this camera shows when the first (reference) camera is
   at its frame 0 (the first camera's is always 0). `rate` = this camera's
   frame rate / the reference camera's. Camera `i`'s frame at reference instant
@@ -244,7 +244,7 @@ A camera the calibration does not cover (left out of a wand calibration) is
 entry are not calibrated either (a camera added after calibrating). 3D uses
 the calibrated cameras. A `*.kcal.json` marks such a camera `null` in its
 `cameras` list the same way.
-To hand the cameras to another program, use **3D → Export Calibration**
+To hand the cameras to another program, use **File → Export → Calibration**
 (Anipose, OpenCV, MATLAB, Blender, DLTdv — converted and checked), not this
 file.
 
@@ -331,8 +331,8 @@ pandas: `pd.read_csv("lizard.kinetrace/cameras/cam1/tracks/snout.csv")`.
 MATLAB: `readtable('lizard.kinetrace/cameras/cam1/tracks/snout.csv')`. R:
 `read.csv("lizard.kinetrace/cameras/cam1/tracks/snout.csv")`. The landmarks
 of a camera are listed in its `points.csv`. For other programs' own formats
-(DeepLabCut, DLTdv, MATLAB) use File → Export Tracks, or let every save keep
-them in `exports/` (File → Keep Exports Up to Date…).
+(DeepLabCut, DLTdv, MATLAB) use File → Export → Tracks, or let every save keep
+them in `exports/` (File → Export → Keep Exports Up to Date…).
 
 ## Writing a project for Kinetrace
 
@@ -402,7 +402,7 @@ file is kept as `name.kinetrace.bak`) or to keep saving it as one file.
 
 ## Other programs' conventions
 
-Kinetrace converts these for you (File → Import, 3D → Export Calibration,
+Kinetrace converts these for you (File → Import, File → Export → Calibration,
 Ctrl+E, and `python -m kinetrace.convert`). The plain CSV, DeepLabCut and sparse
 TSV exports also write an `_events.csv` and (with a silhouette) a `_segment.csv`
 beside them; the DLTdv exports do not. For reference:
