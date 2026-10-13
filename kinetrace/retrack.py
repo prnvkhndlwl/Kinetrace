@@ -119,9 +119,8 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
     The hand "Snap to the other cameras' rays" is this function too (R14), with its own
     rules passed in: `margin` (the polylines' extra reach past the picture; None =
     `epipolar_polyline`'s default, 0 = cut exactly at the edges, what the guides draw),
-    `observations` ([(camera, its calibration, raw (x, y)), ...], gathered by the caller at
-    the fractional frame, I253, among the calibrated cameras only; the default gathers them at the
-    integer frame, likewise among the calibrated cameras, I273) and
+    `observations` ([(camera, its calibration, raw (x, y)), ...] among the calibrated cameras;
+    the default is `Project.observations`, at the fractional instant like Snap: I253, I281) and
     `info`, which receives `intersect_polylines`'s {"mode", ...} plus "n_lines" and, when the
     crossing is refused, "outside_px"."""
     p = project
@@ -145,21 +144,7 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
         if probe is None:
             probe = working_probe(cal)
     if observations is None:
-        observations = []
-        for c in range(p.n_views):
-            if c == view or cal.camera(c) is None:
-                continue
-            sc = p.sessions[c]
-            j = sc.pid_by_name(name)
-            if j is None:
-                continue
-            fc = p.map_frame(view, c, int(local_frame))
-            if fc is None or not (0 <= fc < sc.n_frames) or not sc.exportable_at(fc, j):
-                continue
-            uv = sc.tracks[fc, j]
-            if not np.isfinite(uv).all():
-                continue
-            observations.append((c, cal.camera(c), uv))
+        observations = p.observations(name, view, int(local_frame))
     kw = {} if margin is None else {"margin": float(margin)}
     lines = []
     for _c, cam, uv in observations:
@@ -278,18 +263,7 @@ def _blame(project, stretches: list[Stretch], threshold_px) -> list[Stretch]:
 def _n_other_views(project, view: int, name: str, local_frame: int) -> int:
     """How many OTHER calibrated cameras have landmark `name` (exportable, finite) at the
     instant of `view`'s `local_frame` - the rays `ray_target` could cross."""
-    p = project
-    cal = p.calibration
-    n = 0
-    for c in range(p.n_views):
-        if c == view or cal is None or cal.camera(c) is None:
-            continue
-        sc = p.sessions[c]
-        j = sc.pid_by_name(name)
-        fc = p.map_frame(view, c, int(local_frame)) if j is not None else None
-        if fc is not None and 0 <= fc < sc.n_frames and sc.exportable_at(fc, j) and np.isfinite(sc.tracks[fc, j]).all():
-            n += 1
-    return n
+    return len(project.observations(name, view, int(local_frame)))
 
 
 def _start_on_two_rays(project, st: Stretch, threshold_px, min_run: int) -> bool:

@@ -811,6 +811,13 @@ def _r14():
     p.set_offset(1, 0.4)
     p.set_offset(2, -0.3)
     one(12, "fractional offsets (the observations are interpolated, I253)")
+    # (I281) Re-track's own seed reads the other cameras at that same fractional instant: its default
+    # gatherer IS Snap's (it read the nearest whole frame, up to half a frame of motion off)
+    seed = retrack.ray_target(p, p.active, "M", 12)
+    snap = retrack.ray_target(p, p.active, "M", 12, observations=win._observations("M", 12, exclude=p.active))
+    check(seed is not None and snap is not None and np.allclose(seed[0], snap[0], atol=1e-9) and seed[1] == snap[1],
+          f"(I281) Re-track's seed at a fractional offset = the Snap seed (one reader of the other cameras): "
+          f"{seed} vs {snap}")
     p.set_offset(1, 0.0)
     p.set_offset(2, 0.0)
     # two calibrated cameras are enough for the hand snap, and (I273) for the default re-track rule too

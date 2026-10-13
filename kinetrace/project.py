@@ -88,6 +88,15 @@ def half_up(x) -> int | np.ndarray:
     return int(out) if out.ndim == 0 else out
 
 
+def cell_xy(sc, fr, j: int):
+    """Landmark `j`'s position at frame `fr` of session `sc` (float64), or None (no frame, outside
+    the video, no position, hidden, not finite)."""
+    if fr is None or not (0 <= fr < sc.n_frames) or not sc.exportable_at(fr, j):
+        return None
+    uv = sc.tracks[fr, j]
+    return np.asarray(uv, np.float64) if np.isfinite(uv).all() else None
+
+
 class Project:
     """The views of one project and the offsets that align them."""
 
@@ -225,6 +234,40 @@ class Project:
         used Python's round / np.rint, whose half-to-even disagreed with
         `map_frame` at every .5 offset and shifted stretch ends by one.)"""
         return half_up(self.rates[view] * np.asarray(t, np.float64) + self.offsets[view])
+
+    def observations(self, name: str, src: int, frame, exclude: int | None = None) -> list:
+        """[(camera, its calibration, raw (x, y) float64), ...]: the calibrated cameras other than
+        `exclude` (None = `src`, -1 = none) that have landmark `name` at the instant of `src`'s
+        `frame` (hidden cells left out). Read at the FRACTIONAL frame the way Reconstruct does
+        (I253): between the two neighbouring frames when both have a position, else at the nearest
+        frame (`map_frame`) -- with a sub-frame offset or a slower camera the nearest frame is up to
+        half a frame of motion off. THE reader of Snap, the guides and Re-track (I281)."""
+        cal = self.calibration
+        if cal is None:
+            return []
+        exclude = src if exclude is None else exclude
+        out = []
+        for c in range(self.n_views):
+            cam = cal.camera(c)
+            if c == exclude or cam is None:
+                continue
+            sc = self.sessions[c]
+            j = sc.pid_by_name(name)
+            if j is None:
+                continue
+            uv = None
+            fx = self.map_frame_exact(src, c, frame)
+            lo = int(np.floor(fx))
+            a = fx - lo
+            if 1e-9 < a < 1.0 - 1e-9:
+                u0, u1 = cell_xy(sc, lo, j), cell_xy(sc, lo + 1, j)
+                if u0 is not None and u1 is not None:
+                    uv = (1.0 - a) * u0 + a * u1
+            if uv is None:
+                uv = cell_xy(sc, self.map_frame(src, c, frame), j)
+            if uv is not None:
+                out.append((c, cam, uv))
+        return out
 
     def reference_index(self, view: int, frame) -> int | np.ndarray:
         """The reference frame nearest local `frame` of `view`: `map_frame`'s

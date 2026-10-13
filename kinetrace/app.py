@@ -7817,45 +7817,9 @@ class MainWindow(QMainWindow):
         return self._guides_into(self.project.active, s.points[pid].name, self.current)
 
     def _observations(self, name: str, f: int, exclude: int) -> list:
-        """[(view, calibration, raw (x, y)), ...]: the calibrated cameras other
-        than `exclude` that have landmark `name` at the instant of the working
-        camera's frame `f` (hidden cells left out). Read at the FRACTIONAL frame the way Reconstruct
-        does (I253): between the two neighbouring frames when both have a position, else at the
-        nearest frame -- with a sub-frame offset or a 2x camera the nearest frame is up to half a
-        frame of motion off, and A stores the prediction as a hand placement."""
-        p = self.project
-        out = []
-        for c in range(p.n_views):
-            cal = self._cal_cam(c)
-            if c == exclude or cal is None:
-                continue
-            sc = p.sessions[c]
-            j = sc.pid_by_name(name)
-            if j is None:
-                continue
-            uv = None
-            fx = p.map_frame_exact(p.active, c, f)
-            lo = int(np.floor(fx))
-            a = fx - lo
-            if 1e-9 < a < 1.0 - 1e-9:
-                u0, u1 = self._cell_xy(sc, lo, j), self._cell_xy(sc, lo + 1, j)
-                if u0 is not None and u1 is not None:
-                    uv = (1.0 - a) * u0 + a * u1
-            if uv is None:
-                fc = p.map_frame(p.active, c, f)
-                uv = self._cell_xy(sc, fc, j) if fc is not None else None
-            if uv is not None:
-                out.append((c, cal, uv))
-        return out
-
-    @staticmethod
-    def _cell_xy(sc, fr: int, j: int):
-        """Landmark `j`'s position at frame `fr` of session `sc`, or None (outside the video, no
-        position, hidden, not finite)."""
-        if not (0 <= fr < sc.n_frames) or not sc.exportable_at(fr, j):
-            return None
-        uv = sc.tracks[fr, j]
-        return np.asarray(uv, np.float64) if np.isfinite(uv).all() else None
+        """`Project.observations` at the working camera's frame `f` (I253, I281: the one reader, at
+        the fractional instant, that Re-track uses too)."""
+        return self.project.observations(name, self.project.active, f, exclude)
 
     def _guides_into(self, target: int, name: str, f: int, trusted: list | None = None,
                      obs: list | None = None, depth=None) -> list:
