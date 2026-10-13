@@ -441,18 +441,79 @@ def _nice_length(x: float) -> float:
     return e
 
 
+FOV_SIDE_ALPHA = 0.10          # (G187, owner 2026-10-12) each field-of-view side: 10 % of its camera's colour
+
+
+def _px(v: float, px: float) -> int:
+    """A size of `v` screen pixels at the display's pixel density `px` (at least 1; halves round up, never to
+    even - the same at 150 % as at 250 %)."""
+    return max(1, int(np.floor(v * px + 0.5)))
+
+
+SCREEN_CLAMP = 1e7              # px: a far-plane point of a ray near 90 degrees, zoomed far in, stays in int32
+
+
+def _to_int_px(scr: np.ndarray) -> np.ndarray:
+    return np.round(np.clip(scr, -SCREEN_CLAMP, SCREEN_CLAMP)).astype(np.int32)
+
+
 def _draw_poly(img, scr: np.ndarray, colour, closed: bool, thickness: int = 1) -> None:
     ok = np.isfinite(scr).all(axis=1)
     if ok.sum() >= 2:
-        cv2.polylines(img, [np.round(scr[ok]).astype(np.int32)], closed, colour, thickness, cv2.LINE_AA)
+        cv2.polylines(img, [_to_int_px(scr[ok])], closed, colour, thickness, cv2.LINE_AA)
+
+
+def _fov_sides(cd, to_screen) -> list:
+    """(G187) The four sides of one camera's field of view as (mean depth, (K, 2) int32 screen polygon): the
+    camera centre, the border points of that side (the lens bend kept) and the next side's first point, so
+    the corner closes."""
+    f = cd.fov
+    if f is None or f.side is None or not len(f.border):
+        return []
+    firsts = {s: f.border[f.side == s][0] for s in range(4) if (f.side == s).any()}
+    out = []
+    for s in range(4):
+        pts = f.border[f.side == s]
+        if not len(pts):
+            continue
+        nxt = next((firsts[(s + j) % 4] for j in range(1, 4) if (s + j) % 4 in firsts), None)
+        poly = np.vstack([f.centre[None], pts] + ([nxt[None]] if nxt is not None else []))
+        scr, depth = to_screen(poly)
+        if len(scr) >= 3 and np.isfinite(scr).all():
+            out.append((float(depth.mean()), _to_int_px(scr)))
+    return out
+
+
+def _blend_poly(img, poly: np.ndarray, colour, alpha: float) -> None:
+    """Fill `poly` at `alpha` over `img`, in place, inside the polygon's own box only."""
+    H, W = img.shape[:2]
+    x0, y0 = max(0, int(poly[:, 0].min())), max(0, int(poly[:, 1].min()))
+    x1, y1 = min(W, int(poly[:, 0].max()) + 1), min(H, int(poly[:, 1].max()) + 1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    roi = img[y0:y1, x0:x1]
+    layer = roi.copy()
+    cv2.fillPoly(layer, [poly - np.array([x0, y0], np.int32)], colour)
+    cv2.addWeighted(layer, alpha, roi, 1.0 - alpha, 0, dst=roi)
 
 
 def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool, show_pyramids: bool,
-                show_fov: bool, show_cover: bool, hits: dict | None) -> np.ndarray:
-    """(G185, G186) the covered space (translucent), the fields of view, the cameras' pose pyramids, the wand
-    lines and ends, and the scale bar. Returns the image (the translucent layer makes a new one)."""
+                show_fov: bool, show_cover: bool, hits: dict | None, px: float = 1.0) -> np.ndarray:
+    """(G185, G186, G187) the fields of view's translucent sides, the covered space (translucent, over them),
+    the fields of view's edges, the cameras' pose pyramids, the wand lines and ends, and the scale bar. Every
+    fixed size is in screen pixels times `px` (the display's pixel density). Returns the image (the
+    translucent layer makes a new one)."""
     pic = scene.calib
     H, W = img.shape[:2]
+    if show_fov:
+        faces = []
+        for k, cd in enumerate(pic.cams):
+            if scene.calib_views is not None and cd.view not in scene.calib_views:
+                continue
+            col = CAM_COLOURS[k % len(CAM_COLOURS)]
+            faces += [(d, poly, col) for d, poly in _fov_sides(cd, to_screen)]
+        for d, poly, col in sorted(faces, key=lambda f: f[0]):          # far ones first
+            _blend_poly(img, poly, col, FOV_SIDE_ALPHA)
     if show_cover and pic.cover.get(scene.cover_n) is not None and len(pic.cover[scene.cover_n][1]):
         verts, faces = pic.cover[scene.cover_n]
         scr, depth = to_screen(verts)
@@ -473,17 +534,17 @@ def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool
         col = CAM_COLOURS[k % len(CAM_COLOURS)]
         dim = tuple(int(0.55 * v) for v in col)
         if show_fov and cd.fov is not None and len(cd.fov.border):
-            _draw_poly(img, to_screen(cd.fov.border)[0], dim, True)
+            _draw_poly(img, to_screen(cd.fov.border)[0], dim, True, _px(1, px))
             for c0, c1 in cd.fov.rays:
-                _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], dim, False)
+                _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], dim, False, _px(1, px))
         if show_pyramids and cd.pose is not None and len(cd.pose.border):
-            _draw_poly(img, to_screen(cd.pose.border)[0], col, True, 2)
+            _draw_poly(img, to_screen(cd.pose.border)[0], col, True, _px(1, px))            # (G187) 1 px
             for c0, c1 in cd.pose.rays:
-                _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], col, False, 2)
+                _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], col, False, _px(1, px))
         cs = to_screen(cd.centre)[0][0]
         if (show_pyramids or show_fov) and np.isfinite(cs).all():
-            cv2.putText(img, cd.name, (int(cs[0]) + 8, int(cs[1]) - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1,
-                        cv2.LINE_AA)
+            cv2.putText(img, cd.name, (int(cs[0]) + _px(8, px), int(cs[1]) - _px(6, px)), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45 * px, col, _px(1, px), cv2.LINE_AA)
     es, _ = to_screen(pic.ends)
     if hits is not None:
         hits["ends"] = es if show_ends else None
@@ -491,22 +552,25 @@ def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool
         es = np.full_like(es, np.nan)
     for a, b in pic.pairs:
         if np.isfinite(es[a]).all() and np.isfinite(es[b]).all():
-            cv2.line(img, (int(es[a, 0]), int(es[a, 1])), (int(es[b, 0]), int(es[b, 1])), (95, 95, 95), 1,
+            cv2.line(img, (int(es[a, 0]), int(es[a, 1])), (int(es[b, 0]), int(es[b, 1])), (70, 70, 70), _px(1, px),
                      cv2.LINE_AA)
     order = np.argsort(pic.end_state, kind="stable")             # rejected ones last: on top
     for k in order:
         if np.isfinite(es[k]).all():
             st = int(pic.end_state[k])
-            cv2.circle(img, (int(es[k, 0]), int(es[k, 1])), 3 if st == 3 else 2, END_COLOURS[st], -1, cv2.LINE_AA)
-    L = _nice_length(110.0 / max(scale, 1e-12))
+            # (G187, owner: "the wand points are too big") radius 1, a rejected end 2, at the display's density
+            cv2.circle(img, (int(es[k, 0]), int(es[k, 1])), _px(2 if st == 3 else 1, px), END_COLOURS[st], -1,
+                       cv2.LINE_AA)
+    L = _nice_length(110.0 * px / max(scale, 1e-12))
     if L > 0:
         n = int(round(L * scale))
-        x1, y = W - 20, H - 24
-        cv2.line(img, (x1 - n, y), (x1, y), (220, 220, 220), 2, cv2.LINE_AA)
+        x1, y = W - _px(20, px), H - _px(24, px)
+        cv2.line(img, (x1 - n, y), (x1, y), (220, 220, 220), _px(2, px), cv2.LINE_AA)
         for x in (x1 - n, x1):
-            cv2.line(img, (x, y - 5), (x, y + 5), (220, 220, 220), 1, cv2.LINE_AA)
+            cv2.line(img, (x, y - _px(5, px)), (x, y + _px(5, px)), (220, 220, 220), _px(1, px), cv2.LINE_AA)
         lab = f"{L:g} {pic.unit or scene.unit}".strip()
-        cv2.putText(img, lab, (x1 - n, y - 9), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.putText(img, lab, (x1 - n, y - _px(9, px)), cv2.FONT_HERSHEY_SIMPLEX, 0.45 * px, (220, 220, 220),
+                    _px(1, px), cv2.LINE_AA)
     return img
 
 
@@ -514,28 +578,32 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
                  zoom: float = 1.0, show_mesh: bool = True, show_points: bool = True,
                  show_cameras: bool = False, up: int = 2, pan: tuple[float, float] = (0.0, 0.0),
                  show_calib: bool = False, show_fov: bool = False, show_cover: bool = False,
-                 hits: dict | None = None, show_pyramids: bool | None = None) -> np.ndarray:
+                 hits: dict | None = None, show_pyramids: bool | None = None, px: float = 1.0) -> np.ndarray:
     """The 3D window's picture (BGR). The wand calibration layers (G185, G186) are drawn only when asked and
     the scene has a picture: `show_calib` = the wand points (and the scale bar), `show_pyramids` the
     cameras' pose pyramids (None = with the wand points), `show_fov` their fields of view, `show_cover`
     the covered space; each on its own (owner 2026-10-12). `hits`, when given, receives "ends" = the wand
-    ends' (P, 2) image pixels (None when they are not drawn)."""
+    ends' (P, 2) image pixels (None when they are not drawn). `px` (G187): the display's pixel density -
+    `size` is in device pixels, `pan` in screen (logical) pixels, and every fixed size (lines, dots, text)
+    is scaled by it, so the picture is sharp on a scaled display; px = 1 draws exactly as before."""
     W, H = size
     img = np.full((H, W, 3), (24, 26, 30), np.uint8)
     pyr = show_calib if show_pyramids is None else show_pyramids
     calib_on = (show_calib or pyr or show_fov or show_cover) and scene.calib is not None
-    to_screen, R, scale = screen_transform(scene, size, azimuth, elevation, zoom, pan, up, show_cameras,
-                                           calib_on)
+    to_screen, R, scale = screen_transform(scene, size, azimuth, elevation, zoom,
+                                           (pan[0] * px, pan[1] * px), up, show_cameras, calib_on)
+    fs, t1 = 0.45 * px, _px(1, px)                                  # text scale, a 1 px line
 
     # axes triad (bottom-left), world axes after the same rotation
-    o = np.array([48.0, H - 48.0])
+    o = np.array([48.0 * px, H - 48.0 * px])
     for k, (col, lab) in enumerate((((60, 60, 230), "X"), ((60, 200, 60), "Y"), ((230, 120, 60), "Z"))):
         a = np.zeros(3)
         a[k] = 1.0
-        d = (R @ a)[:2] * 32
+        d = (R @ a)[:2] * 32 * px
         tip = (int(o[0] + d[0]), int(o[1] - d[1]))
-        cv2.line(img, (int(o[0]), int(o[1])), tip, col, 2, cv2.LINE_AA)
-        cv2.putText(img, lab, (tip[0] + 3, tip[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
+        cv2.line(img, (int(o[0]), int(o[1])), tip, col, _px(2, px), cv2.LINE_AA)
+        cv2.putText(img, lab, (tip[0] + _px(3, px), tip[1] + _px(4, px)), cv2.FONT_HERSHEY_SIMPLEX, fs, col, t1,
+                    cv2.LINE_AA)
     if show_mesh and scene.mesh is not None and len(scene.mesh[1]):
         verts, faces = scene.mesh
         fn = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
@@ -552,27 +620,30 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
             c = (base * shade[k]).astype(int).tolist()
             cv2.fillConvexPoly(img, tri[k], c, lineType=cv2.LINE_AA)
     if calib_on:
-        img = _draw_calib(img, scene, to_screen, R, scale, show_calib, pyr, show_fov, show_cover, hits)
+        img = _draw_calib(img, scene, to_screen, R, scale, show_calib, pyr, show_fov, show_cover, hits, px)
     if show_cameras and not calib_on and scene.cameras is not None and len(scene.cameras):
         cs, _ = to_screen(scene.cameras)
+        m = 50 * px
         for k, (x, y) in enumerate(cs):
-            if np.isfinite(x) and np.isfinite(y) and -50 < x < W + 50 and -50 < y < H + 50:
-                cv2.drawMarker(img, (int(x), int(y)), (80, 120, 255), cv2.MARKER_TRIANGLE_UP, 14, 2, cv2.LINE_AA)
+            if np.isfinite(x) and np.isfinite(y) and -m < x < W + m and -m < y < H + m:
+                cv2.drawMarker(img, (int(x), int(y)), (80, 120, 255), cv2.MARKER_TRIANGLE_UP, _px(14, px),
+                               _px(2, px), cv2.LINE_AA)
                 nm = scene.camera_names[k] if k < len(scene.camera_names) else f"cam {k + 1}"
-                cv2.putText(img, nm, (int(x) + 8, int(y) + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (120, 150, 255), 1, cv2.LINE_AA)
+                cv2.putText(img, nm, (int(x) + _px(8, px), int(y) + _px(4, px)), cv2.FONT_HERSHEY_SIMPLEX, fs,
+                            (120, 150, 255), t1, cv2.LINE_AA)
     if show_points and scene.points is not None and len(scene.points):
         ps, _ = to_screen(scene.points)
         ok = np.isfinite(scene.points).all(axis=1)
         for i, j in scene.bones:
             if i < len(ok) and j < len(ok) and ok[i] and ok[j]:
                 cv2.line(img, (int(ps[i, 0]), int(ps[i, 1])), (int(ps[j, 0]), int(ps[j, 1])),
-                         (200, 200, 200), 1, cv2.LINE_AA)
+                         (200, 200, 200), t1, cv2.LINE_AA)
         for k, (x, y) in enumerate(ps):
             if ok[k] and np.isfinite(x) and np.isfinite(y):
-                cv2.circle(img, (int(x), int(y)), 4, (60, 230, 120), -1, cv2.LINE_AA)
+                cv2.circle(img, (int(x), int(y)), _px(4, px), (60, 230, 120), -1, cv2.LINE_AA)
                 if k < len(scene.names):
-                    cv2.putText(img, scene.names[k], (int(x) + 6, int(y) - 4), cv2.FONT_HERSHEY_SIMPLEX,
-                                0.4, (170, 240, 190), 1, cv2.LINE_AA)
+                    cv2.putText(img, scene.names[k], (int(x) + _px(6, px), int(y) - _px(4, px)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4 * px, (170, 240, 190), t1, cv2.LINE_AA)
     return img
 
 
@@ -644,7 +715,8 @@ class View3D(QWidget):
         self.chk_pyr.setToolTip("Where each camera stands and which way it looks")
         self.chk_fov = QCheckBox("Fields of view")
         self.chk_fov.setToolTip("Each camera's whole field of view, its lens included, to a flat far plane past "
-                                "the wand")
+                                "the wand: four translucent sides in the camera's colour (denser where fields "
+                                "overlap)")
         self.chk_cover = QCheckBox("Covered by ≥")
         self.chk_cover.setToolTip("The space at least this many of the chosen cameras see: where 3D is possible "
                                   "(2) and well determined (3 or more)")
@@ -683,6 +755,7 @@ class View3D(QWidget):
         self._timer.setInterval(15)
         self._timer.timeout.connect(self._render)
         self.last_image: np.ndarray | None = None
+        self._last_dpr = 1.0            # the pixel density last_image was drawn at (G187)
         self._hits: dict = {}
         self._cover_thread: _CoverageThread | None = None
         self._cover_threads: list = []          # every worker until it has finished (see _start_coverage)
@@ -854,13 +927,15 @@ class View3D(QWidget):
         self.info.setText(txt)
 
     def end_screen_points(self) -> np.ndarray | None:
-        """The wand ends' (P, 2) positions on the canvas in the last picture (NaN where not drawn)."""
+        """The wand ends' (P, 2) positions on the canvas in the last picture, in screen (logical) pixels - the
+        picture itself is drawn at the display's pixel density (G187) - NaN where not drawn."""
         es = self._hits.get("ends")
         if es is None or self.last_image is None:
             return None
+        dpr = self._last_dpr
         h, w = self.last_image.shape[:2]
-        ox, oy = (self.canvas.width() - w) / 2.0, (self.canvas.height() - h) / 2.0
-        return es + np.array([ox, oy])
+        ox, oy = (self.canvas.width() - w / dpr) / 2.0, (self.canvas.height() - h / dpr) / 2.0
+        return es / dpr + np.array([ox, oy])
 
     def _pick(self, x: float, y: float, radius: float = 6.0) -> int | None:
         pts = self.end_screen_points()
@@ -905,20 +980,25 @@ class View3D(QWidget):
             self._timer.start()
 
     def _render(self) -> None:
+        # (G187) drawn at the display's pixel density: a display scaled above 100 % shows it sharp, not stretched
+        dpr = max(1.0, float(self.canvas.devicePixelRatioF()))
         w = max(64, self.canvas.width())
         h = max(64, self.canvas.height())
         hits: dict = {}
-        img = render_scene(self.scene, (w, h), self.azimuth, self.elevation, self.zoom,
-                           self.chk_mesh.isChecked(), self.chk_points.isChecked(),
+        img = render_scene(self.scene, (int(round(w * dpr)), int(round(h * dpr))), self.azimuth, self.elevation,
+                           self.zoom, self.chk_mesh.isChecked(), self.chk_points.isChecked(),
                            self.chk_cams.isChecked(), pan=tuple(self.pan),
                            show_calib=self.chk_calib.isChecked(), show_fov=self.chk_fov.isChecked(),
                            show_cover=self.chk_cover.isChecked(), hits=hits,
-                           show_pyramids=self.chk_pyr.isChecked())
+                           show_pyramids=self.chk_pyr.isChecked(), px=dpr)
         self._hits = hits
+        self._last_dpr = dpr
         self.last_image = img
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888)
-        self.canvas.setPixmap(QPixmap.fromImage(qimg.copy()))
+        pm = QPixmap.fromImage(qimg.copy())
+        pm.setDevicePixelRatio(dpr)
+        self.canvas.setPixmap(pm)
 
     def save_png(self, path: str) -> None:
         if self.last_image is None:
