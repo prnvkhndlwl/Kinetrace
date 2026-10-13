@@ -944,22 +944,34 @@ class MainWindow(QMainWindow):
         # (a click on a companion switches to it through ViewGrid.view_activated -> _set_active_view)
         self._init_canvas_state(canvas)
 
-    def _init_canvas_state(self, canvas) -> None:
-        """Give a NEWLY created view the toolbar state everything else already
-        has. Without this a camera added later keeps the class defaults —
-        Follow on, so it auto-frames the silhouette while the toggle says off."""
+    def _canvas_settings(self) -> dict:
+        """THE per-view toolbar settings (R25): the canvas setter -> its arguments now. A NEW view gets
+        every one (`_init_canvas_state`: a camera added later kept the class defaults -- Follow on, so it
+        auto-framed the silhouette while the toggle said off), a change goes to every view
+        (`_push_canvas`), so the two can never list different settings. Widgets not built yet are skipped."""
+        out = {"set_region_shape": (self._region_shape,), "set_trails": (self._trail_len, self._trail_future)}
         if getattr(self, "btn_follow", None) is not None:
-            canvas.set_follow(self.btn_follow.isChecked())
+            out["set_follow"] = (self.btn_follow.isChecked(),)
         if getattr(self, "btn_pan", None) is not None:
-            canvas.set_pan_mode(self.btn_pan.isChecked())
+            out["set_pan_mode"] = (self.btn_pan.isChecked(),)
         if getattr(self, "marker_spin", None) is not None:
-            canvas.set_marker_size(self.marker_spin.value())
-        canvas.set_region_shape(self._region_shape)
-        canvas.set_trails(self._trail_len, self._trail_future)
+            out["set_marker_size"] = (self.marker_spin.value(),)
         if getattr(self, "act_onion", None) is not None:
-            canvas.set_onion(self.act_onion.isChecked())
-            canvas.set_loupe(self.act_loupe.isChecked())
-            canvas.set_display_filter(self._display_filter_key())
+            out["set_onion"] = (self.act_onion.isChecked(),)
+            out["set_loupe"] = (self.act_loupe.isChecked(),)
+            out["set_display_filter"] = (self._display_filter_key(),)
+        return out
+
+    def _init_canvas_state(self, canvas) -> None:
+        """Give a NEWLY created view the toolbar state everything else already has."""
+        for setter, args in self._canvas_settings().items():
+            getattr(canvas, setter)(*args)
+
+    def _push_canvas(self, setter: str) -> None:
+        """One setting, as it is now, to every view."""
+        args = self._canvas_settings()[setter]
+        for cv in self.grid.canvases:
+            getattr(cv, setter)(*args)
 
     def _build_ui_rest(self):
         """The window's widgets and menus, section by section in the order they depend on each other:
@@ -1034,7 +1046,7 @@ class MainWindow(QMainWindow):
         # every camera view, not just the active one (the property would bind
         # the bound method of whichever canvas happened to be active here)
         self.marker_spin.valueChanged.connect(
-            lambda px: [cv.set_marker_size(px) for cv in self.grid.canvases])
+            lambda _px: self._push_canvas("set_marker_size"))
 
     def _build_tool_buttons(self) -> None:
         """The labelled tool buttons of the control bar (Follow, Auto-pause, ROI, Point ▾, Segment ▾, Mask, Body,
@@ -1046,7 +1058,7 @@ class MainWindow(QMainWindow):
             "selected, re-frames ALL points automatically. R always fits the whole frame.",
             checked=False)      # OFF by default: the view moves only when asked
         self.btn_follow.toggled.connect(
-            lambda on: [cv.set_follow(on) for cv in self.grid.canvases])
+            lambda _on: self._push_canvas("set_follow"))
         self.canvas.set_follow(self.btn_follow.isChecked())
 
         self.btn_autopause = self._tool_button(
@@ -1704,13 +1716,12 @@ class MainWindow(QMainWindow):
                                  checkable=True)
         self.act_onion.setToolTip("Hollow ghost markers where every point was one frame ago (solid) "
                                   "and will be one frame on (dashed): a wrong step shows at a glance")
-        self.act_onion.toggled.connect(lambda on: [cv.set_onion(on) for cv in self.grid.canvases]
-                                       + [self._refresh_overlay()])
+        self.act_onion.toggled.connect(lambda _on: (self._push_canvas("set_onion"), self._refresh_overlay()))
         m_view.addAction(self.act_onion)
         self.act_loupe = QAction(_key_hint("&Loupe — magnifier under the cursor", "L"), self, checkable=True)
         self.act_loupe.setToolTip("A magnified inset follows the cursor over the video, with a crosshair "
                                   "on the exact pixel: for sub-pixel placement at 4K without zooming in")
-        self.act_loupe.toggled.connect(lambda on: [cv.set_loupe(on) for cv in self.grid.canvases])
+        self.act_loupe.toggled.connect(lambda _on: self._push_canvas("set_loupe"))
         m_view.addAction(self.act_loupe)
         self.act_epipolar = QAction("&Epipolar guides from the other cameras", self, checkable=True)
         self.act_epipolar.setChecked(True)
@@ -3438,13 +3449,7 @@ class MainWindow(QMainWindow):
         except Exception:
             self._busy_pop(tok)
             raise
-        if self.canvas._raw_rgb is None:
-            self._first_frame_token = tok
-            self._busy_step("Showing the first picture…")
-            self._busy_set_passive(tok)
-            self._first_frame_timer.start()
-        else:
-            self._busy_pop(tok)
+        self._hand_over_first_picture(tok)
         missed = len(rest) - len(added)
         self.toast.show_message(
             f"Opened {1 + len(added)} camera(s) from {folder}; the base (reference) camera is "
@@ -3513,9 +3518,15 @@ class MainWindow(QMainWindow):
         except Exception:
             self._busy_pop(tok)
             raise
+        self._hand_over_first_picture(tok, OPEN_STAGES, OPEN_STAGES)
+
+    def _hand_over_first_picture(self, tok, *stage) -> None:
+        """The loading card's level `tok` stays until the working camera's first picture is on screen
+        (`_first_frame_timer` pops it then; one already there pops it now) -- R25: the open and the
+        folder import. `stage`: the card's step number and count, when it shows them."""
         if self.state == READY and self.canvas._raw_rgb is None:
             self._first_frame_token = tok            # popped when the picture is on screen
-            self._busy_step("Showing the first picture…", OPEN_STAGES, OPEN_STAGES)
+            self._busy_step("Showing the first picture…", *stage)
             self._busy_set_passive(tok)              # built: clicks and keys go through meanwhile
             self._first_frame_timer.start()
         else:
@@ -3987,8 +3998,7 @@ class MainWindow(QMainWindow):
         if self._undo_extra:
             # the undo step spans cameras by their index: after a removal the
             # indices shift, so that step can no longer be taken back safely (G19)
-            self._undo_snap = None
-            self.act_undo.setEnabled(False)
+            self._drop_undo_point()
         had_3d, had_hull = p.reconstruction is not None, bool(self._hull_cache)
         add_on = self._leave_camera_tools()     # the same tool housekeeping as a view switch (G92)
         target = None
@@ -4071,8 +4081,7 @@ class MainWindow(QMainWindow):
         self._epi_probe = None
         self._lock = None                        # a step's collected pictures are keyed by the old numbers
         self._wand_result = (None, None)         # the last wand run's report names the old numbers (I33)
-        self._undo_snap = None                   # an undo step spans cameras by their number (G19)
-        self.act_undo.setEnabled(False)
+        self._drop_undo_point()                  # an undo step spans cameras by their number (G19)
         self._size_tiles()                       # each tile now shows the camera at its index
         self.grid.set_active(p.active)
         self.grid.set_arrangement()              # lay the tiles out again with the remapped order
@@ -4939,8 +4948,8 @@ class MainWindow(QMainWindow):
                     rt.seek.request(f)
             cv.set_masks(self._mask_layers(s, f), self._mask_opacity)       # every segment (G149)
             cv.set_bones(s.bones() if self.act_show_bones.isChecked() else [])
-            sel_name = (self.session.points[self.selected].name if self.selected is not None
-                        and self.session is not None and self.selected < self.session.n_points else None)
+            sel = self._selected_point()
+            sel_name = self.session.points[sel].name if sel is not None else None
             # the ball markers' fitted circles too: a ball lost its circle as soon as
             # its camera was not the working one (G22)
             trails, future = self._companion_trails(s, f)      # (G33)
@@ -5039,8 +5048,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 "Pan tool: drag to move the view. H or Esc when done "
                 "(picking Add or Segment also ends it)", 6000)
-        for cv in self.grid.canvases:
-            cv.set_pan_mode(on)
+        self._push_canvas("set_pan_mode")
 
     def _on_add_mode(self, on: bool):
         if on:
@@ -5082,7 +5090,7 @@ class MainWindow(QMainWindow):
         if kind == "ball":
             # a selected ball with no data here is CONTINUED by the click (the
             # same rule as points): the click is a new SAM prompt on this frame
-            if (self.selected is not None and self.selected < s.n_points and s.points[self.selected].is_ball
+            if (self._selected_point() is not None and s.points[self.selected].is_ball
                     and not s.tracked[self.current, self.selected]):
                 self._begin_edit()              # (I123)
                 s.add_ball_prompt(self.selected, self.current, x, y)
@@ -5106,8 +5114,7 @@ class MainWindow(QMainWindow):
         # panel, click where it reappeared, then Track. Never a silhouette-
         # derived landmark: it has no data before a run, so N + click placed it
         # by hand instead of adding the point asked for (I69).
-        if (self.selected is not None and self.selected < s.n_points
-                and not s.points[self.selected].derived
+        if (self._selected_point() is not None and not s.points[self.selected].derived
                 and not s.tracked[self.current, self.selected]):
             self._on_place(self.selected, *self._snap_to_prediction(self.selected, x, y))
             rmse = self._residual_sentence(s.points[self.selected].name)      # (G28)
@@ -5119,8 +5126,7 @@ class MainWindow(QMainWindow):
         # (I123) without a snapshot here, Ctrl+Z right after adding restored an OLDER
         # snapshot: the new point vanished AND the previous run or edit was undone
         self._begin_edit()
-        derived_sel = (self.selected is not None and self.selected < s.n_points
-                       and s.points[self.selected].derived)
+        derived_sel = self._selected_point() is not None and s.points[self.selected].derived
         pid = s.add_point(self.current, x, y)
         where = self._commit_new_point(pid, x, y)
         self._hint_small_spot(pid, x, y)
@@ -5658,7 +5664,7 @@ class MainWindow(QMainWindow):
         k, new = self._segment_tool_target()
         if k is None:
             return
-        dropped = self._undo_not_for_prompts()
+        dropped = self._drop_undo_point()
         s.segments[k].add_click(self.current, x, y, positive)
         s._touch()
         self._after_prompt_change("excluded" if not positive else "marked", new, dropped)
@@ -5670,7 +5676,7 @@ class MainWindow(QMainWindow):
         k, new = self._segment_tool_target()
         if k is None:
             return
-        dropped = self._undo_not_for_prompts()
+        dropped = self._drop_undo_point()
         s.segments[k].set_box(self.current, (x0, y0, x1, y1))
         s._touch()
         self._after_prompt_change("boxed", new, dropped)
@@ -5681,7 +5687,7 @@ class MainWindow(QMainWindow):
             return
         clicks = s.animal.prompts.get(self.current, [])
         if 0 <= index < len(clicks):
-            dropped = self._undo_not_for_prompts()
+            dropped = self._drop_undo_point()
             del clicks[index]
             if not clicks:
                 s.animal.prompts.pop(self.current, None)
@@ -5698,11 +5704,18 @@ class MainWindow(QMainWindow):
 
     _UNDO_DROPPED = " (the earlier Ctrl+Z step is gone: segment clicks cannot be undone — right-click a click to remove it)"
 
-    def _undo_not_for_prompts(self) -> bool:
-        """The segment's clicks and boxes are not part of an undo snapshot, so no
-        snapshot can take one back (G70): left alone, the next Ctrl+Z undid the PREVIOUS
-        tracking run and kept the click. The undo point is cleared instead, as for
-        removing the segment (I124). True when there was one to lose."""
+    def _selected_point(self) -> int | None:
+        """The selected point when it is one of the working camera's points, else None (R25: one check for
+        the places that used `self.selected` only after testing it against the session)."""
+        s, q = self.session, self.selected
+        return q if s is not None and q is not None and 0 <= q < s.n_points else None
+
+    def _drop_undo_point(self) -> bool:
+        """No undo step across a change that no snapshot can take back (R25: one rule for every such
+        place). The segment's clicks and boxes are not part of a snapshot (G70: left alone, the next
+        Ctrl+Z undid the PREVIOUS run and kept the click), nor is removing an animal (I124), a camera
+        removed or the cameras reordered (G19: a step spans cameras by their number). True when there
+        was one to lose."""
         had = self._undo_snap is not None
         self._undo_snap = None
         self.act_undo.setEnabled(False)
@@ -5942,8 +5955,7 @@ class MainWindow(QMainWindow):
         for name in names:                         # by NAME: the indices shift as each one goes
             p.remove_segment(name, keep_points=True)  # one list of animals in every camera (G149)
         # an older snapshot would restore something else and not the animal (I124)
-        self._undo_snap = None
-        self.act_undo.setEnabled(False)
+        self._drop_undo_point()
         self.btn_animal.setChecked(False)
         self.selected = None
         self.timeline.set_session(s)   # lane layout changes
@@ -5972,8 +5984,7 @@ class MainWindow(QMainWindow):
     def _set_display_filter(self, key: str, announce: bool = True):
         key = key if key in DISPLAY_FILTERS else "none"
         self._filter_acts[key].setChecked(True)
-        for cv in self.grid.canvases:
-            cv.set_display_filter(key)
+        self._push_canvas("set_display_filter")
         if announce:
             label = self._filter_acts[key].text()
             self.statusBar().showMessage(
@@ -5989,10 +6000,7 @@ class MainWindow(QMainWindow):
         act.setChecked(True)
         self.act_trail_custom.setText(f"Custom… ({self._trail_custom} frames)"
                                       if act is self.act_trail_custom else "Custom…")
-        for cv in self.grid.canvases:
-            cv.set_trails(self._trail_len, self._trail_future)
-        self._refresh_overlay()
-        self._refresh_companions()
+        self._apply_trails()
 
     def _ask_trail_len(self):
         """View → Trails → Custom…: how many frames of trail to draw (G33)."""
@@ -6023,8 +6031,11 @@ class MainWindow(QMainWindow):
 
     def _on_trail_future(self, on: bool):
         self._trail_future = bool(on)
-        for cv in self.grid.canvases:
-            cv.set_trails(self._trail_len, self._trail_future)
+        self._apply_trails()
+
+    def _apply_trails(self) -> None:
+        """The trail length / upcoming path to every view, redrawn (R25: two copies)."""
+        self._push_canvas("set_trails")
         self._refresh_overlay()
         self._refresh_companions()
 
@@ -6032,8 +6043,7 @@ class MainWindow(QMainWindow):
         key = key if key in REGION_SHAPES else "circle"
         self._region_shape = key
         self._shape_acts[key].setChecked(True)
-        for cv in self.grid.canvases:
-            cv.set_region_shape(key)
+        self._push_canvas("set_region_shape")
         if announce:
             how = {"circle": "drag from the centre outward",
                    "rect": "drag a box around the object",
@@ -6306,11 +6316,8 @@ class MainWindow(QMainWindow):
             k, made = s.add_segment(), True
         seg_name = s.segments[k].name
         # one undo step, in every camera the template gives landmarks to (G70, G19)
-        self._undo_snap = s.snapshot()
-        self.act_undo.setEnabled(True)
-        if self.project is not None and self.project.n_views > 1:
-            for v in self.project.others():
-                self._undo_extra[v] = self.project.sessions[v].snapshot()
+        others = self.project.others() if self.project is not None and self.project.n_views > 1 else []
+        self._set_undo_point(s.snapshot(), {v: self.project.sessions[v].snapshot() for v in others})
         new = s.apply_skeleton(t, k)
         if self.project is not None and self.project.n_views > 1:
             # the same animal in every camera: its skeleton (bones, head) and its landmarks (G19)
@@ -6663,8 +6670,7 @@ class MainWindow(QMainWindow):
             "Ctrl+Z undoes the move", 7000)
 
     def _on_reposition(self, x: float, y: float):
-        if self.selected is not None and self.session is not None \
-                and self.selected < self.session.n_points:
+        if self._selected_point() is not None:
             self._on_place(self.selected, x, y)
         else:
             self.statusBar().showMessage("Select a point first (click it), then Ctrl+Click to move it", 4000)
@@ -7546,7 +7552,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Point tools work on tracked points: add some first (N, then click)", 7000)
             return
         if a is None:
-            a = self.selected if self.selected is not None and 0 <= self.selected < s.n_points else 0
+            a = self._selected_point()
+            a = 0 if a is None else a
         cam = self.project.name(self.project.active) if self.project is not None and self.project.n_views > 1 else ""
         dlg = PointToolsDialog(self, s, a, b, op, self.current, self.timeline.sel_range, cam)
         ok = dlg.exec() == QDialog.Accepted
@@ -7683,8 +7690,8 @@ class MainWindow(QMainWindow):
             pk, ak = self.layers.selected_names()
             if getattr(self, "_point_list_project", None) is not self.project:
                 pk, ak = set(), set()          # another video / project: nothing carries over by name
-            cur_name = s.points[self.selected].name if (s is not None and self.selected is not None
-                                                        and self.selected < s.n_points) else None
+            cur = self._selected_point()
+            cur_name = s.points[cur].name if cur is not None else None
             if cur_name is not None and cur_name not in pk:
                 pk, ak = {cur_name}, set()     # the current point is a NEW one: select just it
             # (G81: a Ctrl+A selection with no current point is kept)
