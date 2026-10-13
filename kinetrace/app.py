@@ -1589,9 +1589,6 @@ class MainWindow(QMainWindow):
                                    "to unmark.")
         self.act_annotator = QAction("&Annotator Name…", self, triggered=self._set_annotator)
         self.act_annotator.setToolTip("Recorded on the events and notes you add")
-        for a in (self.act_note, self.act_hidden, self.act_annotator):
-            m_edit.addAction(a)
-        m_edit.addSeparator()
         # (G147) fixing which point is which
         self.act_point_tools = QAction("&Point Tools… (swap, move, fill, split)", self,
                                        triggered=lambda: self._point_tools())
@@ -1599,6 +1596,15 @@ class MainWindow(QMainWindow):
                                         "to another, fill one point's empty frames from another, or split a point "
                                         "in two at a frame. Each is one Ctrl+Z step.")
         m_edit.addAction(self.act_point_tools)
+        m_edit.addSeparator()
+        m_edit.addAction(self.act_note)
+        m_edit.addAction(self.act_hidden)
+        # (G188) Events and Skeleton were top-level menus of their own: they are filled by
+        # `_refresh_events_ui` / `_refresh_skeleton_menu` (`_build_skeleton_events_menus`)
+        self.m_events = m_edit.addMenu("E&vents")
+        self.m_skeleton = m_edit.addMenu("S&keleton")   # (also under the LAYERS Skeleton ▾ button)
+        m_edit.addSeparator()
+        m_edit.addAction(self.act_annotator)
 
     def _build_view_menu(self) -> None:
         """View menu: panel, other cameras, overlays, trails, display filters."""
@@ -1746,14 +1752,12 @@ class MainWindow(QMainWindow):
         self.addAction(self.act_settings)
 
     def _build_skeleton_events_menus(self) -> None:
-        """Skeleton and Events menus."""
+        """Fill Edit → Skeleton and Edit → Events (the submenus are made by `_build_edit_menu`)."""
         # skeleton templates (also under the panel's Skeleton ▾ button)
-        self.m_skeleton = self.menuBar().addMenu("&Skeleton")
         self._refresh_skeleton_menu()
 
         # E is handled in keyPressEvent (a menu shortcut would steal the letter
         # from rename editors); the menu wording documents it
-        self.m_events = self.menuBar().addMenu("E&vents")
         self.act_mark_event = QAction("Mark Event Start / End  (E)", self,
                                       triggered=self._mark_event)
         self._refresh_events_ui()

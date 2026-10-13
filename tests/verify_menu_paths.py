@@ -239,7 +239,12 @@ for p, a, sub in leaves:
     if p[0] != "File" and sub is None:
         assert "export" not in p[-1].lower() or p[-1].startswith("Keep"), f"an export outside File > Export: {p}"
 assert sum(a is win.act_calib for _, a, _s in leaves) == 1 and paths[id(win.act_calib)] == ["File", "Import", "Calibration…"]
-print("(c) every export in File > Export, one calibration import OK")
+tops = [label(a) for a in win.menuBar().actions()]
+assert tops == ["File", "Edit", "View", "3D", "Body", "Help"], tops
+assert paths[id(win.m_events.menuAction())] == ["Edit", "Events"], "Events is a submenu of Edit"
+assert paths[id(win.m_skeleton.menuAction())] == ["Edit", "Skeleton"], "Skeleton is a submenu of Edit"
+print("(c) six top-level menus; Events and Skeleton in Edit; every export in File > Export, one calibration "
+      "import OK")
 
 # ---- (d) a shortcut whose action now sits in a submenu still fires: pressed with real keys ----------------
 from PySide6.QtCore import Qt  # noqa: E402
