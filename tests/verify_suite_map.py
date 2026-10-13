@@ -36,7 +36,7 @@ check(not unmapped, f"all {len(mods)} kinetrace modules are in tests/suite_map.p
       (f" (missing: {', '.join(unmapped)})" if unmapped else ""))
 
 # 2. every named suite exists; every grouped suite is reachable
-named = {n for _, suites in suite_map.MAP for n in suites} | set(suite_map.FALLBACK)
+named = {n for _, suites in suite_map.MAP + suite_map.ALSO for n in suites} | set(suite_map.FALLBACK)
 missing = sorted(n for n in named if not os.path.exists(os.path.join(HERE, n + ".py")))
 check(not missing, "every suite the table names exists" + (f" (no file: {missing})" if missing else ""))
 unreachable = sorted(n for n in run_suites.CPU + run_suites.GPU if n not in named and n != "audit_sweep")
@@ -51,13 +51,16 @@ s2, _ = suite_map.suites_for(["tests/_synth_spots.py"])
 check(s == ["verify_animal", "verify_animal_gui"] and "verify_spots" in s2,
       "a changed test helper runs the suites that import it")
 s, _ = suite_map.suites_for(["docs/MANUAL.md"])
-check(s == ["verify_timeline_events"], "MANUAL.md runs the suite that renders it")
+check(s == ["verify_timeline_events", "verify_menu_paths"],
+      "MANUAL.md runs the suite that renders it and the menu-path check")
 s, u = suite_map.suites_for(["kinetrace/brand_new.py"])
-check(u == ["kinetrace/brand_new.py"] and s == suite_map.FALLBACK, "an unknown module: fallback set, reported")
+check(u == ["kinetrace/brand_new.py"] and s == suite_map.FALLBACK + ["verify_menu_paths"],
+      "an unknown module: fallback set (+ the menu-path check), reported")
 s, u = suite_map.suites_for(["README.md", "wiki/Home.md"])
 check(s == [] and u == [], "text outside the app selects nothing")
 s, _ = suite_map.suites_for(["kinetrace/tracker.py", "kinetrace/tracker.py"])
 check(len(s) == len(set(s)) and s[0] == "verify_tracker", "no suite twice; the table's order kept")
+check(s[-1] == "verify_menu_paths", "every module change also checks the menu paths its messages name")
 
 
 def git_checks():
