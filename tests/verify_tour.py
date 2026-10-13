@@ -165,6 +165,11 @@ if sess is not None:
     win._autosave()
     pump(0.3)
     check(recovery.for_video(str(made)) is None, "no recovery copy of the untouched demo")
+    check(win.layers.selected_pids() == list(range(sess.n_points)) and not win.layers.selected_animals(),
+          "the demo's five points come selected, its animal row not (no SAM weights needed)",
+          (win.layers.selected_pids(), win.layers.selected_animals()))
+    check(win._track_blocked is None and win.btn_track.isEnabled(), "Track works at the first press on the demo",
+          win._track_blocked)
 
 # ---------------------------------------------------------------- [3] walking the stops
 print("[3] walking the stops")

@@ -3041,6 +3041,11 @@ class MainWindow(QMainWindow):
             self._refresh_cameras()
             self._fit_timeline_height()
             self._goto(self.current, force=True)
+            # its five points selected (owner 2026-10-12): Track carries them on at the first press. Not the
+            # animal row -- that would be a silhouette run, which needs the SAM weights
+            self.layers.select_only(pids, (), current=pids[0])
+            self._on_point_selection_changed()
+            self.project.dirty = False             # a selection is not a change
             self._update_frame_label()
             self._apply_state()
         self._show_tour()
@@ -3073,8 +3078,9 @@ class MainWindow(QMainWindow):
         box.setText(
             "<p><b>This is Kinetrace's demo video</b>: a made-up animal with five points already tracked on "
             "the first frames and its silhouette outlined.</p>"
-            "<p><b>Keep playing with it</b>: drag along the timeline, select points in LAYERS and press "
-            "<b>Track</b> to carry them on, click on the video to correct one, try File → Export. Nothing is "
+            "<p><b>Keep playing with it</b>: drag along the timeline, press <b>Track</b> to carry its points "
+            "on (they are already selected in LAYERS), click on the video to correct one, try File → Export. "
+            "Nothing is "
             "saved unless you choose Save.</p>"
             "<p><b>To work on your own footage</b>, open it with <b>File → Open Video</b> (Ctrl+O): it takes "
             "the demo's place. If you changed the demo, Kinetrace asks whether to keep the changes — "
