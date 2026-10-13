@@ -114,6 +114,7 @@ class TimelinePanel(QWidget):
         # distinguishable or a silhouette-only delete would clear points too.
         self.sel_rows: list[int] | None = None
         self.sel_seg = False                   # marquee covers a segment lane
+        self._band_segs: list = []             # the segment lanes the marquee covers (G149)
         self.sel_segs: list[int] | None = None  # ... which ones (G149); None = not named (the active one)
         self._view = (0, 1)                    # displayed frame range, inclusive
         self._scroll = 0                       # first visible lane row
@@ -885,7 +886,7 @@ class TimelinePanel(QWidget):
                 self._drag_select_y = y
                 self.sel_range = (f, f)
                 self.sel_rows, self.sel_seg = self._lanes_in_band(y, y)
-                self.sel_segs = list(getattr(self, "_band_segs", [])) if self.sel_seg else None   # (G149)
+                self.sel_segs = list(self._band_segs) if self.sel_seg else None   # (G149)
                 self.update()
                 return
             if x < GUTTER_W:
@@ -919,7 +920,7 @@ class TimelinePanel(QWidget):
             self.sel_range = (min(self._drag_select_from, f),
                               max(self._drag_select_from, f))
             self.sel_rows, self.sel_seg = self._lanes_in_band(self._drag_select_y, y)
-            self.sel_segs = list(getattr(self, "_band_segs", [])) if self.sel_seg else None   # (G149)
+            self.sel_segs = list(self._band_segs) if self.sel_seg else None   # (G149)
             self.update()
             return
         if self._drag_seek and (ev.buttons() & Qt.LeftButton):

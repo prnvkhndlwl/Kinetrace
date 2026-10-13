@@ -454,9 +454,9 @@ s.segments[1].hold = True
 had = s.seg_masks[1].has(3)
 if not had:
     s.write_mask(3, blob(100, 100, 10), 1.0, 6.0, i=1)
-check(win._stored_segments([hp1]) == [1] and win._seg_list([hp1], False) == [],
+check(win._stored_segments([hp1]) == [1] and win._seg_list(False) == [],
       "G180 a re-track's held point is kept on its OWN animal's saved silhouettes (animal 2, not the active one); "
-      "nothing is re-segmented", (win._stored_segments([hp1]), win._seg_list([hp1], False)))
+      "nothing is re-segmented", (win._stored_segments([hp1]), win._seg_list(False)))
 if not had:
     s.seg_masks[1].clear(3, 3)
 s.segments[1].hold = False

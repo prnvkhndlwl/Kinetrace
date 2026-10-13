@@ -460,30 +460,16 @@ class WandPage(QWizardPage):
         for nm, both, _any in rows:
             lines.append(f"<tr><td>{nm}</td><td style='padding-left:12px'>{both} frames with both ends</td></tr>")
         lines.append("</table>")
-        if p.n_views < 2:
-            both = rows[0][1] if rows else 0
-            lines.append(f"<p>Frames with both ends in this one camera: <b>{both}</b>.</p>")
-            self.table.setText("".join(lines))
-            self.warn.setText(
-                f"<span style='color:{theme.OK}'>One camera cannot be calibrated on its own: the wand's two "
-                "ends give a direction and a scale only when a second camera sees them too. Add the "
-                "other cameras' wand videos to this project (＋ Add video, then Sync) and track the "
-                "same two names there; this page then counts the shared frames and lets you go on. "
-                "Your tracking here is kept and exports normally (Ctrl+E).</span>")
-            self.completeChanged.emit()
-            return
-        lines.append(f"<p>Frames where two or more cameras see both ends: <b>{self._n_frames}</b></p>")
+        # one camera (two or more returned above, through the ticks: `_update_ticks` says how many frames)
+        both = rows[0][1] if rows else 0
+        lines.append(f"<p>Frames with both ends in this one camera: <b>{both}</b>.</p>")
         self.table.setText("".join(lines))
-        if self._n_frames < MIN_FRAMES:
-            self.warn.setText(f"<span style='color:{theme.RED}'>Too few frames (at least {MIN_FRAMES} are needed). "
-                              "Track the wand ends in at least two cameras on the same stretch of the "
-                              "recording.</span>")
-        elif self._n_frames < GOOD_FRAMES:
-            self.warn.setText(f"<span style='color:{theme.OK}'>Under {GOOD_FRAMES} shared frames: it will run, but "
-                              "the result will be rough. More frames, spread over the recording, help most."
-                              "</span>")
-        else:
-            self.warn.setText("")
+        self.warn.setText(
+            f"<span style='color:{theme.OK}'>One camera cannot be calibrated on its own: the wand's two "
+            "ends give a direction and a scale only when a second camera sees them too. Add the "
+            "other cameras' wand videos to this project (＋ Add video, then Sync) and track the "
+            "same two names there; this page then counts the shared frames and lets you go on. "
+            "Your tracking here is kept and exports normally (Ctrl+E).</span>")
         self.completeChanged.emit()
 
     def isComplete(self) -> bool:

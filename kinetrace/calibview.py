@@ -259,12 +259,6 @@ class CalibPicture:
         self.lines = [ln for ln in self.lines if not ln.startswith("The wand cloud lies")]
         self.lines[:0] = sentences
 
-    def add_coverage(self, n_max: int = 40, views=None) -> Coverage:
-        """`coverage_for` + `use_coverage` in one call (tests, scripts)."""
-        res = self.coverage_for(views, n_max)
-        self.use_coverage(res)
-        return res[0]
-
 
 def _cameras(cal: Calibration, names: list, ends: np.ndarray, probe) -> tuple[list, list[str]]:
     p = ends[np.isfinite(ends).all(axis=1)]

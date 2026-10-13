@@ -442,7 +442,7 @@ row_click(lay.point_item(0))
 row_click(win._animal_item(1), mod=Qt.ControlModifier)
 check(win._selected_pids() == [0] and win._selected_segments() == [1], "Ctrl+click adds an animal to a point")
 row_click(lay.point_item(0))
-check(not win._run_segments({0}) and not win._stored_segments([0]), "a Scene point never brings a silhouette")
+check(not win._run_segments() and not win._stored_segments([0]), "a Scene point never brings a silhouette")
 
 # ------------------------------------------------------------------ [5] skeleton
 print("[5] skeletons (G157)")

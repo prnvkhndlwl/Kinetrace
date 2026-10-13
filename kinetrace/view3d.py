@@ -757,7 +757,6 @@ class View3D(QWidget):
         self.last_image: np.ndarray | None = None
         self._last_dpr = 1.0            # the pixel density last_image was drawn at (G187)
         self._hits: dict = {}
-        self._cover_thread: _CoverageThread | None = None
         self._cover_threads: list = []          # every worker until it has finished (see _start_coverage)
         self._cover_gen = 0
         self._cover_key = None
@@ -886,7 +885,6 @@ class View3D(QWidget):
         # is ignored by generation
         self._cover_threads.append(th)
         th.finished.connect(lambda t=th: self._cover_thread_ended(t))
-        self._cover_thread = th
         self.info.setText((self._base_info + "  ·  " if self._base_info else "") + "counting the covered space…")
         th.start()
 
