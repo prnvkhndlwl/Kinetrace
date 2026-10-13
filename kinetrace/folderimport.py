@@ -357,8 +357,8 @@ class VideoFolderDialog(QDialog):
 
     def stop_probe(self) -> None:
         """Stop the header thread (a QThread must never be destroyed running). It
-        is told to stop and cut off from the dialog, and kept referenced in
-        `_ORPHANS` until its `finished` fires when a slow header read is still in
+        is told to stop and cut off from the dialog, and kept referenced
+        (`threads.retire`) until its `finished` fires when a slow header read is still in
         progress: dropping a running QThread aborts the process, and waiting for
         it froze the dialog for seconds (I199)."""
         th, self._probe = self._probe, None

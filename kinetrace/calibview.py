@@ -203,7 +203,7 @@ class CalibPicture:
     source: str = "fit"              # "fit" = a wand run's own errors; "tracks" = recomputed from the landmarks
     lines: list = field(default_factory=list)
     cal: Calibration | None = None
-    cover: dict = field(default_factory=dict)       # n -> (verts, faces), filled by `add_coverage`
+    cover: dict = field(default_factory=dict)       # n -> (verts, faces), filled by `use_coverage`
     coverage: Coverage | None = None
 
     def finite_ends(self) -> np.ndarray:

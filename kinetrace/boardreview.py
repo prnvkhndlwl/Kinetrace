@@ -53,7 +53,7 @@ def pixmap(bgr: np.ndarray, width: int | None = None, max_w: int | None = None) 
 
 def quality(err: float, size: tuple[int, int] | None = None) -> tuple[str, str]:
     """(word, colour) for one view's reprojection error: green up to the lens
-    report's "good" limit, amber up to its "ok" limit, red beyond - the SAME
+    report's "good" limit, yellow (theme.OK) up to its "ok" limit, red beyond - the SAME
     limits the report grades the fit with (`lens.rms_limits`, R19; the tiles
     used a fixed 0.6 / 1.5 px beside the report's resolution-scaled ones)."""
     if not np.isfinite(err):

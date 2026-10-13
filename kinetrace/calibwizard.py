@@ -1582,7 +1582,7 @@ def report_text(report: dict, grav: dict | None, csv_note: str | None = None) ->
 
 def gravity_colour(pct_off: float) -> str:
     """Colour of the gravity check's figure from how many % away from g it is, with
-    wand.py's own bands: green while the sentence says "consistent", amber up to the
+    wand.py's own bands: green while the sentence says "consistent", yellow (theme.OK) up to the
     point where the verdict is capped, red beyond (G137: the colours used 3 % / 8 %
     against sentences that used 2 % / 5 %)."""
     if pct_off <= _wand.G_CONSISTENT_PCT:

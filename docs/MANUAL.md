@@ -2327,8 +2327,8 @@ calibration switches the first one on.
   agree: *3D rmse 0.84 px · 2 cams*. It is the reconstruction residual in
   pixels (DLTdv's definition — the number 3D → Reconstruct reports for every
   frame): green = good (under about 1.5 px at 1920 px wide), yellow = usable,
-  red = one of the placements is off (every good / usable / poor verdict in the
-  program uses these three colours). With only **two** cameras it never reads
+  red = one of the placements is off (the good / usable / poor verdicts of the
+  picture, the wizards and the reports use these three colours). With only **two** cameras it never reads
   better than yellow ("ok"): a slip along the line joining the two views is
   invisible to two cameras, so a low number cannot be called good. The status
   bar says the same after each click. The dashed lines turn faint in every camera from then on — they have
