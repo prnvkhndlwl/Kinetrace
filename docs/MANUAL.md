@@ -220,8 +220,8 @@ start reminds you (click it to check now; it comes back at most once a week
 until you do) — the reminder only counts days, it does not go online. If there is one, you see what is new, and
 **Update now** installs it (a download cut off by a lost connection resumes where it
 stopped, and a full disk is named as such). Only the program's own files are replaced: your
-projects, downloaded models, unsaved-work copies, saved skeletons and settings
-are kept. **Restart now** then closes the program (asking first if you have
+projects, downloaded models, unsaved-work copies, saved skeletons, the tour's demo
+video and settings are kept. **Restart now** then closes the program (asking first if you have
 unsaved work) and starts the new version. If the new version needs extra
 supporting software, that first start installs it, which takes a few minutes
 and needs the internet.
@@ -367,6 +367,27 @@ look, and it can stop automatically when it loses something.
 
 ## 5. A tour of the window
 
+**Take the tour in the program itself:** the first time Kinetrace starts, it
+asks whether you would like a one-minute tour (*Take the tour*, *Not now* —
+asked again next time — or *Don't ask again*), and **Help → Take the Interface
+Tour…** shows it whenever you like. The window darkens and one part at a time is
+lit, with a card saying what it is for: **→** or **Enter** for the next part,
+**←** to go back, **Esc** to leave. While the tour is up, keys and clicks only
+move the tour, and it changes nothing you have set up — a panel you have hidden
+or moved stays where it is, and its card tells you how to bring it back. It
+cannot start while tracking is running (pause with **X** first).
+
+If no video is open, the tour first opens a **demo video** that Kinetrace makes
+for you (a made-up animal walking; about a second the first time, kept in the
+*demo* folder inside the Kinetrace folder). It comes with five points already
+tracked on the first 100 frames and the animal's outline drawn, so every panel
+has something in it. After the tour it stays open for you to try things —
+press **Track** to carry the points on, click to correct one, export. Nothing is
+saved unless you choose Save; open your own video with **File → Open Video**
+and it takes the demo's place.
+
+The rest of this section describes the same parts in more detail.
+
 ```
  File  Edit  View  Skeleton  Events  3D  Body  Help      ← the menus
 ┌────────────────────────────────────────────────────┬──────────────────────┐
@@ -392,7 +413,7 @@ export), **Edit** (undo, notes, the hidden mark, the name recorded on your
 notes), **View** (the panel, this strip, trails, the loupe, display filters),
 **Skeleton** (ready-made landmark lists for an animal), **Events**, **3D** (several cameras:
 sync, calibration, 3D positions), **Body** (people's joints and joint angles)
-and **Help** (this manual, **F1**, and the keyboard reference). **Hover the
+and **Help** (this manual, **F1**, the keyboard reference and the interface tour). **Hover the
 mouse over any menu entry** and a line appears saying what it does. In the 3D
 menu, the entries that need something you have not done yet — a second camera,
 a calibration — mostly stay clickable and tell you what is missing when you
@@ -3657,6 +3678,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Ctrl+E** | export your results |
 | **Ctrl+,** | settings (also the last entry of the **Segment ▾** dropdown) |
 | **F1** | this manual (**Help → User Manual**) |
+| **Help → Take the Interface Tour…** | a one-minute tour of the window, on a demo video when none is open ([section 5](#5-a-tour-of-the-window)); in the tour: **→** / **Enter** next, **←** back, **Esc** leave |
 | **Help → Check for Updates…** | install a newer version, keeping your projects and models ([section 3](#getting-a-newer-version)) |
 
 ### Editing on the timeline
