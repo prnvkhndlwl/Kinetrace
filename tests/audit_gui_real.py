@@ -648,7 +648,7 @@ def walk_menubar(skip=("Open Video", "Open Project", "Exit", "Quit")):
         label = " > ".join(path)
         if any(s in label for s in skip):
             continue
-        if path[0] == "Skeleton" and CTX["state"] not in ("points",):
+        if path[:2] == ["Edit", "Skeleton"] and CTX["state"] not in ("points",):
             continue                     # templates add landmarks: exercised in the points state only
         step("menu " + label, lambda p=path: click_menu_path(p))
         if win.state == TRACKING and CTX["state"] != "tracking":
@@ -1184,14 +1184,15 @@ try:
 
             STUB["open"] = CSV
             POLICY.update(mode="accept", handler=_calib_handler)
-            step("3D > Import Calibration", lambda: click_menu_path(["3D", "Import Calibration"]))
+            step("File > Import > Calibration", lambda: click_menu_path(["File", "Import", "Calibration"]))
             POLICY.update(mode="cancel", handler=None)
             STUB["open"] = ""
             rec("calibration_after", has=win.project.calibration is not None)
             POLICY["mode"] = "accept"
             POLICY["answers"] = ["No"]
             step("Ctrl+3 reconstruct", lambda: key(Qt.Key_3, Qt.ControlModifier, win.canvas.viewport()), settle=1.0)
-            step("3D > Estimate Sub-frame Offsets", lambda: click_menu_path(["3D", "Estimate Sub-frame"]), settle=1.0)
+            step("3D > Sync > Estimate Sub-frame Offsets", lambda: click_menu_path(["3D", "Sync", "Estimate Sub-frame"]),
+                 settle=1.0)
             step("Ctrl+4 carve", lambda: key(Qt.Key_4, Qt.ControlModifier, win.canvas.viewport()), settle=1.0)
             POLICY["mode"] = "cancel"
             walk_menubar()

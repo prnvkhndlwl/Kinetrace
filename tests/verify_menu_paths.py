@@ -200,6 +200,10 @@ def resolve(text: str, pos: int, top: str):
         path.append(name)
         nxt = ARROW.search(text, pos)
         between = text[pos:nxt.start()] if nxt else ""
+        if sub is not None and (nxt is None or WORD.search(between)) and re.match(r"[ \t]+\w", text[pos:]):
+            # a path that stops at a submenu while the words go on: "3D → Calibrate a Lens" once Calibrate
+            # became a submenu (its entry is 3D → Calibrate → Calibrate a Lens)
+            return " > ".join(path) + " is a submenu; the text goes on with " + repr(" ".join(text[pos:pos + 40].split()))
         if sub is None or nxt is None or WORD.search(between):
             return None
         pos = nxt.end()
@@ -243,6 +247,21 @@ tops = [label(a) for a in win.menuBar().actions()]
 assert tops == ["File", "Edit", "View", "3D", "Body", "Help"], tops
 assert paths[id(win.m_events.menuAction())] == ["Edit", "Events"], "Events is a submenu of Edit"
 assert paths[id(win.m_skeleton.menuAction())] == ["Edit", "Skeleton"], "Skeleton is a submenu of Edit"
+def entries(path):
+    return [(p[-1], a) for p, a, _ in leaves if p[:-1] == path]
+
+
+assert [a for _, a in entries(["3D", "Sync"])] == [win.act_sync, win.act_offsets3d]
+assert [a for _, a in entries(["3D", "Calibrate"])] == [win.act_lens, win.act_load_lens, win.act_wand]
+assert [n for n, _ in entries(["3D"])][:3] == ["Cameras Overview…", "Sync", "Calibrate"], entries(["3D"])
+assert len(entries(["3D"])) == 8, [n for n, _ in entries(["3D"])]
+assert [a for _, a in entries(["Help"])][:4] == [win.act_manual, win.act_tour, by_text["Keyboard & Mouse Reference…"],
+                                                win.act_help_models]
+assert entries(["Help"])[-1][1] is win.act_about
+for act in (win.act_note, win.act_hidden, win.act_mark_event, win.act_onion, win.act_loupe):
+    assert act.shortcut().isEmpty(), f"{label(act)}: a single key goes through _hotkey, never a QAction shortcut"
+    if sys.platform != "darwin":
+        assert "\t" in act.text() and "(" not in act.text().split("\t")[1], act.text()
 print("(c) six top-level menus; Events and Skeleton in Edit; every export in File > Export, one calibration "
       "import OK")
 

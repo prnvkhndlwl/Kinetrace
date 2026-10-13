@@ -58,6 +58,13 @@ MANUAL_WHICH_MODEL = "Which point model should I use?"
 _AT_AVAILABLE: dict = {}        # the `available` function asked -> True once it said so (R23)
 
 
+def _key_hint(label: str, keys: str) -> str:
+    """A menu label with its single-key hotkey in the shortcut column (G188). Not a real shortcut: single
+    letters go through `_hotkey`, so text fields keep them. On a Mac the native menu turns text after a tab
+    into a key equivalent, which would take the letter from every text field: there it stays in the label."""
+    return f"{label}   ({keys})" if sys.platform == "darwin" else f"{label}\t{keys}"
+
+
 def _alltracker_available() -> bool:
     """`alltracker_backend.available()` (a file stat) asked once per process, not per selected point
     on every playhead move and twice per row at every list rebuild (R23). Only a True answer is
@@ -1579,10 +1586,10 @@ class MainWindow(QMainWindow):
                                        "them (only what is selected is tracked). Esc clears the selection.")
         m_edit.addAction(self.act_select_all)
         m_edit.addSeparator()
-        self.act_note = QAction("&Note at This Frame…   (Shift+N)", self, triggered=lambda: self._edit_note())
+        self.act_note = QAction(_key_hint("&Note at This Frame…", "Shift+N"), self, triggered=lambda: self._edit_note())
         self.act_note.setToolTip("Attach a free-text note to the current frame (shown on the timeline, "
                                  "exported with the events)")
-        self.act_hidden = QAction("Mark Selected Point &Hidden Here   (Shift+X)", self,
+        self.act_hidden = QAction(_key_hint("Mark Selected Point &Hidden Here", "Shift+X"), self,
                                   triggered=self._toggle_hidden_here)
         self.act_hidden.setToolTip("The selected point is not really visible on this frame: keep its "
                                    "position but leave it blank in exports and out of 3D. Press again "
@@ -1665,8 +1672,9 @@ class MainWindow(QMainWindow):
         self.act_show_midline.setToolTip("Also available by right-clicking the segment in the panel")
         self.act_show_bones = QAction("Show skeleton &bones", self, checkable=True, checked=True,
                                       triggered=lambda _=False: self._refresh_overlay())
-        self.act_settings = QAction("&Settings… (segmentation model, token, opacity)", self,
-                                    shortcut=QKeySequence("Ctrl+,"), triggered=self._show_settings)
+        self.act_settings = QAction("&Settings…", self, shortcut=QKeySequence("Ctrl+,"), triggered=self._show_settings)
+        self.act_settings.setToolTip("Your annotator name, the segmentation model, the Hugging Face token for SAM 3 "
+                                     "and how opaque the silhouettes are drawn")
         # the Segment ▾ menu ends with the full Settings dialog (token, opacity)
         self._seg_menu.addAction(self.act_settings)
         # and Edit ends with it, as the Preferences entry: on a Mac Qt moves it to the application
@@ -1703,14 +1711,14 @@ class MainWindow(QMainWindow):
                                          "step ahead is visible before you get there")
         self.act_trail_future.toggled.connect(self._on_trail_future)
         m_trails.addAction(self.act_trail_future)
-        self.act_onion = QAction("&Onion skin — ghosts of the previous / next frame  (O)", self,
+        self.act_onion = QAction(_key_hint("&Onion skin — ghosts of the previous / next frame", "O"), self,
                                  checkable=True)
         self.act_onion.setToolTip("Hollow ghost markers where every point was one frame ago (solid) "
                                   "and will be one frame on (dashed): a wrong step shows at a glance")
         self.act_onion.toggled.connect(lambda on: [cv.set_onion(on) for cv in self.grid.canvases]
                                        + [self._refresh_overlay()])
         m_view.addAction(self.act_onion)
-        self.act_loupe = QAction("&Loupe — magnifier under the cursor  (L)", self, checkable=True)
+        self.act_loupe = QAction(_key_hint("&Loupe — magnifier under the cursor", "L"), self, checkable=True)
         self.act_loupe.setToolTip("A magnified inset follows the cursor over the video, with a crosshair "
                                   "on the exact pixel: for sub-pixel placement at 4K without zooming in")
         self.act_loupe.toggled.connect(lambda on: [cv.set_loupe(on) for cv in self.grid.canvases])
@@ -1758,7 +1766,7 @@ class MainWindow(QMainWindow):
 
         # E is handled in keyPressEvent (a menu shortcut would steal the letter
         # from rename editors); the menu wording documents it
-        self.act_mark_event = QAction("Mark Event Start / End  (E)", self,
+        self.act_mark_event = QAction(_key_hint("Mark Event Start / End", "E"), self,
                                       triggered=self._mark_event)
         self._refresh_events_ui()
 
@@ -1789,7 +1797,7 @@ class MainWindow(QMainWindow):
         self.act_export_cal = QAction("&Calibration…", self, triggered=self._export_calibration)  # File → Export
         self.act_export_cal.setToolTip("Save this project's calibration for other projects (.kcal.json) and "
                                        "for DLTdv (dltCoefs.csv), with the report")
-        self.act_sync = QAction("S&ync Cameras (Sound / Motion)…", self, triggered=self._sync_dialog)
+        self.act_sync = QAction("Sync &Cameras (Sound / Motion)…", self, triggered=self._sync_dialog)
         self.act_sync.setToolTip("Whole-frame offsets for cameras that were started by hand: lines up the\n"
                                  "cameras' sound tracks (claps, voices; with a noise filter) or how much the\n"
                                  "picture changes in every camera. Needs no tracking, no calibration.")
@@ -1834,9 +1842,17 @@ class MainWindow(QMainWindow):
                                     "frames, when it moved, and GoPro's own lens model")
         # (G188) one action, in File → Import (the 3D menu had its own twin of it); the exports go to File → Export
         self._m_import.insertAction(self.act_import_xyz, self.act_calib)
-        for a in (self.act_sync, self.act_cameras, None, self.act_lens, self.act_load_lens, self.act_wand,
-                  self.act_offsets3d, None, self.act_recon, self.act_set_axes, self.act_retrack, self.act_hull, None,
-                  self.act_view3d):
+        # (G188) grouped in the order a project uses them: the cameras, their timing, their calibration, then
+        # the 3D result (15 entries in one list before)
+        m_3d.addAction(self.act_cameras)
+        m_3d.addSeparator()
+        m_sync = m_3d.addMenu("S&ync")
+        for a in (self.act_sync, self.act_offsets3d):
+            m_sync.addAction(a)
+        m_calibrate = m_3d.addMenu("&Calibrate")
+        for a in (self.act_lens, self.act_load_lens, None, self.act_wand):
+            m_calibrate.addSeparator() if a is None else m_calibrate.addAction(a)
+        for a in (None, self.act_recon, self.act_set_axes, self.act_retrack, self.act_hull, None, self.act_view3d):
             m_3d.addSeparator() if a is None else m_3d.addAction(a)
 
     def _build_body_menu(self) -> None:
@@ -1874,36 +1890,30 @@ class MainWindow(QMainWindow):
         self.act_manual = QAction("&User Manual…", self, shortcut=QKeySequence("F1"),
                                   triggered=self._show_manual)
         self.act_manual.setToolTip("The full manual, written for someone new to tracking")
-        m_help.addAction(self.act_manual)
         self.act_tour = QAction("Take the Interface &Tour…", self, triggered=lambda: self._start_tour())
         self.act_tour.setToolTip("A one-minute tour: each part of the window is lit in turn and a card says what "
                                  "it is for. With no video open it opens a short demo video first. Nothing you "
                                  "have set up is changed; Esc leaves it")
-        m_help.addAction(self.act_tour)
         self.act_help_models = QAction("Which &Point Model Should I Use?", self,
                                        triggered=lambda: self._show_manual(MANUAL_WHICH_MODEL))
         self.act_help_models.setToolTip("A visible shape (an animal, an object) -> AllTracker + Segment, no extra "
                                         "clicks; a target small enough to be one point (a dot up to ~20 px) -> "
                                         "Moving spot; a round marker -> Ball marker -- and the test that decides "
                                         "on your own footage")
-        m_help.addAction(self.act_help_models)
-        self.act_syscheck = QAction("System &Check… (GPU, memory, what runs here)", self,
+        self.act_syscheck = QAction("System &Check…", self,
                                     triggered=self._show_system_check)
         self.act_syscheck.setToolTip("What this computer has (graphics card, memory, PyTorch build) and "
                                      "which features run on it, run slower, or are switched off")
-        m_help.addAction(self.act_syscheck)
-        self.act_error_report = QAction("&Error Report… (what went wrong, to copy into a bug report)", self,
+        self.act_error_report = QAction("&Error Report…", self,
                                         triggered=self._show_error_report)
         self.act_error_report.setToolTip(
             "The errors Kinetrace recorded while running (kinetrace.log in the Kinetrace folder's logs "
             "folder) and the System Check, ready to copy into a bug report. Nothing is sent anywhere.")
-        m_help.addAction(self.act_error_report)
-        self.act_folders = QAction("Kinetrace's &Folders… (where everything is kept)", self,
+        self.act_folders = QAction("Kinetrace's &Folders…", self,
                                    triggered=self._show_folders)
         self.act_folders.setToolTip(
             "Every folder Kinetrace reads or writes, with its size, and a button to open it -- what "
             "deleting the Kinetrace folder removes, and what it leaves (your projects and exports)")
-        m_help.addAction(self.act_folders)
         # (Windows) the Kinetrace shortcut in the Start menu, opt-in: it lives outside the folder (winapp.py)
         self.act_start_menu = QAction("Add Kinetrace to the &Start Menu…", self, triggered=self._toggle_start_menu)
         self.act_start_menu.setToolTip(
@@ -1911,19 +1921,19 @@ class MainWindow(QMainWindow):
             "Windows profile, outside the Kinetrace folder. To pin Kinetrace to the taskbar, right-click the "
             "Kinetrace shortcut in the Kinetrace folder -> Pin to taskbar.")
         self.act_start_menu.setVisible(sys.platform == "win32")
-        m_help.addAction(self.act_start_menu)
         m_help.aboutToShow.connect(self._refresh_start_menu_action)
-        m_help.addAction(QAction("&Keyboard && Mouse Reference…", self,
-                                 triggered=self._show_hotkeys))
-        m_help.addSeparator()
+        act_keys = QAction("&Keyboard && Mouse Reference…", self, triggered=self._show_hotkeys)
         self.act_updates = QAction("Check for &Updates…", self, triggered=self._check_updates)
         self.act_updates.setToolTip(
             "Asks GitHub whether a newer Kinetrace has been published and, if so, installs it and restarts. "
             "Your projects, models and settings are kept. Nothing is checked unless you ask.")
-        m_help.addAction(self.act_updates)
         self.act_about = QAction(f"&About {APP_NAME}…", self, triggered=self._show_about)
         self.act_about.setToolTip("Version, licence, where Kinetrace comes from, and the models it builds on")
-        m_help.addAction(self.act_about)
+        # (G188) learning / what went wrong here / the installation
+        for a in (self.act_manual, self.act_tour, act_keys, self.act_help_models, None,
+                  self.act_syscheck, self.act_error_report, self.act_folders, None,
+                  self.act_updates, self.act_start_menu, self.act_about):
+            m_help.addSeparator() if a is None else m_help.addAction(a)
 
     def _build_nav_shortcuts(self) -> None:
         """The Left / Right / Home / End shortcuts (single-letter keys go through `_hotkey`)."""
