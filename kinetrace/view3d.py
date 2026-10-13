@@ -707,7 +707,8 @@ class View3D(QWidget):
         self.chk_pyr.setToolTip("Where each camera stands and which way it looks")
         self.chk_fov = QCheckBox("Fields of view")
         self.chk_fov.setToolTip("Each camera's whole field of view, its lens included, to a flat far plane past "
-                                "the wand")
+                                "the wand: four translucent sides in the camera's colour (denser where fields "
+                                "overlap)")
         self.chk_cover = QCheckBox("Covered by ≥")
         self.chk_cover.setToolTip("The space at least this many of the chosen cameras see: where 3D is possible "
                                   "(2) and well determined (3 or more)")

@@ -2053,13 +2053,16 @@ five pages and explains each one:
    **Show in 3D** opens this calibration as a picture you can turn, before you
    use it: each camera as a small pyramid where it stands, pointing where it
    looks, its whole **field of view** (as Blender draws a camera: the picture's
-   edges, the lens bend included, out to a flat plane past the wand), and every
-   wand position the calibration used, both ends joined by a line, coloured by
+   edges, the lens bend included, out to a flat plane past the wand; its four
+   sides are filled in the camera's colour, faintly, so where several cameras'
+   fields overlap the picture looks denser), and every wand position the
+   calibration used as two small dots joined by a thin line, coloured by
    how well the cameras agree on it: **green** good, **yellow** ok, **orange**
-   poor, **red** a click the fit set aside. Hover over a wand end to see its
-   frame and error. Tick **Covered by ≥ 2** (or 3, or all) to see the space at
+   poor, **red** (a slightly bigger dot) a click the fit set aside. Zoom in
+   (mouse wheel) to tell single wand positions apart; hover over a wand end to
+   see its frame and error. Tick **Covered by ≥ 2** (or 3, or all) to see the space at
    least that many cameras see — where 3D is possible, and where it is well
-   determined — and the line above the picture says how much of the wand
+   determined; it is drawn over the fields of view — and the line above the picture says how much of the wand
    cloud lies inside it, with a verdict (90 % or more good, 70 % ok, less
    poor). **Cameras ▾** chooses which cameras are drawn and counted: untick
    some to see what the others cover together. Each layer (wand points,
