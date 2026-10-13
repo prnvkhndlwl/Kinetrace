@@ -28,7 +28,7 @@ from kinetrace.calib import (Calibration, CameraCalibration, calib_frame_ok, dlt
 GOOD, OK, POOR, REJECTED = 0, 1, 2, 3
 STATE_WORDS = {GOOD: "good", OK: "ok", POOR: "poor", REJECTED: "rejected by the fit"}
 COVER_GOOD_PCT, COVER_OK_PCT = 90.0, 70.0      # share of the wand cloud inside the covered space
-POSE_FRAC = 0.2                                # the pose pyramid's depth, of the cloud's size
+POSE_FRAC = 0.06                               # the pose pyramid's depth, of the scene (wand + cameras) size
 FOV_REACH = 1.15                               # the field of view reaches this far past the farthest wand end
 WAND_RMSE_GOOD_PX, WAND_RMSE_OK_PX = 1.0, 2.5  # the wand report's bands at 1080p (wand.RMSE_GOOD_PX / _OK_PX)
 
@@ -263,6 +263,8 @@ class CalibPicture:
 def _cameras(cal: Calibration, names: list, ends: np.ndarray, probe) -> tuple[list, list[str]]:
     p = ends[np.isfinite(ends).all(axis=1)]
     span = float(np.linalg.norm(p.max(axis=0) - p.min(axis=0))) if len(p) else 1.0
+    allp = np.vstack([p] + [cal.camera(v).center()[None] for v in cal.views()]) if len(p) else None
+    scene = float(np.linalg.norm(allp.max(axis=0) - allp.min(axis=0))) if allp is not None else span
     cams, lines, flat = [], [], []
     for v in cal.views():
         cam = cal.camera(v)
@@ -271,7 +273,8 @@ def _cameras(cal: Calibration, names: list, ends: np.ndarray, probe) -> tuple[li
         far = float(np.max(np.linalg.norm(p - c, axis=1))) * FOV_REACH if len(p) else 2.0 * span
         # (the far plane at the farthest wand end's distance: every end lies before it)
         pinhole = getattr(cam.undistort, "kind", "none") == "none"
-        cams.append(CamDraw(v, name, c, fov(cam, POSE_FRAC * max(span, 1e-3), probe, n=4),
+        # the pose pyramid: the four corners only (a wide lens's bent edge is the field of view's job)
+        cams.append(CamDraw(v, name, c, fov(cam, POSE_FRAC * max(scene, 1e-3), probe, n=1),
                             fov(cam, far, probe), pinhole))
         if pinhole:
             flat.append(name)
