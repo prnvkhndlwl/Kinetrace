@@ -5565,30 +5565,40 @@ class MainWindow(QMainWindow):
     def _save_animal_template(self, k: int) -> None:
         """An animal's points, bones, head and derived rules as a template in skeletons/ (G157), so
         the next animal gets them from Skeleton ▾."""
-        from kinetrace.skeletons import save_user_template, user_template_path
         s = self.session
         name, ok = QInputDialog.getText(self, "Save as a skeleton template", "Template name:",
                                         text=(s.segments[k].skeleton or {}).get("name") or s.segments[k].name)
         if not ok or not name.strip():
             return
         t = s.skeleton_template(k, name.strip())
-        try:
-            try:
-                path = save_user_template(t)
-            except FileExistsError:
-                if QMessageBox.question(
-                        self, "Replace the saved skeleton?",
-                        f"{user_template_path(t).name} already exists in skeletons/. Replace it?",
-                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-                    return
-                path = save_user_template(t, overwrite=True)
-        except OSError as e:
-            QMessageBox.warning(self, "Template not saved", _plain_error(e, "The template could not be saved"))
+        path = self._save_template_asking(t)
+        if not path:
             return
         self._refresh_skeleton_menu()
         self.toast.show_message(
             f"Template <b>{t['name']}</b> saved ({len(t['landmarks'])} points, {len(t['bones'])} bones): select "
             f"another animal and choose it under Skeleton ▾. ({Path(str(path)).name})", "success", 9000)
+
+    def _save_template_asking(self, t: dict, no_means: str = "") -> "Path | None | bool":
+        """Save a skeleton template to skeletons/; a template of that name already there is replaced only
+        when the user says so (G122). Returns the path written, False when the user said No, None when the
+        save failed (said in words). One rule for Save as a template and Custom skeleton (G191: the
+        question named a file made from the template's keys, and Custom skeleton showed a raw error)."""
+        from kinetrace.skeletons import user_template_path
+        try:
+            try:
+                return save_user_template(t)
+            except FileExistsError:
+                fname = user_template_path(t["name"]).name
+                if QMessageBox.question(
+                        self, "Replace the saved skeleton?",
+                        f"skeletons/{fname} already exists.\n\nReplace it?" + (f" ({no_means})" if no_means else ""),
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                    return False
+                return save_user_template(t, overwrite=True)
+        except OSError as e:
+            QMessageBox.warning(self, "Template not saved", _plain_error(e, "The template could not be saved"))
+            return None
 
     def _layers_menu(self, pos):
         """Right-click in LAYERS (G154): a point = the point menu (several selected = the menu for all of
@@ -6437,21 +6447,8 @@ class MainWindow(QMainWindow):
                                 + "\n• ".join(list(problems) + left_out)
                                 + ("\n\nThose landmarks are tracked by appearance instead (select, N, click)."
                                    if problems else ""))
-        try:
-            try:
-                save_user_template(t)
-            except FileExistsError:
-                # a template of that name is already in skeletons/: replaced only when asked (G122)
-                from kinetrace.skeletons import user_template_path
-                fname = user_template_path(t["name"]).name
-                if QMessageBox.question(
-                        self, "Replace the saved skeleton?",
-                        f"skeletons/{fname} already exists.\n\nReplace it with this skeleton? (No: use the skeleton "
-                        "now without saving it over the old one.)",
-                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
-                    save_user_template(t, overwrite=True)
-        except OSError as e:
-            self.statusBar().showMessage(f"Template not saved to skeletons/: {e}", 6000)
+        # saved or not (No, or a failed save, said in words), the skeleton is used now (G122, G191)
+        self._save_template_asking(t, no_means="No: use the skeleton now without saving it over the old one")
         self._apply_skeleton_template(t)
 
     def _clear_skeleton(self):

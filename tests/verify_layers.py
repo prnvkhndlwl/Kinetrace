@@ -483,6 +483,16 @@ try:
     saved = json.load(open(os.path.join(tmpdir, "my animal.json"), encoding="utf-8"))
     check(head0 in saved["landmarks"] and saved["head"] == "P6" and not any(n.startswith("animal ") for n in saved["landmarks"]),
           "the animal saved as a template, in part names", saved.get("landmarks", [])[:4])
+    # (G191) the same name again: the question names the file that is there, "my animal.json" (it named a file
+    # made from the whole template's keys)
+    ASKED.clear()
+    ANSWER["q"] = QMessageBox.No
+    menu, acts = win._build_animal_menu(0)
+    win._animal_menu_action(acts["save_tpl"], acts)
+    menu.deleteLater()
+    check(ASKED and "my animal.json" in ASKED[-1], "(G191) saving again asks about the file that is there",
+          ASKED[-1:])
+    ANSWER["q"] = QMessageBox.Yes
     row_click(win._animal_item(1))
     win._apply_skeleton_template(saved)
     check(s.pid_by_name(f"animal 2 {head0}") is not None and s.head_pid(1) == s.pid_by_name("animal 2 P6"),
