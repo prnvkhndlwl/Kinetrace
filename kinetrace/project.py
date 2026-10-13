@@ -81,6 +81,13 @@ def rate_of(fps: float, ref_fps: float) -> float:
     return float(round(fps / ref_fps, 6))
 
 
+def half_up(x) -> int | np.ndarray:
+    """THE rounding of a frame number or an offset: a .5 tie goes UP (floor(x + .5)), never Python's
+    half-to-even `round` (I19, I258, I279: -37.5 -> -37, 237.5 -> 238)."""
+    out = np.floor(np.asarray(x, np.float64) + 0.5).astype(np.int64)
+    return int(out) if out.ndim == 0 else out
+
+
 class Project:
     """The views of one project and the offsets that align them."""
 
@@ -217,9 +224,7 @@ class Project:
         the way it does towards a later view. No range check. (I258: retrack
         used Python's round / np.rint, whose half-to-even disagreed with
         `map_frame` at every .5 offset and shifted stretch ends by one.)"""
-        x = self.rates[view] * np.asarray(t, np.float64) + self.offsets[view]
-        out = np.floor(x + 0.5).astype(np.int64)
-        return int(out) if out.ndim == 0 else out
+        return half_up(self.rates[view] * np.asarray(t, np.float64) + self.offsets[view])
 
     def reference_index(self, view: int, frame) -> int | np.ndarray:
         """The reference frame nearest local `frame` of `view`: `map_frame`'s
