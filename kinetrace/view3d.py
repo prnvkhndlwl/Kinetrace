@@ -370,13 +370,21 @@ class Scene3D:
         self.camera_names: list[str] = []
         self.mesh: tuple[np.ndarray, np.ndarray] | None = None
         self.unit = ""
+        self.calib = None               # (G185) calibview.CalibPicture: the wand calibration layer
+        self.cover_n = 2                # (G186) the covered space drawn: seen by >= this many cameras
 
-    def framing(self, include_cameras: bool) -> tuple[np.ndarray, float]:
+    def framing(self, include_cameras: bool, include_calib: bool = False) -> tuple[np.ndarray, float]:
         """Centre and span to frame: the CURRENT instant's landmarks and hull
         (the animal fills the window and the view follows it through the
         glide); the whole trajectory only when the instant has nothing, and
         the cameras only when asked (they are metres away from a centimetre
-        animal, so including them shrinks it to a dot)."""
+        animal, so including them shrinks it to a dot). With the wand calibration layer: the wand cloud and
+        the cameras (G185)."""
+        if include_calib and self.calib is not None:
+            cal = [self.calib.finite_ends()] + [np.array([c.centre for c in self.calib.cams]).reshape(-1, 3)]
+            allp = np.concatenate([p for p in cal if len(p)]) if sum(len(p) for p in cal) else np.zeros((1, 3))
+            centre = (allp.min(axis=0) + allp.max(axis=0)) / 2
+            return centre, max(float(np.linalg.norm(allp.max(axis=0) - allp.min(axis=0))), 0.05)
         pts = []
         if self.points is not None and len(self.points):
             p = np.asarray(self.points).reshape(-1, 3)
@@ -397,19 +405,118 @@ class Scene3D:
         return centre, max(span, 0.05)
 
 
-def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevation: float,
-                 zoom: float = 1.0, show_mesh: bool = True, show_points: bool = True,
-                 show_cameras: bool = False, up: int = 2, pan: tuple[float, float] = (0.0, 0.0)) -> np.ndarray:
+def screen_transform(scene: Scene3D, size: tuple[int, int], azimuth: float, elevation: float,
+                     zoom: float = 1.0, pan: tuple[float, float] = (0.0, 0.0), up: int = 2,
+                     show_cameras: bool = False, show_calib: bool = False):
+    """(to_screen, R, scale): world points -> ((N, 2) pixels of the rendered image, (N,) depth towards the
+    viewer), the view rotation, pixels per world unit. THE projection `render_scene` draws with (picking a
+    point under the mouse uses the same, G185)."""
     W, H = size
-    img = np.full((H, W, 3), (24, 26, 30), np.uint8)
     R = _view_rotation(azimuth, elevation, up)
-    centre, span = scene.framing(show_cameras)
+    centre, span = scene.framing(show_cameras, show_calib)
     scale = 0.85 * min(W, H) / span * zoom
 
     def to_screen(p):
         q = (np.asarray(p, np.float64).reshape(-1, 3) - centre) @ R.T
         return (np.column_stack([W / 2 + q[:, 0] * scale + pan[0], H / 2 - q[:, 1] * scale + pan[1]]),
                 q[:, 2])
+    return to_screen, R, scale
+
+
+# (G185) the wand ends by state (BGR): good, ok, poor, rejected / disagreeing
+END_COLOURS = ((110, 210, 110), (60, 205, 235), (40, 140, 255), (70, 70, 240))
+CAM_COLOURS = ((255, 170, 80), (120, 220, 255), (200, 120, 255), (120, 255, 170), (255, 120, 170),
+               (170, 200, 255), (80, 200, 200), (230, 230, 120), (180, 160, 255), (140, 255, 255))
+
+
+def _nice_length(x: float) -> float:
+    """1, 2 or 5 x 10^k at or below x."""
+    if not np.isfinite(x) or x <= 0:
+        return 0.0
+    e = 10.0 ** np.floor(np.log10(x))
+    for m in (5.0, 2.0, 1.0):
+        if m * e <= x:
+            return m * e
+    return e
+
+
+def _draw_poly(img, scr: np.ndarray, colour, closed: bool, thickness: int = 1) -> None:
+    ok = np.isfinite(scr).all(axis=1)
+    if ok.sum() >= 2:
+        cv2.polylines(img, [np.round(scr[ok]).astype(np.int32)], closed, colour, thickness, cv2.LINE_AA)
+
+
+def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_fov: bool, show_cover: bool,
+                hits: dict | None) -> np.ndarray:
+    """(G185, G186) the covered space (translucent), the fields of view, the cameras' pose pyramids, the wand
+    lines and ends, and the scale bar. Returns the image (the translucent layer makes a new one)."""
+    pic = scene.calib
+    H, W = img.shape[:2]
+    if show_cover and pic.cover.get(scene.cover_n) is not None and len(pic.cover[scene.cover_n][1]):
+        verts, faces = pic.cover[scene.cover_n]
+        scr, depth = to_screen(verts)
+        order = np.argsort(depth[faces].mean(axis=1))
+        tri = np.round(scr[faces]).astype(np.int32)
+        fn = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
+        fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
+        light = np.array([0.3, 0.5, 0.8]) / np.linalg.norm([0.3, 0.5, 0.8])
+        shade = np.clip(0.35 + 0.65 * np.abs((fn @ R.T) @ light), 0, 1)
+        base = np.array([200.0, 150.0, 80.0])                         # BGR: a blue glass
+        layer = img.copy()
+        for k in order:
+            cv2.fillConvexPoly(layer, tri[k], (base * shade[k]).astype(int).tolist(), lineType=cv2.LINE_AA)
+        img = cv2.addWeighted(layer, 0.3, img, 0.7, 0)
+    for k, cd in enumerate(pic.cams):
+        col = CAM_COLOURS[k % len(CAM_COLOURS)]
+        dim = tuple(int(0.55 * v) for v in col)
+        if show_fov and cd.fov is not None and len(cd.fov.border):
+            _draw_poly(img, to_screen(cd.fov.border)[0], dim, True)
+            for c0, c1 in cd.fov.rays:
+                _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], dim, False)
+        if cd.pose is not None and len(cd.pose.border):
+            _draw_poly(img, to_screen(cd.pose.border)[0], col, True, 2)
+            for c0, c1 in cd.pose.rays:
+                _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], col, False, 2)
+        cs = to_screen(cd.centre)[0][0]
+        if np.isfinite(cs).all():
+            cv2.putText(img, cd.name, (int(cs[0]) + 8, int(cs[1]) - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1,
+                        cv2.LINE_AA)
+    es, _ = to_screen(pic.ends)
+    for a, b in pic.pairs:
+        if np.isfinite(es[a]).all() and np.isfinite(es[b]).all():
+            cv2.line(img, (int(es[a, 0]), int(es[a, 1])), (int(es[b, 0]), int(es[b, 1])), (95, 95, 95), 1,
+                     cv2.LINE_AA)
+    order = np.argsort(pic.end_state, kind="stable")             # rejected ones last: on top
+    for k in order:
+        if np.isfinite(es[k]).all():
+            st = int(pic.end_state[k])
+            cv2.circle(img, (int(es[k, 0]), int(es[k, 1])), 3 if st == 3 else 2, END_COLOURS[st], -1, cv2.LINE_AA)
+    if hits is not None:
+        hits["ends"] = es
+    L = _nice_length(110.0 / max(scale, 1e-12))
+    if L > 0:
+        n = int(round(L * scale))
+        x1, y = W - 20, H - 24
+        cv2.line(img, (x1 - n, y), (x1, y), (220, 220, 220), 2, cv2.LINE_AA)
+        for x in (x1 - n, x1):
+            cv2.line(img, (x, y - 5), (x, y + 5), (220, 220, 220), 1, cv2.LINE_AA)
+        lab = f"{L:g} {pic.unit or scene.unit}".strip()
+        cv2.putText(img, lab, (x1 - n, y - 9), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA)
+    return img
+
+
+def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevation: float,
+                 zoom: float = 1.0, show_mesh: bool = True, show_points: bool = True,
+                 show_cameras: bool = False, up: int = 2, pan: tuple[float, float] = (0.0, 0.0),
+                 show_calib: bool = False, show_fov: bool = False, show_cover: bool = False,
+                 hits: dict | None = None) -> np.ndarray:
+    """The 3D window's picture (BGR). The wand calibration layers (G185, G186) are drawn only when asked and
+    the scene has a picture; `hits`, when given, receives "ends" = the wand ends' (P, 2) image pixels."""
+    W, H = size
+    img = np.full((H, W, 3), (24, 26, 30), np.uint8)
+    calib_on = show_calib and scene.calib is not None
+    to_screen, R, scale = screen_transform(scene, size, azimuth, elevation, zoom, pan, up, show_cameras,
+                                           calib_on)
 
     # axes triad (bottom-left), world axes after the same rotation
     o = np.array([48.0, H - 48.0])
@@ -435,7 +542,9 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
         for k in order:
             c = (base * shade[k]).astype(int).tolist()
             cv2.fillConvexPoly(img, tri[k], c, lineType=cv2.LINE_AA)
-    if show_cameras and scene.cameras is not None and len(scene.cameras):
+    if calib_on:
+        img = _draw_calib(img, scene, to_screen, R, scale, show_fov, show_cover, hits)
+    if show_cameras and not calib_on and scene.cameras is not None and len(scene.cameras):
         cs, _ = to_screen(scene.cameras)
         for k, (x, y) in enumerate(cs):
             if np.isfinite(x) and np.isfinite(y) and -50 < x < W + 50 and -50 < y < H + 50:

@@ -28,7 +28,7 @@ from kinetrace.calib import (Calibration, CameraCalibration, calib_frame_ok, dlt
 GOOD, OK, POOR, REJECTED = 0, 1, 2, 3
 STATE_WORDS = {GOOD: "good", OK: "ok", POOR: "poor", REJECTED: "rejected by the fit"}
 COVER_GOOD_PCT, COVER_OK_PCT = 90.0, 70.0      # share of the wand cloud inside the covered space
-POSE_FRAC = 0.08                               # the pose pyramid's depth, of the cloud's size
+POSE_FRAC = 0.2                                # the pose pyramid's depth, of the cloud's size
 FOV_REACH = 1.15                               # the field of view reaches this far past the farthest wand end
 WAND_RMSE_GOOD_PX, WAND_RMSE_OK_PX = 1.0, 2.5  # the wand report's bands at 1080p (wand.RMSE_GOOD_PX / _OK_PX)
 
@@ -39,7 +39,8 @@ def _cover_word(pct: float) -> str:
 
 @dataclass
 class Fov:
-    """One camera's viewing pyramid at `depth`: `border` (M, 3) world points of the picture's border loop,
+    """One camera's viewing pyramid cut by a flat far plane `depth` in front of it along its viewing axis (as
+    Blender draws a camera): `border` (M, 3) world points of the picture's border loop,
     `raw` (M, 2) the border pixels they come from, `rays` the four corners as (centre, point) segments,
     `pinhole` = the camera has no lens correction."""
     centre: np.ndarray
@@ -47,6 +48,8 @@ class Fov:
     raw: np.ndarray
     rays: list
     pinhole: bool
+    axis: np.ndarray | None = None       # the viewing axis (unit) the far plane is perpendicular to
+    depth: float = 0.0
 
 
 def _border_loop(w: int, h: int, n: int) -> tuple[np.ndarray, list[int]]:
@@ -66,23 +69,33 @@ def fov(cam: CameraCalibration, depth: float, probe, n: int = 24) -> Fov:
     raw, corners = _border_loop(int(cam.width), int(cam.height), n)
     q, ok = calib_frame_ok(cam, raw)
     c, d = dlt_ray(cam.coefs, q[ok], probe) if ok.any() else (cam.center(), np.zeros((0, 3)))
+    centre_px = cam.to_calib_frame(np.array([[(cam.width - 1) / 2.0, (cam.height - 1) / 2.0]]))
+    _, axis = dlt_ray(cam.coefs, centre_px, probe)
+    along = d @ axis[0]
     pts = np.full((len(raw), 3), np.nan)
-    pts[ok] = c + d * float(depth)
+    good = along > 1e-6                                   # rays at or past 90 degrees never reach the plane
+    sub = np.nonzero(ok)[0]
+    ok[sub[~good]] = False
+    pts[sub[good]] = c + d[good] * (float(depth) / along[good])[:, None]
     rays = [(c, pts[k]) for k in corners if ok[k]]
     keep = ok
     return Fov(np.asarray(c, np.float64), pts[keep], raw[keep], rays,
-               getattr(cam.undistort, "kind", "none") == "none")
+               getattr(cam.undistort, "kind", "none") == "none", axis[0], float(depth))
 
 
-def seen_by(cal: Calibration, X: np.ndarray, probe=None) -> np.ndarray:
+def seen_by(cal: Calibration, X: np.ndarray, probe=None, reach: dict | None = None) -> np.ndarray:
     """(N,) how many calibrated cameras see each world point: in front of the camera, inside its picture
-    through its lens model, and where that model round-trips (no fisheye extrapolation)."""
+    through its lens model, and where that model round-trips (no fisheye extrapolation). `reach`: {view:
+    (centre, axis, depth)} - a camera counts only up to that far plane (the field of view drawn)."""
     X = np.asarray(X, np.float64).reshape(-1, 3)
     probe = working_probe(cal) if probe is None else probe
     out = np.zeros(len(X), np.int16)
     for v in cal.views():
         cam = cal.camera(v)
         front = in_front(cam.coefs, X, front_sign(cam.coefs, probe))
+        if reach is not None and v in reach:
+            c0, ax, dep = reach[v]
+            front &= (X - c0) @ ax <= dep
         idx = np.nonzero(front)[0]
         if not len(idx):
             continue
@@ -126,9 +139,12 @@ class Coverage:
     def surface(self, n: int) -> tuple[np.ndarray, np.ndarray]:
         """The boundary of the space seen by >= n cameras (closed: the box is padded with zeros)."""
         if n not in self._surf:
+            from scipy.ndimage import gaussian_filter
             from kinetrace.hull import surface
-            f = np.pad(self.counts.astype(np.float64), 1)
-            self._surf[n] = surface(f, self.origin - self.voxel, self.voxel, iso=n - 0.5)
+            # the inside-or-not field, softened by one voxel so the drawn surface has no voxel steps
+            # (display only: `pct` counts the cameras exactly)
+            f = gaussian_filter(np.pad((self.counts >= n).astype(np.float64), 1), 1.0)
+            self._surf[n] = surface(f, self.origin - self.voxel, self.voxel, iso=0.5)
         return self._surf[n]
 
     def sentences(self, X: np.ndarray) -> list[str]:
@@ -143,7 +159,8 @@ class Coverage:
         return out
 
 
-def coverage(cal: Calibration, lo: np.ndarray, hi: np.ndarray, n_max: int = 64, probe=None) -> Coverage:
+def coverage(cal: Calibration, lo: np.ndarray, hi: np.ndarray, n_max: int = 64, probe=None,
+             reach: dict | None = None) -> Coverage:
     """Count the cameras that see each voxel of the box [lo, hi] (at most `n_max` voxels per side)."""
     lo = np.asarray(lo, np.float64)
     hi = np.asarray(hi, np.float64)
@@ -151,12 +168,13 @@ def coverage(cal: Calibration, lo: np.ndarray, hi: np.ndarray, n_max: int = 64, 
     n = np.maximum(np.ceil((hi - lo) / voxel).astype(int) + 1, 2)
     g = np.meshgrid(*(np.arange(k) for k in n), indexing="ij")
     centres = lo + np.column_stack([a.ravel() for a in g]) * voxel
-    counts = seen_by(cal, centres, probe).reshape(tuple(n)).astype(np.int8)
+    counts = seen_by(cal, centres, probe, reach).reshape(tuple(n)).astype(np.int8)
     return Coverage(counts, lo, voxel, cal.n_calibrated)
 
 
 @dataclass
 class CamDraw:
+    view: int
     name: str
     centre: np.ndarray
     pose: Fov | None
@@ -203,13 +221,23 @@ class CalibPicture:
         ext = np.maximum(hi - lo, 1e-3)
         return lo - margin * ext, hi + margin * ext
 
-    def add_coverage(self, n_max: int = 64) -> Coverage:
+    def add_coverage(self, n_max: int = 40) -> Coverage:
         """Count the cameras over the box and make the surfaces for 2, 3 and all cameras (call it on a
         worker: tens of milliseconds to a few seconds)."""
         if self.cal is None:
             raise ValueError("no calibration to count cameras with")
-        lo, hi = self.box()
-        cov = coverage(self.cal, lo, hi, n_max)
+        # the whole space the drawn fields of view span; each camera counts up to its drawn far plane
+        reach, pts = {}, []
+        for cd in self.cams:
+            if cd.fov is not None and cd.fov.axis is not None and len(cd.fov.border):
+                reach[cd.view] = (cd.centre, cd.fov.axis, cd.fov.depth)
+                pts += [cd.fov.border, cd.centre[None]]
+        if pts:
+            allp = np.vstack(pts)
+            lo, hi = allp.min(axis=0), allp.max(axis=0)
+        else:
+            lo, hi = self.box()
+        cov = coverage(self.cal, lo, hi, n_max, reach=reach or None)
         for n in sorted({2, 3, cov.n_cams} - {0, 1}):
             if n <= cov.n_cams:
                 self.cover[n] = cov.surface(n)
@@ -222,18 +250,21 @@ class CalibPicture:
 def _cameras(cal: Calibration, names: list, ends: np.ndarray, probe) -> tuple[list, list[str]]:
     p = ends[np.isfinite(ends).all(axis=1)]
     span = float(np.linalg.norm(p.max(axis=0) - p.min(axis=0))) if len(p) else 1.0
-    cams, lines = [], []
+    cams, lines, flat = [], [], []
     for v in cal.views():
         cam = cal.camera(v)
         name = names[v] if names and v < len(names) else f"camera {v + 1}"
         c = cam.center()
         far = float(np.max(np.linalg.norm(p - c, axis=1))) * FOV_REACH if len(p) else 2.0 * span
+        # (the far plane at the farthest wand end's distance: every end lies before it)
         pinhole = getattr(cam.undistort, "kind", "none") == "none"
-        cams.append(CamDraw(name, c, fov(cam, POSE_FRAC * max(span, 1e-3), probe, n=4),
+        cams.append(CamDraw(v, name, c, fov(cam, POSE_FRAC * max(span, 1e-3), probe, n=4),
                             fov(cam, far, probe), pinhole))
         if pinhole:
-            lines.append(f"{name}: no lens correction - its field of view is drawn as a straight pinhole "
-                         "pyramid (with a wide lens it is wider near the corners).")
+            flat.append(name)
+    if flat:
+        lines.append(f"{', '.join(flat)}: no lens correction, so {'its' if len(flat) == 1 else 'their'} field of "
+                     "view is drawn as a straight pinhole pyramid (with a wide lens it is wider near the corners).")
     return cams, lines
 
 

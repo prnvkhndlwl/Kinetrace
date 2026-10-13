@@ -61,8 +61,9 @@ def sec_a():
     back = cam.project(f.border)
     err = np.linalg.norm(back - f.raw, axis=1)
     assert np.nanmax(err) < 0.05, np.nanmax(err)
-    # every border point is 3 m from the camera, in front of it
-    d = np.linalg.norm(f.border - cam.center(), axis=1)
+    # every border point lies on the flat far plane 3 m in front of the camera (as Blender draws it)
+    axis = R[2] / np.linalg.norm(R[2])
+    d = (f.border - cam.center()) @ axis
     assert np.allclose(d, 3.0, atol=1e-6), (d.min(), d.max())
     assert len(f.rays) == 4
     f2 = cv3.fov(ws.CAMS[1], 3.0, probe, n=24)
