@@ -39,7 +39,7 @@ FAILS: list[str] = []
 
 
 def check(ok, what, detail=""):
-    print(("  ok    " if ok else "  FAIL  ") + what + (f"  [{detail}]" if detail and not ok else ""))
+    print(("  ok    " if ok else "  FAIL  ") + what + (f"  [{detail}]" if not ok and str(detail) else ""))
     if not ok:
         FAILS.append(what)
 
