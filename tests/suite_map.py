@@ -39,7 +39,7 @@ MAP = [
     ([K + f for f in ("app.py", "canvas.py", "timeline.py", "widgets.py", "viewgrid.py", "camerapanel.py", "theme.py",
                       "icons.py")], GUI),
     ([K + "tour.py", K + "demo.py"], ["verify_tour", "verify_ui_focus", "verify_keys_follow"]),
-    ([K + "layers.py"],["verify_layers", "verify_segment_panel", "verify_segment_targets", "verify_animal_gui"]),
+    ([K + "layers.py"], ["verify_layers", "verify_segment_panel", "verify_segment_targets", "verify_animal_gui"]),
     ([K + "project.py", K + "folderimport.py", K + "cameraorder.py"],
      ["verify_multicam", "verify_shared_landmarks", "verify_multiview", "verify_camera_views", "verify_projectfile",
       "verify_3d_gui", "verify_open_replace"]),

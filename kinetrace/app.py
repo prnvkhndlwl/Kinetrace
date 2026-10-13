@@ -4577,6 +4577,13 @@ class MainWindow(QMainWindow):
         return [w for w in (self.view3d, getattr(self, "dock", None), getattr(self, "body_win", None))
                 if w is not None]
 
+    def _drop_tour(self) -> None:
+        """Close a tour that is up without its after-tour note (a run starting, the window closing)."""
+        ov, self._tour = self._tour, None
+        if ov is not None:
+            ov.blockSignals(True)
+            ov.skip()
+
     def _tour_owns(self, obj) -> bool:
         """`obj` is the tour's overlay or part of its card (those take clicks while the tour is up)."""
         tour = self._tour
@@ -4586,16 +4593,25 @@ class MainWindow(QMainWindow):
         """(G183) While the tour is up, nothing reaches the window but the tour: keys go to `TourOverlay.key`;
         clicks, the wheel and every shortcut (arrows, Ctrl+O, F1) are held back WITHOUT disabling anything
         (the menus it shows stay as the user had them). A ShortcutOverride accepted here makes Qt deliver the
-        key as a plain key press -- to the tour -- instead of firing the shortcut. True = eaten."""
+        key as a plain key press -- to the tour -- instead of firing the shortcut. True = eaten.
+        A run never shares the window with the tour: X / Space must always pause (owner's hard rule), so
+        during a run the tour is dropped and the key goes on as usual."""
         t = ev.type()
-        ours = (self, self.dock)
+        if self.state == TRACKING:
+            self._drop_tour()
+            return False
+        ours = (self, *self._other_app_windows())     # T in the 3D view / Body window must not start a run
         if t in (QEvent.ShortcutOverride, QEvent.Shortcut, QEvent.KeyPress):
             if QApplication.activeWindow() not in ours:
                 return False
             if t == QEvent.ShortcutOverride:
                 ev.accept()
             elif t == QEvent.KeyPress and not ev.isAutoRepeat():
-                self._tour.key(ev)
+                if ev.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
+                    # a shortcut held back says so (I265): Ctrl+S must not look like it saved
+                    self.statusBar().showMessage("The interface tour is open: Esc leaves it, then try again", 5000)
+                else:
+                    self._tour.key(ev)
             return True
         if t in self._INPUT_EVENTS and isinstance(obj, QWidget) and obj.window() in ours:
             return not self._tour_owns(obj)
@@ -8418,6 +8434,7 @@ class MainWindow(QMainWindow):
             return
         if self._loading:                            # (G71) a video / project is opening: nothing starts
             return
+        self._drop_tour()                            # (G183) a run never shares the window with the tour
         self._update_track_button()                  # the reason must be about THIS frame
         blocked = getattr(self, "_track_blocked", None)
         if blocked is not None:
@@ -12805,10 +12822,7 @@ class MainWindow(QMainWindow):
             _retire(self._preview)
 
     def closeEvent(self, ev):
-        if self._tour is not None:           # (G183) a tour left open: gone quietly, input back to the window
-            ov, self._tour = self._tour, None
-            ov.blockSignals(True)
-            ov.skip()
+        self._drop_tour()                    # (G183) a tour left open: gone quietly, input back to the window
         if self._first_frame_token is not None:
             self._first_frame_arrived()      # only waiting for a picture: nothing half-built
         if self._loading:
@@ -12999,18 +13013,22 @@ class _WorldAxesDialog(QDialog):
 
 def start_pop_ups(win, installed: bool, offer: bool) -> None:
     """The pop-ups of a start, one after the other (never stacked): the install pop-up (G178), then the tour
-    offer (G183, owner: "keep them separate"). On a start with either, the update reminder (G179) waits for
-    the next start."""
+    offer (G183, owner: "keep them separate"). The update reminder (G179) waits for the next start after an
+    install or a tour taken; after Not now / Don't ask again it comes as usual -- Not now at every start must
+    never switch it off."""
     from kinetrace import tour
     if installed:
         show_install_welcome(win)
     if not offer:
         return
     answer = tour.offer_tour(win)
+    if answer == "take":
+        _start_tour_when_open(win)
+        return
     if answer == "never":
         win._set_setting(tour.OFFERED_KEY, "never")
-    elif answer == "take":
-        _start_tour_when_open(win)
+    if not installed:
+        QTimer.singleShot(900, win._remind_updates)
 
 
 def _start_tour_when_open(win, tries: int = 300) -> None:

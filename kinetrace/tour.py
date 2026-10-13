@@ -44,11 +44,22 @@ def _panel_hidden(win) -> str:
         return ("You have moved this panel into its own window: it is the separate window titled "
                 "<i>Layers</i>. Drag its title bar onto the right edge of this window to put it back. "
                 "(View → Layers panel, Ctrl+1, shows or hides it.)")
+    if win.dock.isVisible():          # the panel is there; this part of it shows once a video is open
+        return "It appears in the panel on the right once a video is open."
     return "It is hidden now: <b>View → Layers panel</b> (Ctrl+1) shows it."
 
 
-def _help_title_rect(win) -> QRect | None:
+def _menu_bar(win):
+    """The menu bar to light, or None when it is the system's own (macOS: at the top of the screen, outside
+    the window -- the card then speaks of it without lighting anything)."""
     mb = win.menuBar()
+    return None if mb.isNativeMenuBar() else mb
+
+
+def _help_title_rect(win) -> QRect | None:
+    mb = _menu_bar(win)
+    if mb is None:
+        return None
     r = mb.actionGeometry(win.m_help.menuAction())
     if r.isEmpty():
         return None
@@ -67,7 +78,7 @@ def stops(win) -> list[Stop]:
              "and hides panels. <b>Skeleton</b> has ready-made landmark lists, <b>3D</b> is for several "
              "cameras, <b>Body</b> for people's joints. <b>Hover over any menu entry</b> and a line says "
              "what it does.",
-             widget=lambda win: win.menuBar()),
+             widget=_menu_bar),
         Stop("strip", "Getting started",
              "The four steps of a first project: <b>1 Open video → 2 Segment → 3 Skeleton → 4 Track</b>. "
              "Steps 2 and 3 are optional. Click a step to do it; the text on the right says what to do next.",

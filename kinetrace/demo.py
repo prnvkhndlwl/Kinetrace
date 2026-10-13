@@ -23,18 +23,21 @@ FPS = 25.0
 N_FILLED = 100              # frames 0..N_FILLED-1 come tracked and outlined; the rest is Track's to do
 ANIMAL = "lizard"
 PARTS = ("snout", "eye", "tail tip", "left fore foot", "right fore foot")
-FILE_NAME = "kinetrace-demo.mp4"
+# the demo's version is in its name: bump it whenever the drawing, the size or the frame count change, or a
+# demo kept from an earlier release (updates keep demo/) would be filled with truth that no longer matches it
+FILE_NAME = "kinetrace-demo-2.mp4"
 _INSTALL = Path(__file__).resolve().parent.parent / "demo"
 
 
 def demo_folder() -> Path:
     """Where the demo is kept: `demo/` in the Kinetrace folder (deleting the folder removes it; updates keep
     it, `update.PROTECTED`); the per-user data folder when that cannot be written; a temporary folder for the
-    offscreen test suites (they must not write into the user's Kinetrace folder)."""
+    offscreen test suites, one per process (they must not write into the user's Kinetrace folder, nor trip over
+    each other when several checkouts run their suites at once)."""
     from kinetrace import recovery
     if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
         import tempfile
-        return Path(tempfile.gettempdir()) / "kinetrace-test-demo"
+        return Path(tempfile.gettempdir()) / "kinetrace-test-demo" / str(os.getpid())
     if recovery._writable(_INSTALL.parent):        # the Kinetrace folder: asking never creates demo/
         return _INSTALL
     return recovery._user_dir().parent / "demo"
@@ -96,7 +99,8 @@ def _draw(t: int, canvas: np.ndarray | None):
                 cv2.line(img, P(attach), P(foot), colour, 7, cv2.LINE_AA)
                 cv2.circle(img, P(foot), 5, colour, -1, cv2.LINE_AA)
             feet[f"{side_name} {fore_name} foot"] = foot
-    parts = {"snout": c + 66 * u, "eye": eye, "tail tip": tail[-1],
+    # the snout: near the tip of the head (a circle of radius 18 centred 62 px ahead of the body centre)
+    parts = {"snout": c + 76 * u, "eye": eye, "tail tip": tail[-1],
              "left fore foot": feet["left fore foot"], "right fore foot": feet["right fore foot"]}
     return {k: (float(v[0]), float(v[1])) for k, v in parts.items()}, mask > 127
 
@@ -106,10 +110,12 @@ def truth(t: int):
     return _draw(int(t), None)
 
 
-def _frame_count(p: Path) -> int:
+def _is_complete(p: Path) -> bool:
+    """`p` is a whole demo of this version: every frame, at this size."""
     cap = cv2.VideoCapture(str(p))
     try:
-        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) if cap.isOpened() else 0
+        return bool(cap.isOpened() and int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == N_FRAMES
+                    and int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) == W and int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) == H)
     finally:
         cap.release()
 
@@ -119,7 +125,7 @@ def ensure_video() -> Path:
     and renamed, so an interrupted write never leaves a short demo behind. Runs on a worker thread (it opens
     a VideoCapture to count the frames). Raises OSError with a sentence when it cannot be written."""
     p = video_path()
-    if p.exists() and _frame_count(p) == N_FRAMES:
+    if p.exists() and _is_complete(p):
         return p
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(f".{p.stem}-{os.getpid()}.mp4")
@@ -134,7 +140,7 @@ def ensure_video() -> Path:
             vw.write(frame)
     finally:
         vw.release()
-    if _frame_count(tmp) != N_FRAMES:
+    if not _is_complete(tmp):
         tmp.unlink(missing_ok=True)
         raise OSError(f"Kinetrace's demo video in {p.parent} came out incomplete.")
     os.replace(tmp, p)

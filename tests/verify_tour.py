@@ -146,7 +146,15 @@ s.sync()
 check(hasattr(win, "act_tour") and win.act_tour in win.findChildren(QAction), "Help has Take the Interface Tour")
 help_menu = [m for m in win.menuBar().findChildren(type(win.menuBar().actions()[0].menu())) if m.title() == "&Help"]
 check(bool(help_menu) and win.act_tour in help_menu[0].actions(), "... in the Help menu")
-win.act_tour.trigger()
+# the user's gesture: Alt+H opens Help, T (Take the Interface &Tour) picks the entry
+QTest.keyClick(win, Qt.Key_H, Qt.AltModifier)
+pump(0.2)
+popup = QApplication.activePopupWidget()
+check(popup is not None and popup is help_menu[0], "Alt+H opens the Help menu", popup)
+if popup is not None:
+    QTest.keyClick(popup, Qt.Key_T)
+else:
+    win.act_tour.trigger()
 wait(lambda: win._tour is not None, 60, "the tour starts once the demo is open")
 sess = win.session
 check(win.state == READY and sess is not None and os.path.samefile(sess.video_path, made), "the demo video is open")
@@ -241,6 +249,11 @@ manual = getattr(win, "_manual_dlg", None)
 check(manual is None or not manual.isVisible(), "F1 did not open the manual")
 check(not SHOWN and win.state == READY, "Ctrl+O opened nothing", SHOWN)
 check(win._tour is not None and win._tour.index == 1, "Space moved the TOUR on, not the video", win._tour.index)
+win.statusBar().clearMessage()
+QTest.keyClick(win, Qt.Key_S, Qt.ControlModifier)
+pump(0.05)
+check("tour" in win.statusBar().currentMessage().lower() and win._tour.index == 1,
+      "Ctrl+S held back says so (I265), the tour stays where it is", win.statusBar().currentMessage())
 QTest.keyClick(win, Qt.Key_Escape)
 pump(0.1)
 check(win._tour is None, "Esc leaves the tour")
@@ -353,10 +366,51 @@ notes = " ".join(str(n[0]) for n in getattr(win.toast, "_notices", []))
 check(win._tour is None and ("tracking" in notes.lower() or "tracking" in win.toast.text().lower()),
       "refused with a note while tracking", notes[:160])
 win.state = real
+# a run started while the tour is up (from the 3D view or the Body window, which it does not cover):
+# X must still pause at once (owner's hard rule) -- the tour gives way
+win._settings().remove("tour")
+win.act_tour.trigger()
+pump(0.1)
+started, paused = [], []
+win._toggle_tracking = lambda *a, **k: started.append(1)
+if win._tour is not None:
+    app.setActiveWindow(win.dock)                    # the floated panel: another window of the app
+    QTest.keyClick(win.dock, Qt.Key_T)
+    pump(0.05)
+    check(not started and win._tour is not None, "T in another window of the app starts nothing while the tour is up")
+    app.setActiveWindow(win)
+del win._toggle_tracking
+win._pause_tracking = lambda *a, **k: paused.append(1)
+win.state = TRACKING                                 # the run has started
+QTest.keyClick(win, Qt.Key_X)
+pump(0.05)
+check(win._tour is None and paused == [1], "during a run X pauses at once: the tour gives way", (win._tour, paused))
+del win._pause_tracking
+win.state = real
+
+# ---------------------------------------------------------------- [8] the start-up order
+print("[8] the pop-ups at a start")
+from kinetrace import app as appmod  # noqa: E402
+calls = []
+win._remind_updates = lambda *a, **k: calls.append("remind")
+win._start_tour = lambda *a, **k: calls.append("tour")
+for text, want in (("Not now", ["remind"]), ("Don't ask again", ["remind"]), ("Take the tour", ["tour"])):
+    win._settings().remove("tour")
+    calls.clear()
+    ANSWER["text"] = text
+    appmod.start_pop_ups(win, False, True)
+    pump(1.2)
+    check(calls == want, f"'{text}' at a start -> {want} (Not now must never switch the update reminder off)", calls)
+    if text == "Don't ask again":
+        check(str(win._settings().value("tour/offered", "")) == "never", "Don't ask again is kept")
+ANSWER["text"] = None
+del win._remind_updates, win._start_tour
 win.project.dirty = False
 win.close()
 pump(0.2)
 win._dev_probe.wait(15000)
+import shutil  # noqa: E402
+shutil.rmtree(demo.demo_folder(), ignore_errors=True)      # this run's own demo (one folder per process)
 
 print("\nverify_tour: " + ("PASSED" if not FAILS else f"FAILED ({len(FAILS)}): " + "; ".join(FAILS)))
 sys.exit(1 if FAILS else 0)
