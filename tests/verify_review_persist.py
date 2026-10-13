@@ -703,6 +703,15 @@ def _g142():
           and "write" in plain_error(PermissionError(13, "x"), "x could not be read", reading=False), "... or say so with `reading`")
 
 
+@section("I277 cap_first")
+def _i277():
+    from kinetrace import errors
+    cap = getattr(errors, "cap_first", None)
+    check(cap is not None and cap("the lens profile was not saved") == "The lens profile was not saved"
+          and cap("") == "" and cap("1 camera") == "1 camera",
+          "one rule capitalises a sentence's first letter, and an empty message stays empty (str(e)[0] raised)")
+
+
 print()
 if FAILS:
     print(f"VERIFY_REVIEW_PERSIST FAILED ({len(FAILS)})")

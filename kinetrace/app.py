@@ -41,7 +41,7 @@ from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_
                                      save_token, working_size)
 from kinetrace import gpmf, projectfile, recovery, trackio
 from kinetrace.lens import lens_label
-from kinetrace.errors import plain_error as _plain_error
+from kinetrace.errors import cap_first, plain_error as _plain_error
 from kinetrace.session import TrackingSession
 from kinetrace.viewgrid import ViewGrid, caption_for
 from kinetrace.skeletons import all_templates, save_user_template
@@ -11394,7 +11394,7 @@ class MainWindow(QMainWindow):
             else:
                 calibio.write_lens(prof, path)
         except calibio.CalibFormatError as e:      # a fisheye as an Argus line: a sentence already
-            QMessageBox.warning(self, "Lens profile not saved", str(e)[0].upper() + str(e)[1:])
+            QMessageBox.warning(self, "Lens profile not saved", cap_first(str(e)))
             return
         except Exception as e:      # noqa: BLE001 - a full drive, a read-only folder: said
             QMessageBox.warning(self, "Lens profile not saved", _plain_error(e, "The lens profile could not be saved"))
@@ -13214,7 +13214,7 @@ class _WorldAxesDialog(QDialog):
         try:
             B, o = calib.world_axes(pts[0], pts[1], pts[2], self._lh)
         except ValueError as e:
-            return None, None, "", str(e)[0].upper() + str(e)[1:] + "."
+            return None, None, "", cap_first(str(e)) + "."
         when = ("median over the 3D result" if self.rb_median.isChecked() else f"frame {self._t}")
         note = f"world: origin = {names[0]}, +X toward {names[1]}, +Y toward {names[2]} ({when})"
         dx, dy = float(np.linalg.norm(pts[1] - pts[0])), float(np.linalg.norm(pts[2] - pts[0]))
