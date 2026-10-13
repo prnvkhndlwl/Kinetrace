@@ -53,7 +53,7 @@ STRIP_H = 6        # scroll strip at the bottom while time-zoomed
 DEFAULT_LANES = 10  # lanes assumed for the initial size hint (resize for more)
 MIN_SPAN = 16      # tightest time zoom, frames
 TIME_ZOOM_STEP = 1.5  # time-axis zoom factor per keypress / wheel notch
-LOW_CONF = 0.5     # below this a tracked span gets the warning overlay
+from kinetrace.session import LOW_CONF  # noqa: E402  the warning overlay's threshold, J's too (G193)
 ZOOM_BTN = 15      # the time-zoom buttons in the ruler's corner (G152), px
 
 # colors come from the shared design tokens so the painted panel and the
@@ -608,7 +608,8 @@ class TimelinePanel(QWidget):
             return
         trk = s.tracked[v0:v1 + 1]
         self._trk_col = np.maximum.reduceat(trk.astype(np.uint8), bounds, axis=0)
-        conf_masked = np.where(trk, s.confidence[v0:v1 + 1], 1.0).astype(np.float32)
+        # (G193) a cell marked hidden is not doubtful: red only where J stops (`session.low_conf_runs`)
+        conf_masked = np.where(trk & ~s.occluded[v0:v1 + 1], s.confidence[v0:v1 + 1], 1.0).astype(np.float32)
         self._conf_col = np.minimum.reduceat(conf_masked, bounds, axis=0)
         man = (trk & s.manual[v0:v1 + 1]).astype(np.uint8)
         self._man_col = np.maximum.reduceat(man, bounds, axis=0)

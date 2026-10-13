@@ -93,6 +93,8 @@ DEFAULT_UI_STATE: dict = {
 
 SOURCES = ("track", "silhouette", "ball")
 TRACKERS = ("alltracker", "cotracker3", "spot")   # a point's own tracker (G62); "" = the project default
+# below this confidence a tracked, not hidden cell is doubtful: the timeline's red and J's stops (G193)
+LOW_CONF = 0.5
 
 
 class PointArray(NamedTuple):
@@ -707,7 +709,7 @@ class TrackingSession:
             return None
         return int(cand[0] if forward else cand[-1])
 
-    def low_conf_runs(self, pids: list[int] | None = None, threshold: float = 0.5) -> list[tuple[int, int]]:
+    def low_conf_runs(self, pids: list[int] | None = None, threshold: float = LOW_CONF) -> list[tuple[int, int]]:
         """[(start, end)] inclusive frame runs where any of `pids` (default: all
         points) is tracked with confidence below `threshold` and not marked
         occluded by hand — the red stretches on the timeline."""
@@ -724,7 +726,7 @@ class TrackingSession:
         return list(zip(starts.tolist(), ends.tolist()))
 
     def next_low_conf(self, frame: int, forward: bool = True, pids: list[int] | None = None,
-                      threshold: float = 0.5) -> tuple[int, int] | None:
+                      threshold: float = LOW_CONF) -> tuple[int, int] | None:
         """The next (previous) low-confidence run whose start is after (before)
         `frame`; a run containing `frame` is skipped so repeated presses walk on."""
         runs = self.low_conf_runs(pids, threshold)
