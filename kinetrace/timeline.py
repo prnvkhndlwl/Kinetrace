@@ -35,16 +35,6 @@ from PySide6.QtGui import QBrush, QColor, QCursor, QFontMetrics, QPainter, QPen,
 from PySide6.QtWidgets import QInputDialog, QMenu, QSizePolicy, QToolButton, QWidget
 
 
-def _pop(menu: QMenu, pos):
-    """exec() a context menu and release it afterwards. A shown QMenu otherwise
-    lives on as a child of the widget until the widget dies: one leaked menu
-    (with all its actions) per right-click over a long digitizing session.
-    Tooltips on: menus built per right-click missed the window-wide setting (G15)."""
-    menu.setToolTipsVisible(True)
-    chosen = menu.exec(pos)
-    menu.deleteLater()          # deferred: `chosen` stays valid for the caller's comparisons
-    return chosen
-
 GUTTER_W = 96      # left name column, px
 EVENTS_H = 18      # events lane height, px
 ANIMAL_H = 13      # one segment's presence lane (one per segment, G149; none without a segment)
@@ -59,7 +49,8 @@ ZOOM_BTN = 15      # the time-zoom buttons in the ruler's corner (G152), px
 # colors come from the shared design tokens so the painted panel and the
 # styled widgets read as one surface
 from kinetrace import theme as _t  # noqa: E402
-from kinetrace.widgets import WheelSteps  # noqa: E402
+from kinetrace.widgets import WheelSteps, pop_menu  # noqa: E402
+_pop = pop_menu                # every context menu's one rule (R28); the name tests replace
 
 BG = QColor(_t.BG_WINDOW)
 LANE_BG = QColor("#2C2C33")

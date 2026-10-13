@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, Q
                                QDockWidget, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
                                QMenu, QMessageBox, QPlainTextEdit, QProgressDialog,
-                               QSizePolicy, QSpinBox, QSplitter, QTextBrowser,
+                               QSpinBox, QSplitter, QTextBrowser,
                                QToolButton, QVBoxLayout, QWidget)
 
 from kinetrace import APP_NAME, APP_TAGLINE, APP_VERSION, theme
@@ -50,7 +50,7 @@ from kinetrace.theme import apply_theme
 from kinetrace.timeline import TIME_ZOOM_STEP, TimelinePanel
 from kinetrace.video_source import DEFAULT_CACHE_BYTES, FrameCache, SeekService, VideoInfo, probe_video
 from kinetrace import icons
-from kinetrace.widgets import LoadingOverlay, ManualDialog, OnboardingStrip, SettingsDialog, Toast, native_keys
+from kinetrace.widgets import LoadingOverlay, ManualDialog, OnboardingStrip, SettingsDialog, Toast, native_keys, pop_menu, wrap_caption
 
 PROJECT_SUFFIX = projectfile.SUFFIX
 # the manual heading Help / Track ▾ open at (R11: it was spelled out three times)
@@ -1499,8 +1499,7 @@ class MainWindow(QMainWindow):
         pl.addLayout(row2)
         pl.addWidget(self.layers, 1)
         self.animal_label = QLabel("")
-        self.animal_label.setWordWrap(True)
-        self.animal_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.animal_label)
         self.animal_label.setStyleSheet(f"color: {theme.TEXT_DIM};")
         pl.addWidget(self.animal_label)
         dock = QDockWidget("Layers", self)
@@ -5221,8 +5220,7 @@ class MainWindow(QMainWindow):
         if s.segment_of(pid) is not None and not s.points[pid].derived:
             acts[menu.addAction(f"Move {name} to Scene")] = None
         from PySide6.QtGui import QCursor
-        chosen = menu.exec(QCursor.pos())
-        menu.deleteLater()
+        chosen = pop_menu(menu, QCursor.pos())
         if chosen in acts:
             self._move_points([pid], acts[chosen])
 
@@ -5586,14 +5584,12 @@ class MainWindow(QMainWindow):
             self._point_list_menu_for(kind[1], gpos)
         elif kind and kind[0] == "animal":
             menu, acts = self._build_animal_menu(kind[1])
-            chosen = menu.exec(gpos)
-            menu.deleteLater()          # release the shown menu (see canvas._context_menu)
+            chosen = pop_menu(menu, gpos)
             self._animal_menu_action(chosen, acts)
         elif kind and kind[0] == "scene":
             menu = QMenu(self)
             a_new = menu.addAction("＋ Point in Scene")
-            chosen = menu.exec(gpos)
-            menu.deleteLater()
+            chosen = pop_menu(menu, gpos)
             if chosen is a_new:
                 self.layers.select_only()
                 self._on_point_selection_changed()
@@ -7084,8 +7080,7 @@ class MainWindow(QMainWindow):
         if self._maybe_multi_menu(pid, gpos):
             return                              # several selected: the menu for all of them (G64)
         menu, acts = self.canvas._build_context_menu(pid)
-        chosen = menu.exec(gpos)
-        menu.deleteLater()          # a shown menu otherwise lingers as a child of the canvas
+        chosen = pop_menu(menu, gpos)
         if self._point_menu_extra_action(chosen, acts, pid):
             return
         if chosen == acts["rename"]:
@@ -7108,8 +7103,7 @@ class MainWindow(QMainWindow):
         if self.session is None or self.state != READY or pid not in sel or len(sel) < 2:
             return False
         menu, acts = self._build_multi_menu(sel)
-        chosen = menu.exec(global_pos)
-        menu.deleteLater()
+        chosen = pop_menu(menu, global_pos)
         self._multi_menu_action(chosen, acts, sel)
         return True
 

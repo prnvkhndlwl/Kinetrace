@@ -16,11 +16,30 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon, QTextCursor
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QPushButton, QSlider, QTextBrowser, QToolButton, QVBoxLayout,
+                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu,
+                               QPushButton, QSizePolicy, QSlider, QTextBrowser, QToolButton, QVBoxLayout,
                                QWidget)
 
 from kinetrace import theme
+
+
+def wrap_caption(label: QLabel) -> QLabel:
+    """A word-wrapped label that never dictates the window's width: a long single-line QLabel widened the
+    window (CLAUDE.md Qt pitfall), so captions take `QSizePolicy.Ignored` (R28: 17 copies)."""
+    label.setWordWrap(True)
+    label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    return label
+
+
+def pop_menu(menu: QMenu, pos):
+    """exec() a context menu and release it afterwards: a shown QMenu otherwise lives on as a child of
+    its widget until the widget dies -- one leaked menu (with all its actions) per right-click over a long
+    digitizing session. Tooltips on: menus built per right-click missed the window-wide setting (G15).
+    THE way every context menu is shown (R28: nine copies)."""
+    menu.setToolTipsVisible(True)
+    chosen = menu.exec(pos)
+    menu.deleteLater()          # deferred: `chosen` stays valid for the caller's comparisons
+    return chosen
 
 # a notice that carries HTML markup: the tags the app's notices use, so an error text with
 # a "<class 'x'>" in it is still shown as typed

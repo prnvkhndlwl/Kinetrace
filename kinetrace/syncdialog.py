@@ -17,10 +17,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
-                               QProgressBar, QPushButton, QRadioButton, QSizePolicy, QSpinBox, QTableWidget,
+                               QProgressBar, QPushButton, QRadioButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from kinetrace import audiosync, gpmf, sync, theme, threads
+from kinetrace.widgets import wrap_caption
 from kinetrace.errors import plain_error
 
 VERDICT_WORDS = {"clear": "CLEAR - use it", "weak": "WEAK - check by eye first",
@@ -87,8 +88,7 @@ class SyncDialog(QDialog):
             "<p><b>Then check by hand.</b> Step to a moment every camera saw and confirm it appears "
             "at the same time in each view. The fractional part comes later from <i>3D → Sync → "
             "Estimate Sub-frame Offsets</i>, once landmarks are tracked.</p>")
-        intro.setWordWrap(True)
-        intro.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(intro)
         lay.addWidget(intro)
         form = QFormLayout()
         # method
@@ -105,8 +105,7 @@ class SyncDialog(QDialog):
         mrow.addWidget(self.r_motion)
         form.addRow("Method", meth)
         self.method_note = QLabel("" if have_ffmpeg else ffmpeg_note)
-        self.method_note.setWordWrap(True)
-        self.method_note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.method_note)
         self.method_note.setStyleSheet(f"color: {theme.TEXT_DIM};")
         form.addRow("", self.method_note)
         # the sound filter: background noise is the rule, not the exception
@@ -159,8 +158,7 @@ class SyncDialog(QDialog):
         if active != 0:
             note = QLabel(f"= the instant on screen in {project.name(active)} (its frame {int(current_frame)}), "
                           f"through the current offsets.")
-            note.setWordWrap(True)
-            note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            wrap_caption(note)
             note.setStyleSheet(f"color: {theme.TEXT_DIM};")
             form.addRow("", note)
         self.span = QSpinBox()
@@ -199,8 +197,7 @@ class SyncDialog(QDialog):
                                f"At {ref_fps:.0f} fps, {int(round(ref_fps))} frames = 1 second.")
         form.addRow("Search up to (frames)", self.search)
         self.prior_note = QLabel("")
-        self.prior_note.setWordWrap(True)
-        self.prior_note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.prior_note)
         self.prior_note.setStyleSheet(f"color: {theme.TEXT_DIM};")
         if have_prior:
             bits = []
@@ -231,8 +228,7 @@ class SyncDialog(QDialog):
         row.addWidget(self.bar, 1)
         lay.addLayout(row)
         self.status = QLabel("")
-        self.status.setWordWrap(True)
-        self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.status)
         self.status.setStyleSheet(f"color: {theme.TEXT_DIM};")
         lay.addWidget(self.status)
         self.table = QTableWidget(0, 5)

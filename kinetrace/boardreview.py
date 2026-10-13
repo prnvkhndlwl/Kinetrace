@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFrame, QGr
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from kinetrace import lens, theme
+from kinetrace.widgets import wrap_caption
 
 TILE_W = 300                 # thumbnail width in the gallery
 
@@ -400,8 +401,7 @@ class BoardReview(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         bar = QHBoxLayout()
         self.summary = QLabel("")
-        self.summary.setWordWrap(True)
-        self.summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.summary)
         bar.addWidget(self.summary, 1)
         for label, slot, tip in (
                 ("Best spread", self._auto, "Let Kinetrace choose: a spread over the picture, "
@@ -419,8 +419,7 @@ class BoardReview(QWidget):
         # How corner 0 was recognised -- the sentence that tells a first-time
         # user whether the rings SHOULD all sit in the same place on the board.
         self.orient_label = QLabel("")
-        self.orient_label.setWordWrap(True)
-        self.orient_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.orient_label)
         self.orient_label.setStyleSheet(f"color: {theme.TEXT_DIM};")
         lay.addWidget(self.orient_label)
         self.area = QScrollArea()

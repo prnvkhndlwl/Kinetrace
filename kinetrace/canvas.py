@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (QApplication, QGraphicsEllipseItem, QGraphicsItem
                                QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QLabel, QMenu,
                                QToolButton, QWidget)
 
-from kinetrace.widgets import WheelSteps
+from kinetrace.widgets import WheelSteps, pop_menu
 
 HIT_RADIUS_PX = 14      # screen px within which a click grabs a point
 MARKER_RADIUS = 3.0     # screen px (3 by default, was 7)
@@ -1354,10 +1354,8 @@ class VideoCanvas(QGraphicsView):
                 k = self._hit_prompt(sp)
                 if k is not None:
                     menu = QMenu(self)
-                    menu.setToolTipsVisible(True)      # (G15)
                     act = menu.addAction("Remove this click")
-                    chosen = menu.exec(ev.globalPosition().toPoint())
-                    menu.deleteLater()
+                    chosen = pop_menu(menu, ev.globalPosition().toPoint())
                     if chosen == act:
                         self.prompt_remove_requested.emit(k)
                 return
@@ -1662,8 +1660,7 @@ class VideoCanvas(QGraphicsView):
 
     def _context_menu(self, pid: int, global_pos) -> None:
         menu, acts = self._build_context_menu(pid)
-        chosen = menu.exec(global_pos)
-        menu.deleteLater()          # else every right-click leaves a menu behind as a child
+        chosen = pop_menu(menu, global_pos)
         if callable(self.menu_extra_action) and self.menu_extra_action(chosen, acts, pid):
             return
         if chosen == acts["rename"]:
