@@ -29,7 +29,7 @@ How it works
 What it cannot do, said to the user: sound travels ~343 m/s, so a camera
 6 m farther from the clap hears it 17 ms later = 4 frames at 240 fps. The
 audio offset is therefore exact to within (camera spacing / 343 m/s); the
-motion sync and, after tracking, 3D -> Estimate Sub-frame Offsets have no such
+motion sync and, after tracking, 3D -> Sync -> Estimate Sub-frame Offsets have no such
 bias and refine it. Pure numpy/scipy + a subprocess; no Qt.
 """
 from __future__ import annotations
@@ -292,7 +292,7 @@ def acoustic_caveat(fps: float, spacing_m: float = 5.0) -> str:
     return (f"Sound needs {1000 * spacing_m / SPEED_OF_SOUND:.0f} ms to travel {spacing_m:.0f} m, so a camera "
             f"that much farther from the clap hears it about {frames:.1f} frames late at {fps:.0f} fps. The "
             "audio offset is exact only to that; the Motion method in the same dialog has no such bias, and "
-            "3D -> Estimate Sub-frame Offsets (after tracking) refines it to a fraction of a frame.")
+            "3D -> Sync -> Estimate Sub-frame Offsets (after tracking) refines it to a fraction of a frame.")
 
 
 def estimate_offsets_from_audio(paths: list[str], fps: list[float], ref_range_s: tuple[float, float],

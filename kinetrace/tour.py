@@ -74,10 +74,10 @@ def stops(win) -> list[Stop]:
              "<br><br><b>→</b> or <b>Enter</b> = next, <b>←</b> = back, <b>Esc</b> = leave the tour. "
              "Nothing you have set up is changed. Help → Take the Interface Tour shows it again."),
         Stop("menus", "The menus",
-             "<b>File</b> opens a video or a project, saves and exports. <b>Edit</b> undoes. <b>View</b> shows "
-             "and hides panels. <b>Skeleton</b> has ready-made landmark lists, <b>3D</b> is for several "
-             "cameras, <b>Body</b> for people's joints. <b>Hover over any menu entry</b> and a line says "
-             "what it does.",
+             "<b>File</b> opens a video or a project, saves, imports and exports. <b>Edit</b> undoes, fixes "
+             "points, marks events and has ready-made skeletons. <b>View</b> shows and hides panels and "
+             "overlays. <b>3D</b> syncs and calibrates several cameras and builds the 3D result, <b>Body</b> "
+             "measures people's joints. <b>Hover over any menu entry</b> and a line says what it does.",
              widget=_menu_bar),
         Stop("strip", "Getting started",
              "The four steps of a first project: <b>1 Open video → 2 Segment → 3 Skeleton → 4 Track</b>. "

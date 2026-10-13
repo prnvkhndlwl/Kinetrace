@@ -391,7 +391,7 @@ and it takes the demo's place.
 The rest of this section describes the same parts in more detail.
 
 ```
- File  Edit  View  Skeleton  Events  3D  Body  Help      ← the menus
+ File  Edit  View  3D  Body  Help                         ← the menus
 ┌────────────────────────────────────────────────────┬──────────────────────┐
 │ 1 Open video ✓ › 2 Segment › 3 Skeleton › 4 Track  │ Layers               │
 ├────────────────────────────────────────────────────┤ CAMERAS  + Add video │
@@ -411,11 +411,13 @@ The rest of this section describes the same parts in more detail.
 ```
 
 **The menus along the top:** **File** (open a video or a project, save,
-export), **Edit** (undo, notes, the hidden mark, the name recorded on your
-notes), **View** (the panel, this strip, trails, the loupe, display filters),
-**Skeleton** (ready-made landmark lists for an animal), **Events**, **3D** (several cameras:
-sync, calibration, 3D positions), **Body** (people's joints and joint angles)
-and **Help** (this manual, **F1**, the keyboard reference and the interface tour). **Hover the
+import, and every export under **File → Export**), **Edit** (undo, Point Tools,
+notes, the hidden mark, **Events**, the ready-made **Skeleton** landmark lists,
+the name recorded on your notes, Settings), **View** (the panel, this strip,
+trails, the loupe, display filters), **3D** (several cameras: the cameras
+overview, **Sync**, **Calibrate**, then 3D positions), **Body** (people's joints
+and joint angles) and **Help** (this manual, **F1**, the interface tour, the
+keyboard reference; System Check and the error report; updates). **Hover the
 mouse over any menu entry** and a line appears saying what it does. In the 3D
 menu, the entries that need something you have not done yet — a second camera,
 a calibration — mostly stay clickable and tell you what is missing when you
@@ -639,7 +641,7 @@ segment click has just replaced it.)
 
 ### Step 4 — Choose your landmarks
 
-In the right panel, click **Skeleton ▾** (or open the **Skeleton** menu) and
+In the right panel, click **Skeleton ▾** (or open **Edit → Skeleton**) and
 pick the animal type closest to yours — the entries read *Use template: Lizard /
 iguana (14 landmarks)* and so on. The landmark names appear in LAYERS under
 the animal, and a notice over the video says which one to place first. The
@@ -1343,7 +1345,7 @@ timeline.
 
 Marking the same thing again later? The naming box offers the names you have
 already used. Pick one and it becomes another occurrence of that event, sharing
-its colour. The **Events** menu groups all occurrences of each name together.
+its colour. **Edit → Events** groups all occurrences of each name together.
 
 Click a ribbon to jump to that event. **Right-click it** (also right after you
 have clicked it) to jump to its start or end, select its frames on the timeline (to clear or mark hidden), rename it, add
@@ -1358,7 +1360,7 @@ your project and are included in your exported results as a separate file.
 
 **Shift+N** attaches a free-text note to the current frame ("tail hidden behind
 rock", "second animal enters"). Notes appear as small green triangles at the top
-of the timeline, in the **Events** menu, and in the events sidecar file of every
+of the timeline, in **Edit → Events**, and in the events sidecar file of every
 export. Right-click an event ribbon → *Edit note…* to add a note to an event.
 
 Tell the program who you are once — **Edit → Annotator Name…** (also in
@@ -1454,7 +1456,7 @@ the numbers just get measured from the new starting point.
    camera becomes camera 1 the offsets are re-measured from it — the cameras
    stay in sync); only a 3D result is dropped (Reconstruct again). A camera
    the calibration leaves out stays "not calibrated" wherever it goes.
-3. **Line them up.** The quick way: **3D → Sync Cameras (Sound / Motion)…**.
+3. **Line them up.** The quick way: **3D → Sync → Sync Cameras (Sound / Motion)…**.
    It offers two methods and a verdict for each camera; both need no tracking
    and no calibration.
 
@@ -1725,7 +1727,7 @@ tracked near the edges would land in the wrong place in 3D by about that much.
 - **Not sure?** Do it once; the report tells you in pixels how much your lens
   bends the edges, and whether it matters.
 
-**3D → Calibrate a Lens (checkerboard)…** walks you through it, with or
+**3D → Calibrate → Calibrate a Lens (checkerboard)…** walks you through it, with or
 without a video open. Best is to have the project with your cameras open, so
 the finished profile can be attached to one of them straight away (the wand
 wizard's *The cameras* page also has a **Calibrate…** button per camera that
@@ -1792,11 +1794,11 @@ close it without saving, the program offers to save it for you. The wizard:
    the same lens, zoom and resolution. The profile records which checkerboard
    video it was measured on (name and full path) and the frame numbers of the
    boards it used (the report lists them too), so you can always go back and
-   look at those frames. Forgot? **3D → Export Lens Profile…**
+   look at those frames. Forgot? **File → Export → Lens Profile…**
    saves any camera's profile at any time (however it was made: checkerboard,
    GoPro's lens model, a file), as a Kinetrace `.klens.json` or for other
    programs (OpenCV `.yml` / `.json`, Argus `.txt` for a standard lens), and
-   **3D → Load a Lens Profile for Cameras…** puts a saved profile on as many
+   **3D → Calibrate → Load a Lens Profile for Cameras…** puts a saved profile on as many
    cameras as you like in one go — a rig of 5 + 5 or 4 + 4 + 2 identical
    cameras needs one load per group. It lists every camera with what it
    records (a GoPro's model, lens mode and size) and what the file would do to
@@ -1877,10 +1879,10 @@ whole picture including the corners. Kinetrace uses it in two ways:
 
 - **Without a checkerboard:** 3D → Cameras Overview… → *Use GoPro's lens model
   for the GoPro cameras without a lens profile*, or *Use GoPro's lens without boards* in
-  3D → Calibrate a Lens. This is the lens *design*: each camera differs from it
+  3D → Calibrate → Calibrate a Lens. This is the lens *design*: each camera differs from it
   by about 1 % in focal length and up to about 10 px in where the centre of the
   lens is. The wand calibration fine-tunes the focal length.
-- **With a checkerboard (recommended):** in 3D → Calibrate a Lens, choose
+- **With a checkerboard (recommended):** in 3D → Calibrate → Calibrate a Lens, choose
   *GoPro lens from the video + your boards* (chosen for you on GoPro footage).
   GoPro's curve is kept and only this camera's focal length and centre are
   measured from your boards, so the board does **not** need to reach the
@@ -1889,7 +1891,7 @@ whole picture including the corners. Kinetrace uses it in two ways:
   GoPro's and says so: tilting the board more, up and down as well as left and
   right, measures it.
 
-**Syncing GoPros.** When every camera has timecode, 3D → Sync Cameras starts its
+**Syncing GoPros.** When every camera has timecode, 3D → Sync → Sync Cameras starts its
 search from the cameras' start times instead of the file names. The camera
 clocks are set only to about a second, so this is where the search starts, not
 the answer.
@@ -1978,7 +1980,7 @@ recognises it — and for the floor marks if you use them. A few
 hundred frames of the wand spread over the recording is ideal; 30 is the bare
 minimum.
 
-**Run the wizard: 3D → Calibrate Cameras with a Wand…** It walks you through
+**Run the wizard: 3D → Calibrate → Calibrate Cameras with a Wand…** It walks you through
 five pages and explains each one:
 
 1. *What this is* — and a check that the project has what it needs.
@@ -2049,7 +2051,7 @@ five pages and explains each one:
    The check only suggests whole frames, only when every pair of cameras
    agrees, and says when the wand cannot time a camera (too few frames shared
    with the others). Then read the report. (*Save calibration files…* on this
-   page writes the same files as 3D → Export Calibration.)
+   page writes the same files as File → Export → Calibration.)
    **Show in 3D** opens this calibration as a picture you can turn, before you
    use it: each camera as a small pyramid where it stands, pointing where it
    looks, its whole **field of view** (as Blender draws a camera: the picture's
@@ -2115,9 +2117,9 @@ how long your wand is in metres (if the frame rate is right): measure it, then
 calibrate again in metres.
 
 **Keep it.** Press **Use this calibration** and it becomes this project's
-calibration. Then **3D → Export Calibration…** asks where to save (next to the
+calibration. Then **File → Export → Calibration…** asks where to save (next to the
 project by default) and writes a `.kcal.json` (everything, for your animal
-projects: open them, then **3D → Import Calibration…** and choose this file —
+projects: open them, then **File → Import → Calibration…** and choose this file —
 no pixel-convention question, the file knows), a `…_dltCoefs.csv` for
 colleagues who use DLTdv or easyWand, and, for a wand calibration, the report
 as text (`…_report.txt`) for your records. If any camera has a lens
@@ -2164,7 +2166,7 @@ To include it, track the wand in it and calibrate again (or import a file
 that includes it). The calibration is kept in the saved project either way.
 Four steps, in this order:
 
-1. **3D → Import Calibration…** (skip this if you calibrated with the wand in
+1. **File → Import → Calibration…** (skip this if you calibrated with the wand in
    this project — it is already in place). A calibration is a file that says
    where each camera stands and how it sees: the `.kcal.json` written by the
    wand wizard, or a file from the calibration software you already use —
@@ -2205,7 +2207,7 @@ Four steps, in this order:
    camera's offset and frame rate, matched by camera name) and **Silhouettes
    (mask images)…** (a folder of black-and-white masks from another
    segmentation tool, named with their frame number, the size of the video).
-2. **3D → Estimate Sub-frame Offsets…** The program tries small shifts of every
+2. **3D → Sync → Estimate Sub-frame Offsets…** The program tries small shifts of every
    camera's timing and keeps the ones where the cameras' rays meet most
    cleanly (the *residual*, in pixels, that it shows before and after). Do
    this after tracking, not before: it needs the tracks to measure anything.
@@ -2283,15 +2285,16 @@ Four steps, in this order:
    into the edge of the space searched around them, the program enlarges that
    space and carves again; if it still touches the edge, it warns that the
    volume is cut off (too small) — usually a silhouette that takes in some
-   background. **3D → Export Mesh of This Frame…** writes the shape as an OBJ
+   background. **File → Export → Mesh of This Frame…** writes the shape as an OBJ
    or PLY file for Blender, MeshLab or MATLAB.
 
 Most entries of the **3D** menu can be clicked as soon as a video is open (the
 two calibration wizards even before): if something is still missing — a second
 camera, a calibration — the entry says what, and how to get it, instead of doing
-nothing. Three stay grey until they have something to work on: *Show 3D View*
-needs a calibration, *Re-track Disagreeing Stretches* a reconstruction, and
-*Export Mesh of This Frame* a volume carved at this frame.
+nothing. Two stay grey until they have something to work on: *Show 3D View*
+needs a calibration and *Re-track Disagreeing Stretches* a reconstruction; and
+**File → Export → Mesh of This Frame…** stays grey until a volume is carved at
+this frame.
 
 **A calibration must cover every camera.** If you add a camera to a project
 that is already calibrated, the calibration is kept, in the project and in its
@@ -2385,7 +2388,7 @@ reference camera, with a second file giving each position's residual, how
 many cameras saw it, and each camera's own error in pixels. Everything 3D is
 saved in the project, so reopening it brings the calibration, the offsets, the
 positions and the bands back. The 3D points you export always come in the same
-world as the cameras you export with **3D → Export Calibration…**, so the two
+world as the cameras you export with **File → Export → Calibration…**, so the two
 can be used together in another program. A DLTdv xyzpts file keeps a frame with
 no 3D position as an empty frame, so every later frame stays on its own row.
 
@@ -2528,14 +2531,14 @@ the project, and a file it cannot read is named in the message (with the row,
 for a table). (`.cache` holds copies for fast opening and can be deleted; leave
 `.history` alone.)
 
-**One file, to e-mail or archive:** **File → Export Project as One File…**
+**One file, to e-mail or archive:** **File → Export → Project as One File…**
 writes the whole project as a single `.kinetrace` file; **File → Open
 Project…** opens it like the folder. A project saved before September 2026 is
 such a single file: the first time you save it, the program offers to turn it
 into a folder (the single file is kept beside it as `name.kinetrace.bak`), or to
 keep saving it as one file.
 
-**Files for other programs, kept up to date:** **File → Keep Exports Up to
+**Files for other programs, kept up to date:** **File → Export → Keep Exports Up to
 Date…** — tick DLTdv8 (one file per camera, or every camera in one file for
 3D), DeepLabCut, MATLAB, a wide CSV or the 3D points, and after every save the
 program writes them into the project folder's `exports` folder (only the files
@@ -2642,7 +2645,7 @@ were working in when you saved, the project does not open at all.
 
 ## 12. Getting your numbers out
 
-**File → Export Tracks…** (**Ctrl+E**) opens a save window; pick the format in
+**File → Export → Tracks…** (**Ctrl+E**) opens a save window; pick the format in
 its file-type list (*Save as type*).
 
 **With several cameras**, the 2D formats — every row above *ALL CAMERAS* in the
@@ -2728,7 +2731,7 @@ the smoothing; in Python, read it with `pandas.read_csv(path, comment='#')`.
 
 ### A video with the result drawn on it
 
-**File → Export Overlay Video…** writes an MP4 of the camera you are working in,
+**File → Export → Overlay Video…** writes an MP4 of the camera you are working in,
 with everything drawn on the frames: markers and names, the skeleton, the
 silhouette, fading trails, the frame number and time, the names of events while
 they are running, and your notes. Choose the whole video, an event, the frame
@@ -2923,7 +2926,7 @@ If you have several people in shot, raise **People** (up to 8) and each one keep
 their own column in the results, followed from frame to frame.
 
 **Use this camera's measured focal length** — a 3D model has to guess how wide
-the lens is. If you have calibrated this camera's lens (*3D → Calibrate a Lens
+the lens is. If you have calibrated this camera's lens (*3D → Calibrate → Calibrate a Lens
 (checkerboard)…*), tick this and the distances in metres come out right. Only
 the focal length is used — the frames are not straightened first — and the
 angles do not depend on it. Without a lens profile for this camera the box is
@@ -2936,7 +2939,7 @@ frames in between stay blank and you can fill them in later.
 timeline, or only the frame you are on. **Keep the 3D body shape** stores the
 body surface for the side-by-side view (about 110 kB per frame and person).
 **Use this camera's measured focal length** is offered when this camera has a
-lens profile (*3D → Calibrate a Lens*): the 3D model then knows how wide the
+lens profile (*3D → Calibrate → Calibrate a Lens*): the 3D model then knows how wide the
 lens is instead of guessing, which makes its distances right. **Body → Remove
 Body Pose** deletes every pose in this camera; it asks first, and **Ctrl+Z**
 brings it back. Rates of change
@@ -3089,9 +3092,9 @@ are listed, pick the one with the high number.
 
 | Menu item | What it writes |
 |---|---|
-| **Body → Export Joint Positions…** | one row per frame and person: every joint's `x`, `y` in pixels (origin top-left, `y` down) and the model's score for it (`conf`; blank for SAM 3D Body, which gives none), plus X, Y, Z in metres when the model gives 3D. The `xyz_frame` column says what those are: `camera` = measured from the camera (X right, Y down, Z away from it), so they show movement from frame to frame; `body` = centred on the body, fine for angles and segment lengths but not for movement. The first lines start with `#` and explain every column — in Python, read it with `pandas.read_csv(path, comment='#')` |
-| **Body → Export Joint Angles…** | every angle in degrees and degrees per second, with the frame number and the time in seconds — **plus a report file** beside it (`…_report.txt`). The `#` lines at the top say what each angle's zero means |
-| **Body → Export Side-by-side Video…** | an MP4 of the view described above, over the frames that have a pose (inside the timeline's selected window, if there is one); a sampled run gives only its posed frames |
+| **File → Export → Body Joint Positions…** | one row per frame and person: every joint's `x`, `y` in pixels (origin top-left, `y` down) and the model's score for it (`conf`; blank for SAM 3D Body, which gives none), plus X, Y, Z in metres when the model gives 3D. The `xyz_frame` column says what those are: `camera` = measured from the camera (X right, Y down, Z away from it), so they show movement from frame to frame; `body` = centred on the body, fine for angles and segment lengths but not for movement. The first lines start with `#` and explain every column — in Python, read it with `pandas.read_csv(path, comment='#')` |
+| **File → Export → Body Joint Angles…** | every angle in degrees and degrees per second, with the frame number and the time in seconds — **plus a report file** beside it (`…_report.txt`). The `#` lines at the top say what each angle's zero means |
+| **File → Export → Body Side-by-side Video…** | an MP4 of the view described above, over the frames that have a pose (inside the timeline's selected window, if there is one); a sampled run gives only its posed frames |
 
 The report is worth reading. It says which model was used, how many frames had a
 person on them, whether the angles are 3D or flat, **how far each joint actually
@@ -3384,14 +3387,14 @@ The error message gives you an exact `ffmpeg` command that converts it.
 lens it measures to one camera of the project that is open. Two ways to do it:
 
 - **With your experiment open** (the project with your cameras, or that
-  camera's own video): choose **3D → Calibrate a Lens (checkerboard)…**. On the
+  camera's own video): choose **3D → Calibrate → Calibrate a Lens (checkerboard)…**. On the
   page *The checkerboard video*, press **Choose…** and pick the video of the
   board. The box starts out showing the camera's own video, which has no board
   in it. Say which camera the lens belongs to (the board video must have the
   same picture size as that camera), press *Find the boards*, and on the last
   page press *Attach to …*.
 - **With nothing open yet:** run the wizard anyway and on the last page press
-  **Save lens file…**. Later, open your experiment, choose **3D → Calibrate a
+  **Save lens file…**. Later, open your experiment, choose **3D → Calibrate → Calibrate a
   Lens (checkerboard)…** again and press *I already have a lens file…*: it goes
   straight to the last page, where *Attach to …* gives the lens to the camera
   (or press *Load file…* next to that camera in the wand wizard). A lens

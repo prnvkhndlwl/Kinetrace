@@ -114,7 +114,7 @@ def facts_tooltip(f: CameraFacts) -> str:
         lines.append(f"Lens profile ATTACHED BUT NOT USED: {f.lens_note}")
     else:
         lines.append("No lens profile: the wand calibration estimates the focal length and corrects no distortion "
-                     "(3D → Calibrate a Lens, or 3D → Load a Lens Profile for Cameras…).")
+                     "(3D → Calibrate → Calibrate a Lens, or 3D → Calibrate → Load a Lens Profile for Cameras…).")
     lines.append(f"3D calibration: {f.calibration_text}.")
     lines.append("Click for 3D → Cameras Overview…")
     return "\n".join(lines)
@@ -123,7 +123,7 @@ def facts_tooltip(f: CameraFacts) -> str:
 class CamerasOverview(QDialog):
     """`facts()` = the cameras' `CameraFacts` (read again after a button changed something).
     `on_use_gopro_lenses(views)` gives GoPro's lens model to those cameras and returns a sentence;
-    `on_load_lens()` runs 3D → Load a Lens Profile for Cameras…; `on_goto(view, frame)` shows that
+    `on_load_lens()` runs 3D → Calibrate → Load a Lens Profile for Cameras…; `on_goto(view, frame)` shows that
     camera at that frame (a GoPro camera's Moved cell)."""
 
     def __init__(self, parent, facts, on_use_gopro_lenses=None, on_load_lens=None, on_goto=None):
@@ -155,7 +155,7 @@ class CamerasOverview(QDialog):
         lay.addWidget(self.notes)
         btns = QHBoxLayout()
         self.btn_load = QPushButton("Load a lens profile for cameras…")
-        self.btn_load.setToolTip("3D → Load a Lens Profile for Cameras…: one saved lens file for every camera you tick")
+        self.btn_load.setToolTip("3D → Calibrate → Load a Lens Profile for Cameras…: one saved lens file for every camera you tick")
         self.btn_load.clicked.connect(self._load_lens)
         self.btn_load.setEnabled(on_load_lens is not None)
         self.btn_lens = QPushButton("")
@@ -212,7 +212,7 @@ class CamerasOverview(QDialog):
             if prior is not None and len(prior) > 1:
                 lines.append("The cameras' timecode tracks put them within " + ", ".join(
                     f"{f.name} {pr:+.0f}" for f, pr in zip(self.facts[1:], prior[1:])) + " frames of the first "
-                    "camera: a starting point for 3D → Sync Cameras (the camera clocks are set to about a second, "
+                    "camera: a starting point for 3D → Sync → Sync Cameras (the camera clocks are set to about a second, "
                     "so this is not the sync itself).")
         none = [f.name for f in self.facts if f.lens_state == "none"]
         unused = [f.name for f in self.facts if f.lens_state == "unused"]
@@ -231,7 +231,7 @@ class CamerasOverview(QDialog):
         self.btn_lens.setToolTip("GoPro's own model of the lens for the mode each video was recorded in, read from "
                                  "the video: it covers the whole picture. It is the lens design, not each unit "
                                  "(about 1 % in focal length and ~10 px in centre between units): the wand "
-                                 "calibration refines the focal length, a checkerboard (3D → Calibrate a Lens → "
+                                 "calibration refines the focal length, a checkerboard (3D → Calibrate → Calibrate a Lens → "
                                  "GoPro lens + your boards) measures both.")
 
     @staticmethod

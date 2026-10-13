@@ -415,7 +415,7 @@ def turn_needed(size: tuple[int, int], rotation: int | None, cam_size: tuple[int
                    else f"the video of {cam_name} does not say which way it is turned (this decoder cannot tell)")
         fix = ("For a Kinetrace lens file, load it again and let Kinetrace find its checkerboard video, which "
                "tells the turn (I275). Otherwise measure the lens in Kinetrace from the checkerboard video "
-               "(3D → Calibrate a Lens): a profile made now records the turn, and is turned for this camera by "
+               "(3D → Calibrate → Calibrate a Lens): a profile made now records the turn, and is turned for this camera by "
                "itself." if rotation is None else
                "Open the videos with the default decoder (KINETRACE_DECODE not set), which reads the turn.")
         return None, (f"{what} {w} x {h} pictures and {cam_name} records {cw} x {ch}: the same pictures turned a "
@@ -513,7 +513,7 @@ def fit_profile(prof: LensProfile, cam_size: tuple[int, int], cam_rotation: int 
     except ValueError as e:
         return None, (f"{what} {int(prof.width)} x {int(prof.height)} pictures and {cam_name}'s video is turned "
                       f"{_TURN[turn]} from them, so the profile would have to be turned, but {e}. Measure the lens "
-                      "in Kinetrace from the checkerboard video (3D → Calibrate a Lens).")
+                      "in Kinetrace from the checkerboard video (3D → Calibrate → Calibrate a Lens).")
     return out, (f"The lens was measured on {int(prof.width)} x {int(prof.height)} pictures "
                  f"{_TURNED[int(prof.rotation)]} and {cam_name}'s pictures are {_TURNED[int(cam_rotation) % 360]}, "
                  f"so the profile was turned {_TURN[turn]} to fit its {int(cam_size[0])} x {int(cam_size[1])} "

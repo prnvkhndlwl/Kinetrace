@@ -76,6 +76,10 @@ MAP = [
     (["make_test_video.py"], ["verify_core", "verify_4k"]),
     (["tests/run_suites.py", "tests/suite_map.py"], ["verify_suite_map"]),
 ]
+# Added on top of MAP, never instead of it (a module listed only here would still be reported as unmapped):
+# any module's messages and the manual may name a menu entry ("3D → Reconstruct 3D Landmarks"), and
+# verify_menu_paths checks every such path against the live menu bar (G188)
+ALSO = [([K + "*.py", "docs/MANUAL.md"], ["verify_menu_paths"])]
 
 
 def _helper_users(helper):
@@ -107,7 +111,10 @@ def suites_for(paths):
         hit = [suites for pats, suites in MAP if any(fnmatch.fnmatch(p, g) for g in pats)]
         for suites in hit:
             add(suites)
+        also = [suites for pats, suites in ALSO if any(fnmatch.fnmatch(p, g) for g in pats)]
         if hit:
+            for suites in also:
+                add(suites)
             continue
         base = os.path.basename(p)
         if p.startswith("tests/") and base.startswith("verify_") and base.endswith(".py"):
@@ -117,4 +124,6 @@ def suites_for(paths):
         elif p.endswith(".py") and (p.startswith(K) or "/" not in p):
             unmapped.append(p)
             add(FALLBACK)
+        for suites in also:
+            add(suites)
     return chosen, unmapped

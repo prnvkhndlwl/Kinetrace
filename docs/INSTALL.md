@@ -244,8 +244,8 @@ NVIDIA graphics card; the Body dialog offers ViTPose (2D joints) there.
    git clone https://github.com/facebookresearch/sam-3d-body models/sam-3d-body
    ```
 
-Its Python packages are already installed. **Body → 3D body** says what is
-still missing.
+Its Python packages are already installed. **Body → Find People & Measure
+Joints…** says, beside the SAM 3D Body model, what is still missing.
 
 ## Where Kinetrace keeps things
 

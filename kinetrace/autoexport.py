@@ -1,7 +1,7 @@
 """The project folder's exports/: files for other programs, refreshed at every
 save (G42).
 
-File -> Keep Exports Up to Date... ticks the formats (saved in project.json as
+File -> Export -> Keep Exports Up to Date... ticks the formats (saved in project.json as
 `exports_on_save`). After a save of the project folder, `refresh` brings
 exports/ up to date FROM THE SAVED FOLDER ITSELF (read back through the cache,
 so the files match the save exactly and never race the live session), and
@@ -74,7 +74,7 @@ def _fingerprint(index: dict, prefixes: tuple, *extra: str) -> str:
 
 
 def _write_points_in_camera_world(calibio, project, path: str) -> None:
-    """xyzpts.csv in the world the exported cameras (3D -> Export Calibration) are in:
+    """xyzpts.csv in the world the exported cameras (File -> Export -> Calibration) are in:
     mirrored in Z for a left-handed easyWand / DLTdv calibration, the file's origin
     restored for a K + R/t import. The probe is the one the export dialog takes,
     so the two agree (I170)."""
@@ -182,7 +182,7 @@ class ExportsWorker(QThread):
 
 
 class ExportsDialog(QDialog):
-    """File -> Keep Exports Up to Date...: which files to keep in exports/."""
+    """File -> Export -> Keep Exports Up to Date...: which files to keep in exports/."""
 
     def __init__(self, parent, current: list[str], n_views: int, has_3d: bool, folder: Path | None):
         super().__init__(parent)

@@ -26,9 +26,9 @@ programs can read and write (format 2, I145). See docs/FORMAT.md.
 A save writes only the files whose content changed (`write_folder`); opening
 reads a table from `.cache/` when the CSV is still the one saved, and parses
 the CSV when it was edited by hand, so the CSV is always what counts. The
-same layout in a ZIP is the single-file form (`write`: File -> Export Project
-as One File, and the recovery copies with binary tables); format-1 projects
-(a zip with one long tracks.csv per camera) still open. Frames count from 0;
+same layout in a ZIP is the single-file form (`write`: File -> Export -> Project
+as One File, and the recovery copies with binary tables); format-1 projects (a
+zip with one long tracks.csv per camera) still open. Frames count from 0;
 pixels are OpenCV pixel centres counted from 0.
 
 No Qt here: `write` / `write_folder` run on a worker thread, `freeze` (cheap
@@ -713,10 +713,9 @@ def _materialize(item, need_digest: bool = True):
 # ------------------------------------------------------------------ write (worker thread)
 def write(frozen: Frozen, path: str | Path, *, compresslevel: int = 1, fsync: bool = True,
           backup: bool = True, yield_gil=lambda: time.sleep(0)) -> None:
-    """The single-file form (a ZIP of the same layout: File -> Export Project
-    as One File, and the recovery copies). Written atomically: a temp file in
-    the same folder, optionally a copy of the previous file as `<name>.bak`,
-    then one os.replace. The file at `path` is always either the old save or
+    """The single-file form (a ZIP of the same layout: File -> Export -> Project as One File, and
+    the recovery copies). Written atomically: a temp file in the same folder, optionally a copy of
+    the previous file as `<name>.bak`, then one os.replace. The file at `path` is always either the old save or
     the new one, never half of either."""
     path = Path(path)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
@@ -2296,7 +2295,7 @@ What is where
                           another computer checks that it shows the same pictures at the same
                           frame numbers (File > Check Video Frames)
   exports/               files for DeepLabCut, DLTdv or MATLAB, refreshed at every save
-                          when chosen in File > Keep Exports Up to Date
+                          when chosen in File > Export > Keep Exports Up to Date
   videos/                 optional: put the videos here to keep everything in one folder
   .cache/                 copies of the tables for fast opening (safe to delete)
   .history/               the files as they were before the last save

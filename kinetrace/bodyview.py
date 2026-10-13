@@ -1157,7 +1157,7 @@ class BodyRunDialog(QDialog):
             "calibrated this camera, using the real value makes the 3D distances right. "
             "Only the focal length is used (the frames are not undistorted first)."
             if lens_focal is not None else
-            "No lens calibration for this camera. 3D → Calibrate a Lens measures one.")
+            "No lens calibration for this camera. 3D → Calibrate → Calibrate a Lens measures one.")
         lay.addWidget(self.chk_lens)
 
         self.n_frames, self.current = n_frames, current

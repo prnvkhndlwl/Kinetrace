@@ -1,4 +1,4 @@
-"""3D -> Sync Cameras: whole-frame offsets for hand-started cameras, from the
+"""3D -> Sync -> Sync Cameras: whole-frame offsets for hand-started cameras, from the
 SOUND tracks (claps, voices - the usual way, `audiosync.py`) or from the
 PICTURE (how much it changes frame to frame, `sync.py`).
 
@@ -86,8 +86,8 @@ class SyncDialog(QDialog):
             "in every camera, slid until the curves match - a wand swung into view, a person "
             "walking past, a flash leave the same bump in every camera that SAW them.</p>"
             "<p><b>Then check by hand.</b> Step to a moment every camera saw and confirm it appears "
-            "at the same time in each view. The fractional part comes later from <i>3D → Estimate "
-            "Sub-frame Offsets</i>, once landmarks are tracked.</p>")
+            "at the same time in each view. The fractional part comes later from <i>3D → Sync → "
+            "Estimate Sub-frame Offsets</i>, once landmarks are tracked.</p>")
         intro.setWordWrap(True)
         intro.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         lay.addWidget(intro)

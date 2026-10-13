@@ -365,7 +365,7 @@ w._recover_dialog()
 check(not w.act_recover.isEnabled() and not labels_seen, "recovering is not offered in the middle of a run")
 w.state = READY
 w._apply_state()
-check(w.act_recover.isEnabled() and w.act_import_calib.text().replace("&", "") == "Calibration…",
+check(w.act_recover.isEnabled() and w.act_calib.text().replace("&", "") == "Calibration…",
       "... and is back after it; File -> Import names its calibration entry plainly")
 close(w, QMessageBox.Discard)
 check(recovery.find(left_id) is None, "and Discard drops it")
@@ -523,7 +523,7 @@ check(w._save_project_as() and str(w.project_path) == OTHER and projectfile.load
       "... Yes saves the work AS that project (no folder made inside it) (G55)")
 close(w, None)
 w = window(project=OLD)                                  # the exports below work on the first project
-# exports on save, chosen by real clicks in File -> Keep Exports Up to Date...
+# exports on save, chosen by real clicks in File -> Export -> Keep Exports Up to Date...
 from kinetrace import autoexport  # noqa: E402
 
 
