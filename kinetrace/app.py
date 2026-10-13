@@ -11739,6 +11739,8 @@ class MainWindow(QMainWindow):
             seg_name = s.segments[k].name
         t = self._reference_instant()         # the hull cache is keyed by the reference instant (I114)
         masks = self._masks_at_instant(t, seg_name)
+        # (I273) a camera that is not calibrated cannot carve: its silhouette does not count
+        masks = [m if p.calibration.camera(c) is not None else None for c, m in enumerate(masks)]
         n_masks = sum(1 for m in masks if m is not None)
         if n_masks < 3:
             # Two silhouettes carve a sliver the full depth of the intersection
@@ -11747,7 +11749,7 @@ class MainWindow(QMainWindow):
             if not quiet:
                 QMessageBox.information(
                     self, "Volume needs three cameras",
-                    f"Only {n_masks} camera(s) have a silhouette at this instant. A volume carved from "
+                    f"Only {n_masks} calibrated camera(s) have a silhouette at this instant. A volume carved from "
                     "two silhouettes is a long sliver along the line between the cameras -- its size "
                     "is not the animal's. Segment the animal in at least THREE cameras that look at it "
                     "from clearly different directions, then carve again.")

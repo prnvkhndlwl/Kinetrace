@@ -505,6 +505,21 @@ def sec_h():
         assert np.isnan(r.per_cam[..., NO_WAND]).all()
         t = win.toast.text()
         assert "cam3" in t and "not calibrated" in t, t
+        # (review) Carve Volume counts only the CALIBRATED cameras' silhouettes: two calibrated cameras
+        # with three silhouettes is still "needs three cameras", never a two-camera sliver
+        full_cal = p.calibration
+        p.calibration = Calibration([full_cal.camera(0), full_cal.camera(1), None, None, None], "m")
+        real_masks, real_info = win._masks_at_instant, QMessageBox.information
+        seen = []
+        win._masks_at_instant = lambda t, name=None: [np.ones((H, W), bool)] * N_CAM
+        QMessageBox.information = staticmethod(lambda *a, **k: seen.append(a[1]) or QMessageBox.Ok)
+        try:
+            win.act_hull.trigger()                    # 3D -> Carve Volume at This Frame
+            pump(0.2)
+        finally:
+            win._masks_at_instant, QMessageBox.information = real_masks, real_info
+            p.calibration = full_cal
+        assert "Volume needs three cameras" in seen, seen
         # Edit -> Undo: the offsets AND the calibration made at them go back, in one step
         assert win.act_undo.isEnabled()
         win.act_undo.trigger()
