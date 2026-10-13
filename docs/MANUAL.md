@@ -1429,8 +1429,8 @@ the numbers just get measured from the new starting point.
    wrong? **Camera order…** under the CAMERAS list changes it at any time: each
    camera keeps its points, offset, frame rate, lens and calibration (if another
    camera becomes camera 1 the offsets are re-measured from it — the cameras
-   stay in sync); only a 3D result is dropped (Reconstruct again). With a
-   calibration of the first cameras only, those must stay first.
+   stay in sync); only a 3D result is dropped (Reconstruct again). A camera
+   the calibration leaves out stays "not calibrated" wherever it goes.
 3. **Line them up.** The quick way: **3D → Sync Cameras (Sound / Motion)…**.
    It offers two methods and a verdict for each camera; both need no tracking
    and no calibration.
@@ -1958,9 +1958,20 @@ five pages and explains each one:
    unit. That unit becomes the unit of every 3D result. Not measured yet?
    Choose *wand lengths* and type 1: every distance then reads in wand
    lengths, and a dropped ball (page 4) tells you how long the wand is in
-   metres. The page shows how many frames each camera sees both ends in, and
-   how many frames two or more cameras share; under 10 shared frames Next stays
-   off.
+   metres. Under **Cameras to calibrate** each camera has a tick and a line:
+   how many frames it sees both ends in, and how many of them it shares with
+   the other ticked cameras. Cameras that share at least 10 frames with
+   another are ticked for you; a camera where the wand was never clicked (or
+   only on a few frames) is unticked and says so. **A camera you leave out is
+   simply not calibrated**: the calibration covers the ticked cameras, and 3D
+   later uses those (see *From several cameras to 3D*). So you can calibrate
+   the cameras that saw the wand now, and the others later by tracking the
+   wand in them and calibrating again with them ticked. Untick a camera
+   yourself to leave it out too. The page warns when a ticked camera shares
+   too few frames with the others, or when the ticked cameras split into
+   groups that never see the wand at the same time (one calibration cannot
+   join those). Under 10 frames shared by two ticked cameras, or fewer than
+   two ticked cameras, Next stays off.
 3. *The cameras* — leave the focal length on **Find it automatically** unless
    you have calibrated these exact cameras before (it works when only some of
    the cameras have a lens profile, too). Tick **Also estimate lens
@@ -1974,7 +1985,8 @@ five pages and explains each one:
    to fit). A camera that already has a
    different profile of its own is replaced only if you say yes. A shared
    profile says *the same profile as …* on its row. With a profile on every
-   camera the distortion tick is greyed out — there is nothing left for it to
+   camera of this run (the ticked ones; a camera left out says *not in this
+   run*) the distortion tick is greyed out — there is nothing left for it to
    estimate. Identical cameras still differ a little from unit to unit, so the
    wand fine-tunes the focal length of every camera that shares a profile (a
    camera with a profile of its own keeps the profile's). Measured on a test
@@ -1992,11 +2004,24 @@ five pages and explains each one:
    along +X, a point towards +Y, and a frame where all three are tracked in two
    cameras (the page suggests one). **Next** stays greyed out until the drop is
    seen by two cameras on at least 4 frames, or all three marks by two cameras
-   on that frame. *Neither* keeps camera 1's own axes, which is fine for shapes
-   and distances.
+   on that frame. *Neither* keeps the axes of the first calibrated camera
+   (camera 1 when it is ticked), which is fine for shapes and distances.
 5. *Calibrate* — press **Calibrate now**; it takes a few seconds to a minute.
-   Then read the report. (*Save calibration files…* on this page writes the
-   same files as 3D → Export Calibration.)
+   First the program checks the **cameras' timing** against the wand: if a
+   camera's offset is a few frames off (a common slip of a sync by sound or
+   by eye), the wand clicks of that camera fit the others clearly better at
+   another offset. Then the page stops and says so, camera by camera — for
+   example *"cam4: its wand clicks agree with the other cameras when its
+   offset is 120 instead of 123 (3 frames less): 81 % of its clicks agree with
+   one camera layout then (good), 30 % now (poor)"* — with two buttons: **Apply these offsets and
+   calibrate** (one Ctrl+Z after the wizard takes the offsets back, together
+   with the calibration made at them) or **Calibrate with the offsets as they
+   are**. Hand check: step through a sharp event (the wand stopping, a flash)
+   in two of those cameras — with the new offsets they show the same instant.
+   The check only suggests whole frames, only when every pair of cameras
+   agrees, and says when the wand cannot time a camera (too few frames shared
+   with the others). Then read the report. (*Save calibration files…* on this
+   page writes the same files as 3D → Export Calibration.)
 
 **Reading the report.** The top line is a verdict in plain words:
 
@@ -2019,7 +2044,11 @@ five pages and explains each one:
 - **NOT GOOD ENOUGH** — do not use it. The notes say what to fix: typically a
   wrong wand length, a camera whose wand tracking slipped, two cameras whose
   offsets are not aligned, or one camera that shares almost no frames with the
-  others. Fix that, and calibrate again.
+  others (untick it on *The wand*, or track more of the wand in it). Fix that,
+  and calibrate again.
+
+The report's per-camera table lists the cameras left out of the run as *not
+calibrated*.
 
 Two lines are worth checking by hand every time. **Camera spacing** lists the
 distance between each pair of cameras: pace it out or measure it with a tape —
@@ -2046,8 +2075,11 @@ correction, a `…_dltCoefs_README.txt` comes too and the message says so: a
 dltCoefs.csv has no room for the correction, so its numbers fit
 **lens-corrected** pixels only — raw video digitized with it in DLTdv or
 easyWand lands in the wrong place near the picture edges. The `.kcal.json`
-keeps the correction. Calibrate again whenever a camera is moved, re-zoomed,
-or replaced.
+keeps the correction. With cameras left out, the `.kcal.json` marks them *not
+calibrated*, the files for other programs hold the calibrated cameras under
+their own names, and the dltCoefs.csv has a column for each calibrated camera
+only — its README lists which camera each column is. Calibrate again whenever
+a camera is moved, re-zoomed, or replaced.
 
 **Using the calibration in another program.** The export dialog also offers,
 tick as many as you want (**Tick everything** for all): **Anipose**
@@ -2074,11 +2106,13 @@ named.
 Once every camera is tracked (the same landmark names in each), the **3D** menu
 turns the pictures into positions in space. An entry chosen too early — with
 one video, or before there is a calibration — does not fail silently: it tells
-you what it still needs. A calibration covers the cameras it was made for: add
-a camera to a calibrated project later and the calibration is kept (in the
-saved file too), but 3D needs **every** camera calibrated, so calibrate again,
-import a file that includes the new camera, or remove it again (its **×** in
-the CAMERAS panel) to get 3D back. Four steps, in this order:
+you what it still needs. A calibration covers the cameras it was made for, and
+3D uses those: **two calibrated cameras are enough**. A camera that is not
+calibrated — left out of a wand calibration, or added to the project later —
+is simply left out of 3D, and each 3D step says which cameras it left out.
+To include it, track the wand in it and calibrate again (or import a file
+that includes it). The calibration is kept in the saved project either way.
+Four steps, in this order:
 
 1. **3D → Import Calibration…** (skip this if you calibrated with the wand in
    this project — it is already in place). A calibration is a file that says
@@ -2100,7 +2134,10 @@ the CAMERAS panel) to get 3D back. Four steps, in this order:
    cameras by size where it can and asks before accepting a column whose size
    differs from the video's; a `dltCoefs.csv` records no sizes, so match its
    columns in the order your calibration software listed the cameras. It
-   refuses to put two cameras on one column. The line under the columns says
+   refuses to put two cameras on one column. Each camera's list also has
+   **not calibrated**: a file with fewer cameras than the project leaves the
+   rest not calibrated (3D then uses the others), and a `.kcal.json` that
+   left a camera out keeps it that way. The line under the columns says
    whether a lens correction was found and will be applied — and says so when
    a DLTdv project's lens correction could not be read, or a file's
    distortion lines could not be used. Cameras described the
