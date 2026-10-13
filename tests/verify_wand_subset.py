@@ -306,7 +306,18 @@ def sec_d():
     assert len(kb) == N_CAM and kb.camera(NO_WAND) is None and kb.views() == [0, 1, 3, 4]
     for v in kb.views():
         assert np.array_equal(kb.camera(v).coefs, cal_.camera(v).coefs)
-    print("D. a not-calibrated camera survives calibration.json and .kcal.json OK")
+    # (review) a calibration with nothing calibrated left saves (as no calibration) instead of failing
+    P.calibration = Calibration([None] * N_CAM, "m")
+    P.save(path)
+    assert Project.load(path).calibration is None
+    # removing the calibrated cameras one by one leaves no calibration, not a list of gaps
+    P2 = build(tag="subd2")
+    P2.calibration = Calibration([None, cal_.camera(1), None, None, None], "m")
+    P2.remove_view(1)
+    assert P2.calibration is None, P2.calibration
+    P2.save(os.path.join(SCRATCH, "wand_subset_none.kinetrace"))
+    print("D. a not-calibrated camera survives calibration.json and .kcal.json; an all-gap calibration saves "
+          "as none OK")
 
 
 def sec_e():
@@ -387,6 +398,19 @@ def sec_g():
     assert [cb.currentData() for cb in dlg._combos] == [0, 1, 2, -1, -1], [cb.currentData() for cb in dlg._combos]
     dlg._accept()
     assert dlg.result_calibration is not None and dlg.result_calibration.views() == [0, 1, 2]
+    dlg.deleteLater()
+    # (review) a saved gap calibration loses its TRAILING gaps: [c1, c2, null, c4] onto 5 cameras keeps
+    # each camera's own entry (camera 4 = entry 4), camera 5 not calibrated - never packed by size
+    short = Calibration([cal_.camera(0), cal_.camera(1), None, cal_.camera(3)], "m")
+    kp2 = os.path.join(SCRATCH, "wand_subset_short.kcal.json")
+    with open(kp2, "w", encoding="utf-8") as fh:
+        json.dump(calibio.calibration_to_kcal(short), fh)
+    dlg = v3.CalibrationDialog(None, names, [(W, H)] * N_CAM)
+    assert dlg.load(kp2)
+    assert [cb.currentData() for cb in dlg._combos] == [0, 1, -1, 3, -1], [cb.currentData() for cb in dlg._combos]
+    dlg._accept()
+    rc2 = dlg.result_calibration
+    assert rc2.views() == [0, 1, 3] and np.array_equal(rc2.camera(3).coefs, cal_.camera(3).coefs)
     dlg.deleteLater()
     pump()
     print("G. exports hold cam1, 2, 4, 5 under their names, the DLT csv says which column is which; "

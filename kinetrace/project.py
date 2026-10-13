@@ -368,6 +368,8 @@ class Project:
         if self.calibration is not None and i < len(self.calibration.cameras):
             del self.calibration.cameras[i]
             self.calibration.__dict__.pop("_probe_cache", None)     # the first two cameras may be others now
+            if self.calibration.n_calibrated == 0:                    # (I273) nothing calibrated is left
+                self.calibration = None
         self.reconstruction = None
         # removing the reference promotes the next camera: the new reference's
         # rate becomes the unit, and re-zeroing shifts the set — nothing moves

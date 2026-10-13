@@ -417,7 +417,7 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
     files["project.json"] = _json({"cameras": cams, "active_camera": project.names[project.active],
                                    "exports_on_save": list(getattr(project, "exports", []) or [])})   # (G42)
     files["state.json"] = _json(_clean_json(state))
-    if project.calibration is not None and len(project.calibration) > 0:
+    if project.calibration is not None and project.calibration.n_calibrated > 0:     # (I273) not all gaps
         arr = project.calibration.to_arrays("calib_")
         cal = json.loads(arr["calib_meta"])
         # (I273) a camera that is not calibrated: null coefficients (and null in "cams")

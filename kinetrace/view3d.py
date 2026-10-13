@@ -232,8 +232,10 @@ class CalibrationDialog(QDialog):
         # picture sizes and exactly one column matches a view's size (e.g. a
         # rig's lone 848x480 camera), in which case that column is taken.
         n_v = len(self.view_names)
-        if len(cols) < len(cal.cameras) and len(cal.cameras) == n_v:
-            # a file that already says which of THIS many cameras are not calibrated: camera i = entry i
+        if len(cols) < len(cal.cameras) <= n_v:
+            # a file that already says which cameras are not calibrated (a null): camera i = entry i, the
+            # cameras past its end not calibrated (a saved calibration does not write trailing gaps), never
+            # packed by size - that gave camera 3 camera 4's DLT (review of I273)
             default = [cols.index(i) if i in cols else -1 for i in range(n_v)]
         else:
             default = match_columns(self.view_sizes[:n_v], fcams, n_v)
