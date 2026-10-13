@@ -746,6 +746,7 @@ class View3D(QWidget):
         self._timer.setInterval(15)
         self._timer.timeout.connect(self._render)
         self.last_image: np.ndarray | None = None
+        self._last_dpr = 1.0            # the pixel density last_image was drawn at (G187)
         self._hits: dict = {}
         self._cover_thread: _CoverageThread | None = None
         self._cover_threads: list = []          # every worker until it has finished (see _start_coverage)
@@ -917,13 +918,15 @@ class View3D(QWidget):
         self.info.setText(txt)
 
     def end_screen_points(self) -> np.ndarray | None:
-        """The wand ends' (P, 2) positions on the canvas in the last picture (NaN where not drawn)."""
+        """The wand ends' (P, 2) positions on the canvas in the last picture, in screen (logical) pixels - the
+        picture itself is drawn at the display's pixel density (G187) - NaN where not drawn."""
         es = self._hits.get("ends")
         if es is None or self.last_image is None:
             return None
+        dpr = self._last_dpr
         h, w = self.last_image.shape[:2]
-        ox, oy = (self.canvas.width() - w) / 2.0, (self.canvas.height() - h) / 2.0
-        return es + np.array([ox, oy])
+        ox, oy = (self.canvas.width() - w / dpr) / 2.0, (self.canvas.height() - h / dpr) / 2.0
+        return es / dpr + np.array([ox, oy])
 
     def _pick(self, x: float, y: float, radius: float = 6.0) -> int | None:
         pts = self.end_screen_points()
@@ -968,20 +971,25 @@ class View3D(QWidget):
             self._timer.start()
 
     def _render(self) -> None:
+        # (G187) drawn at the display's pixel density: a display scaled above 100 % shows it sharp, not stretched
+        dpr = max(1.0, float(self.canvas.devicePixelRatioF()))
         w = max(64, self.canvas.width())
         h = max(64, self.canvas.height())
         hits: dict = {}
-        img = render_scene(self.scene, (w, h), self.azimuth, self.elevation, self.zoom,
-                           self.chk_mesh.isChecked(), self.chk_points.isChecked(),
+        img = render_scene(self.scene, (int(round(w * dpr)), int(round(h * dpr))), self.azimuth, self.elevation,
+                           self.zoom, self.chk_mesh.isChecked(), self.chk_points.isChecked(),
                            self.chk_cams.isChecked(), pan=tuple(self.pan),
                            show_calib=self.chk_calib.isChecked(), show_fov=self.chk_fov.isChecked(),
                            show_cover=self.chk_cover.isChecked(), hits=hits,
-                           show_pyramids=self.chk_pyr.isChecked())
+                           show_pyramids=self.chk_pyr.isChecked(), px=dpr)
         self._hits = hits
+        self._last_dpr = dpr
         self.last_image = img
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888)
-        self.canvas.setPixmap(QPixmap.fromImage(qimg.copy()))
+        pm = QPixmap.fromImage(qimg.copy())
+        pm.setDevicePixelRatio(dpr)
+        self.canvas.setPixmap(pm)
 
     def save_png(self, path: str) -> None:
         if self.last_image is None:
