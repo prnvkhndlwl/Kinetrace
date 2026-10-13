@@ -238,35 +238,24 @@ def open_writer(path: str | Path, fps: float, size: tuple[int, int]) -> tuple[cv
     raise RuntimeError("OpenCV could not open a video writer for " + path)
 
 
-class OverlayRenderer(QThread):
-    """Renders `opts.start..opts.end` of the session's video with the overlay
-    into `out_path`. Emits progress (done, total), then finished_ok(path,
-    codec) or error(message). `request_cancel` stops after the current
-    frame and deletes the partial file.
+class VideoWriteJob(QThread):
+    """Writes frames of a video, each drawn by the subclass, into `out_path` (R28: the overlay and the
+    side-by-side video had one loop in two copies). Emits progress (done, total), then
+    finished_ok(path, codec) or error(message); `request_cancel` stops after the current frame and
+    deletes the partial file. After `finished_ok`, `frames_written` is how many frames are really in the
+    file and `note` says why it is short of what was asked ("" when it is not) -- a video can end before
+    the range the session believed it had (I41, I232). A truncated file is never a result.
 
-    Built on the GUI thread: it draws from a FROZEN copy of the session
-    (`freeze_session`, I38), so edits made while it renders are not in the
-    video and cannot crash it. After `finished_ok`, `frames_written` is the
-    number of frames really in the file and `note` a sentence saying why it is
-    short of the range ("" when it is not) — a video can end before the range
-    the session believed it had (I41)."""
+    A subclass gives `_reader()` (it may refuse in words first), `_plan(reader)` -> (frames, first,
+    fps, size), `_compose(bgr, frame)`, and the sentences `_none_written(first)` /
+    `_short_sentence(reader, frames, done)` / `_error_text(exc)`."""
     progress = Signal(int, int)
     finished_ok = Signal(str, str)
     error = Signal(str)
 
-    def __init__(self, session, video_path: str, out_path: str, opts: OverlayOptions,
-                 bones: list[tuple[int, int]] | None, mask_opacity: float = 0.35):
+    def __init__(self, out_path: str):
         super().__init__()
-        self.session = freeze_session(session, opts.start, opts.end)
-        self.video_path = str(video_path)
         self.out_path = str(out_path)
-        self.opts = opts
-        # (I44) the dialog's "Skeleton bones" tick decides, not the canvas's
-        # View toggle: with the tick on, an empty list means the skeleton's bones
-        if opts.bones and not bones and hasattr(session, "bones"):
-            bones = session.bones()
-        self.bones = list(bones or [])
-        self.mask_opacity = float(mask_opacity)
         self.frames_written = 0
         self.note = ""
         self._cancel = False
@@ -279,6 +268,88 @@ class OverlayRenderer(QThread):
             Path(self.out_path).unlink(missing_ok=True)
         except OSError:
             pass
+
+    def run(self) -> None:
+        reader = vw = None
+        created = False             # the writer made / truncated out_path: ours to delete
+        try:
+            reader = self._reader()
+            frames, first, fps, size = self._plan(reader)
+            total = len(frames)
+            vw, codec = open_writer(self.out_path, fps, size)
+            created = True
+            reader.reset(first)
+            done = 0
+            for f in frames:
+                if self._cancel:
+                    break
+                bgr = reader.read(f)
+                if bgr is None:
+                    break
+                img = self._compose(bgr, f)
+                if img.shape[1] != size[0] or img.shape[0] != size[1]:
+                    img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
+                vw.write(img)
+                done += 1
+                if done % 5 == 0 or done == total:
+                    self.progress.emit(done, total)
+            vw.release()
+            vw = None
+            self.frames_written = done
+            if self._cancel:
+                self._discard()
+                self.error.emit("cancelled")
+                return
+            if done == 0:
+                # (I41) a range wholly past the frames that decode: an empty MP4 reported as
+                # "written" is worse than saying so
+                self._discard()
+                self.error.emit(self._none_written(first))
+                return
+            if done < total:
+                # (I41) the loop used to stop at the first failed read and report the REQUESTED count
+                self.note = (self.note + "; " if self.note else "") + self._short_sentence(reader, frames, done)
+                self.progress.emit(done, total)
+            self.finished_ok.emit(self.out_path, codec)
+        except Exception as e:      # noqa: BLE001
+            if vw is not None:
+                vw.release()
+                vw = None
+            if created:
+                self._discard()     # a truncated file is not a result (I232)
+            self.error.emit(self._error_text(e))
+        finally:
+            if vw is not None:
+                vw.release()
+            if reader is not None:
+                reader.release()
+
+
+class OverlayRenderer(VideoWriteJob):
+    """Renders `opts.start..opts.end` of the session's video with the overlay
+    into `out_path`. Emits progress (done, total), then finished_ok(path,
+    codec) or error(message). `request_cancel` stops after the current
+    frame and deletes the partial file.
+
+    Built on the GUI thread: it draws from a FROZEN copy of the session
+    (`freeze_session`, I38), so edits made while it renders are not in the
+    video and cannot crash it. After `finished_ok`, `frames_written` is the
+    number of frames really in the file and `note` a sentence saying why it is
+    short of the range ("" when it is not) — a video can end before the range
+    the session believed it had (I41)."""
+
+    def __init__(self, session, video_path: str, out_path: str, opts: OverlayOptions,
+                 bones: list[tuple[int, int]] | None, mask_opacity: float = 0.35):
+        super().__init__(out_path)
+        self.session = freeze_session(session, opts.start, opts.end)
+        self.video_path = str(video_path)
+        self.opts = opts
+        # (I44) the dialog's "Skeleton bones" tick decides, not the canvas's
+        # View toggle: with the tick on, an empty list means the skeleton's bones
+        if opts.bones and not bones and hasattr(session, "bones"):
+            bones = session.bones()
+        self.bones = list(bones or [])
+        self.mask_opacity = float(mask_opacity)
 
     def _output_fps(self, header_fps: float) -> float:
         """The rate the overlay plays at (I226): the caller's `opts.fps`, else the
@@ -305,74 +376,34 @@ class OverlayRenderer(QThread):
                            "measured), so the overlay cannot be timed. Set the camera's frame rate with the "
                            "fps button in the CAMERAS panel first.")
 
-    def run(self) -> None:
+    def _reader(self):
         from kinetrace.video_source import FrameReader      # the one shared frame reader (R17)
-        reader = None
-        vw = None
-        created = False             # the writer made / truncated out_path: ours to delete
-        try:
-            f0, f1 = int(self.opts.start), int(self.opts.end)
-            reader = FrameReader(self.video_path, f0)
-            cap = reader.cap
-            fps = self._output_fps(float(cap.get(cv2.CAP_PROP_FPS)))
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            sc = float(self.opts.scale)
-            size = (max(2, int(round(w * sc))), max(2, int(round(h * sc))))
-            total = max(0, f1 - f0 + 1)
-            vw, codec = open_writer(self.out_path, fps, size)
-            created = True
-            reader.reset(f0)
-            done = 0
-            for f in range(f0, f1 + 1):
-                if self._cancel:
-                    break
-                bgr = reader.read(f)
-                if bgr is None:
-                    break
-                img = draw_overlay(bgr, f, self.session, self.opts, self.bones,
-                                   mask_opacity=self.mask_opacity)
-                if img.shape[1] != size[0] or img.shape[0] != size[1]:
-                    img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
-                vw.write(img)
-                done += 1
-                if done % 5 == 0 or done == total:
-                    self.progress.emit(done, total)
-            vw.release()
-            vw = None
-            self.frames_written = done
-            if self._cancel:
-                self._discard()
-                self.error.emit("cancelled")
-                return
-            if done == 0:
-                # (I41) a range wholly past the frames that decode: an empty MP4
-                # reported as "written" is worse than saying so
-                self._discard()
-                self.error.emit(f"frame {f0} could not be decoded (the video ends before it, or the "
-                                "file is damaged there), so nothing was written. Choose a range "
-                                "inside the video.")
-                return
-            if done < total:
-                # (I41) the loop used to stop at the first failed read and report
-                # the REQUESTED count; the app shows this sentence instead
-                self.note = (f"Frame {f0 + done} could not be decoded (the video ends there, or the "
-                             f"file is damaged), so this overlay stops at frame {f0 + done - 1}: "
-                             f"{done} of {total} frames were written.")
-                self.progress.emit(done, total)
-            self.finished_ok.emit(self.out_path, codec)
-        except Exception as e:      # noqa: BLE001
-            if vw is not None:
-                vw.release()
-                vw = None
-            if created:
-                self._discard()     # a truncated file is not a result
-            self.error.emit(str(e))
-        finally:
-            if vw is not None:
-                vw.release()
-            if reader is not None:
-                reader.release()
+        return FrameReader(self.video_path, int(self.opts.start))
+
+    def _plan(self, reader):
+        f0, f1 = int(self.opts.start), int(self.opts.end)
+        cap = reader.cap
+        fps = self._output_fps(float(cap.get(cv2.CAP_PROP_FPS)))
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        sc = float(self.opts.scale)
+        size = (max(2, int(round(w * sc))), max(2, int(round(h * sc))))
+        return range(f0, f1 + 1), f0, fps, size
+
+    def _compose(self, bgr, f):
+        return draw_overlay(bgr, f, self.session, self.opts, self.bones, mask_opacity=self.mask_opacity)
+
+    def _none_written(self, first: int) -> str:
+        return (f"frame {first} could not be decoded (the video ends before it, or the file is damaged "
+                "there), so nothing was written. Choose a range inside the video.")
+
+    def _short_sentence(self, reader, frames, done: int) -> str:
+        f0 = frames[0]
+        return (f"Frame {f0 + done} could not be decoded (the video ends there, or the file is damaged), so "
+                f"this overlay stops at frame {f0 + done - 1}: {done} of {len(frames)} frames were written.")
+
+    def _error_text(self, e: BaseException) -> str:
+        return str(e)
 
 
 # ------------------------------------------------------------------ dialog
