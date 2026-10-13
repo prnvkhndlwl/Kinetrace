@@ -1969,13 +1969,22 @@ class MainWindow(QMainWindow):
                 "stands.\n\nMake one with 3D → Calibrate Cameras with a Wand, or bring one you already "
                 "have (DLTdv, easyWand, Argus or a Kinetrace .kcal.json) with 3D → Import Calibration.")
             return False
-        if len(p.calibration) != p.n_views:
+        cal = p.calibration
+        left_out = [p.name(v) for v in range(p.n_views) if cal.camera(v) is None]
+        if len(cal) > p.n_views or p.n_views - len(left_out) < 2:
             QMessageBox.information(
                 self, what,
-                f"The calibration covers {len(p.calibration)} camera(s) but the project has {p.n_views}. "
-                "Calibrate all cameras (3D → Calibrate Cameras with a Wand), import a calibration that "
-                "includes every camera, or remove the extra camera with its × in the CAMERAS panel.")
+                f"The calibration covers {p.n_views - len(left_out)} of this project's {p.n_views} cameras; "
+                f"{what} needs two or more calibrated cameras. Calibrate the cameras that see the wand "
+                "(3D → Calibrate Cameras with a Wand), or import a calibration that includes them.")
             return False
+        if left_out:
+            # (I273) 3D runs on the calibrated cameras; say which cameras are left out of it
+            self.toast.show_message(
+                f"{what}: {', '.join(left_out)} {'is' if len(left_out) == 1 else 'are'} not calibrated and "
+                "left out (3D uses the calibrated cameras). To include "
+                f"{'it' if len(left_out) == 1 else 'them'}, track the wand there and calibrate again.",
+                "info", 9000)
         return True
 
     def _reference_instant(self) -> int:
@@ -2071,7 +2080,8 @@ class MainWindow(QMainWindow):
         # 3D layer: needs several cameras, then a calibration, then a result
         p = self.project
         multi = p is not None and p.n_views > 1 and has_video and not tracking
-        has_cal = multi and p.calibration is not None and len(p.calibration) == p.n_views
+        has_cal = (multi and p.calibration is not None and len(p.calibration) <= p.n_views   # (I273) any 2+
+                   and sum(p.calibration.camera(v) is not None for v in range(p.n_views)) >= 2)
         # Import Calibration and Sync open with one video too and explain what
         # a further step needs (I115)
         live3d = has_video and not tracking and p is not None
@@ -3721,12 +3731,7 @@ class MainWindow(QMainWindow):
                    + [(("new", x), Path(x).name, "new") for x in paths])
 
         def problem(keys):
-            # a calibration of the first cameras must keep them first (Project.order_problem)
-            cal = p.calibration
-            k = len(cal) if cal is not None else 0
-            if 0 < k <= p.n_views and sorted(key[1] for key in keys[:k] if key[0] == "cam") != list(range(k)):
-                return (f"the calibration covers cameras 1-{k} only, so they must stay the first {k} cameras; "
-                        "put the new videos after them")
+            # (I273) the calibration no longer limits the order (a new camera is not calibrated)
             return None
         dlg = CameraOrderDialog(self, entries, f"Add {len(paths)} camera{'s' if len(paths) != 1 else ''}: their order",
                                 consequence="The new cameras are marked “new”. Each camera keeps its points and offset; "
@@ -3803,18 +3808,17 @@ class MainWindow(QMainWindow):
         self._gopro_soon()                       # (G145)
         self._frames_check_soon([self._views[-1]])   # (I266)
         cal = self.project.calibration
-        if cal is not None and 0 < len(cal) < self.project.n_views:
-            # the 3D menu greys out (it needs every camera calibrated): say why,
-            # and that the existing calibration is kept, not lost (I16)
+        if cal is not None and cal.n_calibrated > 0:
+            # say that the new camera is not in the calibration, and that the existing calibration
+            # is kept, not lost (I16); 3D goes on with the calibrated cameras (I273)
             QMessageBox.information(
-                self, "The calibration covers the first cameras",
-                f"This project's calibration was made for {len(cal)} camera(s); {Path(path).name} is "
+                self, "The new camera is not calibrated",
+                f"This project's calibration covers {cal.n_calibrated} camera(s); {Path(path).name} is "
                 f"camera {i + 1} and is not in it.\n\n"
-                "The calibration stays in the project and in the saved file, but 3D (Reconstruct, "
-                "Volume, the 3D view) needs every camera calibrated. Either calibrate all "
-                f"{self.project.n_views} cameras (3D → Calibrate Cameras with a Wand, or Import "
-                "Calibration with a file that includes this camera), or remove this camera again "
-                "with its × in the CAMERAS panel to use 3D again.")
+                "The calibration stays in the project and in the saved file, and 3D (Reconstruct, "
+                "Volume, the 3D view) goes on with the calibrated cameras, leaving this one out. To "
+                "include it, track the wand in it and calibrate again (3D → Calibrate Cameras with a "
+                "Wand), or Import Calibration with a file that includes this camera.")
         return True
 
     def _remove_view(self, i: int):
@@ -7608,21 +7612,20 @@ class MainWindow(QMainWindow):
 
     def _cal_cam(self, v: int):
         """Camera `v`'s calibration, or None when the calibration does not cover
-        it -- a camera added after calibrating (G25). Calibration cameras are in
-        view order, and a camera added later is appended after them."""
+        it -- a camera added after calibrating (G25) or left out of a wand
+        calibration of some of the cameras (I273)."""
         p = self.project
         cal = p.calibration if p is not None else None
-        if cal is None or not (0 <= v < min(len(cal.cameras), p.n_views)):
+        if cal is None or not 0 <= v < p.n_views:
             return None
-        return cal.cameras[v]
+        return cal.camera(v)
 
     def _guides_ready(self) -> bool:
         """Two or more calibrated cameras: the guides and the ◇ predictions work
-        among them, even when a camera added later is not calibrated (G25) -- the
-        3D entries still need every camera (`_need_calibration`)."""
+        among them (G25, I273)."""
         p = self.project
         return (p is not None and p.n_views > 1 and p.calibration is not None
-                and min(len(p.calibration.cameras), p.n_views) >= 2)
+                and sum(p.calibration.camera(v) is not None for v in range(p.n_views)) >= 2)
 
     def _epipolar_guides(self, pid: int) -> list:
         """[(polyline (M, 2) native px of the working camera, colour, camera name), ...]: where
@@ -9737,6 +9740,7 @@ class MainWindow(QMainWindow):
     def _undo_snap(self, snap):
         self.__dict__["_undo_main"] = snap
         self.__dict__["_undo_extra"] = {}
+        self.__dict__["_undo_timing"] = None     # (I274) offsets (+ calibration) of the same step
 
     @property
     def _undo_extra(self) -> dict:
@@ -9763,15 +9767,91 @@ class MainWindow(QMainWindow):
         self._refresh_companions()
         return n
 
+    def _apply_offsets_undoable(self, offsets) -> None:
+        """(I274; from I271's parked branch) Every camera's offset at once as ONE Ctrl+Z step: the wand
+        wizard's "Apply these offsets and calibrate". The step also keeps the calibration (and wand
+        run) of that moment: the wizard's result is then made AT the new offsets, so taking the
+        offsets back takes back the calibration fitted to them too. The 3D result made with the old
+        timing is dropped."""
+        p = self.project
+        if p is None or self.session is None:
+            return
+        before, had_3d = list(p.offsets), p.reconstruction is not None
+        for i, o in enumerate(offsets):
+            p.set_offset(i, float(o))
+        if all(abs(a - b) <= 1e-12 for a, b in zip(before, p.offsets)):
+            return
+        # a second Apply in the same wizard (nothing else edited since: any edit resets the record)
+        # extends the step, so the one Ctrl+Z goes back to before the first
+        prev = self.__dict__.get("_undo_timing")
+        self._set_undo_point(self.session.snapshot())
+        rec = prev if prev is not None else {
+            "offsets": before, "calibration": p.calibration, "wand_result": self._wand_result}
+        # what the step left behind: Ctrl+Z takes it back only while it is still so (a hand edit of an
+        # offset, or another calibration, since then is the user's and stays - review of I274)
+        rec["after"] = list(p.offsets)
+        rec["cal_after"] = p.calibration
+        self.__dict__["_undo_timing"] = rec
+        p.dirty = True
+        self._after_retime(had_3d)
+        self._refresh_companions()
+        self._refresh_cameras()
+
+    def _undo_timing_step(self, timing: dict) -> bool | None:
+        """Put back the offsets (and calibration) an `_apply_offsets_undoable` step changed. None (and
+        nothing changed) when the offsets or the calibration were changed again since."""
+        p = self.project
+        if p is None or len(timing["offsets"]) != p.n_views:
+            return False                  # the camera set changed since: the step no longer fits
+        after = timing.get("after")
+        if (after is not None and (len(after) != p.n_views
+                                   or any(abs(a - b) > 1e-9 for a, b in zip(after, p.offsets))
+                                   or p.calibration is not timing.get("cal_after"))):
+            return None
+        had_3d = p.reconstruction is not None
+        for i, o in enumerate(timing["offsets"]):
+            p.set_offset(i, float(o))
+        p.calibration = timing["calibration"]
+        self._wand_result = timing["wand_result"]
+        p.dirty = True
+        self._after_retime(had_3d)
+        self._refresh_cameras()
+        self._refresh_guides()
+        return True
+
     def _undo_run(self):
         if self._undo_snap is None or self.session is None or self.state != READY:
             return
+        timing = self.__dict__.get("_undo_timing")
         self.session.restore(self._undo_snap)
         p = self.project
         for v, snap in self._undo_extra.items():
             if p is not None and 0 <= v < p.n_views and v != p.active:
                 p.sessions[v].restore(snap)
         self._undo_snap = None
+        undone = self._undo_timing_step(timing) if timing is not None else False
+        if undone is None:
+            self._refresh_companions()
+            self.act_undo.setEnabled(False)
+            self._refresh_point_list()
+            self._refresh_overlay()
+            self._update_frame_label()
+            self._apply_state()
+            self.statusBar().showMessage(
+                "The offsets or the calibration were changed again after 'Apply these offsets': Undo leaves "
+                "them as they are now", 8000)
+            return
+        if undone:
+            self._refresh_companions()
+            self.act_undo.setEnabled(False)
+            self._refresh_point_list()
+            self._refresh_overlay()
+            self._update_frame_label()
+            self._apply_state()
+            self.statusBar().showMessage(
+                "Restored the camera offsets, and the calibration made from them, from before "
+                "'Apply these offsets'", 8000)
+            return
         self._refresh_companions()
         self.act_undo.setEnabled(False)
         self._refresh_point_list()
@@ -10983,7 +11063,8 @@ class MainWindow(QMainWindow):
         self._apply_state()
         self._guides_on()
         self.toast.show_message(
-            f"Calibration loaded for {p.n_views} cameras ({p.calibration.source}). " + self.GUIDES_HINT
+            f"Calibration loaded for {p.calibration.n_calibrated} of {p.n_views} cameras "      # (I273)
+            f"({p.calibration.source}). " + self.GUIDES_HINT
             + " Next: <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3).", "info", 14000)
 
     GUIDES_HINT = ("Press <b>N</b> (＋ Add) and click a point in one camera: the other cameras show a dashed line "
@@ -11226,13 +11307,17 @@ class MainWindow(QMainWindow):
         if self.state != READY:
             return
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
-        wiz = WandWizard(self, p, start)
+        wiz = WandWizard(self, p, start, apply_offsets=self._apply_offsets_undoable)      # (I274)
         accepted = wiz.exec() == QDialog.Accepted
         self._refresh_cameras()          # its lens rows may have changed the lenses, accepted or not (G177)
         if not accepted or wiz.result_calibration is None:
             return
         p.calibration = wiz.result_calibration
         self._wand_result = (wiz.result, wiz.gravity)
+        rec = self.__dict__.get("_undo_timing")
+        if rec is not None and rec.get("after") is not None and all(
+                abs(a - b) <= 1e-9 for a, b in zip(rec["after"], p.offsets)):
+            rec["cal_after"] = p.calibration     # (I274) made AT the applied offsets: part of the same step
         self._drop_reconstruction("a new calibration was made")          # (I242)
         p.dirty = True
         self._apply_state()
@@ -11513,7 +11598,11 @@ class MainWindow(QMainWindow):
         words = {"sharp": "well determined", "weak": "weakly determined",
                  "flat": "flat: the landmarks do not move enough to time it -- do not trust",
                  "none": "unchanged: shares no landmark with another camera here"}
-        rows = "\n".join(f"  {p.name(i)}: {p.offsets[i]:+.3f} → {offs[i]:+.3f}   ({words.get(per_view.get(i), '')})"
+        def _why(i):          # (I273) a camera that is not calibrated has no 3D to be timed by
+            if p.calibration.camera(i) is None:
+                return "unchanged: not calibrated"
+            return words.get(per_view.get(i), "")
+        rows = "\n".join(f"  {p.name(i)}: {p.offsets[i]:+.3f} → {offs[i]:+.3f}   ({_why(i)})"
                          for i in range(p.n_views) if i)
         # The estimator always returns SOME number; the report says whether the
         # tracks actually support it (a flat residual surface once produced
@@ -11572,7 +11661,8 @@ class MainWindow(QMainWindow):
         from kinetrace.calib import reconstruction_report
         widths = [s.width for s in p.sessions if s.width] or [1920]
         heights = [s.height for s in p.sessions if s.height] or [0]
-        rep = reconstruction_report(r, p.n_views, float(max(widths)), float(max(heights)))     # long side (I250)
+        n_cal = sum(p.calibration.camera(v) is not None for v in range(p.n_views))         # (I273)
+        rep = reconstruction_report(r, n_cal, float(max(widths)), float(max(heights)))     # long side (I250)
         self._recon_report = rep
         self._update_disagreement()             # per-camera disagreement onto the timeline
         self._refresh_guides()
@@ -11681,6 +11771,8 @@ class MainWindow(QMainWindow):
             seg_name = s.segments[k].name
         t = self._reference_instant()         # the hull cache is keyed by the reference instant (I114)
         masks = self._masks_at_instant(t, seg_name)
+        # (I273) a camera that is not calibrated cannot carve: its silhouette does not count
+        masks = [m if p.calibration.camera(c) is not None else None for c, m in enumerate(masks)]
         n_masks = sum(1 for m in masks if m is not None)
         if n_masks < 3:
             # Two silhouettes carve a sliver the full depth of the intersection
@@ -11689,7 +11781,7 @@ class MainWindow(QMainWindow):
             if not quiet:
                 QMessageBox.information(
                     self, "Volume needs three cameras",
-                    f"Only {n_masks} camera(s) have a silhouette at this instant. A volume carved from "
+                    f"Only {n_masks} calibrated camera(s) have a silhouette at this instant. A volume carved from "
                     "two silhouettes is a long sliver along the line between the cameras -- its size "
                     "is not the animal's. Segment the animal in at least THREE cameras that look at it "
                     "from clearly different directions, then carve again.")
@@ -11706,7 +11798,7 @@ class MainWindow(QMainWindow):
                 "to look.", "warn", 7000)
             return
         def work():
-            cams = p.calibration.cameras
+            cams = p.calibration.padded(p.n_views)          # (I273) one per camera, None = not calibrated
             span = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) if len(pts) > 1 else 0.0
             margin = max(2.0 * span, 0.05)
             cut_off = False
@@ -11800,8 +11892,9 @@ class MainWindow(QMainWindow):
                            if a in idx and b in idx]
             scene.unit = r.unit
         if p.calibration is not None:
-            scene.cameras = np.array([c.center() for c in p.calibration.cameras])
-            scene.camera_names = list(p.names)
+            views = [v for v in p.calibration.views() if v < p.n_views]      # (I273) calibrated cameras
+            scene.cameras = np.array([p.calibration.camera(v).center() for v in views]).reshape(-1, 3)
+            scene.camera_names = [p.name(v) for v in views]
         if t in self._hull_cache:
             verts, faces, h = self._hull_cache[t]
             scene.mesh = (verts, faces)

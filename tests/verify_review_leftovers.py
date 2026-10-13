@@ -813,11 +813,12 @@ def _r14():
     one(12, "fractional offsets (the observations are interpolated, I253)")
     p.set_offset(1, 0.0)
     p.set_offset(2, 0.0)
-    # two calibrated cameras are enough for the hand snap, not for the default re-track rule
+    # two calibrated cameras are enough for the hand snap, and (I273) for the default re-track rule too
     full = p.calibration
     p.calibration = Calibration(full.cameras[:2], "m", "two")
     try:
-        check(retrack.ray_target(p, 0, "M", 14) is None, "the default rule still needs EVERY camera calibrated")
+        got2 = retrack.ray_target(p, 0, "M", 14)
+        check(got2 is not None and got2[1] == 1, "(I273) the default rule uses the calibrated cameras (here one)")
         one(14, "two calibrated cameras of three (one line: onto it, not along it)", on_truth=False)
     finally:
         p.calibration = full

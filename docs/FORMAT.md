@@ -239,6 +239,11 @@ convention they were fitted in: `pixel_origin` 1 = MATLAB pixels (DLTdv,
 easyWand), 0 = OpenCV; `y_flip` = y counted up from the bottom edge;
 `undistort` = the lens correction applied to raw pixels before the DLT
 (`none`, `opencv` with K / dist / optional P, or `lwm` with control points).
+A camera the calibration does not cover (left out of a wand calibration) is
+`null` in both `cams` and `coefs`, at its place; cameras after the last
+entry are not calibrated either (a camera added after calibrating). 3D uses
+the calibrated cameras. A `*.kcal.json` marks such a camera `null` in its
+`cameras` list the same way.
 To hand the cameras to another program, use **3D → Export Calibration**
 (Anipose, OpenCV, MATLAB, Blender, DLTdv — converted and checked), not this
 file.

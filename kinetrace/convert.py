@@ -71,13 +71,14 @@ def _sizes(values, n: int):
 def cmd_calibration(a) -> int:
     from kinetrace import calibio
     cal = calibio.load_calibration(a.input)
+    cams = [cal.camera(v) for v in cal.views()]          # (I273) a .kcal.json may leave cameras out
     if a.pixels:
         po, flip = PIXELS[a.pixels]
-        for c in cal.cameras:
+        for c in cams:
             c.pixel_origin, c.y_flip = po, flip
-    sizes = _sizes(a.size, len(cal.cameras))
+    sizes = _sizes(a.size, len(cams))
     if sizes:
-        for c, (w, h) in zip(cal.cameras, sizes):
+        for c, (w, h) in zip(cams, sizes):
             c.width, c.height = w, h
     to = a.to or _guess(a.output, CAL_FORMATS, {".kcal.json": "kcal", ".toml": "anipose", ".yml": "opencv-yaml",
                                                 ".yaml": "opencv-yaml", ".json": "opencv-json", ".mat": "matlab",
@@ -86,11 +87,11 @@ def cmd_calibration(a) -> int:
         Path(a.output).write_text(json.dumps(calibio.calibration_to_kcal(cal), indent=1), encoding="utf-8")
     elif to == "dlt":
         calibio.dlt_csv_matlab(cal, a.output)
-        if any(type(c.undistort).__name__ != "NoUndistort" for c in cal.cameras):
+        if any(type(c.undistort).__name__ != "NoUndistort" for c in cams):
             _say("note: these cameras have a lens correction a dltCoefs.csv cannot hold: its coefficients fit "
                  "lens-corrected pixels only")
     else:
-        if any(c.width <= 0 or c.height <= 0 for c in cal.cameras):
+        if any(c.width <= 0 or c.height <= 0 for c in cams):
             raise Failure(f"{Path(a.input).name} does not record the cameras' picture sizes (a dltCoefs.csv "
                           "never does): give --size WIDTHxHEIGHT, once for all cameras or once per camera")
         names = a.names.split(",") if a.names else None
@@ -99,7 +100,7 @@ def cmd_calibration(a) -> int:
          "matlab": calibio.write_matlab, "blender": calibio.write_blender}[to](models, a.output)
         for n in models.notes:
             _say("note:", n)
-    _say(f"wrote {a.output} ({CAL_FORMATS[to]}, {len(cal.cameras)} cameras)")
+    _say(f"wrote {a.output} ({CAL_FORMATS[to]}, {len(cams)} cameras)")
     return 0
 
 
@@ -163,11 +164,12 @@ def cmd_points3d(a) -> int:
         # through the same models `convert calibration` writes for this calibration (mirrored in Z
         # for a left-handed easyWand / DLTdv world, the file's origin for a K + R/t rig)
         cal = calibio.load_calibration(a.calibration)
-        sizes = _sizes(a.size, len(cal.cameras))
+        cams = [cal.camera(v) for v in cal.views()]
+        sizes = _sizes(a.size, len(cams))
         if sizes:
-            for c, (w, h) in zip(cal.cameras, sizes):
+            for c, (w, h) in zip(cams, sizes):
                 c.width, c.height = w, h
-        if any(c.width <= 0 or c.height <= 0 for c in cal.cameras):
+        if any(c.width <= 0 or c.height <= 0 for c in cams):
             raise Failure(f"{Path(a.calibration).name} does not record the cameras' picture sizes: give --size "
                           "WIDTHxHEIGHT, once for all cameras or once per camera")
         models = calibio.to_models(cal)
@@ -313,8 +315,11 @@ def _project_lines(path) -> tuple[list[str], list[str]]:
     if proj.calibration is not None:
         lines.append(f"  calibration: {len(proj.calibration)} camera(s), unit {proj.calibration.unit or '?'}, "
                      f"from {proj.calibration.source or '?'}")
-        if len(proj.calibration) != proj.n_views:
+        left = [proj.name(v) for v in range(proj.n_views) if proj.calibration.camera(v) is None]
+        if len(proj.calibration) > proj.n_views:
             warn.append(f"the calibration has {len(proj.calibration)} cameras, the project {proj.n_views}")
+        elif left:
+            warn.append(f"not calibrated (left out of 3D): {', '.join(left)}")
     if proj.reconstruction is not None:
         r = proj.reconstruction
         lines.append(f"  3D: {len(r.names)} landmark(s), reference frames {r.t0} - {r.t0 + r.n_frames - 1}")
@@ -349,7 +354,8 @@ def _describe(path: str) -> tuple[list[str], list[str]]:
                 f"{imp.xy.shape[1]} row(s), {n} position(s)"] + imp.notes, []
     cal = calibio.load_calibration(path)
     lines = [f"calibration ({cal.source or p.name}): {len(cal.cameras)} camera(s), unit {cal.unit or '?'}"]
-    lines += [f"  camera {i + 1}: {c.width}x{c.height}, pixels from {c.pixel_origin:g}"
+    lines += [f"  camera {i + 1}: not calibrated" if c is None else
+              f"  camera {i + 1}: {c.width}x{c.height}, pixels from {c.pixel_origin:g}"
               f"{', y from the bottom' if c.y_flip else ''}, lens correction: {getattr(c.undistort, 'kind', 'none')}"
               for i, c in enumerate(cal.cameras)]
     return lines, cal.notes

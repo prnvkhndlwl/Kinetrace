@@ -62,7 +62,9 @@ def match_columns(view_sizes, file_cameras, n_views: int) -> list[int]:
     take the columns of that size in order, and every camera left over takes
     the next column nobody has taken -- so a file with no sizes is simply
     column i for camera i. The old rule only accepted a size hit that was not
-    another camera's identity default, which in a swap is always the case."""
+    another camera's identity default, which in a swap is always the case.
+    (I273) A camera left over when every column is taken gets -1: not calibrated
+    (it used to share the last column, which the dialog then refused)."""
     n_cols = len(file_cameras)
     out: list[int | None] = [None] * n_views
     taken: set[int] = set()
@@ -87,7 +89,7 @@ def match_columns(view_sizes, file_cameras, n_views: int) -> list[int]:
     spare = [k for k in range(n_cols) if k not in taken]
     for i in range(n_views):                        # the rest: the next free column
         if out[i] is None:
-            out[i] = spare.pop(0) if spare else min(i, n_cols - 1)
+            out[i] = spare.pop(0) if spare else -1
     return [int(k) for k in out]
 
 
@@ -206,12 +208,15 @@ class CalibrationDialog(QDialog):
         # K + R/t cameras (Anipose, OpenCV, MATLAB cameras) are always OpenCV pixels;
         # from_krt is the only importer that moves the origin, so it marks them
         self._self_described = low.endswith((".json", ".txt")) or cal.origin_shift is not None
-        if cal.cameras:
+        # (I273) the file's calibrated cameras (a .kcal.json may leave cameras out: null)
+        cols = cal.views()
+        fcams = [cal.camera(k) for k in cols]
+        if fcams:
             # (I171) ALWAYS take the importer's own convention: a self-described file locks it, and
             # a file that is not (dltCoefs.csv, easyWand, a DLTdv project: MATLAB's 1-based pixels)
             # must RESET it -- a previous self-described file left OpenCV's selected, and the
             # next dltCoefs.csv was then imported 0-based: the I96 one-pixel error
-            c0 = cal.cameras[0]
+            c0 = fcams[0]
             match = [k for k, (_, o, f) in enumerate(CONVENTIONS) if o == c0.pixel_origin and f == c0.y_flip]
             self.conv.setCurrentIndex(match[0] if match else (2 if c0.pixel_origin == 0.0 else 0))
         self.conv.setEnabled(not self._self_described)
@@ -226,24 +231,36 @@ class CalibrationDialog(QDialog):
         # Default mapping: column i for camera i -- unless the file records
         # picture sizes and exactly one column matches a view's size (e.g. a
         # rig's lone 848x480 camera), in which case that column is taken.
-        default = match_columns(self.view_sizes[:len(self.view_names)], cal.cameras, len(self.view_names))
+        n_v = len(self.view_names)
+        if len(cols) < len(cal.cameras) <= n_v:
+            # a file that already says which cameras are not calibrated (a null): camera i = entry i, the
+            # cameras past its end not calibrated (a saved calibration does not write trailing gaps), never
+            # packed by size - that gave camera 3 camera 4's DLT (review of I273)
+            default = [cols.index(i) if i in cols else -1 for i in range(n_v)]
+        else:
+            default = match_columns(self.view_sizes[:n_v], fcams, n_v)
         for i, nm in enumerate(self.view_names):
             self.grid.addWidget(QLabel(nm), i + 1, 0)
             cb = QComboBox()
-            for k, c in enumerate(cal.cameras):
+            for k, c in zip(cols, fcams):
                 size = f" ({c.width}×{c.height})" if c.width else ""
-                cb.addItem(f"cam {k + 1}{size}")
-            cb.setCurrentIndex(default[i])
-            cb.setToolTip("Which column of the file is this camera. The sizes in brackets are the "
-                          "file's own record of each camera's picture -- match them to the videos."
-                          if any(c.width for c in cal.cameras) else
-                          "Which column of the file is this camera. The file records no picture sizes: "
-                          "use the order your calibration software listed the cameras in.")
+                cb.addItem(f"cam {k + 1}{size}", k)
+            cb.addItem("not calibrated", -1)          # (I273) left out of 3D
+            cb.setCurrentIndex(default[i] if default[i] >= 0 else cb.count() - 1)
+            cb.setToolTip(("Which column of the file is this camera. The sizes in brackets are the "
+                           "file's own record of each camera's picture -- match them to the videos."
+                           if any(c.width for c in fcams) else
+                           "Which column of the file is this camera. The file records no picture sizes: "
+                           "use the order your calibration software listed the cameras in.")
+                          + " \"not calibrated\" leaves the camera out of 3D.")
             self.grid.addWidget(cb, i + 1, 1)
             self._combos.append(cb)
-        und = {c.undistort.kind for c in cal.cameras}
-        parts = [f"{len(cal.cameras)} camera(s) in the file, {len(self.view_names)} in the project."]
-        if not any(c.width for c in cal.cameras):
+        und = {c.undistort.kind for c in fcams}
+        parts = [f"{len(fcams)} camera(s) in the file, {len(self.view_names)} in the project."]
+        if len(fcams) < len(self.view_names):
+            parts.append("A camera the file does not cover is marked \"not calibrated\": 3D uses the "
+                         "calibrated cameras and leaves it out.")
+        if not any(c.width for c in fcams):
             parts.append("This file does not record picture sizes: match the columns by the order your "
                          "calibration software listed the cameras.")
         notes = list(getattr(cal, "notes", []) or [])
@@ -266,23 +283,24 @@ class CalibrationDialog(QDialog):
         parts += notes
         if cal.unit:
             parts.append(f"World unit: {cal.unit}.")
-        rm = [c.rmse for c in cal.cameras if np.isfinite(c.rmse)]
+        rm = [c.rmse for c in fcams if np.isfinite(c.rmse)]
         if rm:
             parts.append(f"Calibration RMSE per camera: {', '.join(f'{r:.2f}' for r in rm)} px.")
         self.info.setText(" ".join(parts))
-        self.buttons.button(QDialogButtonBox.Ok).setEnabled(len(cal.cameras) >= 2)
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(len(fcams) >= 2)
         return True
 
     def _accept(self) -> None:
         if self._loaded is None:
             return
         from PySide6.QtWidgets import QMessageBox
-        chosen = [cb.currentIndex() for cb in self._combos]
+        chosen = [int(cb.currentData()) for cb in self._combos]     # the file's entry, -1 = not calibrated
         # Two project cameras on one column is never right: the same DLT would
         # place both cameras at the same spot and the 3D is garbage with a
         # perfectly normal-looking residual. Refuse, do not warn.
-        if len(set(chosen)) != len(chosen):
-            dup = sorted({k for k in chosen if chosen.count(k) > 1})
+        used = [k for k in chosen if k >= 0]
+        if len(set(used)) != len(used):
+            dup = sorted({k for k in used if used.count(k) > 1})
             QMessageBox.warning(
                 self, "Two cameras share a column",
                 "Column(s) " + ", ".join(f"cam {k + 1}" for k in dup) + " of the file are assigned to "
@@ -292,8 +310,16 @@ class CalibrationDialog(QDialog):
         # A size mismatch between a column and the video it is assigned to is
         # the usual sign of a wrong mapping (e.g. a rig of five 1920x1080
         # cameras and one 848x480). Say which ones, and let the user decide.
+        if len(used) < 2:
+            QMessageBox.warning(
+                self, "Two cameras are needed",
+                "Give at least two cameras of this project a column of the file: 3D needs two "
+                "calibrated cameras.")
+            return
         mism = []
         for i, k in enumerate(chosen):
+            if k < 0:
+                continue
             src = self._loaded.cameras[k]
             if i < len(self.view_sizes) and src.width and src.height:
                 w, h = self.view_sizes[i]
@@ -311,6 +337,9 @@ class CalibrationDialog(QDialog):
         label, origin, flip = CONVENTIONS[self.conv.currentIndex()]
         cams = []
         for i, k in enumerate(chosen):
+            if k < 0:                                   # (I273) not calibrated
+                cams.append(None)
+                continue
             src = self._loaded.cameras[k]
             w, h = self.view_sizes[i] if i < len(self.view_sizes) else (src.width, src.height)
             if getattr(self, "_self_described", False):

@@ -56,7 +56,7 @@ class CameraFacts:
     def calibration_text(self) -> str:
         if self.calibrated is None:
             return "no calibration yet"
-        return "calibrated" if self.calibrated else f"not covered ({self.n_calibrated} cameras calibrated)"
+        return "calibrated" if self.calibrated else f"not calibrated ({self.n_calibrated} cameras are)"
 
 
 def camera_facts(project, infos) -> list[CameraFacts]:
@@ -66,7 +66,7 @@ def camera_facts(project, infos) -> list[CameraFacts]:
     from kinetrace.video_source import display_rotation
     out = []
     cal = getattr(project, "calibration", None)
-    n_cal = len(cal) if cal is not None else 0
+    n_cal = cal.n_calibrated if cal is not None else 0
     for v in range(project.n_views):
         s = project.sessions[v]
         info = infos[v] if v < len(infos) else None
@@ -82,7 +82,7 @@ def camera_facts(project, infos) -> list[CameraFacts]:
                 f.lens_state, f.lens_note = "unused", (why[0].upper() + why[1:] if why else "")
             else:
                 f.lens_state, f.lens_note = "ok", fitted.summary()
-        f.calibrated = None if cal is None else v < n_cal
+        f.calibrated = None if cal is None else cal.camera(v) is not None      # (I273) any cameras
         f.n_calibrated = n_cal
         out.append(f)
     return out

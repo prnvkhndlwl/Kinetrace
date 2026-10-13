@@ -44,7 +44,7 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_onbody_rules", "verify_sync",
        "verify_timeline_events", "verify_scrub", "verify_multicam", "verify_3d_gui", "verify_ui_focus",
        "verify_annotate", "verify_display", "verify_render", "verify_segment_panel", "verify_point_menu",
-       "verify_wand_gui", "verify_lens_gui", "verify_body_gui", "verify_sweep_fixes", "verify_crashlog", "verify_update", "verify_downloads",
+       "verify_wand_gui", "verify_wand_subset", "verify_lens_gui", "verify_body_gui", "verify_sweep_fixes", "verify_crashlog", "verify_update", "verify_downloads",
        "verify_spots", "verify_alltracker_mps", "verify_install_paths", "verify_winapp",
        # the 2026-10-02 code review's regression checks (each fails on the code before its fixes)
        "verify_review_persist", "verify_review_data", "verify_review_3d", "verify_review_calib",

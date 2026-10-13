@@ -417,10 +417,12 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
     files["project.json"] = _json({"cameras": cams, "active_camera": project.names[project.active],
                                    "exports_on_save": list(getattr(project, "exports", []) or [])})   # (G42)
     files["state.json"] = _json(_clean_json(state))
-    if project.calibration is not None and len(project.calibration) > 0:
+    if project.calibration is not None and project.calibration.n_calibrated > 0:     # (I273) not all gaps
         arr = project.calibration.to_arrays("calib_")
         cal = json.loads(arr["calib_meta"])
-        cal["coefs"] = np.asarray(arr["calib_coefs"], np.float64).tolist()
+        # (I273) a camera that is not calibrated: null coefficients (and null in "cams")
+        cal["coefs"] = [None if not np.isfinite(row).any() else row.tolist()
+                        for row in np.asarray(arr["calib_coefs"], np.float64)]
         cal["notes"] = list(getattr(project.calibration, "notes", []) or [])
         files["calibration.json"] = _json(_clean_json(cal))
     if any(l is not None for l in project.lenses):
@@ -1846,13 +1848,16 @@ def _read_calibration(src: _Source):
     if not isinstance(c, dict):
         raise ProjectFileError("calibration.json: expected the calibration's settings")
     try:
-        coefs = np.asarray(c.pop("coefs"), np.float64)
+        rows = c.pop("coefs")
+        if isinstance(rows, list):                       # (I273) null = a camera that is not calibrated
+            rows = [[np.nan] * 11 if r is None else r for r in rows]
+        coefs = np.asarray(rows, np.float64)
     except (KeyError, TypeError, ValueError):
         raise ProjectFileError("calibration.json: 'coefs' missing or not 11 numbers per camera") from None
     with _parsing("calibration.json"):
         notes = c.pop("notes", [])
         for cam in c.get("cams") or []:
-            if cam.get("rmse") is None:                  # NaN is written as null
+            if cam is not None and cam.get("rmse") is None:      # NaN is written as null
                 cam["rmse"] = float("nan")
         cal = Calibration.from_arrays({"calib_coefs": coefs, "calib_meta": json.dumps(c)}, "calib_")
         if cal is not None:

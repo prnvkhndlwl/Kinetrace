@@ -255,9 +255,9 @@ assert win._add_view(cam3)
 pump(0.2)
 sc = p.sessions[2]
 assert [q.name for q in sc.points] == names_a, "the new camera has the shared list, in the same order"
-# (G25) the two calibrated cameras keep their guides; the new one has none and 3D still waits for it
+# (G25) the two calibrated cameras keep their guides; the new one has none; (I273) 3D runs on the two
 assert win._guides_ready() and win._cal_cam(2) is None and win._cal_cam(1) is not None
-assert win._need_calibration("test") is False, "3D still needs every camera calibrated"
+assert win._need_calibration("test") is True, "(I273) 3D runs on the calibrated cameras"
 win._remove_view(2)
 pump(0.2)
 assert win._guides_ready()

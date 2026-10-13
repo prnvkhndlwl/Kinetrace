@@ -465,11 +465,16 @@ class CameraCalibration:
 
 
 class Calibration:
-    """The cameras of a project, in VIEW order, plus the world unit."""
+    """The cameras of a project, in VIEW order, plus the world unit.
 
-    def __init__(self, cameras: list[CameraCalibration] | None = None, unit: str = "",
+    (I273) A camera the calibration does not cover is `None` in `cameras` (a wand calibration of
+    some of the cameras), and so is every camera past the end of the list (a camera added after
+    calibrating, G25). Read a camera with `camera(v)`, never `cameras[v]`; `views()` are the
+    calibrated cameras. `len()` counts the slots, calibrated or not."""
+
+    def __init__(self, cameras: list[CameraCalibration | None] | None = None, unit: str = "",
                  source: str = ""):
-        self.cameras: list[CameraCalibration] = list(cameras or [])
+        self.cameras: list[CameraCalibration | None] = list(cameras or [])
         self.unit = unit            # "m", "mm", … purely a label for exports
         self.source = source        # where it came from (file name), for the UI
         # set by `from_krt`: the world origin was moved by this vector (old-frame
@@ -483,6 +488,26 @@ class Calibration:
 
     def __len__(self) -> int:
         return len(self.cameras)
+
+    def camera(self, v: int) -> CameraCalibration | None:
+        """Camera `v`'s calibration, or None when it is not calibrated."""
+        return self.cameras[v] if 0 <= v < len(self.cameras) else None
+
+    def views(self) -> list[int]:
+        """The calibrated cameras' indices, in camera order."""
+        return [k for k, c in enumerate(self.cameras) if c is not None]
+
+    @property
+    def n_calibrated(self) -> int:
+        return sum(c is not None for c in self.cameras)
+
+    def covers(self, n_views: int) -> bool:
+        """Every one of `n_views` cameras is calibrated."""
+        return len(self.cameras) >= n_views and all(c is not None for c in self.cameras[:n_views])
+
+    def padded(self, n_views: int) -> list[CameraCalibration | None]:
+        """One slot per camera of an `n_views` project (None = not calibrated)."""
+        return [self.camera(v) for v in range(n_views)]
 
     # ---- files ----------------------------------------------------------
     @staticmethod
@@ -743,6 +768,9 @@ class Calibration:
         T[:3, 3] = o
         cams = []
         for k, cam in enumerate(self.cameras):
+            if cam is None:                     # (I273) not calibrated: stays so
+                cams.append(None)
+                continue
             P = dlt_matrix(cam.coefs) @ T
             den = float(P[2, 3])
             if abs(den) <= 1e-9 * float(np.linalg.norm(P[2, :3])) * max(1.0, float(np.linalg.norm(o))):
@@ -761,15 +789,23 @@ class Calibration:
 
     # ---- arrays form (the project file stores it as calibration.json) -----
     def to_arrays(self, prefix: str = "calib_") -> dict:
-        if not self.cameras:
+        """(I273) A camera that is not calibrated is a NaN row of coefficients and a null in "cams";
+        not-calibrated cameras at the end are left out (a calibration of the first k cameras is
+        written as it always was)."""
+        cams = list(self.cameras)
+        while cams and cams[-1] is None:
+            cams.pop()
+        if not cams:
             return {}
         meta = {"unit": self.unit, "source": self.source,
-                "cams": [{"width": c.width, "height": c.height, "pixel_origin": c.pixel_origin,
+                "cams": [None if c is None else
+                         {"width": c.width, "height": c.height, "pixel_origin": c.pixel_origin,
                           "y_flip": c.y_flip, "rmse": c.rmse, "undistort": c.undistort.to_json()}
-                         for c in self.cameras]}
+                         for c in cams]}
         if self.origin_shift is not None:
             meta["origin_shift"] = np.asarray(self.origin_shift, np.float64).tolist()
-        return {f"{prefix}coefs": np.stack([c.coefs for c in self.cameras]).astype(np.float64),
+        return {f"{prefix}coefs": np.stack([np.full(11, np.nan) if c is None else c.coefs
+                                            for c in cams]).astype(np.float64),
                 f"{prefix}meta": json.dumps(meta)}
 
     @staticmethod
@@ -782,6 +818,9 @@ class Calibration:
         cams = []
         for i, L in enumerate(coefs):
             d = (meta.get("cams") or [{}] * len(coefs))[i] if i < len(meta.get("cams", [])) else {}
+            if d is None or not np.isfinite(L).any():      # (I273) a camera that is not calibrated
+                cams.append(None)
+                continue
             cams.append(CameraCalibration(L.copy(), int(d.get("width", 0)), int(d.get("height", 0)),
                                           undistort_from_json(d.get("undistort", {})),
                                           float(d.get("pixel_origin", 1.0)), bool(d.get("y_flip", False)),
@@ -880,11 +919,11 @@ def world_is_left_handed(cal: "Calibration", probe: np.ndarray | None = None) ->
     coefficients usually are): the majority of its cameras, in OpenCV's pixel
     convention with depth positive in front, have det(P[:, :3]) < 0. The one
     test `calibio.to_models` uses to export such a world mirrored in Z."""
-    if not cal.cameras:
+    if not cal.views():
         return False
     probe = probe if probe is not None else working_probe(cal)
     dets = []
-    for cam in cal.cameras:
+    for cam in (cal.camera(v) for v in cal.views()):
         P = cam.pixel_matrix() @ dlt_matrix(cam.coefs) * front_sign(cam.coefs, probe)
         dets.append(np.linalg.det(P[:, :3]))
     return sum(d < 0 for d in dets) > len(dets) / 2
@@ -952,7 +991,7 @@ def working_probe(cal: "Calibration") -> np.ndarray | None:
     corner, the wand's centroid, easyWand's axes points; `from_krt` moves it
     to the cameras' look-at point), and the DLT denominator there is exactly 1
     for every camera, so "in front" is "denominator > 0". The probe is where
-    the first two cameras' forward principal rays come closest -- when they
+    the first two calibrated cameras' forward principal rays come closest -- when they
     converge IN FRONT and within `PROBE_MAX_BASELINES` baselines; otherwise
     (a parallel or toed-out stereo bar) the origin itself. The old rule tried
     all four ray orientations and kept whichever converged: on a toed-out pair
@@ -964,17 +1003,18 @@ def working_probe(cal: "Calibration") -> np.ndarray | None:
     front of all of them (one calibration has one handedness). A mixed sign
     means the origin is behind some camera, and the old search -- which needs
     no forward direction but fails on parallel / toed-out pairs -- is used."""
-    if cal is None or len(cal.cameras) < 2:
+    cams = [c for c in cal.cameras if c is not None] if cal is not None else []    # (I273) calibrated only
+    if len(cams) < 2:
         return None
     cached = getattr(cal, "_probe_cache", None)
     if cached is not None:
         return cached
     origin = np.zeros(3)
     dets = {float(np.sign(np.linalg.det(np.array([L[0:3], L[4:7], L[8:11]]))))
-            for L in (np.asarray(c.coefs, np.float64).reshape(11) for c in cal.cameras)}
+            for L in (np.asarray(c.coefs, np.float64).reshape(11) for c in cams)}
     origin_ok = len(dets) == 1
     rays = []
-    for cam in cal.cameras[:2]:
+    for cam in cams[:2]:
         w = cam.width or 1920
         h = cam.height or 1080
         pp = cam.to_calib_frame(np.array([[w / 2.0, h / 2.0]]))
@@ -1457,8 +1497,13 @@ class _Prepared:
     reconstruction so repeated calls (offset search) stay cheap."""
 
     def __init__(self, sessions, calib: Calibration, names: list[str] | None):
-        if len(calib) != len(sessions):
+        if len(calib) > len(sessions):
             raise ValueError("calibration has a different number of cameras than the project")
+        # (I273) a camera that is not calibrated (a gap, or past the end of the list) has no data
+        # here: its tracks are all NaN and it never enters a triangulation
+        cams = calib.padded(len(sessions))
+        self.used = [c for c, cam in enumerate(cams) if cam is not None]
+        self.n_views = len(sessions)
         if names is None:
             names = []
             for s in sessions:
@@ -1466,9 +1511,13 @@ class _Prepared:
                     if q.name not in names:
                         names.append(q.name)
         self.names = list(names)
-        self.coefs = np.stack([c.coefs for c in calib.cameras])
+        self.coefs = (np.stack([cams[c].coefs for c in self.used]) if self.used
+                      else np.zeros((0, 11)))                          # the CALIBRATED cameras' rows
         self.ct = []                    # per view (T, N_names, 2) in calibration frame
-        for s, cal in zip(sessions, calib.cameras):
+        for s, cal in zip(sessions, cams):
+            if cal is None:
+                self.ct.append(np.full((s.n_frames, len(self.names), 2), np.nan))
+                continue
             full = calib_tracks(s, cal)
             idx = {q.name: j for j, q in enumerate(s.points)}
             arr = np.full((full.shape[0], len(self.names), 2), np.nan)
@@ -1476,6 +1525,17 @@ class _Prepared:
                 if nm in idx:
                     arr[:, j] = full[:, idx[nm]]
             self.ct.append(arr)
+
+    def triangulate(self, uv: np.ndarray, min_cams: int = 2, max_residual: float = float("inf")):
+        """`triangulate_batch` over the calibrated cameras of `uv` (..., C views, 2); the per-camera
+        errors come back with one column per view (NaN for a camera that is not calibrated). With
+        every camera calibrated this IS `triangulate_batch(self.coefs, uv, ...)`."""
+        if len(self.used) == self.n_views:
+            return triangulate_batch(self.coefs, uv, min_cams, max_residual)
+        xyz, resid, ncams, err_u = triangulate_batch(self.coefs, uv[..., self.used, :], min_cams, max_residual)
+        err = np.full(err_u.shape[:-1] + (self.n_views,), np.nan, err_u.dtype)
+        err[..., self.used] = err_u
+        return xyz, resid, ncams, err
 
     def samples(self, rates, offsets, t: np.ndarray, keep: np.ndarray | None = None) -> np.ndarray:
         """(T, N, C, 2) calibration-frame 2D at reference instants t. `keep`
@@ -1514,7 +1574,7 @@ def reconstruct(sessions: list, calib: Calibration, rates: list[float], offsets:
     t0, t1 = int(t_range[0]), int(t_range[1])
     t = np.arange(t0, max(t1 + 1, t0))
     uv = prep.samples(rates, offsets, t)
-    xyz, resid, ncams, err = triangulate_batch(prep.coefs, uv, min_cams, max_residual)
+    xyz, resid, ncams, err = prep.triangulate(uv, min_cams, max_residual)
     return Reconstruction(t0, prep.names, xyz, resid, ncams.astype(np.int32), calib.unit,
                           err.astype(np.float32))
 
@@ -1601,7 +1661,7 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
         if cancelled is not None and cancelled():
             raise _SearchCancelled()
         uv = prep.samples(rates, o, t, keep)
-        _, r, _, _ = triangulate_batch(prep.coefs, uv, 2)
+        _, r, _, _ = prep.triangulate(uv, 2)
         r = r[np.isfinite(r)]
         done[0] += 1
         if progress is not None:

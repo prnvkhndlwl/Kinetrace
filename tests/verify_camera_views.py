@@ -371,8 +371,14 @@ check(max(abs(m0[k] - m1[k]) for k in m0) < 1e-9, "every mapping between two cam
 check([c.coefs[0] for c in pm.calibration.cameras] == [200.0, 0.0, 300.0, 100.0] and pm.sessions[0] is ss[2],
       "each camera keeps its calibration and its data")
 pm.calibration.cameras = pm.calibration.cameras[:2]
-check(pm.order_problem([2, 0, 1, 3]) and pm.order_problem([1, 0, 3, 2]) is None,
-      "a calibration of the first two cameras: they must stay first (in any order)")
+c_a, c_b = pm.calibration.cameras
+check(pm.order_problem([2, 0, 1, 3]) is None and pm.order_problem([1, 0, 3, 2]) is None,
+      "(I273) a calibration of the first two cameras does not limit the order")
+pm.reorder_views([2, 0, 1, 3])
+check(pm.calibration.cameras == [None, c_a, c_b, None] and pm.calibration.views() == [1, 2],
+      "(I273) the not-calibrated cameras move with their cameras", pm.calibration.views())
+pm.reorder_views([1, 2, 0, 3])
+check(pm.calibration.cameras[:2] == [c_a, c_b] and pm.calibration.views() == [0, 1], "and back")
 
 # the app: CAMERAS -> Camera order... with its dialog's own buttons
 win._on_view_offset(1, -3)
@@ -446,7 +452,7 @@ def add_dialog(dlg):
         QTest.mouseClick(dlg.btn_up, Qt.LeftButton)   # ... to camera 1
     ok_btn = dlg.buttons.button(QDialogButtonBox.Ok)
     seen["ok_enabled"], seen["note"] = ok_btn.isEnabled(), dlg.note.text()
-    if ok_btn.isEnabled():
+    if ok_btn.isEnabled() and not seen.pop("cancel", False):
         QTest.mouseClick(ok_btn, Qt.LeftButton)
     else:
         QTest.mouseClick(dlg.buttons.button(QDialogButtonBox.Cancel), Qt.LeftButton)
@@ -455,13 +461,13 @@ def add_dialog(dlg):
 
 cameraorder.CameraOrderDialog.exec = add_dialog
 try:
-    # the calibration covers cameras 1-4: a new video cannot go before them (it would take a calibrated
-    # camera's number) -- OK greys out and the dialog says why
+    # (I273) the calibration covers cameras 1-4: a new video may still become camera 1 (it is simply
+    # not calibrated) -- OK stays enabled; this first look is cancelled
+    seen["cancel"] = True
     QTest.mouseClick(panel.btn_add, Qt.LeftButton)
     pump(0.3)
-    check(not seen.get("ok_enabled", True) and "calibration covers cameras 1-4" in seen.get("note", "")
-          and p.n_views == 4, "with a calibration of cameras 1-4 a new video cannot become camera 1: refused, and why",
-          seen.get("note"))
+    check(seen.get("ok_enabled") is True and "calibration covers" not in seen.get("note", "") and p.n_views == 4,
+          "(I273) with a calibration of cameras 1-4 a new video may become camera 1", seen.get("note"))
     p.calibration = None
     m_old = {(x, y): p.map_frame_exact(p.names.index(x), p.names.index(y), 20) for x in p.names for y in p.names}
     QTest.mouseClick(panel.btn_add, Qt.LeftButton)
