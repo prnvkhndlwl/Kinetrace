@@ -9740,6 +9740,7 @@ class MainWindow(QMainWindow):
     def _undo_snap(self, snap):
         self.__dict__["_undo_main"] = snap
         self.__dict__["_undo_extra"] = {}
+        self.__dict__["_undo_timing"] = None     # (I274) offsets (+ calibration) of the same step
 
     @property
     def _undo_extra(self) -> dict:
@@ -9766,15 +9767,68 @@ class MainWindow(QMainWindow):
         self._refresh_companions()
         return n
 
+    def _apply_offsets_undoable(self, offsets) -> None:
+        """(I274; from I271's parked branch) Every camera's offset at once as ONE Ctrl+Z step: the wand
+        wizard's "Apply these offsets and calibrate". The step also keeps the calibration (and wand
+        run) of that moment: the wizard's result is then made AT the new offsets, so taking the
+        offsets back takes back the calibration fitted to them too. The 3D result made with the old
+        timing is dropped."""
+        p = self.project
+        if p is None or self.session is None:
+            return
+        before, had_3d = list(p.offsets), p.reconstruction is not None
+        for i, o in enumerate(offsets):
+            p.set_offset(i, float(o))
+        if all(abs(a - b) <= 1e-12 for a, b in zip(before, p.offsets)):
+            return
+        # a second Apply in the same wizard (nothing else edited since: any edit resets the record)
+        # extends the step, so the one Ctrl+Z goes back to before the first
+        prev = self.__dict__.get("_undo_timing")
+        self._set_undo_point(self.session.snapshot())
+        self.__dict__["_undo_timing"] = prev if prev is not None else {
+            "offsets": before, "calibration": p.calibration, "wand_result": self._wand_result}
+        p.dirty = True
+        self._after_retime(had_3d)
+        self._refresh_companions()
+        self._refresh_cameras()
+
+    def _undo_timing_step(self, timing: dict) -> bool:
+        """Put back the offsets (and calibration) an `_apply_offsets_undoable` step changed."""
+        p = self.project
+        if p is None or len(timing["offsets"]) != p.n_views:
+            return False                  # the camera set changed since: the step no longer fits
+        had_3d = p.reconstruction is not None
+        for i, o in enumerate(timing["offsets"]):
+            p.set_offset(i, float(o))
+        p.calibration = timing["calibration"]
+        self._wand_result = timing["wand_result"]
+        p.dirty = True
+        self._after_retime(had_3d)
+        self._refresh_cameras()
+        self._refresh_guides()
+        return True
+
     def _undo_run(self):
         if self._undo_snap is None or self.session is None or self.state != READY:
             return
+        timing = self.__dict__.get("_undo_timing")
         self.session.restore(self._undo_snap)
         p = self.project
         for v, snap in self._undo_extra.items():
             if p is not None and 0 <= v < p.n_views and v != p.active:
                 p.sessions[v].restore(snap)
         self._undo_snap = None
+        if timing is not None and self._undo_timing_step(timing):
+            self._refresh_companions()
+            self.act_undo.setEnabled(False)
+            self._refresh_point_list()
+            self._refresh_overlay()
+            self._update_frame_label()
+            self._apply_state()
+            self.statusBar().showMessage(
+                "Restored the camera offsets, and the calibration made from them, from before "
+                "'Apply these offsets'", 8000)
+            return
         self._refresh_companions()
         self.act_undo.setEnabled(False)
         self._refresh_point_list()
@@ -11229,7 +11283,7 @@ class MainWindow(QMainWindow):
         if self.state != READY:
             return
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
-        wiz = WandWizard(self, p, start)
+        wiz = WandWizard(self, p, start, apply_offsets=self._apply_offsets_undoable)      # (I274)
         accepted = wiz.exec() == QDialog.Accepted
         self._refresh_cameras()          # its lens rows may have changed the lenses, accepted or not (G177)
         if not accepted or wiz.result_calibration is None:

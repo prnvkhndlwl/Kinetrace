@@ -11,7 +11,14 @@ but no clicks, as on a big rig where not every camera saw the wand. Checked:
   D. a calibration with a gap saves and loads (calibration.json, .kcal.json) with the gap kept (I273);
   E. Reconstruct with a gap = Reconstruct of a project of only the calibrated cameras (np.array_equal);
   F. a camera whose offset is 4 frames wrong is found by the wand timing check, which suggests the
-     shift that puts it right; a correct rig gets no suggestion (I274).
+     shift that puts it right; a correct rig gets no suggestion; a camera that shares too few wand
+     frames is "cannot time", never a suggestion (I274);
+  G. exports and the import dialog with a camera that is not calibrated;
+  H. the real window: wizard (one camera 3 frames off: the suggestion, the user's click on Apply) ->
+     calibration of cameras 1, 2, 4, 5 -> 3D -> Reconstruct; Ctrl+Z (Edit -> Undo) puts the offsets
+     AND the calibration back;
+  I. the wizard's suggestion box: the user's click on "Calibrate with the offsets as they are" keeps
+     the offsets and calibrates anyway.
 
 Run: .venv\\Scripts\\python.exe tests\\verify_wand_subset.py
 """
@@ -80,7 +87,7 @@ def wand_at(t):
     return c + 0.5 * WAND_L * d, c - 0.5 * WAND_L * d
 
 
-def build(no_wand=(NO_WAND,), offsets=None, error=None, tag="sub", seed=3):
+def build(no_wand=(NO_WAND,), offsets=None, error=None, tag="sub", seed=3, few=None):
     """The rig as a project: camera c's local frame f shows reference instant f - offsets[c];
     the project is told offsets + error (a sync mistake). Cameras in `no_wand` get the
     landmarks but no clicks."""
@@ -96,6 +103,8 @@ def build(no_wand=(NO_WAND,), offsets=None, error=None, tag="sub", seed=3):
             tt = np.arange(n_fr, dtype=np.float64) - offsets[c]
             A, B = wand_at(tt)
             inside = (tt >= 0) & (tt <= T - 1)
+            if few is not None and c == few[0]:          # this camera saw the wand on a few frames only
+                inside &= (tt >= 100) & (tt < 100 + few[1])
             for j, X in ((ja, A), (jb, B)):
                 uv = cal.project(X) + rng.normal(0, 0.3, (n_fr, 2))
                 vis = inside & (uv[:, 0] >= 2) & (uv[:, 0] < W - 2) & (uv[:, 1] >= 2) & (uv[:, 1] < H - 2)
@@ -324,7 +333,13 @@ def sec_f():
     assert tc.suggestions == {1: -4}, (tc.suggestions, tc.lines)
     P_ok = build(no_wand=(), tag="subf_ok")
     tc_ok = wd.timing_check(P_ok, "wand A", "wand B", list(range(N_CAM)), [None] * N_CAM)
-    assert tc_ok.suggestions == {}, (tc_ok.suggestions, tc_ok.lines)
+    assert tc_ok.suggestions == {} and tc_ok.verdict == "fine", (tc_ok.suggestions, tc_ok.lines)
+    assert all(v == 0 for v in tc_ok.shift.values()), tc_ok.shift
+    # camera 5 saw the wand on 20 frames only (and is 6 frames off): it cannot be timed - no suggestion
+    P_few = build(no_wand=(), error=[0, 0, 0, 0, 6], few=(4, 20), tag="subf_few")
+    tc_few = wd.timing_check(P_few, "wand A", "wand B", list(range(N_CAM)), [None] * N_CAM)
+    assert tc_few.shift[4] is None and 4 not in tc_few.suggestions, (tc_few.shift, tc_few.lines)
+    assert any("cannot check the timing of cam5" in ln for ln in tc_few.lines), tc_few.lines
     print(f"F. camera 2 told 4 frames late: the timing check suggests -4 ({tc.lines[0][:70]}...); "
           f"a correct rig: no suggestion OK")
 
@@ -385,7 +400,8 @@ def sec_h():
     from PySide6.QtWidgets import QDialog
     from _clean import forget_recovery
     from kinetrace.app import READY, MainWindow
-    P = build(tag="subh")
+    P = build(tag="subh", error=[0, 0, 0, 3, 0])              # camera 4 is told 3 frames late
+    wrong = float(P.offsets[3])
     paths = [s.video_path for s in P.sessions]
     img = np.full((H, W, 3), 30, np.uint8)
     for pth, s in zip(paths, P.sessions):
@@ -422,7 +438,18 @@ def sec_h():
             self.page_frame.r_none.setChecked(True)
             goto(self, self.page_run)
             run_and_wait(self)
-            assert self.result_calibration is not None, self.page_run.report.toPlainText()[:400]
+            pg = self.page_run
+            assert self.result_calibration is None and pg.timing_box.isVisible(), pg.report.toPlainText()[:300]
+            assert "cam4" in pg.timing_text.text(), pg.timing_text.text()
+            QTest.mouseClick(pg.btn_apply_offsets, Qt.LeftButton)       # the user's click: Apply
+            pump(0.1)
+            t0 = time.time()
+            while not pg.btn_run.isEnabled():
+                pump(0.05)
+                assert time.time() - t0 < 180, "calibration after Apply did not finish"
+            pump(0.1)
+            assert self.result_calibration is not None, pg.report.toPlainText()[:400]
+            assert "Timing check" in pg.report.toPlainText()
             self.accept()
             return QDialog.Accepted
 
@@ -431,6 +458,7 @@ def sec_h():
         pump(0.2)
         p = win.project
         assert p.calibration is not None and p.calibration.views() == [0, 1, 3, 4], p.calibration
+        assert abs(p.offsets[3] - (wrong - 3)) < 1e-9, (p.offsets, wrong)
         pump(0.1)
         assert win.act_recon.isEnabled()
         win.act_recon.trigger()                       # 3D -> Reconstruct, as the menu does
@@ -446,8 +474,15 @@ def sec_h():
         assert np.isnan(r.per_cam[..., NO_WAND]).all()
         t = win.toast.text()
         assert "cam3" in t and "not calibrated" in t, t
-        print(f"H. through the window: calibration of 1, 2, 4, 5 -> 3D -> Reconstruct: {int(np.isfinite(L).sum())} "
-              f"wand frames, the toast names cam3 as left out OK")
+        # Edit -> Undo: the offsets AND the calibration made at them go back, in one step
+        assert win.act_undo.isEnabled()
+        win.act_undo.trigger()
+        pump(0.2)
+        assert abs(p.offsets[3] - wrong) < 1e-9 and p.calibration is None and p.reconstruction is None, \
+            (p.offsets, p.calibration)
+        print(f"H. through the window: cam4 3 frames off -> suggestion, Apply -> calibration of 1, 2, 4, 5 -> "
+              f"3D -> Reconstruct: {int(np.isfinite(L).sum())} wand frames, the toast names cam3; Undo puts the "
+              f"offset and the calibration back OK")
     finally:
         cw.WandWizard.exec = real_exec
         QMessageBox.critical = real_critical
@@ -462,7 +497,37 @@ def sec_h():
             forget_recovery(pth)
 
 
-SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f, sec_g, sec_h]
+def sec_i():
+    """The suggestion box's other button: calibrate with the offsets as they are."""
+    P = build(no_wand=(), error=[0, 4, 0, 0, 0], tag="subi")
+    before = list(P.offsets)
+    wz = new_wizard(P)
+    try:
+        goto(wz, wz.page_wand)
+        wz.page_wand.length.setValue(WAND_L)
+        goto(wz, wz.page_cams)
+        known_focal(wz)
+        goto(wz, wz.page_frame)
+        wz.page_frame.r_none.setChecked(True)
+        goto(wz, wz.page_run)
+        run_and_wait(wz)
+        pg = wz.page_run
+        assert pg.timing_box.isVisible() and "cam2" in pg.timing_text.text(), pg.timing_text.text()
+        QTest.mouseClick(pg.btn_keep_offsets, Qt.LeftButton)        # the user's click
+        pump(0.1)
+        t0 = time.time()
+        while not pg.btn_run.isEnabled():
+            pump(0.05)
+            assert time.time() - t0 < 180
+        pump(0.1)
+        assert list(P.offsets) == before, (P.offsets, before)
+        assert wz.result_calibration is not None or "failed" in pg.report.toPlainText().lower()
+        print("I. 'Calibrate with the offsets as they are': offsets unchanged, the solve runs OK")
+    finally:
+        close_wizard(wz)
+
+
+SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f, sec_g, sec_h, sec_i]
 
 if __name__ == "__main__":
     failed = []

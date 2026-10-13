@@ -121,11 +121,15 @@ class _CalibThread(QThread):
     progress = Signal(float, str, int)
     finished_ok = Signal(object, object, int)     # WandResult, gravity dict | None, generation
     error = Signal(str, int)
+    timing_found = Signal(object, int)            # (I274) wanddata.TimingCheck with suggestions, generation
 
     def __init__(self, kwargs: dict, frame_mode: str, drop: dict | None, axes: dict | None,
-                 lens_models: list | None = None, lens_summaries: list | None = None, gen: int = 0):
+                 lens_models: list | None = None, lens_summaries: list | None = None, gen: int = 0,
+                 timing: dict | None = None):
         super().__init__()
         self.kwargs = kwargs
+        self.timing = timing            # (I274) {"project", "a", "b", "views", "models"}: check the offsets first
+        self.timing_result = None
         self.frame_mode = frame_mode
         self.drop = drop
         self.axes = axes
@@ -148,7 +152,21 @@ class _CalibThread(QThread):
     def run(self):
         wand = _wand
         try:
+            if self.timing is not None:
+                # (I274) whole-frame offset mistakes first: they make the solve fail ("no pose is
+                # consistent") or poor; a suggestion stops here and the page asks the user
+                tm = self.timing
+                tc = wd.timing_check(tm["project"], tm["a"], tm["b"], tm["views"], tm["models"],
+                                     progress=lambda f, m: self._note(0.25 * f, m))
+                self.timing_result = tc
+                if tc.suggestions:
+                    if not self._cancel:
+                        self.timing_found.emit(tc, self.gen)
+                    return
             res = wand.calibrate_wand(progress=self._note, **self.kwargs)
+            if self.timing_result is not None:
+                res.report["timing_check"] = {"verdict": self.timing_result.verdict,
+                                              "lines": list(self.timing_result.lines)}
             grav = None
             # (I29) the wand solve stands on its own: a vertical / axes step that
             # cannot be applied keeps camera 1's axes and says why, instead of
@@ -1069,10 +1087,31 @@ class RunPage(QWizardPage):
         lay.addWidget(self.bar)
         self.status = _dim(QLabel(""))
         lay.addWidget(self.status)
+        # (I274, G182) the timing check's suggestion: shown when the wand clicks say an offset is wrong
+        self.timing_box = QGroupBox("The cameras' timing")
+        tl = QVBoxLayout(self.timing_box)
+        self.timing_text = QLabel("")
+        self.timing_text.setWordWrap(True)
+        tl.addWidget(self.timing_text)
+        trow = QHBoxLayout()
+        self.btn_apply_offsets = QPushButton("Apply these offsets and calibrate")
+        self.btn_apply_offsets.setObjectName("primary")
+        self.btn_apply_offsets.setToolTip("Change the offsets as suggested (one Ctrl+Z step takes them back), "
+                                          "then calibrate")
+        self.btn_keep_offsets = QPushButton("Calibrate with the offsets as they are")
+        trow.addWidget(self.btn_apply_offsets)
+        trow.addWidget(self.btn_keep_offsets)
+        trow.addStretch(1)
+        tl.addLayout(trow)
+        self.timing_box.setVisible(False)
+        lay.addWidget(self.timing_box)
         self.report = QTextBrowser()
         lay.addWidget(self.report, 1)
-        self.btn_run.clicked.connect(self._run)
+        self.btn_run.clicked.connect(lambda: self._run())
         self.btn_save.clicked.connect(self._save)
+        self.btn_apply_offsets.clicked.connect(self._apply_offsets)
+        self.btn_keep_offsets.clicked.connect(lambda: self._run(check_timing=False))
+        self._timing = None            # the last TimingCheck that suggested something
         self._thread: _CalibThread | None = None
         self._gen = 0                  # bumped by every run and every change of settings (I28)
         self._run_key = None           # the settings the current result / run was made with
@@ -1142,9 +1181,10 @@ class RunPage(QWizardPage):
                                 "minute.</p>" % theme.TEXT_DIM)
             self.completeChanged.emit()
 
-    def _run(self):
+    def _run(self, check_timing: bool = True):
         w = self.wiz
         p = w.project
+        self.timing_box.setVisible(False)
         a, b = w.page_wand.end_a.currentText(), w.page_wand.end_b.currentText()
         # (I272) only the ticked cameras are solved: every per-camera input is taken for them, in
         # camera order (all ticked = exactly the arguments of a run on every camera)
@@ -1216,7 +1256,11 @@ class RunPage(QWizardPage):
         self.wiz.gravity = None
         self.completeChanged.emit()
         summ = w.page_cams.lens_summaries()
-        th = _CalibThread(kwargs, mode, drop, axes, models, [summ[c] for c in views], gen=self._gen)
+        timing = ({"project": p, "a": a, "b": b, "views": list(views), "models": w.page_cams.lens_models()}
+                  if check_timing and len(views) >= 2 else None)
+        th = _CalibThread(kwargs, mode, drop, axes, models, [summ[c] for c in views], gen=self._gen,
+                          timing=timing)
+        th.timing_found.connect(self._timing_found)
         self._run_views = list(views)
         th.progress.connect(self._progress)
         th.finished_ok.connect(self._done)
@@ -1224,6 +1268,40 @@ class RunPage(QWizardPage):
         th.finished.connect(self._thread_ended)
         self._thread = th
         th.start()
+
+    def _timing_found(self, tc, gen: int):
+        """(I274) The wand clicks say some offsets are whole frames off: show what, and let the user
+        apply them (then calibrate) or calibrate with the offsets as they are."""
+        if gen != self._gen:
+            return
+        self._timing = tc
+        self.bar.setValue(0)
+        self.status.setText("The cameras' timing looks off: see below.")
+        self.timing_text.setText(
+            "<p>Checked against each other, the wand clicks fit best with other offsets for these cameras "
+            "(a whole-frame sync mistake makes a calibration fail or come out poor):</p><ul>"
+            + "".join(f"<li>{ln}</li>" for ln in tc.lines) + "</ul>"
+            "<p style='color:%s'>Hand check: at a sharp event (the wand stopping, a flash), step through "
+            "the frames in two of these cameras - with the new offsets they show the same instant.</p>"
+            % theme.TEXT_DIM)
+        self.timing_box.setVisible(True)
+        self.report.setHtml("")
+
+    def _apply_offsets(self):
+        """Apply the suggested offsets (one undo step in the app), then calibrate."""
+        tc = self._timing
+        p = self.wiz.project
+        if tc is None:
+            return
+        new = [float(p.offsets[c]) + float(tc.suggestions.get(c, 0)) for c in range(p.n_views)]
+        if self.wiz.apply_offsets is not None:
+            self.wiz.apply_offsets(new)
+        else:
+            for c, o in enumerate(new):
+                p.set_offset(c, o)
+        self._timing = None
+        self.timing_box.setVisible(False)
+        self._run()
 
     def _progress(self, f: float, m: str, gen: int):
         if gen == self._gen:
@@ -1247,8 +1325,12 @@ class RunPage(QWizardPage):
         self.status.setText("")
         self.report.setHtml(f"<p style='color:{theme.RED}'><b>Calibration failed.</b> {msg.replace(chr(10), '<br>')}</p>"
                             "<p>Usual causes: a camera that shares too few wand frames with the "
-                            "others (track more of the wand in it), the two wand names swapped in one "
-                            "camera, or cameras whose offsets are not aligned (CAMERAS panel).</p>")
+                            "others (track more of the wand in it, or untick it on the wand page), the two "
+                            "wand names swapped in one camera, or cameras whose offsets are not aligned "
+                            "(CAMERAS panel).</p>")
+        if self._timing is not None:
+            # (I274) the user calibrated with the offsets as they were: offer the suggestion again
+            self.timing_box.setVisible(True)
 
     def _done(self, res, grav, gen: int = -1):
         self.btn_run.setEnabled(True)
@@ -1534,6 +1616,9 @@ def report_html(report: dict, grav: dict | None, project, unit: str) -> str:
         if fitted:
             parts.append(f"<p style='color:{theme.TEXT_DIM}'>Lens distortion was fitted by the wand for "
                          f"{', '.join(fitted)} (no lens profile).</p>")
+    tcheck = report.get("timing_check")
+    if tcheck and tcheck.get("lines"):
+        parts.append("<h3>Timing check</h3><p>" + " ".join(tcheck["lines"]) + "</p>")
     parts.append(f"<h3>The wand</h3><p>Typed length {report.get('wand_length', 0):g} {unit}; recovered "
                  f"{report.get('wand_mean', 0):.4f} ± {report.get('wand_sd', 0):.4f} {unit} over "
                  f"{report.get('n_frames_used', 0)} of {report.get('n_frames_in', 0)} frames "
@@ -1579,8 +1664,10 @@ def spread_calibration(cal, views: list[int], n_views: int):
 
 
 class WandWizard(QWizard):
-    def __init__(self, parent, project, start_dir: str = ""):
+    def __init__(self, parent, project, start_dir: str = "", apply_offsets=None):
         super().__init__(parent)
+        # (I274) the app's undoable "set every camera's offset" (None: set them on the project)
+        self.apply_offsets = apply_offsets
         self.setWindowTitle("Calibrate cameras with a wand")
         self.setWizardStyle(QWizard.ModernStyle)
         self.setOption(QWizard.NoBackButtonOnStartPage, True)

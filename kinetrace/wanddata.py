@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import warnings
 
+from dataclasses import dataclass, field
+
 import numpy as np
 
 from kinetrace.calib import sample_tracks_at
@@ -345,4 +347,207 @@ def coverage_summary(project, name_a: str, name_b: str) -> list[tuple[str, int, 
         ea = s.exportable_at(slice(None), ja) if ja is not None else np.zeros(s.n_frames, bool)
         eb = s.exportable_at(slice(None), jb) if jb is not None else np.zeros(s.n_frames, bool)
         out.append((project.name(c), int((ea & eb).sum()), int((ea | eb).sum())))
+    return out
+
+
+# ------------------------------------------------------------- the cameras' timing from the wand (I274)
+TIMING_MAX_SHIFT = 30          # frames tried each way
+TIMING_MAX_ROWS = 300          # wand instants per camera pair and shift (thinned evenly)
+TIMING_MIN_ROWS = 30           # a pair with fewer shared wand instants says nothing about timing
+TIMING_THR_PX = 1.5            # epipolar inlier band at 1080p (scaled by the picture's long side): 3 px
+                               # at 4K hid a 2-frame error between two 4K cameras at 240 fps (owner's rig)
+TIMING_GOOD_SHARE = 0.6        # a pair's best shift counts when this share of its clicks fit one geometry ...
+TIMING_MARGIN = 0.15           # ... and that is this much more than at the offsets as they are
+
+
+@dataclass
+class TimingCheck:
+    """What `timing_check` found. `shift[v]`: whole frames to ADD to camera v's offset so its wand
+    clicks agree with the other cameras' (None = the wand cannot time it); `suggestions`: the
+    cameras whose shift is not 0, only when every camera pair agrees with them; `lines`: what to
+    tell the user, one sentence per camera (or one when all is well); `pairs`: the evidence."""
+    shift: dict = field(default_factory=dict)
+    suggestions: dict = field(default_factory=dict)
+    lines: list = field(default_factory=list)
+    pairs: list = field(default_factory=list)
+    verdict: str = "fine"          # fine | suggest | unclear
+
+
+def _undistorted_track(session, j: int, model) -> np.ndarray:
+    """(T, 1, 2) a landmark's track in this camera's lens-corrected pixels (NaN where not tracked)."""
+    tr = raw_track(session, j)
+    if model is not None:
+        ok = np.isfinite(tr).all(axis=1)
+        if ok.any():
+            tr = tr.copy()
+            tr[ok] = model.undistort(tr[ok])
+    return tr[:, None]
+
+
+def _inlier_share(xa: np.ndarray, xb: np.ndarray, thr: float) -> float:
+    """Share of point pairs that agree with ONE epipolar geometry (fundamental matrix, RANSAC with
+    a fixed seed: the same project always gives the same answer)."""
+    import cv2
+    if len(xa) < 2 * TIMING_MIN_ROWS:
+        return float("nan")
+    cv2.setRNGSeed(0)
+    F, m = cv2.findFundamentalMat(xa, xb, cv2.FM_RANSAC, float(thr), 0.99, 1000)
+    if F is None or m is None:
+        return 0.0
+    return float(m.ravel().astype(bool).mean())
+
+
+def timing_check(project, name_a: str, name_b: str, views: list[int], lens_models: list | None = None,
+                 max_shift: int = TIMING_MAX_SHIFT, progress=None) -> TimingCheck:
+    """(I274) Are the cameras' offsets right, to the whole frame, by the wand clicks alone? For every
+    pair of `views` with enough shared wand instants, the share of their clicks that fit one
+    epipolar geometry is measured with the second camera's offset moved by -max_shift..+max_shift
+    frames: a wrong offset shows as a share that is clearly higher a few frames away. The pairs'
+    best shifts are then fitted with one shift per camera (the first camera of `views` - camera 1
+    when it is ticked - keeps its offset; with camera 1 left out, the shift most cameras need is
+    taken as none) and suggested only when every pair agrees within a frame.
+    `lens_models`: per project camera, the undistortion of its lens profile (or None)."""
+    views = list(views)
+    out = TimingCheck(shift={v: None for v in views})
+    if len(views) < 2:
+        return out
+    models = list(lens_models) if lens_models is not None else [None] * project.n_views
+    t0, t1 = sampling_window(project)
+    if t1 < t0:
+        return out
+    t = np.arange(t0, t1 + 1, dtype=np.float64)
+    tracks = {}
+    for v in views:
+        s = project.sessions[v]
+        ja, jb = s.pid_by_name(name_a), s.pid_by_name(name_b)
+        if ja is None or jb is None:
+            continue
+        tracks[v] = (_undistorted_track(s, ja, models[v]), _undistorted_track(s, jb, models[v]))
+
+    def sample(v, shift):
+        local = project.rates[v] * t + project.offsets[v] + shift
+        a = sample_tracks_at(tracks[v][0], local)[:, 0]
+        b = sample_tracks_at(tracks[v][1], local)[:, 0]
+        return a, b
+
+    long_side = {v: max(project.sessions[v].width, project.sessions[v].height) or 1920 for v in views}
+    have = [v for v in views if v in tracks]
+    pairs = [(i, j) for k, i in enumerate(have) for j in have[k + 1:]]
+    for n_done, (i, j) in enumerate(pairs):
+        if progress is not None:
+            progress(n_done / max(len(pairs), 1), f"Checking the timing of {project.name(i)} and {project.name(j)}")
+        ai, bi = sample(i, 0)
+        thr = TIMING_THR_PX * max(long_side[i], long_side[j]) / 1920.0
+        shares, rows = {}, 0
+
+        def score(d):
+            nonlocal rows
+            if d in shares or abs(d) > max_shift:
+                return
+            aj, bj = sample(j, d)
+            ok = (np.isfinite(ai).all(axis=1) & np.isfinite(bi).all(axis=1)
+                  & np.isfinite(aj).all(axis=1) & np.isfinite(bj).all(axis=1))
+            idx = np.nonzero(ok)[0]
+            if d == 0:
+                rows = len(idx)
+            if len(idx) < TIMING_MIN_ROWS:
+                shares[d] = float("nan")
+                return
+            idx = _thin(idx, TIMING_MAX_ROWS)
+            xa = np.vstack([ai[idx], bi[idx]]).astype(np.float64)
+            xb = np.vstack([aj[idx], bj[idx]]).astype(np.float64)
+            shares[d] = _inlier_share(xa, xb, thr)
+
+        # every other shift, then the neighbours of the best three (a peak is a few frames wide)
+        for d in range(-int(max_shift), int(max_shift) + 1, 2):
+            score(d)
+        score(0)
+        top = sorted((d for d in shares if np.isfinite(shares[d])), key=lambda d: -shares[d])[:3]
+        for d0 in top:
+            for d in (d0 - 1, d0 + 1):
+                score(d)
+        rec = {"cams": (i, j), "rows": rows, "share0": shares.get(0, float("nan")), "best": None,
+               "share_best": float("nan"), "used": False}
+        fin = {d: v for d, v in shares.items() if np.isfinite(v)}
+        if 0 in fin and rows >= TIMING_MIN_ROWS:
+            best = max(fin, key=lambda d: (fin[d], -abs(d)))
+            rec["best"], rec["share_best"] = int(best), float(fin[best])
+            # evidence only from a clear peak: at the offsets as they are (the best IS 0), or clearly
+            # better elsewhere; a pair whose best is elsewhere by a hair says nothing either way
+            if fin[best] >= TIMING_GOOD_SHARE and (best == 0 or fin[best] - fin[0] >= TIMING_MARGIN):
+                rec["used"] = True
+        out.pairs.append(rec)
+    used = [r for r in out.pairs if r["used"]]
+    timed = sorted({c for r in used for c in r["cams"]})
+    if not used:
+        out.verdict = "unclear"
+        out.lines = ["The wand clicks cannot check the cameras' timing here (too few frames that two "
+                     "cameras share, or no clear agreement at any offset)."]
+        return out
+    # one shift per camera: s_j - s_i = d_ij, weighted by the shared instants, first camera fixed
+    ref = views[0] if views[0] in timed else timed[0]
+    col = {c: k for k, c in enumerate(c for c in timed if c != ref)}
+    A = np.zeros((len(used), len(col)))
+    y = np.zeros(len(used))
+    w = np.zeros(len(used))
+    for r_, rec in enumerate(used):
+        i, j = rec["cams"]
+        if j in col:
+            A[r_, col[j]] += 1.0
+        if i in col:
+            A[r_, col[i]] -= 1.0
+        y[r_] = rec["best"]
+        w[r_] = np.sqrt(max(rec["rows"], 1))
+    sol = np.linalg.lstsq(A * w[:, None], y * w, rcond=None)[0] if len(col) else np.zeros(0)
+    s = {ref: 0}
+    for c, k in col.items():
+        s[c] = int(np.floor(sol[k] + 0.5))            # whole frames (no banker's rounding)
+    # connected to the reference through used pairs? (a camera only in pairs among others is still
+    # fixed relative to them; lstsq gives the minimum-norm answer for a separate group: say unclear)
+    reach, frontier = {ref}, [ref]
+    while frontier:
+        c = frontier.pop()
+        for rec in used:
+            a_, b_ = rec["cams"]
+            for x, y_ in ((a_, b_), (b_, a_)):
+                if x == c and y_ not in reach:
+                    reach.add(y_)
+                    frontier.append(y_)
+    if 0 not in views or views[0] != 0:
+        # camera 1 (the project's clock) is not in this run: the shift most cameras need is "none"
+        vals = [s[c] for c in reach]
+        mode = max(set(vals), key=lambda v: (vals.count(v), -abs(v)))
+        s = {c: v - mode for c, v in s.items()}
+    resid = [abs(rec["best"] - (s[rec["cams"][1]] - s[rec["cams"][0]])) for rec in used
+             if rec["cams"][0] in reach and rec["cams"][1] in reach]
+    consistent = all(r_ <= 1 for r_ in resid)
+    for c in views:
+        out.shift[c] = s[c] if c in reach else None
+    if not consistent:
+        out.verdict = "unclear"
+        out.lines = ["The camera pairs disagree about the timing (no single offset per camera fits all of them): "
+                     "check the offsets by hand at a sharp event (CAMERAS panel), or a wand end clicked as the "
+                     "other end in one camera."]
+        return out
+    for c in views:
+        if out.shift[c]:
+            out.suggestions[c] = int(out.shift[c])
+    names = {c: project.name(c) for c in views}
+    for c, d in sorted(out.suggestions.items()):
+        ev = [rec for rec in used if c in rec["cams"] and rec["best"] != 0]
+        now = float(np.mean([rec["share0"] for rec in ev])) if ev else float("nan")
+        then = float(np.mean([rec["share_best"] for rec in ev])) if ev else float("nan")
+        old = float(project.offsets[c])
+        out.lines.append(
+            f"{names[c]}: its wand clicks agree with the other cameras when its offset is {old + d:g} instead of "
+            f"{old:g} ({abs(d)} frame{'s' if abs(d) != 1 else ''} {'more' if d > 0 else 'less'}): "
+            f"{100 * then:.0f} % of the clicks fit one geometry then, {100 * now:.0f} % now.")
+    left = [names[c] for c in views if out.shift[c] is None]
+    if out.suggestions:
+        out.verdict = "suggest"
+    else:
+        out.lines.append("The cameras' timing agrees with the wand clicks: no offset needs to change.")
+    if left:
+        out.lines.append(f"The wand cannot check the timing of {', '.join(left)} (too few frames shared with the "
+                         "other cameras).")
     return out
