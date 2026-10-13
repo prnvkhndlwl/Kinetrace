@@ -612,7 +612,7 @@ class _SaveWorker(QThread):
 # carried across a camera switch (I50). Frame, selection and zoom stay per camera.
 GLOBAL_UI_KEYS = ("follow", "autopause", "roi", "track_mode", "track_all", "marker_size", "show_mask", "mask_opacity",
                   "show_midline", "show_bones", "seg_backend", "point_backend", "trail_len",
-                  "trail_future", "onion", "loupe", "epipolar", "display_filter", "region_shape")
+                  "trail_future", "onion", "loupe", "epipolar", "display_filter", "region_shape", "wand_ends")
 
 
 class _ResizeHook(QObject):
@@ -723,6 +723,8 @@ class MainWindow(QMainWindow):
         self.project: Project | None = None
         self._views: list[_ViewRuntime] = []
         self.view3d: View3D | None = None          # the floating 3D window (created on demand)
+        self._calib_pic = None      # (G185) (calibration, wand names, calibview.CalibPicture) for the 3D window
+        self._wand_cal = None       # the calibration the wand wizard made this session (its result is exact)
         self._hull_cache: dict[int, tuple] = {}    # reference frame -> (verts, faces, Hull)
         # hotkeys are offered to `_hotkey` before the focused widget sees them
         # (see eventFilter): a click on a spin box or a list must never kill F
@@ -10514,6 +10516,9 @@ class MainWindow(QMainWindow):
         if had_hull is None:
             had_hull = bool(self._hull_cache)
         self._hull_cache.clear()
+        if self._calib_pic is not None:          # (G185) the wand picture of the old timing / calibration
+            self._calib_pic = None
+            self._refresh_view3d(force=True)
         if replacement is None and not (had or had_hull):
             return False
         self._update_disagreement()
@@ -11314,6 +11319,11 @@ class MainWindow(QMainWindow):
             return
         p.calibration = wiz.result_calibration
         self._wand_result = (wiz.result, wiz.gravity)
+        self._wand_cal = p.calibration                          # (G185) its picture comes from the run
+        ends = getattr(wiz.result, "wand_names", None)
+        if ends:
+            for sv in p.sessions:                               # display state (view.json), not dirty
+                sv.ui_state["wand_ends"] = list(ends)
         rec = self.__dict__.get("_undo_timing")
         if rec is not None and rec.get("after") is not None and all(
                 abs(a - b) <= 1e-9 for a, b in zip(rec["after"], p.offsets)):
@@ -11862,6 +11872,8 @@ class MainWindow(QMainWindow):
             if self.view3d is None:
                 self.view3d = View3D(self)
                 self.view3d.closed.connect(lambda: self.act_view3d.setChecked(False))
+                self.view3d.end_clicked.connect(self._goto_reference)              # (G185)
+                self.view3d.calib_wanted.connect(lambda: QTimer.singleShot(0, self._make_calib_picture))
             self.view3d.show()
             self._refresh_view3d(force=True)
         elif self.view3d is not None:
@@ -11900,7 +11912,84 @@ class MainWindow(QMainWindow):
             scene.mesh = (verts, faces)
             unit = p.calibration.unit if p.calibration else ""
             info += f" · hull {h.volume():.3g} {unit}³ from {h.n_views} cameras"
+        # (G185, G186) the wand calibration's picture, when one is made for THIS calibration
+        cal = p.calibration
+        self.view3d.set_calib_available(cal is not None and sum(cal.camera(v) is not None
+                                                                for v in range(p.n_views)) >= 2)
+        cp = self._calib_pic
+        scene.calib = cp[2] if (cp is not None and cp[0] is cal) else None
+        if scene.unit == "" and cal is not None:
+            scene.unit = cal.unit
         self.view3d.set_scene(scene, info)
+        if scene.calib is None and self.view3d._calib_on():
+            QTimer.singleShot(0, self._make_calib_picture)
+
+    def _goto_reference(self, t: int) -> None:
+        """(G185) A click on a wand end in the 3D window: the working camera shows that instant."""
+        p = self.project
+        if p is None or self.session is None:
+            return
+        f = int(p.local_index(p.active, int(t)))
+        if 0 <= f < self.session.n_frames:
+            self._goto(f, force=True)
+        else:
+            self.statusBar().showMessage(f"{p.name(p.active)} has no frame at that instant (reference frame "
+                                         f"{int(t)})", 5000)
+
+    def _wand_end_names(self) -> tuple[str, str] | None:
+        """The two wand landmarks: those of the last wand calibration (display state, view.json), else the
+        ones named like wand ends; None when neither is tracked in two or more cameras."""
+        from kinetrace import wanddata as _wd
+        from kinetrace.calibwizard import _guess_wand_names
+        p, s = self.project, self.session
+        if p is None:
+            return None
+        tracked = _wd.common_point_names(p)
+        saved = (s.ui_state.get("wand_ends") if s is not None else None) or []
+        if len(saved) >= 2 and saved[0] in tracked and saved[1] in tracked:
+            return str(saved[0]), str(saved[1])
+        a, b = _guess_wand_names(tracked)
+        return (a, b) if a and b and a != b else None
+
+    def _make_calib_picture(self) -> None:
+        """(G185, G186) The 3D picture of the project's calibration: this session's wand run when it made
+        the calibration (its own errors and rejected clicks), else the wand recomputed from its two
+        landmarks (after reopening nothing of the run is saved)."""
+        from kinetrace import calibview
+        p = self.project
+        v3 = self.view3d
+        if p is None or v3 is None or p.calibration is None or not v3._calib_on():
+            return
+        cal = p.calibration
+        cp = self._calib_pic
+        if cp is not None and cp[0] is cal:
+            self._refresh_view3d(force=True)
+            return
+        res = self._wand_result[0] if self._wand_result else None
+        try:
+            if res is not None and self._wand_cal is cal:
+                pic = calibview.from_wand_result(res, getattr(res, "frame_ids", None),
+                                                 list(res.report.get("camera_names") or []),
+                                                 tuple(getattr(res, "wand_names", ("end 1", "end 2"))))
+                names = tuple(getattr(res, "wand_names", ("end 1", "end 2")))
+            else:
+                names = self._wand_end_names()
+                if names is None:
+                    self.toast.show_message(
+                        "The wand calibration picture needs the two wand landmarks (the same names in two or "
+                        "more cameras, e.g. 'wand A' and 'wand B'): track them, or calibrate with the wand "
+                        "first.", "warn", 9000)
+                    return
+                a, b = names
+                pic = self._in_background("Drawing the wand calibration",
+                                          lambda: calibview.from_project(p, a, b))
+        except Exception as e:      # noqa: BLE001 - said, never a crash
+            self.toast.show_message(_plain_error(e, "The wand calibration picture could not be made"), "warn", 9000)
+            return
+        if p is not self.project or p.calibration is not cal:
+            return
+        self._calib_pic = (cal, names, pic)
+        self._refresh_view3d(force=True)
 
     # ------------------------------------------------------------------ body
 
@@ -12717,6 +12806,8 @@ class MainWindow(QMainWindow):
             _retire(self._preview)
 
     def closeEvent(self, ev):
+        if self.view3d is not None:
+            self.view3d.stop_threads()           # (G186) the covered-space worker ends before the window
         if self._first_frame_token is not None:
             self._first_frame_arrived()      # only waiting for a picture: nothing half-built
         if self._loading:

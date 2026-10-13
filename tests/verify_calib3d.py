@@ -220,14 +220,19 @@ def sec_e():
         p = win.project
         target = None
         for k in np.argsort(np.abs(pts[:, 0] - v.canvas.width() / 2)):
-            t_ref = int(v.scene.calib.end_frame[k])
-            loc = int(p.local_index(p.active, t_ref))
+            if not np.isfinite(pts[k]).all():
+                continue
+            x, y = int(round(pts[k, 0])), int(round(pts[k, 1]))
+            hit = v._pick(x, y)                       # the end a click there lands on (dots overlap)
+            if hit is None:
+                continue
+            loc = int(p.local_index(p.active, int(v.scene.calib.end_frame[hit])))
             if loc != win.current and 0 <= loc < win.session.n_frames:
-                target = (k, loc)
+                target = (x, y, loc)
                 break
         assert target is not None
-        k, loc = target
-        QTest.mouseClick(v.canvas, Qt.LeftButton, pos=QPoint(int(round(pts[k, 0])), int(round(pts[k, 1]))))
+        x, y, loc = target
+        QTest.mouseClick(v.canvas, Qt.LeftButton, pos=QPoint(x, y))
         pump(0.3)
         assert win.current == loc, (win.current, loc)
         # Covered by >= 3: the picture changes once the volume is computed
@@ -247,8 +252,51 @@ def sec_e():
         v._render()
         assert not np.array_equal(two, v.last_image), "Covered by >= 3 draws the same as >= 2"
         assert "2+" in v.info.text() or "cameras see" in v.info.text(), v.info.text()
+        # (owner 2026-10-12) the Cameras menu: two cameras unticked -> their fields of view go, the covered
+        # space is counted from the three others
+        v.chk_fov.setChecked(True)
+        pump(0.1)
+        v._render()
+        before = v.last_image.copy()
+        every = [int(a.data()) for a in v.cam_actions]     # the calibrated cameras (4: cam3 saw no wand)
+        v.cam_actions[0].trigger()                        # Cameras ▾ -> the first camera (the menu entry's click)
+        v.cam_actions[2].trigger()                        # Cameras ▾ -> the third
+        left = set(every) - {every[0], every[2]}
+        for _ in range(200):
+            pump(0.05)
+            if v.scene.calib.coverage is not None and v.scene.calib.coverage.n_cams == len(left):
+                break
+        assert v.scene.calib_views == left, (v.scene.calib_views, left)
+        assert v.scene.calib.coverage.n_cams == len(left), v.scene.calib.coverage.n_cams
+        assert [v.cmb_cover.itemData(i) for i in range(v.cmb_cover.count())] == list(range(2, len(left) + 1))
+        v._render()
+        assert not np.array_equal(before, v.last_image)
+        # after saving and reopening, nothing of the wand run is kept: the picture is rebuilt from the two
+        # wand landmarks (remembered as display state) with the project's calibration
+        assert win._save_project(), "Save failed"
+        pump(0.5)
+        win._open_project_from_path(proj_path)
+        for _ in range(300):
+            pump(0.05)
+            if win.state == READY and win.project is not None and win.project is not p:
+                break
+        p2 = win.project
+        assert p2 is not p and p2.calibration is not None and p2.calibration.views() == [0, 1, 3, 4]
+        assert p2.sessions[0].ui_state.get("wand_ends") == ["wand A", "wand B"], p2.sessions[0].ui_state.get("wand_ends")
+        if not win.act_view3d.isChecked():
+            win.act_view3d.trigger()
+        pump(0.3)
+        v = win.view3d
+        if not v.chk_calib.isChecked():
+            QTest.mouseClick(v.chk_calib, Qt.LeftButton, pos=QPoint(4, v.chk_calib.height() // 2))
+        for _ in range(200):
+            pump(0.05)
+            if v.scene.calib is not None:
+                break
+        assert v.scene.calib is not None and v.scene.calib.source == "tracks", v.scene.calib
+        assert v.scene.calib.end_names == ("wand A", "wand B") and len(v.scene.calib.finite_ends()) > 200
         print(f"E. app: 3D View -> Wand calibration, a click on a wand end moves to frame {loc}; covered by >= 3 "
-              f"redraws; '{v.info.text()[:80]}' OK")
+              f"redraws; two cameras unticked: recounted from the others; reopened: rebuilt from the tracks; '{v.info.text()[:60]}' OK")
     finally:
         ws.cw.WandWizard.exec = real_exec
         if hasattr(win, "_dev_probe"):

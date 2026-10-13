@@ -685,6 +685,7 @@ class View3D(QWidget):
         self.last_image: np.ndarray | None = None
         self._hits: dict = {}
         self._cover_thread: _CoverageThread | None = None
+        self._cover_threads: list = []          # every worker until it has finished (see _start_coverage)
         self._cover_gen = 0
         self._cover_key = None
         self._base_info = ""
@@ -692,8 +693,7 @@ class View3D(QWidget):
     # ---- data
     def set_scene(self, scene: Scene3D, info: str = "") -> None:
         old = self.scene.calib if self.scene is not None else None
-        if scene.calib is None and old is not None and self._calib_on():
-            scene.calib = old                     # a new instant keeps the calibration picture
+        scene.calib_views = self.scene.calib_views if (self.scene is not None and scene.calib is old) else None
         scene.cover_n = self.scene.cover_n if self.scene is not None else scene.cover_n
         self.scene = scene
         self._base_info = info
@@ -803,17 +803,23 @@ class View3D(QWidget):
             return
         self._cover_key = key
         self._cover_gen += 1
-        self.stop_threads(wait=False)
         th = _CoverageThread(pic, self.scene.calib_views, self._cover_gen)
         th.done.connect(self._coverage_done)
+        # every worker stays referenced until it has finished: an earlier one still counting for another
+        # choice of cameras is not dropped (a running QThread garbage-collected aborts the app); its result
+        # is ignored by generation
+        self._cover_threads.append(th)
+        th.finished.connect(lambda t=th: self._cover_thread_ended(t))
         self._cover_thread = th
         self.info.setText((self._base_info + "  ·  " if self._base_info else "") + "counting the covered space…")
         th.start()
 
+    def _cover_thread_ended(self, th) -> None:
+        if th in self._cover_threads:
+            self._cover_threads.remove(th)
+        th.deleteLater()
+
     def _coverage_done(self, res, gen: int) -> None:
-        th = self._cover_thread
-        if th is not None:
-            th.wait()
         if gen != self._cover_gen or self.scene.calib is None:
             return
         if isinstance(res, Exception):
@@ -824,10 +830,12 @@ class View3D(QWidget):
         self.request_render()
 
     def stop_threads(self, wait: bool = True) -> None:
-        """The coverage worker: its result is dropped (generation); with `wait`, until it has ended."""
-        th = self._cover_thread
-        if th is not None and th.isRunning() and wait:
-            th.wait()
+        """The coverage workers: their results are dropped (generation); with `wait`, until all have ended
+        (a count takes well under a few seconds; it cannot be interrupted half-way)."""
+        self._cover_gen += 1
+        if wait:
+            for th in list(self._cover_threads):
+                th.wait()
 
     def _show_info(self) -> None:
         pic = self.scene.calib
