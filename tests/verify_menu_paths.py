@@ -130,8 +130,10 @@ print(f"(a) all {len(GOLDEN)} actions of the old menu bar are reachable, shortcu
 # ---- (b) every menu path written in the code and the docs resolves ---------------------------------------
 TOPS = ("File", "Edit", "View", "Skeleton", "Events", "3D", "Body", "Help")   # today's and every former top menu
 # "3 Skeleton → 4 Track" (the getting-started steps) is not a menu path: no digit + space before the menu
-START = re.compile(r"(?<![\w/-])(?<!\d )(" + "|".join(re.escape(t) for t in TOPS) + r")\s*(?:→|->)\s*")
-ARROW = re.compile(r"→|->")
+# Arrows: → and ->, and " > " with a space on each side (the project README.txt and messages use it); a bare ">"
+# is a comparison or HTML, never a path
+START = re.compile(r"(?<![\w/-])(?<!\d )(" + "|".join(re.escape(t) for t in TOPS) + r")(?:\s*(?:→|->)\s*|[ \t]+>[ \t]+)")
+ARROW = re.compile(r"→|->|[ \t]>[ \t]")
 WORD = re.compile(r"[\w&+]+(?:['’\-][\w&+]+)*")
 SKIP = re.compile(r"[\s*`_\"']*")
 # entries whose label changes with the state (the text the docs may quote -> the label in a fresh window)
@@ -165,7 +167,8 @@ def match_entry(text: str, pos: int, path: list):
     label to its first words when no other entry of that menu starts with the same words ("3D → Reconstruct")."""
     end = ARROW.search(text, pos)
     end = min(end.start() if end else len(text), pos + 300)
-    toks = [(m.group().lower().replace("'", "").replace("’", ""), m.end()) for m in WORD.finditer(text, pos, end)]
+    found = list(WORD.finditer(text, pos, end))
+    toks = [(m.group().lower().replace("'", "").replace("’", ""), m.end()) for m in found]
     sibs = children.get(tuple(path), [])
     best = None
     for name, act, sub in sibs:
@@ -177,6 +180,9 @@ def match_entry(text: str, pos: int, path: list):
                 continue
             whole = k == len(cw)
             unique = all(o is act or words(on)[:k] != cw[:k] for on, o, _ in sibs)
+            if not whole and k < len(found) and not text[found[k - 1].end():found[k].start()].strip() \
+                    and found[k].group()[:1].isupper():
+                continue      # "Side-by-side Video" is not "Side-by-side View": a capital word goes on the label
             if (whole or unique) and (best is None or k > best[0]):
                 best = (k, name, sub, toks[k - 1][1])
     return None if best is None else best[1:]
@@ -204,19 +210,42 @@ def resolve(text: str, pos: int, top: str):
             # a path that stops at a submenu while the words go on: "3D → Calibrate a Lens" once Calibrate
             # became a submenu (its entry is 3D → Calibrate → Calibrate a Lens)
             return " > ".join(path) + " is a submenu; the text goes on with " + repr(" ".join(text[pos:pos + 40].split()))
-        if sub is None or nxt is None or WORD.search(between):
+        if sub is None:
+            # "File → Export → Body Joint Positions… / Body Joint Angles…": the second entry is a sibling
+            alt = re.match(r"[*`_…\s]*\s/\s+[*`_]*(?=[A-Z])", text[pos:])
+            if alt and match_entry(text, pos + alt.end(), path[:-1]) is None:
+                return (" > ".join(path[:-1]) + " has no entry for " +
+                        repr(" ".join(text[pos + alt.end():pos + alt.end() + 50].split())))
+            return None
+        if nxt is None or WORD.search(between):
             return None
         pos = nxt.end()
 
 
 sources = [os.path.join(ROOT, "kinetrace", f) for f in sorted(os.listdir(os.path.join(ROOT, "kinetrace")))
            if f.endswith(".py")]
-sources += [os.path.join(ROOT, "docs", "MANUAL.md"), os.path.join(ROOT, "README.md")]
+# every published document (the local-only ones are history or notes: AUDIT.md keeps the old paths on purpose)
+LOCAL_ONLY = {"CLAUDE.md", "AUDIT.md", "DEVELOPMENT.md", "PIPELINE_ROADMAP.md", "NEW_ACCOUNT_SETUP.md"}
+for folder in (ROOT, os.path.join(ROOT, "docs")):
+    sources += [os.path.join(folder, f) for f in sorted(os.listdir(folder))
+                if f.endswith(".md") and f not in LOCAL_ONLY]
+sources.append(os.path.join(ROOT, "requirements.txt"))
 wiki = os.path.join(ROOT, "wiki")
 if not os.path.isdir(wiki):          # a worktree has no wiki clone: the main checkout's
     wiki = os.path.join(os.path.dirname(ROOT), "Kinetrace", "wiki")
 if os.path.isdir(wiki):
     sources += [os.path.join(wiki, f) for f in sorted(os.listdir(wiki)) if f.endswith(".md")]
+# the checker itself: paths it must refuse (each a false pass once) and paths it must accept
+for text, ok in (("Body → Side-by-side Video…", False), ("3D → Calibrate a Lens (checkerboard)", False),
+                 ("File > Keep Exports Up to Date", False), ("Body → Export Joint Angles…", False),
+                 ("File → Export → Body Joint Positions… / Export Joint Angles…", False),
+                 ("File > Export > Keep Exports Up to Date", True), ("see 3D → Reconstruct).", True),
+                 ("**3D → Calibrate → Calibrate a Lens (checkerboard)…**", True),
+                 ("Help → About and Check for Updates", True), ("1 Open video → 2 Segment → 3 Skeleton → 4", True)):
+    m = START.search(text)
+    got = m is None or resolve(text, m.end(), m.group(1)) is None
+    assert got == ok, f"the checker {'refuses' if ok else 'accepts'} {text!r}"
+
 n_paths, stale = 0, []
 for path in sources:
     with open(path, encoding="utf-8") as f:
