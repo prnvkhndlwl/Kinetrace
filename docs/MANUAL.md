@@ -375,7 +375,8 @@ lit, with a card saying what it is for: **→** or **Enter** for the next part,
 **←** to go back, **Esc** to leave. While the tour is up, keys and clicks only
 move the tour, and it changes nothing you have set up — a panel you have hidden
 or moved stays where it is, and its card tells you how to bring it back. It
-cannot start while tracking is running (pause with **X** first).
+cannot start while tracking is running (pause with **X** first), and a run
+started from another window closes it, so **X** and **Space** always pause.
 
 If no video is open, the tour first opens a **demo video** that Kinetrace makes
 for you (a made-up animal walking; about a second the first time, kept in the
