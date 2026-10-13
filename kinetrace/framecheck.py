@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel, QPushB
 
 from kinetrace import fingerprint as fpm
 from kinetrace import theme
-from kinetrace import video_source as vs
 from kinetrace.widgets import wrap_caption
 
 
@@ -50,12 +49,10 @@ class FrameCheckWorker(QThread):
 
     def run(self):
         try:
-            plan = vs.seek_plan(self.path)
-            if plan is None or plan.file != vs.file_identity(self.path):
-                plan = vs.check_seeks(self.path, self.n_frames, self._cancelled)
-                if self._cancel:
-                    return
-                vs.set_seek_plan(self.path, plan)
+            plan, fresh = fpm.exact_reads(self.path, self.n_frames, self._cancelled)
+            if self._cancel:
+                return
+            if fresh:
                 self.seeks_checked.emit(plan)
             if self.fp is None:
                 if self.make_missing:

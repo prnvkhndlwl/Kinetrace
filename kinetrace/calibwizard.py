@@ -31,7 +31,7 @@ from kinetrace import theme
 from kinetrace import wand as _wand
 from kinetrace import wanddata as wd
 from kinetrace.video_source import display_rotation
-from kinetrace.errors import plain_error
+from kinetrace.errors import cap_first, plain_error
 from kinetrace.lenswizard import VERDICT_COLORS, _dim, stop_page_threads
 
 UNITS = [("metres (m)", "m"), ("centimetres (cm)", "cm"), ("millimetres (mm)", "mm"), ("inches (in)", "in"),
@@ -200,7 +200,7 @@ class _CalibThread(QThread):
                            f"cameras (the page suggests one)")
                     e = f"{e} on reference frame {a.get('t', '?')}"
                 res = wand.keep_camera_frame(
-                    res, f"{what[0].upper() + what[1:]} could NOT be set: {e}. The calibration itself is fine "
+                    res, f"{cap_first(what)} could NOT be set: {e}. The calibration itself is fine "
                          f"and keeps {cam1}'s axes. Go Back to 'Which way is up' and {fix}, or choose "
                          f"'Neither'.", what)
             # cameras with a lens profile were solved on UNDISTORTED points: the

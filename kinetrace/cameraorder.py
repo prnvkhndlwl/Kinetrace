@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QHB
                                QListWidgetItem, QPushButton, QVBoxLayout)
 
 from kinetrace import theme
+from kinetrace.errors import cap_first
 
 KEY_ROLE = Qt.UserRole + 1
 NOTE_ROLE = Qt.UserRole + 2
@@ -119,7 +120,7 @@ class CameraOrderDialog(QDialog):
         self.btn_up.setEnabled(r > 0)
         self.btn_down.setEnabled(0 <= r < self.list.count() - 1)
         why = self._problem(self.keys()) if self._problem is not None else None
-        self.note.setText(why[:1].upper() + why[1:] + "." if why else self._consequence)
+        self.note.setText(cap_first(why) + "." if why else self._consequence)
         self.note.setStyleSheet(f"color: {theme.AMBER if why else theme.TEXT_DIM};")
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(not why)
 

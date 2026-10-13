@@ -10657,7 +10657,7 @@ class MainWindow(QMainWindow):
         if reason and (dropped or had_hull):
             gone = " and ".join(x for x, on in (("the 3D result", dropped), ("the carved volume", had_hull)) if on)
             self.statusBar().showMessage(
-                f"{reason[:1].upper() + reason[1:]}: {gone} made earlier {'were' if ' and ' in gone else 'was'} "
+                f"{cap_first(reason)}: {gone} made earlier {'were' if ' and ' in gone else 'was'} "
                 "cleared — " + " and ".join(x for x, on in (("press Ctrl+3 (3D → Reconstruct)", dropped),
                                                             ("carve with Ctrl+4", had_hull)) if on) + " again", 8000)
         return dropped
@@ -11403,7 +11403,7 @@ class MainWindow(QMainWindow):
         from kinetrace.calibwizard import lens_for_camera
         p = self.project
         fitted, said = lens_for_camera(prof, p.sessions[v], p.name(v))
-        return fitted, (said[0].upper() + said[1:] if said else "")
+        return fitted, cap_first(said)
 
     def _lens_turn_unknown(self, prof, v: int) -> bool:
         """`_lens_fit` refuses `prof` for camera v only because the profile does not record its board

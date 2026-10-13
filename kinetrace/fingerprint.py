@@ -313,15 +313,18 @@ def _finish(cands: list, path: str, n: int, width: int, height: int, seeks: str,
                             time.strftime("%Y-%m-%d %H:%M:%S"), marks, crops, thumbs, seeks, bool(data_before))
 
 
-def exact_reads(path: str, n_frames: int, should_cancel=lambda: False) -> None:
+def exact_reads(path: str, n_frames: int, should_cancel=lambda: False):
     """Make sure this file's seeks were checked on this computer (`check_seeks`), so every read
     below is exact -- the app's worker has usually done it already; a caller of this module on its
-    own (a test, the CI check) gets it here."""
+    own (a test, the CI check) gets it here. Returns (the plan, True when it was checked NOW and kept):
+    the frame check shows a fresh one (R29: it repeated this rule)."""
     plan = seek_plan(path)
     if plan is None or plan.file != file_identity(path):
         plan = check_seeks(path, n_frames, should_cancel)
         if not should_cancel():
             set_seek_plan(path, plan)
+            return plan, True
+    return plan, False
 
 
 def _reader(path: str):

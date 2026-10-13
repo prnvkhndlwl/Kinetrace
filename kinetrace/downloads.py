@@ -32,6 +32,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from kinetrace.errors import cap_first
+
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 HF_CACHE = MODELS_DIR / "hf" / "hub"      # the Hugging Face cache INSIDE the install, whatever HF_HOME says (I195)
 TIMEOUT_S = 30              # no byte for this long = the download stalled
@@ -115,7 +117,7 @@ def _mb(n: float) -> str:
 def _no_net(label: str, e: Exception, hint: str | None = None) -> DownloadError:
     hint = hint or ("Check the internet connection and try again: it is needed only once, then the file stays "
                     "in models/.")
-    return DownloadError(f"{label[0].upper()}{label[1:]} could not be downloaded ({_why(e)}). {hint}")
+    return DownloadError(f"{cap_first(label)} could not be downloaded ({_why(e)}). {hint}")
 
 
 def _why(e: Exception) -> str:
@@ -168,7 +170,7 @@ def _disk_error(label: str, e: OSError, folder) -> DownloadError:
     else:
         why = e.strerror or type(e).__name__
         todo = "Check the folder and the drive"
-    return DownloadError(f"{label[0].upper()}{label[1:]} could not be saved: {why} ({folder}). {todo}, then try "
+    return DownloadError(f"{cap_first(label)} could not be saved: {why} ({folder}). {todo}, then try "
                          "again - this is not a network problem.")
 
 
@@ -430,6 +432,6 @@ def hf_snapshot(repo: str, label: str, progress=None, cancel=lambda: False) -> N
             raise _disk_error(label, disk, HF_CACHE) from None
         low = f"{type(e).__name__} {e}".lower()
         if any(k in low for k in ("gated", "401", "403", "unauthorized", "restricted")):
-            raise DownloadError(f"{label[0].upper()}{label[1:]} is gated on Hugging Face: request access to "
+            raise DownloadError(f"{cap_first(label)} is gated on Hugging Face: request access to "
                                 f"https://huggingface.co/{repo}, then paste a read token in Settings.") from None
         raise _no_net(label, e) from None

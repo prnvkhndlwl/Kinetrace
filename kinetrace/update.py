@@ -42,7 +42,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kinetrace import APP_VERSION
+from kinetrace import APP_VERSION, winlaunch
 
 REPO = "prnvkhndlwl/Kinetrace"
 PAGE = f"https://github.com/{REPO}"
@@ -295,8 +295,9 @@ def _read_manifest(root: Path) -> dict:
 
 
 def _digest(path: Path) -> str | None:
+    from kinetrace.downloads import file_sha256        # the one file hash (R29), read in chunks
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return file_sha256(path)
     except OSError:
         return None
 
@@ -513,13 +514,12 @@ def relaunch(root: Path = ROOT) -> None:
             pyw = launcher_python(root)
             if pyw.exists():
                 subprocess.Popen([str(pyw), "-I", str(launcher)], cwd=str(root),
-                                 creationflags=0x00000008 | 0x00000200, close_fds=True)   # detached
+                                 creationflags=winlaunch.DETACHED, close_fds=True)
                 return
-        # run.bat in a console of its own, as a double click would. Not `start "title" x`: an
-        # unquoted first argument of start is the program, so "start Kinetrace run.bat" ran
-        # nothing (I156). `cmd /c ""path""` takes the quoted path literally (& ^ in a folder name).
-        subprocess.Popen(f'cmd /c ""{root / "run.bat"}""', cwd=str(root),
-                         creationflags=subprocess.CREATE_NEW_CONSOLE)
+        # run.bat in a console of its own, as a double click would (winlaunch's one rule, R29). Not
+        # `start "title" x`: an unquoted first argument of start is the program, so "start Kinetrace
+        # run.bat" ran nothing (I156).
+        winlaunch.run_bat(root, [])
     elif sys.platform == "darwin":
         # Kinetrace.app when run.sh made it (X27): no Terminal window, and it opens Terminal by itself
         # when the update asked for an install step; -n: a NEW instance, not the one that is quitting
