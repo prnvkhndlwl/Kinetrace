@@ -59,6 +59,11 @@ MANUAL_WHICH_MODEL = "Which point model should I use?"
 _AT_AVAILABLE: dict = {}        # the `available` function asked -> True once it said so (R23)
 
 
+def _silhouettes_text(n: int) -> str:
+    """'the silhouette' / 'N silhouettes' in the Track button's and the notice's sentences (R25)."""
+    return "the silhouette" if n < 2 else f"{n} silhouettes"
+
+
 def _key_hint(label: str, keys: str) -> str:
     """A menu label with its single-key hotkey in the shortcut column (G188). Not a real shortcut: single
     letters go through `_hotkey`, so text fields keep them. On a Mac the native menu turns text after a tab
@@ -2536,7 +2541,7 @@ class MainWindow(QMainWindow):
             if n:
                 what.append(f"the {n} selected point(s)")
             if animal_ok:
-                what.append("the silhouette" if len(segs) < 2 else f"{len(segs)} silhouettes")
+                what.append(_silhouettes_text(len(segs)))
             what = " and ".join(what)
             if animal_ok and self._live_derived(s, segs):
                 what += " (with the landmarks derived from it)"
@@ -5658,18 +5663,15 @@ class MainWindow(QMainWindow):
         return None, False
 
     def _on_animal_click(self, x: float, y: float, positive: bool):
-        s = self.session
-        if s is None or self.state != READY:
-            return
-        k, new = self._segment_tool_target()
-        if k is None:
-            return
-        dropped = self._drop_undo_point()
-        s.segments[k].add_click(self.current, x, y, positive)
-        s._touch()
-        self._after_prompt_change("excluded" if not positive else "marked", new, dropped)
+        self._segment_prompt(lambda seg: seg.add_click(self.current, x, y, positive),
+                             "excluded" if not positive else "marked")
 
     def _on_animal_box(self, x0: float, y0: float, x1: float, y1: float):
+        self._segment_prompt(lambda seg: seg.set_box(self.current, (x0, y0, x1, y1)), "boxed")
+
+    def _segment_prompt(self, edit, verb: str) -> None:
+        """A click or box of the Segment tool onto the animal it is for (R25: two copies): `edit(segment)`
+        changes its prompts; no undo step spans it (G70)."""
         s = self.session
         if s is None or self.state != READY:
             return
@@ -5677,9 +5679,9 @@ class MainWindow(QMainWindow):
         if k is None:
             return
         dropped = self._drop_undo_point()
-        s.segments[k].set_box(self.current, (x0, y0, x1, y1))
+        edit(s.segments[k])
         s._touch()
-        self._after_prompt_change("boxed", new, dropped)
+        self._after_prompt_change(verb, new, dropped)
 
     def _on_prompt_remove(self, index: int):
         s = self.session
@@ -6648,19 +6650,11 @@ class MainWindow(QMainWindow):
             return
         if self.session.points[pid].derived:        # the same refusal as a plain click (I69)
             self._refresh_overlay()
-            self.statusBar().showMessage(
-                f"{self.session.points[pid].name} is derived from the silhouette — to place it by hand, "
-                "right-click it → Data source → Track by appearance", 6000)
+            self._say_derived(pid, "place")
             return
         # a Ctrl+click / N-continue is ONE undo step, like a plain click:
         # without it Ctrl+Z threw away the whole previous tracking run (I64)
-        self._begin_edit()
-        corrected = bool(self.session.tracked[self.current, pid] and not self.session.manual[self.current, pid])
-        self.session.set_position(self.current, pid, x, y)
-        if corrected:
-            self._hint_corrections(pid)
-        self._refresh_overlay()
-        self._update_track_button()
+        self._hand_place(pid, x, y)
         name = self.session.points[pid].name
         rmse = self._residual_sentence(name)                   # (G28)
         self.statusBar().showMessage(
@@ -6668,6 +6662,31 @@ class MainWindow(QMainWindow):
             + f"{name} set to ({x:.1f}, {y:.1f}) at frame {self.current} — press Track to "
             "re-track forward from here (the Track button names the points it will track); "
             "Ctrl+Z undoes the move", 7000)
+
+    def _names_phrase(self, pids: list[int]) -> str:
+        """The first five points' names, then ", … (N points)" (R25: Delete and Clear said it alike)."""
+        s = self.session
+        names = ", ".join(s.points[p].name for p in pids[:5])
+        return names + (f", … ({len(pids)} points)" if len(pids) > 5 else "")
+
+    def _hand_place(self, pid: int, x: float, y: float, hint: bool = True) -> None:
+        """Place `pid` by hand on this frame as ONE undo step, and show it (R25: click, Ctrl+click, ◇ and Snap
+        did it in four copies). `hint`: a tracked frame corrected counts toward the corrections hint (G58);
+        the ◇ and Snap to the rays never did."""
+        s = self.session
+        self._begin_edit()
+        corrected = hint and bool(s.tracked[self.current, pid] and not s.manual[self.current, pid])
+        s.set_position(self.current, pid, x, y)
+        if corrected:
+            self._hint_corrections(pid)
+        self._refresh_overlay()
+        self._update_track_button()
+
+    def _say_derived(self, pid: int, verb: str) -> None:
+        """A landmark derived from the silhouette is not placed by hand (I69): says how to make it one."""
+        self.statusBar().showMessage(
+            f"{self.session.points[pid].name} is derived from the silhouette — to {verb} it by hand, "
+            "right-click it → Data source → Track by appearance", 6000)
 
     def _on_reposition(self, x: float, y: float):
         if self._selected_point() is not None:
@@ -6698,18 +6717,10 @@ class MainWindow(QMainWindow):
                 "info", 7000)
             return
         if s.points[pid].derived:
-            self.statusBar().showMessage(
-                f"{s.points[pid].name} is derived from the silhouette — to annotate it by hand, "
-                "right-click it → Data source → Track by appearance", 6000)
+            self._say_derived(pid, "annotate")
             return
         x, y = self._snap_to_prediction(pid, x, y)
-        self._begin_edit()               # Ctrl+Z takes the click back
-        corrected = bool(s.tracked[self.current, pid] and not s.manual[self.current, pid])
-        s.set_position(self.current, pid, x, y)
-        if corrected:
-            self._hint_corrections(pid)
-        self._refresh_overlay()
-        self._update_track_button()
+        self._hand_place(pid, x, y)      # Ctrl+Z takes the click back
         n = int(s.manual[:, pid].sum())
         plural = "s" if n != 1 else ""
         rmse = self._residual_sentence(s.points[pid].name)      # (G28)
@@ -6853,9 +6864,7 @@ class MainWindow(QMainWindow):
                 self._on_delete(pids[0])
             return
         n_cells = int(s.tracked[:, pids].sum())
-        names = ", ".join(s.points[p].name for p in pids[:5])
-        if len(pids) > 5:
-            names += f", … ({len(pids)} points)"
+        names = self._names_phrase(pids)
         gone = [s.points[p].name for p in pids]
         n_other, cams = self._landmark_data_elsewhere(gone)
         also = (f"\n\nThey are also removed from {', '.join(cams)} (every camera shares one list of "
@@ -6965,9 +6974,7 @@ class MainWindow(QMainWindow):
         self._apply_state()
         parts = []
         if use:
-            names = ", ".join(s.points[p].name for p in use[:5])
-            if len(use) > 5:
-                names += f", … ({len(use)} points)"
+            names = self._names_phrase(use)
             parts.append(f"{n_pts} tracked frames for {names}")
         if do_masks:
             parts.append(f"{n_msk} silhouettes")
@@ -8130,10 +8137,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"No ◇ for {name}: {pr['why']}", 9000)
             return
         x, y = float(pr["xy"][0]), float(pr["xy"][1])
-        self._begin_edit()
-        s.set_position(self.current, pid, x, y)
-        self._refresh_overlay()
-        self._update_track_button()
+        self._hand_place(pid, x, y, hint=False)
         rmse = self._residual_sentence(name)                   # (G28)
         self.statusBar().showMessage(
             f"{name} placed where {' and '.join(self.project.name(c) for c in pr['views'])} put it on frame "
@@ -8191,10 +8195,7 @@ class MainWindow(QMainWindow):
             return
         n_cams = int(got[1])
         x, y = float(got[0][0]), float(got[0][1])
-        self._begin_edit()
-        s.set_position(self.current, pid, x, y)
-        self._refresh_overlay()
-        self._update_track_button()
+        self._hand_place(pid, x, y, hint=False)
         moved = float(np.linalg.norm(np.array([x, y]) - cur)) if np.isfinite(cur).all() else float("nan")
         self.statusBar().showMessage(
             f"{s.points[pid].name} snapped onto {n_cams} camera{'s' if n_cams != 1 else ''}' rays at "
@@ -8598,12 +8599,7 @@ class MainWindow(QMainWindow):
                         trimmed.append((p.name(v), end))
         fails = [d["fail"] for _k, d in ran if d.get("fail") is not None]
         if fails:
-            v, f, pid = min(fails, key=lambda t: t[1])
-            if v < p.n_views and p.active != v:
-                self._set_active_view(v)
-            self._goto(min(f, self.n_frames - 1), force=True)
-            if 0 <= pid < self.session.n_points:
-                self._on_select(pid)
+            self._show_at(*min(fails, key=lambda t: t[1]))
         else:
             if st["view"] < p.n_views and p.active != st["view"]:
                 self._set_active_view(st["view"])
@@ -8952,6 +8948,14 @@ class MainWindow(QMainWindow):
             run.deleteLater()
         st["runs"] = []
 
+    def _show_at(self, view: int, frame: int, pid: int | None = None) -> None:
+        """The camera, frame and point a run stopped on (R25: two copies). `_set_active_view` already leaves
+        the active camera / a camera gone alone, `_goto` keeps the frame in the video."""
+        self._set_active_view(view)
+        self._goto(frame, force=True)
+        if pid is not None and 0 <= pid < self.session.n_points:
+            self._on_select(pid)
+
     def _multi_finish(self) -> None:
         """Every camera done (or the run stopped): one undo step for all of them,
         a summary, and the working camera back -- unless a camera stopped on a lost
@@ -8966,11 +8970,7 @@ class MainWindow(QMainWindow):
         if user_stop:
             problem = None      # X stopped every camera at once: back to the one watched (I141)
         if problem is not None:
-            if p.active != problem["view"]:
-                self._set_active_view(problem["view"])
-            self._goto(problem["fail"], force=True)
-            if problem.get("pid") is not None and problem["pid"] >= 0 and problem["pid"] < self.session.n_points:
-                self._on_select(problem["pid"])
+            self._show_at(problem["view"], problem["fail"], problem.get("pid"))
         else:
             orig = st["orig"]
             if orig < p.n_views and p.active != orig:
@@ -9140,7 +9140,7 @@ class MainWindow(QMainWindow):
         skipped = sum(1 for i in range(s.n_points) if not s.points[i].derived and i in scope) - len(pids)
         segs = self._run_segments(scope) if animal_ok else []
         parts = ([f"the {len(pids)} selected point(s)"] if pids else []) + (
-            ["the silhouette" if len(segs) < 2 else f"{len(segs)} silhouettes"] if animal_ok else [])
+            [_silhouettes_text(len(segs))] if animal_ok else [])
         held = self._held_note(pids, segs)
         self.statusBar().showMessage(
             f"Tracking {' and '.join(parts)}" + (f" — {held}" if held else "")
@@ -10020,35 +10020,20 @@ class MainWindow(QMainWindow):
         self._undo_snap = None
         undone = self._undo_timing_step(timing) if timing is not None else False
         if undone is None:
-            self._refresh_companions()
-            self.act_undo.setEnabled(False)
-            self._refresh_point_list()
-            self._refresh_overlay()
-            self._update_frame_label()
-            self._apply_state()
-            self.statusBar().showMessage(
-                "The offsets or the calibration were changed again after 'Apply these offsets': Undo leaves "
-                "them as they are now", 8000)
-            return
-        if undone:
-            self._refresh_companions()
-            self.act_undo.setEnabled(False)
-            self._refresh_point_list()
-            self._refresh_overlay()
-            self._update_frame_label()
-            self._apply_state()
-            self.statusBar().showMessage(
-                "Restored the camera offsets, and the calibration made from them, from before "
-                "'Apply these offsets'", 8000)
-            return
-        self._refresh_companions()
+            said = ("The offsets or the calibration were changed again after 'Apply these offsets': Undo leaves "
+                    "them as they are now", 8000)
+        elif undone:
+            said = ("Restored the camera offsets, and the calibration made from them, from before "
+                    "'Apply these offsets'", 8000)
+        else:
+            said = ("Restored tracks from before the last tracking run / edit", 5000)
+        self._refresh_companions()       # one epilogue for the three outcomes (R25)
         self.act_undo.setEnabled(False)
         self._refresh_point_list()
         self._refresh_overlay()
         self._update_frame_label()
         self._apply_state()  # Track/Export gates depend on the restored data
-        self.statusBar().showMessage(
-            "Restored tracks from before the last tracking run / edit", 5000)
+        self.statusBar().showMessage(*said)
 
     # ------------------------------------------------------- project / saves
 
@@ -11770,12 +11755,10 @@ class MainWindow(QMainWindow):
     def _estimate_offsets_dialog(self):
         from kinetrace.calib import estimate_offsets
         p = self.project
-        if not self._need_calibration("Estimate Sub-frame Offsets"):
+        rng = self._overlap_or_say("Estimate Sub-frame Offsets")
+        if rng is None:
             return
-        t0, t1 = self._t_range_3d()
-        if t1 < t0:
-            self.toast.show_message("Nothing tracked in the overlap yet — track the cameras first.", "warn", 6000)
-            return
+        t0, t1 = rng
         rep: dict = {}
 
         def work(report, cancelled):
@@ -11843,12 +11826,10 @@ class MainWindow(QMainWindow):
     def _reconstruct_3d(self, quiet: bool = False):
         from kinetrace.calib import reconstruct
         p = self.project
-        if not self._need_calibration("Reconstruct 3D Landmarks"):
+        rng = self._overlap_or_say("Reconstruct 3D Landmarks")
+        if rng is None:
             return
-        t0, t1 = self._t_range_3d()
-        if t1 < t0:
-            self.toast.show_message("Nothing tracked in the overlap yet — track the cameras first.", "warn", 6000)
-            return
+        t0, t1 = rng
         try:           # off the GUI thread (G50)
             p.reconstruction = self._in_background(
                 "Reconstructing the 3D landmarks",
@@ -11862,11 +11843,7 @@ class MainWindow(QMainWindow):
         solved = int(np.isfinite(r.residual).sum())
         med = float(np.nanmedian(r.residual)) if solved else float("nan")
         self._apply_state()
-        if not self.act_view3d.isChecked():
-            self.act_view3d.setChecked(True)
-            self._toggle_view3d(True)
-        else:
-            self._refresh_view3d(force=True)
+        self._show_view3d()
         # A number without a verdict is what let a real stereo test export
         # 38 px of camera disagreement as if it were data: say what the residual
         # means and what to do, every time, and keep the verdict with the result.
@@ -12057,17 +12034,33 @@ class MainWindow(QMainWindow):
                 "when it is fully in view of three.")
         self._hull_cache[t] = (verts, faces, h)
         self._apply_state()
-        if not self.act_view3d.isChecked():
-            self.act_view3d.setChecked(True)
-            self._toggle_view3d(True)
-        else:
-            self._refresh_view3d(force=True)
+        self._show_view3d()
         if not quiet:
             unit = p.calibration.unit or "unit"
             self.toast.show_message(
                 f"Volume hull at frame {t} of {p.name(0)}: {h.n_views} cameras, {h.volume():.3g} {unit}³ "
                 f"({mesh_volume(verts, faces):.3g} {unit}³ as a mesh), voxel {voxel:.3g} {unit}. "
                 "File → Export → Mesh of This Frame writes it as OBJ/PLY.", "info", 9000)
+
+    def _show_view3d(self) -> None:
+        """The 3D window open and redrawn (R25: Reconstruct and Carve did it in two copies). `act_view3d` is
+        wired with `triggered`, so ticking it here does not open the window by itself."""
+        if not self.act_view3d.isChecked():
+            self.act_view3d.setChecked(True)
+            self._toggle_view3d(True)
+        else:
+            self._refresh_view3d(force=True)
+
+    def _overlap_or_say(self, what: str) -> "tuple[int, int] | None":
+        """The reference instants the cameras overlap with tracked data, for a 3D step called `what`; None
+        (said) without a calibration or without such instants (R25: two copies)."""
+        if not self._need_calibration(what):
+            return None
+        t0, t1 = self._t_range_3d()
+        if t1 < t0:
+            self.toast.show_message("Nothing tracked in the overlap yet — track the cameras first.", "warn", 6000)
+            return None
+        return t0, t1
 
     def _toggle_view3d(self, on: bool):
         if on:
