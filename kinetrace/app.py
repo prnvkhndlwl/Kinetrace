@@ -2167,10 +2167,7 @@ class MainWindow(QMainWindow):
         self.timeline.setEnabled(has_video and not tracking)  # still paints progress live
         # ONLY the working camera takes edits — a click on a companion view
         # switches to it instead, so an edit can never land in the wrong session
-        active_i = self.project.active if self.project is not None else 0
-        for k, cv in enumerate(self.grid.canvases):
-            cv.set_interactive(has_video and not tracking and k == active_i)
-            cv.set_switchable(has_video and not tracking and k != active_i)
+        self._set_canvas_roles(has_video and not tracking)
         self.btn_add.setEnabled(has_video and not tracking)
         if tracking and self.btn_add.isChecked():
             self.btn_add.setChecked(False)
@@ -3567,24 +3564,13 @@ class MainWindow(QMainWindow):
             then(info)
 
         self.state = READY
-        self._refresh_cameras()
-        self._undo_snap = None
-        self.selected = None
         self._animal_hint_shown = False
-        self._refresh_point_list()
-        self.timeline.set_session(self.session)
-        self._refresh_events_ui()
-        self._refresh_skeleton_menu()
-        self._refresh_animal_panel()
-        self._goto(self.session.current_frame if self.session else 0, force=True)
-        self._apply_ui_state()   # restored sessions reopen EXACTLY as saved
-        self._apply_state()
+        self._show_session(self.session.current_frame if self.session else 0, info.path)
         job, self._after_open = self._after_open, None
         if job is not None and Path(job[0]).resolve() == Path(info.path).resolve():
             QTimer.singleShot(0, job[1])
         if self.session is not None and self.session.n_points > 3:
             QTimer.singleShot(0, self._fit_timeline_height)
-        self.setWindowTitle(f"{APP_NAME} — {Path(info.path).name}")
         if (self.session is not None and self.session.n_points == 0 and self.session.animal is None
                 and not self._on_demo()):           # the demo is filled next (G183): the hint would be wrong
             self.toast.show_message(
@@ -3962,10 +3948,7 @@ class MainWindow(QMainWindow):
         self._rebudget_caches()
         for cv in self.grid.set_count(self.project.n_views):
             self._wire_canvas(cv)
-        cv = self.grid.canvas(i)
-        cv.set_video_size(info.width, info.height)
-        cv.set_interactive(False)          # only the active view takes edits
-        cv.set_marker_size(self.marker_spin.value())
+        self.grid.canvas(i).set_video_size(info.width, info.height)    # (its roles and marker size: wired)
         self.grid.set_active(self.project.active)
         self._apply_state()            # multi-camera actions (sync, import calibration) light up
         if added:
@@ -4019,17 +4002,22 @@ class MainWindow(QMainWindow):
         self._rebudget_caches()
         self.grid.drop_view(i)             # (G170) the cameras after it move down one, on screen too
         self.grid.set_count(p.n_views)
-        for k, rt in enumerate(self._views):          # tiles after i now show another camera
-            cv = self.grid.canvas(k)
-            if cv is not None:
-                cv.set_video_size(rt.info.width, rt.info.height)
-            rt.want_frame = None
+        self._size_tiles()                 # tiles after i now show another camera
         self.grid.set_active(p.active)
         self._apply_active_view(target if target is not None else p.session.current_frame)
         self._enter_camera_tools(add_on)
         self._drop_reconstruction("a camera was removed", had=had_3d, had_hull=had_hull)       # (I206)
 
     # ------------------------------------------------------- the cameras' order (G172)
+
+    def _size_tiles(self) -> None:
+        """Each tile sized for the camera now at its index, with nothing asked of it yet (R25: a camera
+        removed, the order changed, a project opened)."""
+        for k, rt in enumerate(self._views):
+            cv = self.grid.canvas(k)
+            if cv is not None:
+                cv.set_video_size(rt.info.width, rt.info.height)
+            rt.want_frame = None
 
     def _order_consequence(self) -> str:
         """What reordering an open project does, in words (the order dialog's footnote)."""
@@ -4085,11 +4073,7 @@ class MainWindow(QMainWindow):
         self._wand_result = (None, None)         # the last wand run's report names the old numbers (I33)
         self._undo_snap = None                   # an undo step spans cameras by their number (G19)
         self.act_undo.setEnabled(False)
-        for k, rt in enumerate(self._views):     # each tile now shows the camera at its index
-            cv = self.grid.canvas(k)
-            if cv is not None:
-                cv.set_video_size(rt.info.width, rt.info.height)
-            rt.want_frame = None
+        self._size_tiles()                       # each tile now shows the camera at its index
         self.grid.set_active(p.active)
         self.grid.set_arrangement()              # lay the tiles out again with the remapped order
         self._apply_active_view(self.current)    # the same camera, the same frame
@@ -4201,24 +4185,34 @@ class MainWindow(QMainWindow):
         self.spin.setRange(0, rt.n_frames - 1)
         self.spin.setSuffix(f" / {rt.n_frames - 1}")
         self._set_play_interval(info.fps)
-        for k, cv in enumerate(self.grid.canvases):
-            cv.set_interactive(k == p.active and self.state == READY)
-            cv.set_switchable(k != p.active and self.state == READY)
-            cv.set_stale(False)
+        for cv in self.grid.canvases:
+            cv.set_stale(False)              # which one takes edits: `_set_canvas_roles` in `_apply_state`
         self.canvas.set_video_size(info.width, info.height)
+        self._show_session(int(np.clip(frame, 0, rt.n_frames - 1)), info.path)
+
+    def _set_canvas_roles(self, ready: bool) -> None:
+        """ONLY the working camera takes edits; a click on another view switches to it (R25: four copies)."""
+        active_i = self.project.active if self.project is not None else 0
+        for k, cv in enumerate(self.grid.canvases):
+            cv.set_interactive(ready and k == active_i)
+            cv.set_switchable(ready and k != active_i)
+
+    def _show_session(self, frame: int, path: str) -> None:
+        """Every widget onto the active camera's session at `frame` (R25: opening a video and switching
+        camera did it in two copies): nothing selected, no undo step across it, the lists, the lanes, the
+        menus, the panel, the frame, the session's view options (restored sessions reopen EXACTLY as
+        saved), the state, the title."""
         self.selected = None
         self._undo_snap = None
-        self.act_undo.setEnabled(False)
         self._refresh_point_list()
-        self.timeline.set_session(s)
+        self.timeline.set_session(self.session)
         self._refresh_events_ui()
         self._refresh_skeleton_menu()
         self._refresh_animal_panel()
-        self._goto(int(np.clip(frame, 0, rt.n_frames - 1)), force=True)
+        self._goto(frame, force=True)
         self._apply_ui_state()
-        self._refresh_cameras()
         self._apply_state()
-        self.setWindowTitle(f"{APP_NAME} — {Path(info.path).name}")
+        self.setWindowTitle(f"{APP_NAME} — {Path(path).name}")
 
     def _toggle_maximize_view(self) -> None:
         """M (owner 2026-10-10, G181): the working camera fills the grid; M again puts every camera back
@@ -4250,21 +4244,18 @@ class MainWindow(QMainWindow):
             return
         had_3d, before = self.project.reconstruction is not None, list(self.project.offsets)
         self.project.set_offset(i, float(offset))
-        if list(self.project.offsets) != before:        # an unchanged value drops nothing (I206)
-            self._after_retime(had_3d)
+        self._retimed(had_3d, list(self.project.offsets) != before)   # an unchanged value drops nothing (I206)
+
+    def _retimed(self, had_3d: bool, changed: bool = True, reason: str = "camera timing changed") -> None:
+        """After a camera's offset or rate was set (R25: five copies): when the timing really changed, the
+        triangulation is stale (I23: the project dropped it) and the volumes, the band and the menus follow
+        (I206: the carved volumes are keyed by reference instant, so they go on EVERY retime); the other
+        cameras and the CAMERAS panel are redrawn either way."""
+        if changed:
+            self._drop_reconstruction(reason, had=had_3d and self.project is not None
+                                      and self.project.reconstruction is None)
         self._refresh_companions()
         self._refresh_cameras()
-
-    def _after_retime(self, had_3d: bool, had_hull: bool | None = None) -> None:
-        """A changed offset / rate makes the triangulation stale (I23): the
-        project drops it; here the volumes, the band and the menus follow."""
-        if had_hull is None:
-            had_hull = bool(self._hull_cache)
-        # (I206) the carved volumes are keyed by reference instant and made with the old
-        # timing: dropped on EVERY retime, with or without a 3D result
-        self._drop_reconstruction("camera timing changed",
-                                  had=had_3d and self.project is not None and self.project.reconstruction is None,
-                                  had_hull=had_hull)
 
     def _align_view_here(self, i: int):
         """Take what camera `i` is showing right now as the match for the active
@@ -4282,10 +4273,7 @@ class MainWindow(QMainWindow):
             return
         had_3d, before = p.reconstruction is not None, list(p.offsets)
         off = p.align_to(i, shown, self.current)
-        if list(p.offsets) != before:
-            self._after_retime(had_3d)
-        self._refresh_companions()
-        self._refresh_cameras()
+        self._retimed(had_3d, list(p.offsets) != before)
         self.statusBar().showMessage(
             f"{p.name(p.active)} aligned to the reference {p.name(i)}: offset {off:+g} frames"
             if ref else
@@ -4437,9 +4425,7 @@ class MainWindow(QMainWindow):
         had_3d = p.reconstruction is not None
         if not p.set_fps(i, float(v)):
             return
-        self._after_retime(had_3d)
-        self._refresh_companions()
-        self._refresh_cameras()
+        self._retimed(had_3d)
         self._apply_state()                       # menu / button gates (the project is now unsaved: set_fps dirties it)
         same = abs(float(v) - file_fps) <= 1e-6
         self.toast.show_message(
@@ -5108,12 +5094,7 @@ class MainWindow(QMainWindow):
                 return
             self._begin_edit()                  # adding is one undo step too (I123)
             pid = s.add_ball(self.current, x, y)
-            where = self._assign_new_point(pid, x, y)      # its animal, or Scene (G155)
-            self._share_landmarks()
-            self.selected = pid
-            self._refresh_point_list()
-            self._refresh_overlay()
-            self._apply_state()
+            where = self._commit_new_point(pid, x, y)
             self.statusBar().showMessage(
                 f"Added ball marker {s.points[pid].name}{where} at ({x:.0f}, {y:.0f}) on frame {self.current}. "
                 "Add the other balls the same way (Point ▾ → Ball marker), then press Track: SAM outlines "
@@ -5141,17 +5122,27 @@ class MainWindow(QMainWindow):
         derived_sel = (self.selected is not None and self.selected < s.n_points
                        and s.points[self.selected].derived)
         pid = s.add_point(self.current, x, y)
-        where = self._assign_new_point(pid, x, y)          # its animal, or Scene (G155)
-        self._share_landmarks()
-        self.selected = pid
-        self._refresh_point_list()
-        self._refresh_overlay()
-        self._apply_state()
+        where = self._commit_new_point(pid, x, y)
         self._hint_small_spot(pid, x, y)
         self.statusBar().showMessage(
             f"Added {s.points[pid].name}{where} at ({x:.0f}, {y:.0f}) on frame {self.current}"
             + (" — the landmark that was selected is derived from the silhouette and cannot be placed by "
                "hand, so a NEW point was added" if derived_sel else ""), 6000 if derived_sel else 4000)
+
+    def _commit_new_point(self, pid: int, x: float | None = None, y: float | None = None,
+                          companions: bool = False) -> str:
+        """What follows making any point (R25: five copies): its animal or Scene (G155), shared with the
+        other cameras, selected and shown; `companions` also redraws the other cameras before the state.
+        Returns `_assign_new_point`'s ' (in <animal>)' for the status line."""
+        where = self._assign_new_point(pid, x, y)
+        self._share_landmarks()
+        self.selected = pid
+        self._refresh_point_list()
+        self._refresh_overlay()
+        if companions:
+            self._refresh_companions()
+        self._apply_state()
+        return where
 
     def _owner_for_new_point(self, x: float | None = None, y: float | None = None) -> tuple[int | None, str]:
         """(G155) The animal a new point joins, and why: (1) the one animal row selected in LAYERS;
@@ -5241,14 +5232,8 @@ class MainWindow(QMainWindow):
             self.btn_add.setChecked(False)      # the next click places THIS point
         self._begin_edit()                      # one undo step, in every camera (I123, G19)
         pid = s.add_empty_point()
-        self._assign_new_point(pid)             # the selected animal, else Scene (G155)
-        self._share_landmarks()
-        self.selected = pid
         self._epi_probe = None
-        self._refresh_point_list()
-        self._refresh_overlay()
-        self._refresh_companions()
-        self._apply_state()
+        self._commit_new_point(pid, companions=True)          # the selected animal, else Scene (G155)
         name = s.points[pid].name
         multi = self.project is not None and self.project.n_views > 1
         self.statusBar().showMessage(
@@ -5266,12 +5251,7 @@ class MainWindow(QMainWindow):
         s = self.session
         self._begin_edit()                      # (I123)
         pid = s.add_point(self.current, cx, cy, kind="group", radius=radius)
-        self._assign_new_point(pid, cx, cy)     # its animal, or Scene (G155)
-        self._share_landmarks()
-        self.selected = pid
-        self._refresh_point_list()
-        self._refresh_overlay()
-        self._apply_state()
+        self._commit_new_point(pid, cx, cy)
         self.statusBar().showMessage(
             f"Added region {s.points[pid].name} (r={radius:.0f} px) at frame "
             f"{self.current} — it tracks as one point: the region's fitted center", 6000)
@@ -6075,12 +6055,7 @@ class MainWindow(QMainWindow):
         self._begin_edit()                      # (I123)
         pid = s.add_point(self.current, float(c[0]), float(c[1]), kind="group", radius=radius,
                           shape=shape, outline=pts.tolist())
-        self._assign_new_point(pid, float(c[0]), float(c[1]))     # its animal, or Scene (G155)
-        self._share_landmarks()
-        self.selected = pid
-        self._refresh_point_list()
-        self._refresh_overlay()
-        self._apply_state()
+        self._commit_new_point(pid, float(c[0]), float(c[1]))
         self.statusBar().showMessage(
             f"Added {shape} region {s.points[pid].name} ({len(pts)} corners) at frame {self.current} "
             "— it tracks as one point: the region's fitted centre", 6000)
@@ -10002,9 +9977,7 @@ class MainWindow(QMainWindow):
         rec["cal_after"] = p.calibration
         self.__dict__["_undo_timing"] = rec
         p.dirty = True
-        self._after_retime(had_3d)
-        self._refresh_companions()
-        self._refresh_cameras()
+        self._retimed(had_3d)
 
     def _undo_timing_step(self, timing: dict) -> bool | None:
         """Put back the offsets (and calibration) an `_apply_offsets_undoable` step changed. None (and
@@ -10023,7 +9996,7 @@ class MainWindow(QMainWindow):
         p.calibration = timing["calibration"]
         self._wand_result = timing["wand_result"]
         p.dirty = True
-        self._after_retime(had_3d)
+        self._drop_reconstruction("camera timing changed", had=had_3d and p.reconstruction is None)
         self._refresh_cameras()
         self._refresh_guides()
         return True
@@ -10775,9 +10748,7 @@ class MainWindow(QMainWindow):
         for v, off, rate in rows:
             p.set_offset(v, off)
         p.dirty = True
-        self._after_retime(had_3d)
-        self._refresh_companions()
-        self._refresh_cameras()
+        self._retimed(had_3d)
         n = sum(1 for v, _o, _r in rows if v != 0)
         rebased = (f" The file's numbers were measured against another camera, so they were re-based on "
                    f"{p.name(0)}." if getattr(rows, "rebased", False) else "")
@@ -11238,11 +11209,7 @@ class MainWindow(QMainWindow):
         for cv in self.grid.set_count(proj.n_views):
             self._wire_canvas(cv)
         self.grid.reset_arrangement()      # (G170) the views as saved come with the project's layout
-        for i, rt in enumerate(self._views):
-            cv = self.grid.canvas(i)
-            cv.set_video_size(rt.info.width, rt.info.height)
-            if i != proj.active:
-                cv.set_interactive(False)
+        self._size_tiles()
         self.grid.set_active(proj.active)
         self.act_solo.setEnabled(proj.n_views > 1)
         self.m_others.setEnabled(proj.n_views > 1)      # View → Other cameras (G24)
@@ -11784,9 +11751,7 @@ class MainWindow(QMainWindow):
         moved = any(abs(a - b) > 1e-9 for a, b in zip(before, p.offsets))
         if moved:
             p.dirty = True
-            self._drop_reconstruction("the cameras' timing changed", had=had_3d)
-        self._refresh_companions()
-        self._refresh_cameras()
+        self._retimed(had_3d, moved, reason="the cameras' timing changed")
         self._apply_state()
         if n:
             self.toast.show_message(
