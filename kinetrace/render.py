@@ -374,7 +374,7 @@ class OverlayRenderer(QThread):
 
 
 class OverlayDialog:
-    """Options for File → Export Overlay Video. Built lazily as a QDialog so
+    """Options for File → Export → Overlay Video. Built lazily as a QDialog so
     the pure-function part of this module imports without QtWidgets."""
 
     def __new__(cls, parent, session, default_path: str, current: int,

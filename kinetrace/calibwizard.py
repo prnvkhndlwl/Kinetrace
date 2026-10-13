@@ -1,4 +1,4 @@
-"""Wand calibration wizard — 3D → Calibrate Cameras with a Wand.
+"""Wand calibration wizard — 3D → Calibrate → Calibrate Cameras with a Wand.
 
 Written for someone who has never calibrated a camera. The pages explain the
 one idea that matters at each step, pull everything they can from the open
@@ -257,7 +257,7 @@ of the scale; or three reference points on the floor.</li>
 </ol>
 <p><b>What you get.</b> A calibration stored in this project (use it with 3D →
 Reconstruct), files you can hand to DLTdv or keep for the animal projects
-(3D → Export Calibration), and a report that says in plain words whether the result
+(File → Export → Calibration), and a report that says in plain words whether the result
 can be trusted.</p>
 <p style="color:{theme.TEXT_DIM}">Method: sparse bundle adjustment on the wand observations,
 the same principle as easyWand (Theriault et al. 2014). The report's verdict rules are
@@ -522,7 +522,7 @@ class CamerasPage(QWizardPage):
         g3 = QVBoxLayout(gb3)
         g3.addWidget(_dim(QLabel("A wide lens bends straight lines near the edges of the picture; the wand "
                                  "cannot measure that well on its own. Calibrate each such lens once with a "
-                                 "printed checkerboard (3D → Calibrate a Lens), or load a saved profile. With a "
+                                 "printed checkerboard (3D → Calibrate → Calibrate a Lens), or load a saved profile. With a "
                                  "profile the focal length above is taken from it and the tracks are "
                                  "straightened before the solve.")))
         self.lens_grid = QGridLayout()

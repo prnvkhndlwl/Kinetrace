@@ -1,4 +1,4 @@
-"""Lens calibration wizard — 3D → Calibrate a Lens (checkerboard).
+"""Lens calibration wizard — 3D → Calibrate → Calibrate a Lens (checkerboard).
 
 For someone who has never heard the words "intrinsic" or "distortion": the
 pages say when a lens needs calibrating at all, hand out a printable
@@ -784,7 +784,7 @@ class ResultPage(QWizardPage):
             # opened with no video (G9): nothing to attach to -- the FILE is the result
             parts.append(f"<p><b>No video is open, so this profile is not attached to a camera.</b> Press "
                          "<b>Save lens file…</b> below and keep the file. To use it: open the project (or the "
-                         "camera's video), then either 3D → Calibrate a Lens → <i>I already have a lens file…</i>, "
+                         "camera's video), then either 3D → Calibrate → Calibrate a Lens → <i>I already have a lens file…</i>, "
                          "or the <i>Load file…</i> button next to that camera on the wand wizard's Cameras page. "
                          "It is valid as long as the camera keeps the same lens, zoom and resolution.</p>")
         else:

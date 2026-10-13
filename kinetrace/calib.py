@@ -1358,8 +1358,8 @@ def reconstruction_report(rec: Reconstruction, n_views: int, width_px: float = 1
     elif med <= ok_lim:
         verdict = "ok"
         out["reasons"].append(f"The cameras disagree by {med:.2f} px (median). Usable, but check the "
-                              "worst landmark below and the camera offsets (3D -> Estimate Sub-frame "
-                              "Offsets) before trusting fine detail.")
+                              "worst landmark below and the camera offsets (3D -> Sync -> Estimate "
+                              "Sub-frame Offsets) before trusting fine detail.")
     else:
         verdict = "poor"
         out["reasons"].append(f"The cameras disagree by {med:.2f} px (median): the 3D is NOT trustworthy. "

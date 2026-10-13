@@ -1,4 +1,4 @@
-"""3D → Load a Lens Profile for Cameras… (G176): one saved lens file attached to every camera ticked in
+"""3D → Calibrate → Load a Lens Profile for Cameras… (G176): one saved lens file attached to every camera ticked in
 a list, so a rig of 5 + 5 or 4 + 4 + 2 identical cameras gets its profiles in one go instead of one
 camera at a time. Each row says what the file would do to that camera -- fits, fits turned (a camera
 filmed on its side, I269), does not fit and why, or replaces the profile it has -- before anything is

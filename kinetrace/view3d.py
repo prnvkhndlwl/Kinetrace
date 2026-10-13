@@ -94,7 +94,7 @@ def match_columns(view_sizes, file_cameras, n_views: int) -> list[int]:
 
 
 class ExportCalibrationDialog(QDialog):
-    """3D -> Export Calibration: which formats. Every file is written with the
+    """File -> Export -> Calibration: which formats. Every file is written with the
     same base name; the conventions are converted (and checked) by the program."""
 
     def __init__(self, parent, has_lenses: bool):

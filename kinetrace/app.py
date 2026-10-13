@@ -184,7 +184,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>Ctrl+6</td><td>show / hide the body side-by-side view (footage + skeleton | the pose on its own | joint angles over time)</td></tr>
 </table>
 <h3>Events &amp; timeline</h3><table>
-<tr><td class=k>E, then E</td><td>mark an event window — the name dropdown re-uses existing event types, so the same event can be tagged at many times (one color per type; the Events menu groups occurrences)</td></tr>
+<tr><td class=k>E, then E</td><td>mark an event window — the name dropdown re-uses existing event types, so the same event can be tagged at many times (one color per type; occurrences are grouped in Edit → Events)</td></tr>
 <tr><td class=k>scroll strip</td><td>while time-zoomed, the bar at the panel's bottom edge shows the view window — click/drag it to move through the video</td></tr>
 <tr><td class=k>click / drag lanes</td><td>seek (the timeline IS the scrubber)</td></tr>
 <tr><td class=k>click a ribbon</td><td>select the event's frame window AND jump to its start (right-click: rename, retime, delete)</td></tr>
@@ -775,8 +775,8 @@ class MainWindow(QMainWindow):
         self._undo_snap = None
         self._epi_probe = None           # (view, x, y): a look-here Alt+click (G19, G21)
         # the other cameras (G24): "all" = follow the playhead; "active" = only the
-        # working video decodes, the others stay where they were (G27). View →
-        # Other cameras also has Hidden (act_solo).
+        # working video decodes, the others stay where they were (G27). Hidden (act_solo) is the
+        # third choice in View → Other cameras.
         self._sync_mode = "all"
         self._companions_stale = False   # "active": the others are not at the playhead yet
         self._last_goto_t = 0.0
@@ -1551,7 +1551,7 @@ class MainWindow(QMainWindow):
         self._m_import = m_import
         for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks):
             m_import.addAction(a)
-        # (G188) every export in one File → Export submenu, mirroring Import; the 3D and Body exports are
+        # (G188) every export in one submenu, File → Export, mirroring Import; the 3D and Body exports are
         # created with their menus' actions, so `_fill_export_menu` fills it once they all exist
         self._m_export = m_file.addMenu("&Export")
         self.act_export.setText("&Tracks…")
@@ -1760,7 +1760,7 @@ class MainWindow(QMainWindow):
         self.addAction(self.act_settings)
 
     def _build_skeleton_events_menus(self) -> None:
-        """Fill Edit → Skeleton and Edit → Events (the submenus are made by `_build_edit_menu`)."""
+        """Fill the submenus Edit → Skeleton / Edit → Events (made by `_build_edit_menu`)."""
         # skeleton templates (also under the panel's Skeleton ▾ button)
         self._refresh_skeleton_menu()
 
@@ -1840,7 +1840,7 @@ class MainWindow(QMainWindow):
                                     "plays turned), its lens profile and whether it is used, whether the 3D\n"
                                     "calibration covers it; for GoPro footage also its settings, tilt, dropped\n"
                                     "frames, when it moved, and GoPro's own lens model")
-        # (G188) one action, in File → Import (the 3D menu had its own twin of it); the exports go to File → Export
+        # (G188) one action, in File → Import (the 3D menu had a twin of it); the exports are in File → Export
         self._m_import.insertAction(self.act_import_xyz, self.act_calib)
         # (G188) grouped in the order a project uses them: the cameras, their timing, their calibration, then
         # the 3D result (15 entries in one list before)
@@ -2003,17 +2003,17 @@ class MainWindow(QMainWindow):
                 self, what,
                 f"{what} works on two or more cameras filming the same moment.\n\n"
                 "1. Add the other cameras' videos with ＋ Add video in the CAMERAS panel.\n"
-                "2. Line them up in time (3D → Sync Cameras).\n"
+                "2. Line them up in time (3D → Sync → Sync Cameras).\n"
                 "3. Track the same landmarks, with the same names, in every camera.\n"
-                "4. Calibrate the cameras (3D → Calibrate Cameras with a Wand), or import a "
-                "calibration you already have (3D → Import Calibration).")
+                "4. Calibrate the cameras (3D → Calibrate → Calibrate Cameras with a Wand), or import a "
+                "calibration you already have (File → Import → Calibration).")
             return False
         if p.calibration is None:
             QMessageBox.information(
                 self, what,
                 f"{what} needs a camera calibration first: it tells the program where each camera "
-                "stands.\n\nMake one with 3D → Calibrate Cameras with a Wand, or bring one you already "
-                "have (DLTdv, easyWand, Argus or a Kinetrace .kcal.json) with 3D → Import Calibration.")
+                "stands.\n\nMake one with 3D → Calibrate → Calibrate Cameras with a Wand, or bring one you already "
+                "have (DLTdv, easyWand, Argus or a Kinetrace .kcal.json) with File → Import → Calibration.")
             return False
         cal = p.calibration
         left_out = [p.name(v) for v in range(p.n_views) if cal.camera(v) is None]
@@ -2022,7 +2022,7 @@ class MainWindow(QMainWindow):
                 self, what,
                 f"The calibration covers {p.n_views - len(left_out)} of this project's {p.n_views} cameras; "
                 f"{what} needs two or more calibrated cameras. Calibrate the cameras that see the wand "
-                "(3D → Calibrate Cameras with a Wand), or import a calibration that includes them.")
+                "(3D → Calibrate → Calibrate Cameras with a Wand), or import a calibration that includes them.")
             return False
         if left_out:
             # (I273) 3D runs on the calibrated cameras; say which cameras are left out of it
@@ -3237,7 +3237,7 @@ class MainWindow(QMainWindow):
         if what == "project":
             return "Every camera, point and track, and where you were, come back exactly as you left them."
         if what == "cameras":
-            return ("Next: line the cameras up in time with 3D → Sync Cameras (Sound / Motion); every camera "
+            return ("Next: line the cameras up in time with 3D → Sync → Sync Cameras (Sound / Motion); every camera "
                     "shares one list of points.")
         return ("Next: press N and click what you want to track (or S to outline the animal). F1 opens the "
                 "manual, written for first-time users.")
@@ -3463,7 +3463,7 @@ class MainWindow(QMainWindow):
         self.toast.show_message(
             f"Opened {1 + len(added)} camera(s) from {folder}; the base (reference) camera is "
             f"<b>{p.name(0)}</b>." + (f" {missed} could not be added." if missed else "") + saved
-            + " Next: line them up in time with <b>3D → Sync Cameras (Sound / Motion)</b>.", "info", 12000)
+            + " Next: line them up in time with <b>3D → Sync → Sync Cameras (Sound / Motion)</b>.", "info", 12000)
 
     def _open_video(self, path: str, then=None, title: str | None = None, hint: str | None = None,
                     discard: bool = False):
@@ -3938,7 +3938,7 @@ class MainWindow(QMainWindow):
         self.toast.show_message(
             f"Added {len(added)} camera(s) — the order: "
             + ", ".join(f"{k + 1} {p.name(k)}" for k in range(p.n_views))
-            + ". Line them up in time: <b>3D → Sync Cameras (Sound / "
+            + ". Line them up in time: <b>3D → Sync → Sync Cameras (Sound / "
             "Motion)</b> does it from the sound tracks or the pictures, or scrub to a shared event and nudge each "
             "camera's <b>offset</b> (or press <b>Align here</b>).",
             "info", 12000)
@@ -3996,8 +3996,8 @@ class MainWindow(QMainWindow):
                 f"camera {i + 1} and is not in it.\n\n"
                 "The calibration stays in the project and in the saved file, and 3D (Reconstruct, "
                 "Volume, the 3D view) goes on with the calibrated cameras, leaving this one out. To "
-                "include it, track the wand in it and calibrate again (3D → Calibrate Cameras with a "
-                "Wand), or Import Calibration with a file that includes this camera.")
+                "include it, track the wand in it and calibrate again (3D → Calibrate → Calibrate Cameras "
+                "with a Wand), or Import Calibration with a file that includes this camera.")
         return True
 
     def _remove_view(self, i: int):
@@ -6026,7 +6026,7 @@ class MainWindow(QMainWindow):
         self._set_trail_len(int(n) if ok else self._trail_len)
 
     def _trails_for(self, s, f: int):
-        """View → Trails for session `s` at frame `f`: (the past path, the upcoming
+        """The trails (View → Trails) for session `s` at frame `f`: (the past path, the upcoming
         path) per point, or None where that part is off. One place, so the working
         camera and the others draw the same trails (G33)."""
         n = self._trail_len
@@ -6523,7 +6523,7 @@ class MainWindow(QMainWindow):
         occ = f" — occurrence {n_occ}" if n_occ > 1 else ""
         self.statusBar().showMessage(
             f"“{e.name}” marked: frames {e.start}–{e.end}{occ}. Click its ribbon "
-            "(or use the Events menu) to jump back", 6000)
+            "(or use Edit → Events) to jump back", 6000)
 
     def _on_events_changed(self):
         self._refresh_events_ui()
@@ -8181,7 +8181,7 @@ class MainWindow(QMainWindow):
         if not self._guides_ready() or self._cal_cam(p.active) is None:
             self.toast.show_message(
                 "Alt+click shows where a spot can be in the other cameras: it needs a calibration of this camera "
-                "and at least one other (3D → Import Calibration, or calibrate with a wand).", "info", 7000)
+                "and at least one other (File → Import → Calibration, or calibrate with a wand).", "info", 7000)
             return
         self._epi_probe = (p.active, float(x), float(y))
         self._guides_on()
@@ -10575,7 +10575,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _export_single_file(self) -> None:
-        """File → Export Project as One File: the whole project (the folder's
+        """File → Export → Project as One File: the whole project (the folder's
         files, not its .cache / .history / exports) in one .kinetrace zip, to
         e-mail or archive. Kinetrace opens it like a folder (I145)."""
         if self.project is None or self._saving:
@@ -10614,7 +10614,7 @@ class MainWindow(QMainWindow):
                                 "your project folder is unchanged.", "success", 9000)
 
     def _exports_dialog(self) -> None:
-        """File → Keep Exports Up to Date… (G42): the formats written into the
+        """File → Export → Keep Exports Up to Date… (G42): the formats written into the
         project folder's exports/ at every save."""
         from kinetrace.autoexport import ExportsDialog
         p = self.project
@@ -10659,7 +10659,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("exports/ already up to date ✓", 4000)
 
     def _import_tracks_dialog(self, path: str | None = None):
-        """File → Import Tracks: another program's 2D tracks into the camera on
+        """File → Import → Tracks: another program's 2D tracks into the camera on
         screen (trackio.py). With no video open, the video comes first."""
         if path is None:
             path, _ = QFileDialog.getOpenFileName(self, "Import tracks", "", TRACKS_FILTER)
@@ -11274,7 +11274,7 @@ class MainWindow(QMainWindow):
                                     "A calibration describes several cameras filming the same moment, so it is "
                                     "imported into a project that has them all: add the other cameras' videos "
                                     "first with ＋ Add video in the CAMERAS panel (in the order the calibration "
-                                    "lists them), then 3D → Import Calibration again.")
+                                    "lists them), then File → Import → Calibration again.")
             return
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
         dlg = CalibrationDialog(self, list(p.names), self._view_sizes(), start)
@@ -11306,7 +11306,7 @@ class MainWindow(QMainWindow):
         self._refresh_guides()
 
     def _lens_wizard(self):
-        """3D → Calibrate a Lens: intrinsics + distortion of ONE camera from a
+        """3D → Calibrate → Calibrate a Lens: intrinsics + distortion of ONE camera from a
         checkerboard video, attached to that camera of this project."""
         from kinetrace.lenswizard import LensWizard
         p = self.project
@@ -11331,7 +11331,7 @@ class MainWindow(QMainWindow):
                     if path:
                         saved = profile.save(path)
                         self.toast.show_message(f"Lens profile saved: {Path(saved).name}. Load it for its camera "
-                                                "with 3D → Calibrate a Lens → I already have a lens file…",
+                                                "with 3D → Calibrate → Calibrate a Lens → I already have a lens file…",
                                                 "success", 9000)
             return
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
@@ -11359,7 +11359,7 @@ class MainWindow(QMainWindow):
                         "Argus / DLTdv camera profile (*.txt)")
 
     def _export_lens_profile(self) -> None:
-        """3D -> Export Lens Profile… (G148): a camera's lens profile to a file, whenever, however it was made
+        """File -> Export -> Lens Profile… (G148): a camera's lens profile to a file, whenever, however it was made
         (checkerboard, GoPro's model, a file, the wand wizard's lens rows). The working camera's when it has
         one, else the choice of the cameras that do. Kinetrace's own format keeps the report; OpenCV / Argus
         are for other programs (an Argus line cannot hold a fisheye lens: said, nothing written)."""
@@ -11371,8 +11371,8 @@ class MainWindow(QMainWindow):
         if not have:
             QMessageBox.information(
                 self, "No lens profile yet",
-                "No camera of this project has a lens profile yet.\n\nMake one with 3D → Calibrate a Lens "
-                "(checkerboard), load one with 3D → Load a Lens Profile for Cameras…"
+                "No camera of this project has a lens profile yet.\n\nMake one with 3D → Calibrate → Calibrate a Lens "
+                "(checkerboard), load one with 3D → Calibrate → Load a Lens Profile for Cameras…"
                 + (", or give the GoPro cameras GoPro's lens model in 3D → Cameras Overview…" if self._gopro_infos() else "")
                 + ". Then export it here.")
             return
@@ -11404,12 +11404,12 @@ class MainWindow(QMainWindow):
             return
         self.toast.show_message(
             f"Lens profile of {p.name(v)} saved as {Path(path).name} ({prof.width}×{prof.height}). To use it again: "
-            "3D → Load a Lens Profile for Cameras… (or the lens wizard's <i>I already have a lens file…</i>), "
+            "3D → Calibrate → Load a Lens Profile for Cameras… (or the lens wizard's <i>I already have a lens file…</i>), "
             "for this camera in another project or for cameras of the same model, lens, zoom and recording mode.",
             "success", 12000)
 
     def _load_lens_profile(self) -> None:
-        """3D -> Load a Lens Profile for Cameras… (G148, G176): a saved profile (.klens.json, OpenCV, Argus: the
+        """3D -> Calibrate -> Load a Lens Profile for Cameras… (G148, G176): a saved profile (.klens.json, OpenCV, Argus: the
         lens wizard's reader, `lens.read_lens_for`) attached after the picture-size check every lens gets
         (I31; turned for a camera filmed on its side, I269). With several cameras, `LensAttachDialog` lists
         what the file does to each and attaches it to the ticked ones in one go (a rig of identical
@@ -11530,7 +11530,7 @@ class MainWindow(QMainWindow):
             self._refresh_cameras()                # the CAMERAS lens badges (G177)
 
     def _wand_wizard(self):
-        """3D → Calibrate Cameras with a Wand: the native easyWand replacement,
+        """3D → Calibrate → Calibrate Cameras with a Wand: the native easyWand replacement,
         explained for a first-time user. The result becomes this project's
         calibration (and can be exported for the animal projects)."""
         from kinetrace.calibwizard import WandWizard
@@ -11546,10 +11546,10 @@ class MainWindow(QMainWindow):
                 "Wand calibration works on the wand recording of your cameras, in ONE project:\n\n"
                 "1. File → Open Video… — the wand video of the first camera.\n"
                 "2. In the CAMERAS panel on the right, ＋ Add video — the wand video of each other "
-                "camera; set their offsets so they show the same instant (3D → Sync Cameras).\n"
+                "camera; set their offsets so they show the same instant (3D → Sync → Sync Cameras).\n"
                 "3. In every camera, track the two wand ends (Point ▾ → Ball marker on each ball, or N "
                 "on a mark; the SAME names in every camera, e.g. 'wand A' and 'wand B'), then Track ▶.\n"
-                "4. Then 3D → Calibrate Cameras with a Wand… again.\n\n"
+                "4. Then 3D → Calibrate → Calibrate Cameras with a Wand… again.\n\n"
                 "Help → User Manual (F1), section 10, walks through all of it.")
             return
         if self.state != READY:
@@ -11579,11 +11579,11 @@ class MainWindow(QMainWindow):
         self._guides_on()
         self.toast.show_message(
             f"Wand calibration ({v}) is now this project's calibration. Save the project (Ctrl+S); "
-            "<b>3D → Export Calibration</b> writes it for your animal projects. " + self.GUIDES_HINT,
+            "<b>File → Export → Calibration</b> writes it for your animal projects. " + self.GUIDES_HINT,
             "success", 14000)
 
     def _export_calibration(self):
-        """3D -> Export Calibration: the cameras for other programs, in the
+        """File -> Export -> Calibration: the cameras for other programs, in the
         formats ticked (calibio.py converts the conventions and checks them)."""
         from kinetrace import calibio
         from kinetrace.calibwizard import dlt_csv_caveat, save_calibration_files
@@ -11774,7 +11774,7 @@ class MainWindow(QMainWindow):
         return said
 
     def _sync_dialog(self):
-        """3D -> Sync Cameras (Sound / Motion): whole-frame offsets from the sound tracks or the pictures."""
+        """3D -> Sync -> Sync Cameras (Sound / Motion): whole-frame offsets from the sound tracks or the pictures."""
         from kinetrace.syncdialog import SyncDialog
         p = self.project
         if p is None or p.n_views < 2:
@@ -11806,7 +11806,7 @@ class MainWindow(QMainWindow):
             self.toast.show_message(
                 f"Offsets applied to {n} camera(s). Check by eye: step to a moment every camera saw and "
                 "confirm it shows at the same time in each view. Later, after tracking, "
-                "<b>3D → Estimate Sub-frame Offsets</b> refines them to a fraction of a frame.",
+                "<b>3D → Sync → Estimate Sub-frame Offsets</b> refines them to a fraction of a frame.",
                 "success", 12000)
 
     def _estimate_offsets_dialog(self):
@@ -12109,7 +12109,7 @@ class MainWindow(QMainWindow):
             self.toast.show_message(
                 f"Volume hull at frame {t} of {p.name(0)}: {h.n_views} cameras, {h.volume():.3g} {unit}³ "
                 f"({mesh_volume(verts, faces):.3g} {unit}³ as a mesh), voxel {voxel:.3g} {unit}. "
-                "3D → Export Mesh writes it as OBJ/PLY.", "info", 9000)
+                "File → Export → Mesh of This Frame writes it as OBJ/PLY.", "info", 9000)
 
     def _toggle_view3d(self, on: bool):
         if on:
@@ -12868,7 +12868,7 @@ class MainWindow(QMainWindow):
         self._autosave()
 
     def _export_overlay(self):
-        """File → Export Overlay Video: render the tracked result into an MP4
+        """File → Export → Overlay Video: render the tracked result into an MP4
         in a background thread (its own VideoCapture), with a cancellable
         progress dialog. The app stays usable meanwhile."""
         from kinetrace.render import OverlayDialog, OverlayRenderer

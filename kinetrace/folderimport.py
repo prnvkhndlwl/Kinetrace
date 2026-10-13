@@ -345,7 +345,7 @@ class VideoFolderDialog(QDialog):
                     "keeps its own rate against camera 1 (×2 for a camera twice as fast).")
         if rows and not problems:
             info = (f"{len(rows)} camera(s); camera 1 (the reference): <b>{self._paths[rows[0]].name}</b>. After "
-                    "importing, line them up in time with 3D → Sync Cameras (Sound / Motion). " + info)
+                    "importing, line them up in time with 3D → Sync → Sync Cameras (Sound / Motion). " + info)
         self.note.setText(" ".join(problems) if problems else info)
         self.note.setStyleSheet(f"color: {theme.AMBER if problems else theme.TEXT_DIM};")
         ok_btn.setEnabled(not problems)

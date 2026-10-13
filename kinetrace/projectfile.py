@@ -26,8 +26,7 @@ programs can read and write (format 2, I145). See docs/FORMAT.md.
 A save writes only the files whose content changed (`write_folder`); opening
 reads a table from `.cache/` when the CSV is still the one saved, and parses
 the CSV when it was edited by hand, so the CSV is always what counts. The
-same layout in a ZIP is the single-file form (`write`: File -> Export Project
-as One File, and the recovery copies with binary tables); format-1 projects
+same layout in a ZIP is the single-file form (`write`: File -> Export -> Project as One File, and the recovery copies with binary tables); format-1 projects
 (a zip with one long tracks.csv per camera) still open. Frames count from 0;
 pixels are OpenCV pixel centres counted from 0.
 
@@ -713,8 +712,7 @@ def _materialize(item, need_digest: bool = True):
 # ------------------------------------------------------------------ write (worker thread)
 def write(frozen: Frozen, path: str | Path, *, compresslevel: int = 1, fsync: bool = True,
           backup: bool = True, yield_gil=lambda: time.sleep(0)) -> None:
-    """The single-file form (a ZIP of the same layout: File -> Export Project
-    as One File, and the recovery copies). Written atomically: a temp file in
+    """The single-file form (a ZIP of the same layout: File -> Export -> Project as One File, and the recovery copies). Written atomically: a temp file in
     the same folder, optionally a copy of the previous file as `<name>.bak`,
     then one os.replace. The file at `path` is always either the old save or
     the new one, never half of either."""
