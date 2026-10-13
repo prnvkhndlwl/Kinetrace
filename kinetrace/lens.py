@@ -413,8 +413,10 @@ def turn_needed(size: tuple[int, int], rotation: int | None, cam_size: tuple[int
         unknown = ("the profile does not record which way the pictures of its checkerboard video were turned "
                    "(a file from another program, or one made before Kinetrace recorded it)" if rotation is None
                    else f"the video of {cam_name} does not say which way it is turned (this decoder cannot tell)")
-        fix = ("Measure the lens in Kinetrace from the checkerboard video (3D → Calibrate a Lens): a profile made "
-               "now records the turn, and is turned for this camera by itself." if rotation is None else
+        fix = ("For a Kinetrace lens file, load it again and let Kinetrace find its checkerboard video, which "
+               "tells the turn (I275). Otherwise measure the lens in Kinetrace from the checkerboard video "
+               "(3D → Calibrate a Lens): a profile made now records the turn, and is turned for this camera by "
+               "itself." if rotation is None else
                "Open the videos with the default decoder (KINETRACE_DECODE not set), which reads the turn.")
         return None, (f"{what} {w} x {h} pictures and {cam_name} records {cw} x {ch}: the same pictures turned a "
                       f"quarter turn, as when a camera films on its side. The lens is the same and the profile "
