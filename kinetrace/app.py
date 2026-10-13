@@ -2697,8 +2697,6 @@ class MainWindow(QMainWindow):
         """Help → System Check: the hardware probe in plain words (the same
         text `python -m kinetrace --check` prints), with a Copy button for
         support requests. Runs the probe on the worker if it has not finished."""
-        import sys
-        from PySide6.QtGui import QFont
         from kinetrace.device import cached_device, describe
         probe = getattr(self, "_dev_probe", None)
         if cached_device() is None and probe is not None and probe.isRunning():
@@ -2714,18 +2712,33 @@ class MainWindow(QMainWindow):
                                 hint="This happens once per start of Kinetrace.")
         text = describe() if cached_device() is not None else \
             "The hardware check has not finished yet (PyTorch is still loading). Try again in a moment."
+        self._text_report("System check", text, (640, 420))
+
+    def _text_report(self, title: str, text: str, size: tuple[int, int], note: str = "",
+                     nowrap: bool = False, extra=None) -> None:
+        """A read-only text in a dialog with Copy and Close (R26: System Check and Error Report built it
+        twice): `note` above it, `extra` = (button text, action) beside Copy."""
+        from PySide6.QtGui import QFont
         dlg = QDialog(self)
-        dlg.setWindowTitle("System check")
-        dlg.setMinimumSize(640, 420)
+        dlg.setWindowTitle(title)
+        dlg.setMinimumSize(*size)
         lay = QVBoxLayout(dlg)
+        if note:
+            lab = QLabel(note)
+            lab.setWordWrap(True)
+            lay.addWidget(lab)
         view = QPlainTextEdit(text)
         view.setReadOnly(True)
+        if nowrap:
+            view.setLineWrapMode(QPlainTextEdit.NoWrap)
         view.setFont(QFont("Consolas" if sys.platform.startswith("win") else "Menlo", 10)
                      if sys.platform != "linux" else QFont("Monospace", 10))
         lay.addWidget(view)
         btns = QDialogButtonBox(QDialogButtonBox.Close)
         copy = btns.addButton("Copy", QDialogButtonBox.ActionRole)
         copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
+        if extra is not None:
+            btns.addButton(extra[0], QDialogButtonBox.ActionRole).clicked.connect(extra[1])
         btns.rejected.connect(dlg.reject)
         btns.accepted.connect(dlg.accept)
         lay.addWidget(btns)
@@ -2744,30 +2757,9 @@ class MainWindow(QMainWindow):
     def _show_error_report(self):
         """Help → Error Report…: what went wrong, with Copy and Open the log
         folder (the files can be attached instead). Nothing is sent anywhere (I140)."""
-        import sys
         from PySide6.QtCore import QUrl
-        from PySide6.QtGui import QDesktopServices, QFont
+        from PySide6.QtGui import QDesktopServices
         from kinetrace import crashlog
-        text = self._error_report_text()
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Error report")
-        dlg.setMinimumSize(760, 480)
-        lay = QVBoxLayout(dlg)
-        note = QLabel("Nothing is sent anywhere. The report contains file and folder names from this computer "
-                      "(which can include your user name and your video names): read it before you post it "
-                      "somewhere public.")        # (I158)
-        note.setWordWrap(True)
-        lay.addWidget(note)
-        view = QPlainTextEdit(text)
-        view.setReadOnly(True)
-        view.setLineWrapMode(QPlainTextEdit.NoWrap)
-        view.setFont(QFont("Consolas" if sys.platform.startswith("win") else "Menlo", 10)
-                     if sys.platform != "linux" else QFont("Monospace", 10))
-        lay.addWidget(view)
-        btns = QDialogButtonBox(QDialogButtonBox.Close)
-        copy = btns.addButton("Copy", QDialogButtonBox.ActionRole)
-        copy.clicked.connect(lambda: QApplication.clipboard().setText(text))
-        show = btns.addButton("Open the log folder", QDialogButtonBox.ActionRole)
 
         def _open():
             d = crashlog.log_path().parent
@@ -2777,12 +2769,11 @@ class MainWindow(QMainWindow):
                 pass
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
 
-        show.clicked.connect(_open)
-        btns.rejected.connect(dlg.reject)
-        btns.accepted.connect(dlg.accept)
-        lay.addWidget(btns)
-        dlg.exec()
-        dlg.deleteLater()
+        self._text_report("Error report", self._error_report_text(), (760, 480), nowrap=True,
+                          extra=("Open the log folder", _open),
+                          note="Nothing is sent anywhere. The report contains file and folder names from this "
+                               "computer (which can include your user name and your video names): read it before "
+                               "you post it somewhere public.")        # (I158)
 
     def _start_menu_here(self) -> bool:
         """The Start menu holds the Kinetrace entry of THIS folder (winapp.py; Windows only)."""
@@ -5783,13 +5774,8 @@ class MainWindow(QMainWindow):
         else:
             text = (f"Downloading the segmentation model ({label}) — first use only.\n"
                     "It is stored inside the tool folder (models/hf).")
-        dlg = QProgressDialog(text, "Cancel", 0, 0, self)
-        dlg.setWindowTitle("Preparing the model")
-        dlg.setWindowModality(Qt.WindowModal)
-        dlg.setAutoClose(False)
-        dlg.setAutoReset(False)
-        dlg.setMinimumDuration(0 if not seg_is_cached(backend) else 300)
-        dlg.canceled.connect(self._cancel_seg_download)
+        dlg = self._progress_dialog(text, "Cancel", 0, "Preparing the model", self._cancel_seg_download, modal=True,
+                                    delay_ms=0 if not seg_is_cached(backend) else 300)
         dlg.setValue(0)
         self._loading_dialog = dlg
         self._seg_clock = {}
@@ -6955,7 +6941,7 @@ class MainWindow(QMainWindow):
             return
         # (G82) count first: a clear that removes nothing takes no snapshot -- it used to replace
         # the undo point, so the last tracking run could no longer be undone -- and says so
-        lo, hi = max(0, min(f0, f1)), min(s.n_frames - 1, max(f0, f1))
+        lo, hi = s.frame_window(f0, f1)
         would_pts = int(s.tracked[lo:hi + 1][:, use].sum()) if use else 0
         would_msk = sum(int((s.seg_masks[k].area[lo:hi + 1] > 0).sum()) for k in segs) if do_masks else 0
         if not would_pts and not would_msk:
@@ -7323,7 +7309,7 @@ class MainWindow(QMainWindow):
         had data (G82); nothing to clear = no undo point, said by `_clear_window`."""
         s = self.session
         seg = (self._segment_selected() if masks is None else bool(masks)) and s.animal is not None
-        lo, hi = max(0, min(f0, f1)), min(s.n_frames - 1, max(f0, f1))
+        lo, hi = s.frame_window(f0, f1)
         n_pts = sum(1 for q in sel if q < s.n_points and s.tracked[lo:hi + 1, q].any())
         n_seg = bool(seg and any((s.seg_masks[k].area[lo:hi + 1] > 0).any() for k in self._selected_segments()
                                  if k < s.n_segments))
@@ -9531,13 +9517,8 @@ class MainWindow(QMainWindow):
 
     def _open_model_dialog(self, text: str, delay_ms: int) -> None:
         if self._model_dialog is None:
-            dlg = QProgressDialog(text, "Cancel", 0, 0, self)
-            dlg.setWindowTitle("Preparing the models")
-            dlg.setWindowModality(Qt.NonModal)              # X / Space still stop the run
-            dlg.setMinimumDuration(delay_ms)
-            dlg.setAutoClose(False)
-            dlg.setAutoReset(False)
-            dlg.canceled.connect(self._cancel_model_download)
+            dlg = self._progress_dialog(text, "Cancel", 0, "Preparing the models", self._cancel_model_download,
+                                        delay_ms=delay_ms)          # not modal: X / Space still stop the run
             dlg.setValue(0)
             self._model_dialog = dlg
             self._model_dl = {}
@@ -10618,12 +10599,8 @@ class MainWindow(QMainWindow):
                 return
         try:           # a long DeepLabCut / SLEAP file: off the GUI thread (G52)
             imp = self._in_background("Reading the tracks", lambda: trackio.read(path), detail=Path(path).name)
-        except trackio.TrackImportError as e:
-            QMessageBox.warning(self, "Cannot import these tracks", str(e))
-            return
         except Exception as e:  # noqa: BLE001 - (G142) a failed READ in words, the traceback logged
-            QMessageBox.warning(self, "Cannot import these tracks",
-                                _plain_error(e, "The tracks could not be read", reading=True))
+            self._read_failed("Cannot import these tracks", e, "The tracks", trackio.TrackImportError)
             return
         if self.session is None:
             QMessageBox.information(self, "Import tracks",
@@ -10651,12 +10628,8 @@ class MainWindow(QMainWindow):
             return
         try:
             rec, notes = calibio.read_points3d(path, unit=p.calibration.unit if p.calibration else "")
-        except calibio.CalibFormatError as e:
-            QMessageBox.warning(self, "Cannot import these 3D points", str(e))
-            return
-        except Exception as e:  # noqa: BLE001 - (G142)
-            QMessageBox.warning(self, "Cannot import these 3D points",
-                                _plain_error(e, "The 3D points could not be read", reading=True))
+        except Exception as e:  # noqa: BLE001 - (G142) a failed READ in words, the traceback logged
+            self._read_failed("Cannot import these 3D points", e, "The 3D points", calibio.CalibFormatError)
             return
         if p.reconstruction is not None and QMessageBox.question(
                 self, "Replace the 3D result?", "This project already has a 3D result. Replace it with the "
@@ -10719,12 +10692,8 @@ class MainWindow(QMainWindow):
             return
         try:
             rows = calibio.read_offsets(path, p)
-        except calibio.CalibFormatError as e:
-            QMessageBox.warning(self, "Cannot import these offsets", str(e))
-            return
-        except Exception as e:  # noqa: BLE001 - (G142)
-            QMessageBox.warning(self, "Cannot import these offsets",
-                                _plain_error(e, "The offsets could not be read", reading=True))
+        except Exception as e:  # noqa: BLE001 - (G142) a failed READ in words, the traceback logged
+            self._read_failed("Cannot import these offsets", e, "The offsets", calibio.CalibFormatError)
             return
         # (I169) read_offsets already re-based the rows on this project's first camera; a file with no
         # row for it cannot be: its numbers are the file's own, applied only when the user says so
@@ -10771,12 +10740,8 @@ class MainWindow(QMainWindow):
                 lambda report: trackio.import_masks_png(s, folder, lambda d, n: report(f"{d} of {n} images", d, n),
                                                         i=k),
                 detail=Path(folder).name, progress=True)
-        except trackio.TrackImportError as e:
-            QMessageBox.warning(self, "Cannot import these silhouettes", str(e))
-            return
-        except Exception as e:  # noqa: BLE001 - (G142)
-            QMessageBox.warning(self, "Cannot import these silhouettes",
-                                _plain_error(e, "The silhouettes could not be read", reading=True))
+        except Exception as e:  # noqa: BLE001 - (G142) a failed READ in words, the traceback logged
+            self._read_failed("Cannot import these silhouettes", e, "The silhouettes", trackio.TrackImportError)
             return
         self._undo_snap = snap
         self.act_undo.setEnabled(snap is not None)
@@ -11376,8 +11341,7 @@ class MainWindow(QMainWindow):
         try:
             prof, which = lens_mod.read_lens_for(path, v, p.name(v))
         except Exception as e:      # noqa: BLE001 - not a lens file, a damaged one: said
-            QMessageBox.warning(self, "Lens profile not loaded",
-                                _plain_error(e, f"{Path(path).name} could not be read", reading=True))
+            self._read_failed("Lens profile not loaded", e, Path(path).name)
             return
         if prof is None:
             QMessageBox.warning(self, "Lens profile not loaded", which)
@@ -11429,8 +11393,7 @@ class MainWindow(QMainWindow):
                     filled, read = offer_board_turn(self, one, path, [p.name(k) for k in needy])
             rows = attach_rows(p, path, recordings, profile=filled)
         except Exception as e:      # noqa: BLE001 - not a lens file, a damaged one: said
-            QMessageBox.warning(self, "Lens profile not loaded",
-                                _plain_error(e, f"{Path(path).name} could not be read", reading=True))
+            self._read_failed("Lens profile not loaded", e, Path(path).name)
             return
         dlg = LensAttachDialog(self, path, rows, p.active)
         accepted = dlg.exec() == QDialog.Accepted
@@ -12232,13 +12195,7 @@ class MainWindow(QMainWindow):
         w = BodyPoseWorker(self.info.path, self.n_frames, opts, seg_masks, target=s)    # (G78) fps is a no-op
         self._body_worker = w
         total = max(1, (opts.end - opts.start) // max(1, opts.step) + 1)
-        dl = QProgressDialog("Looking for people…", "Stop", 0, total, self)
-        dl.setWindowTitle("Body pose")
-        dl.setWindowModality(Qt.NonModal)
-        dl.setMinimumDuration(0)
-        dl.setAutoClose(False)
-        dl.setAutoReset(False)
-        dl.canceled.connect(w.request_cancel)
+        dl = self._progress_dialog("Looking for people…", "Stop", total, "Body pose", w.request_cancel)
         self._body_progress = dl
         w.progress.connect(self._on_body_progress)
         w.finished_ok.connect(self._on_body_done)
@@ -12443,13 +12400,8 @@ class MainWindow(QMainWindow):
                                w.chk_upright.isChecked() if w is not None else True,
                                w.chk_shape.isChecked() if w is not None else True)
         self._body_video = r
-        dl = QProgressDialog("Rendering the side-by-side video…", "Cancel", 0,
-                             max(1, f1 - f0 + 1), self)
-        dl.setWindowTitle("Export")
-        dl.setWindowModality(Qt.NonModal)
-        dl.setMinimumDuration(0)
-        dl.setAutoClose(False)
-        dl.canceled.connect(r.request_cancel)
+        dl = self._progress_dialog("Rendering the side-by-side video…", "Cancel", max(1, f1 - f0 + 1), "Export",
+                                   r.request_cancel)
         r.progress.connect(lambda d, tt: (dl.setMaximum(max(1, tt)), dl.setValue(d)))
         r.finished_ok.connect(lambda p, c: self.toast.show_message(
             f"Side-by-side video written to {Path(p).name} ({c})."
@@ -12569,6 +12521,26 @@ class MainWindow(QMainWindow):
         except calibio.CalibFormatError as e:
             return None, (f"The points were written in Kinetrace's own world, not the exported cameras' "
                           f"({e}).")
+
+    def _progress_dialog(self, text: str, cancel: str, maximum: int, title: str, on_cancel,
+                         modal: bool = False, delay_ms: int = 0) -> QProgressDialog:
+        """A progress window that stays open, full, until its owner closes it (R26: five copies; the
+        side-by-side video's dropped back to empty at the end). Not modal unless `modal`: X / Space stop a
+        run meanwhile."""
+        dlg = QProgressDialog(text, cancel, 0, maximum, self)
+        dlg.setWindowTitle(title)
+        dlg.setWindowModality(Qt.WindowModal if modal else Qt.NonModal)
+        dlg.setMinimumDuration(delay_ms)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.canceled.connect(on_cancel)
+        return dlg
+
+    def _read_failed(self, title: str, e: BaseException, what: str, known=()) -> None:
+        """A file that could not be read, said in a box (R26: eight copies): a `known` format error is
+        already a sentence naming the problem; anything else in words, its traceback logged (G142)."""
+        QMessageBox.warning(self, title, str(e) if known and isinstance(e, known)
+                            else _plain_error(e, f"{what} could not be read"))
 
     def _nothing_to_write(self, key: str) -> str | None:
         """Why export `key` has nothing to write now, or None (R26: Ctrl+E said it, Everything repeated
@@ -12832,13 +12804,8 @@ class MainWindow(QMainWindow):
         bones = s.bones()            # the dialog's "Skeleton bones" tick decides, not the View toggle (I44)
         r = OverlayRenderer(s, self.info.path, out, opts, bones, self._mask_opacity)
         total = opts.end - opts.start + 1
-        prog = QProgressDialog(f"Rendering {total} frames to {Path(out).name}…", "Cancel", 0, total, self)
-        prog.setWindowTitle("Overlay video")
-        prog.setWindowModality(Qt.NonModal)
-        prog.setMinimumDuration(0)
-        prog.setAutoClose(False)
-        prog.setAutoReset(False)
-        prog.canceled.connect(r.request_cancel)
+        prog = self._progress_dialog(f"Rendering {total} frames to {Path(out).name}…", "Cancel", total,
+                                     "Overlay video", r.request_cancel)
         r.progress.connect(lambda d, t: prog.setValue(d))
 
         def _done(path, codec):

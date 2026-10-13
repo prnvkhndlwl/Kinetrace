@@ -859,6 +859,11 @@ class TrackingSession:
         """Animal k has (or can make) a silhouette: clicks or stored silhouettes (G153: optional)."""
         return 0 <= k < self.n_segments and bool(self.segments[k].n_prompts() or self.seg_masks[k].n_masked())
 
+    def frame_window(self, f0: int, f1: int) -> tuple[int, int]:
+        """The window between two frames in either order, inside the video (R26: Clear and the
+        multi-point Clear wrote it alike)."""
+        return max(0, min(f0, f1)), min(self.n_frames - 1, max(f0, f1))
+
     def segments_with_masks(self) -> list[int]:
         """The animals with at least one stored silhouette (R26: the exports and Body asked it four ways)."""
         return [k for k in range(self.n_segments) if self.seg_masks[k].n_masked() > 0]
