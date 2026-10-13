@@ -2176,13 +2176,18 @@ Four steps, in this order:
    ordinary (v7) format, choose the `…dvProject.mat` instead — it also carries
    the lens correction for GoPro-style cameras, which the plain CSV does not. In
    the dialog, tell the program which column belongs to which camera and how the
-   calibration counted pixels. **DLTdv and easyWand** count from 1 with y
-   downwards, which is the first choice and almost always right; if your 3D
-   comes out wrong by a constant amount, this setting is the first thing to
-   check. The choice starts fresh for every file you open (it never carries over
-   from the last one). A Kinetrace `.kcal.json` states its own convention, and
-   so does an OpenCV-style camera file (below), so for those the choice is
-   locked. When
+   calibration counted pixels. A `dltCoefs.csv` and an easyWand file do not say,
+   so the choice starts empty and **OK stays grey until you pick one**:
+   **DLTdv8 and easyWand** count from 1 with y downwards (the first choice, almost
+   always right); files from older DLTdv versions may count y up from the bottom
+   edge; OpenCV and Python count from 0. A wrong choice moves every 3D point by
+   about a pixel's worth while the residual still looks normal, which is why the
+   program asks instead of guessing. The choice starts fresh for every file you
+   open. A Kinetrace `.kcal.json`, a DLTdv8 project and an OpenCV-style camera
+   file (below) state their own convention, so for those the choice is locked.
+   Inside the program every calibration is then kept the way Kinetrace counts
+   pixels (from 0, y downwards); the export for DLTdv / easyWand / MATLAB adds
+   the 1 back. When
    the file records each camera's picture size, the dialog matches columns to
    cameras by size where it can and asks before accepting a column whose size
    differs from the video's; a `dltCoefs.csv` records no sizes, so match its
