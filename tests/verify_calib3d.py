@@ -522,17 +522,49 @@ def _h_child():
         h, w = v.last_image.shape[:2]
         assert (w, h) == (round(v.canvas.width() * dpr), round(v.canvas.height() * dpr)), \
             f"picture {w}x{h} for a {v.canvas.width()}x{v.canvas.height()} canvas at {dpr}x"
-        pts = v.end_screen_points()
-        k = int(np.nanargmin(np.abs(pts[:, 0] - v.canvas.width() / 2) + np.abs(pts[:, 1] - v.canvas.height() / 2)))
-        hp = QPointF(float(pts[k, 0]), float(pts[k, 1]))
+        # ... and shown at that density: the picture fits the canvas (not twice its size, cropped)
+        pm = v.canvas.pixmap()
+        shown = pm.deviceIndependentSize()
+        assert abs(pm.devicePixelRatio() - dpr) < 1e-9 and abs(shown.width() - v.canvas.width()) <= 1 and \
+            abs(shown.height() - v.canvas.height()) <= 1, \
+            f"shown {shown.width():.0f}x{shown.height():.0f} at {pm.devicePixelRatio()}x on a {v.canvas.width()}x{v.canvas.height()} canvas"
+        # the wheel zooms in (the dots spread), a Shift-drag pans (the window takes both), as the user would
+        from PySide6.QtGui import QWheelEvent
+        from kinetrace import view3d as v3
+        p0 = QPointF(v.width() / 2, v.height() / 2)
+        for _ in range(12):
+            ws.app.sendEvent(v, QWheelEvent(p0, v.mapToGlobal(p0), QPoint(0, 0), QPoint(0, 120), Qt.NoButton,
+                                            Qt.NoModifier, Qt.NoScrollPhase, False))
+        p1 = QPointF(p0.x() + 37, p0.y() - 23)
+        for typ, pos, btns in ((QEvent.MouseButtonPress, p0, Qt.LeftButton), (QEvent.MouseMove, p1, Qt.LeftButton),
+                               (QEvent.MouseButtonRelease, p1, Qt.NoButton)):
+            ws.app.sendEvent(v, QMouseEvent(typ, pos, v.mapToGlobal(pos), Qt.LeftButton, btns, Qt.ShiftModifier))
+        pump(0.1)
+        assert tuple(v.pan) == (37.0, -23.0), v.pan
+        v._render()
+        # where each wand end lies on the screen, worked out on its own: the same view at the canvas's
+        # LOGICAL size (px 1) - not from the picture's own mapping (review of G187)
+        pic = v.scene.calib
+        cw, ch = v.canvas.width(), v.canvas.height()
+        to_l, _, _ = v3.screen_transform(v.scene, (cw, ch), v.azimuth, v.elevation, v.zoom, tuple(v.pan), 2,
+                                         v.chk_cams.isChecked(), True)
+        lp = to_l(pic.ends)[0]
+        d = np.hypot(lp[:, None, 0] - lp[None, :, 0], lp[:, None, 1] - lp[None, :, 1])
+        np.fill_diagonal(d, np.inf)
+        inside = (lp[:, 0] > 20) & (lp[:, 0] < cw - 20) & (lp[:, 1] > 20) & (lp[:, 1] < ch - 20)
+        alone = np.isfinite(lp).all(axis=1) & inside & (d.min(axis=1) >= 4)
+        assert alone.any(), "no wand end stands alone"
+        cand = np.nonzero(alone)[0]
+        # the one farthest from the centre: a wrong scale maps the centre onto itself and hides there
+        k = int(cand[np.argmax(np.hypot(lp[cand, 0] - cw / 2, lp[cand, 1] - ch / 2))])
+        assert np.hypot(lp[k, 0] - cw / 2, lp[k, 1] - ch / 2) > 100, "every lone wand end is near the centre"
+        hp = QPointF(float(lp[k, 0]), float(lp[k, 1]))
         ws.app.sendEvent(v.canvas, QMouseEvent(QEvent.MouseMove, hp, v.canvas.mapToGlobal(hp), Qt.NoButton,
                                                Qt.NoButton, Qt.NoModifier))
         pump(0.1)
         tip = v.canvas.toolTip()
-        hit = v._pick(pts[k, 0], pts[k, 1])
-        assert hit is not None and "frame" in tip and str(int(v.scene.calib.end_frame[hit])) in tip, tip
-        print(f"H-CHILD OK: {w}x{h} picture for a {v.canvas.width()}x{v.canvas.height()} canvas at {dpr}x; "
-              f"hover '{tip}'")
+        assert tip == pic.hover_text(k), f"hover at {pic.hover_text(k)!r}'s place says {tip!r}"
+        print(f"H-CHILD OK: {w}x{h} picture for a {cw}x{ch} canvas at {dpr}x; after a pan the hover says '{tip}'")
     finally:
         ws.close_wizard(wz)
 
