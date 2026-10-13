@@ -7282,6 +7282,7 @@ class MainWindow(QMainWindow):
                 self._set_undo_point(snap)
                 self._refresh_overlay()
                 self.timeline.refresh()
+                self._update_track_button()     # a filled frame here can unblock Track (G190), as one point's fill
             self.statusBar().showMessage(f"{n} frame(s) filled from the curves through the hand placements"
                                          + (" — Ctrl+Z undoes" if n else " (nothing to fill)"), 7000)
 
