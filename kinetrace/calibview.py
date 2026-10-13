@@ -221,30 +221,43 @@ class CalibPicture:
         ext = np.maximum(hi - lo, 1e-3)
         return lo - margin * ext, hi + margin * ext
 
-    def add_coverage(self, n_max: int = 40) -> Coverage:
-        """Count the cameras over the box and make the surfaces for 2, 3 and all cameras (call it on a
-        worker: tens of milliseconds to a few seconds)."""
+    def coverage_for(self, views=None, n_max: int = 40) -> tuple:
+        """(Coverage, {n: surface}, sentences) of the space the cameras `views` (CamDraw.view ids; None =
+        all) see - computed WITHOUT changing the picture, so a worker can run it while the window draws.
+        The box is the whole space their drawn fields of view span; each camera counts up to its drawn far
+        plane (G186; owner 2026-10-12: any choice of cameras)."""
         if self.cal is None:
             raise ValueError("no calibration to count cameras with")
-        # the whole space the drawn fields of view span; each camera counts up to its drawn far plane
+        chosen = [cd for cd in self.cams if views is None or cd.view in views]
+        cams = [None] * len(self.cal)
         reach, pts = {}, []
-        for cd in self.cams:
+        for cd in chosen:
+            cams[cd.view] = self.cal.camera(cd.view)
             if cd.fov is not None and cd.fov.axis is not None and len(cd.fov.border):
                 reach[cd.view] = (cd.centre, cd.fov.axis, cd.fov.depth)
                 pts += [cd.fov.border, cd.centre[None]]
+        sub = Calibration(cams, self.cal.unit)
         if pts:
             allp = np.vstack(pts)
             lo, hi = allp.min(axis=0), allp.max(axis=0)
         else:
             lo, hi = self.box()
-        cov = coverage(self.cal, lo, hi, n_max, reach=reach or None)
-        for n in sorted({2, 3, cov.n_cams} - {0, 1}):
-            if n <= cov.n_cams:
-                self.cover[n] = cov.surface(n)
-        self.coverage = cov
+        cov = coverage(sub, lo, hi, n_max, probe=working_probe(self.cal), reach=reach or None)
+        surfaces = {n: cov.surface(n) for n in range(2, cov.n_cams + 1)}
+        return cov, surfaces, (cov.sentences(self.finite_ends()) if cov.n_cams >= 2 else [])
+
+    def use_coverage(self, result: tuple) -> None:
+        """Show a `coverage_for` result (on the window's thread)."""
+        cov, surfaces, sentences = result
+        self.coverage, self.cover = cov, dict(surfaces)
         self.lines = [ln for ln in self.lines if not ln.startswith("The wand cloud lies")]
-        self.lines[:0] = cov.sentences(self.finite_ends())
-        return cov
+        self.lines[:0] = sentences
+
+    def add_coverage(self, n_max: int = 40, views=None) -> Coverage:
+        """`coverage_for` + `use_coverage` in one call (tests, scripts)."""
+        res = self.coverage_for(views, n_max)
+        self.use_coverage(res)
+        return res[0]
 
 
 def _cameras(cal: Calibration, names: list, ends: np.ndarray, probe) -> tuple[list, list[str]]:

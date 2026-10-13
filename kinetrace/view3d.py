@@ -12,7 +12,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPushButton,
@@ -372,6 +372,7 @@ class Scene3D:
         self.unit = ""
         self.calib = None               # (G185) calibview.CalibPicture: the wand calibration layer
         self.cover_n = 2                # (G186) the covered space drawn: seen by >= this many cameras
+        self.calib_views = None         # the cameras (CamDraw.view) whose pyramid / field of view are drawn
 
     def framing(self, include_cameras: bool, include_calib: bool = False) -> tuple[np.ndarray, float]:
         """Centre and span to frame: the CURRENT instant's landmarks and hull
@@ -446,8 +447,8 @@ def _draw_poly(img, scr: np.ndarray, colour, closed: bool, thickness: int = 1) -
         cv2.polylines(img, [np.round(scr[ok]).astype(np.int32)], closed, colour, thickness, cv2.LINE_AA)
 
 
-def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_fov: bool, show_cover: bool,
-                hits: dict | None) -> np.ndarray:
+def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool, show_pyramids: bool,
+                show_fov: bool, show_cover: bool, hits: dict | None) -> np.ndarray:
     """(G185, G186) the covered space (translucent), the fields of view, the cameras' pose pyramids, the wand
     lines and ends, and the scale bar. Returns the image (the translucent layer makes a new one)."""
     pic = scene.calib
@@ -467,21 +468,27 @@ def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_fov: bool,
             cv2.fillConvexPoly(layer, tri[k], (base * shade[k]).astype(int).tolist(), lineType=cv2.LINE_AA)
         img = cv2.addWeighted(layer, 0.3, img, 0.7, 0)
     for k, cd in enumerate(pic.cams):
+        if scene.calib_views is not None and cd.view not in scene.calib_views:
+            continue
         col = CAM_COLOURS[k % len(CAM_COLOURS)]
         dim = tuple(int(0.55 * v) for v in col)
         if show_fov and cd.fov is not None and len(cd.fov.border):
             _draw_poly(img, to_screen(cd.fov.border)[0], dim, True)
             for c0, c1 in cd.fov.rays:
                 _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], dim, False)
-        if cd.pose is not None and len(cd.pose.border):
+        if show_pyramids and cd.pose is not None and len(cd.pose.border):
             _draw_poly(img, to_screen(cd.pose.border)[0], col, True, 2)
             for c0, c1 in cd.pose.rays:
                 _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], col, False, 2)
         cs = to_screen(cd.centre)[0][0]
-        if np.isfinite(cs).all():
+        if (show_pyramids or show_fov) and np.isfinite(cs).all():
             cv2.putText(img, cd.name, (int(cs[0]) + 8, int(cs[1]) - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1,
                         cv2.LINE_AA)
     es, _ = to_screen(pic.ends)
+    if hits is not None:
+        hits["ends"] = es if show_ends else None
+    if not show_ends:
+        es = np.full_like(es, np.nan)
     for a, b in pic.pairs:
         if np.isfinite(es[a]).all() and np.isfinite(es[b]).all():
             cv2.line(img, (int(es[a, 0]), int(es[a, 1])), (int(es[b, 0]), int(es[b, 1])), (95, 95, 95), 1,
@@ -491,8 +498,6 @@ def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_fov: bool,
         if np.isfinite(es[k]).all():
             st = int(pic.end_state[k])
             cv2.circle(img, (int(es[k, 0]), int(es[k, 1])), 3 if st == 3 else 2, END_COLOURS[st], -1, cv2.LINE_AA)
-    if hits is not None:
-        hits["ends"] = es
     L = _nice_length(110.0 / max(scale, 1e-12))
     if L > 0:
         n = int(round(L * scale))
@@ -509,12 +514,16 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
                  zoom: float = 1.0, show_mesh: bool = True, show_points: bool = True,
                  show_cameras: bool = False, up: int = 2, pan: tuple[float, float] = (0.0, 0.0),
                  show_calib: bool = False, show_fov: bool = False, show_cover: bool = False,
-                 hits: dict | None = None) -> np.ndarray:
+                 hits: dict | None = None, show_pyramids: bool | None = None) -> np.ndarray:
     """The 3D window's picture (BGR). The wand calibration layers (G185, G186) are drawn only when asked and
-    the scene has a picture; `hits`, when given, receives "ends" = the wand ends' (P, 2) image pixels."""
+    the scene has a picture: `show_calib` = the wand points (and the scale bar), `show_pyramids` the
+    cameras' pose pyramids (None = with the wand points), `show_fov` their fields of view, `show_cover`
+    the covered space; each on its own (owner 2026-10-12). `hits`, when given, receives "ends" = the wand
+    ends' (P, 2) image pixels (None when they are not drawn)."""
     W, H = size
     img = np.full((H, W, 3), (24, 26, 30), np.uint8)
-    calib_on = show_calib and scene.calib is not None
+    pyr = show_calib if show_pyramids is None else show_pyramids
+    calib_on = (show_calib or pyr or show_fov or show_cover) and scene.calib is not None
     to_screen, R, scale = screen_transform(scene, size, azimuth, elevation, zoom, pan, up, show_cameras,
                                            calib_on)
 
@@ -543,7 +552,7 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
             c = (base * shade[k]).astype(int).tolist()
             cv2.fillConvexPoly(img, tri[k], c, lineType=cv2.LINE_AA)
     if calib_on:
-        img = _draw_calib(img, scene, to_screen, R, scale, show_fov, show_cover, hits)
+        img = _draw_calib(img, scene, to_screen, R, scale, show_calib, pyr, show_fov, show_cover, hits)
     if show_cameras and not calib_on and scene.cameras is not None and len(scene.cameras):
         cs, _ = to_screen(scene.cameras)
         for k, (x, y) in enumerate(cs):
@@ -567,12 +576,33 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
     return img
 
 
+class _CoverageThread(QThread):
+    """(G186) `CalibPicture.coverage_for` off the window's thread."""
+    done = Signal(object, int)
+
+    def __init__(self, picture, views, gen: int):
+        super().__init__()
+        self.picture, self.views, self.gen = picture, views, gen
+
+    def run(self):
+        try:
+            res = self.picture.coverage_for(self.views)
+        except Exception as e:      # noqa: BLE001 - said in the info line, never a crash
+            res = e
+        self.done.emit(res, self.gen)
+
+
 class View3D(QWidget):
     """Floating 3D window: orbit with the left mouse button, zoom with the
     wheel, pan with the middle button (or Shift+drag), double-click to reset.
-    Redraws on demand, coalesced through a timer."""
+    Redraws on demand, coalesced through a timer. With a wand calibration picture (G185, G186): the wand
+    points, the camera pyramids, the fields of view and the covered space are separate ticks, the
+    Cameras menu chooses which cameras are drawn and counted, a wand end under the mouse says its frame,
+    and a click on it emits `end_clicked` (its reference frame)."""
 
     closed = Signal()
+    end_clicked = Signal(int)
+    calib_wanted = Signal()         # a calibration tick was switched on and there is no picture yet
 
     def __init__(self, parent=None):
         super().__init__(parent, Qt.Tool)
@@ -602,11 +632,47 @@ class View3D(QWidget):
         self.info.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         top.addWidget(self.info, 1)
         lay.addLayout(top)
+        # (G185, G186) the wand calibration's layers, each on its own, and the cameras drawn / counted
+        self.calib_row = QWidget()
+        cr = QHBoxLayout(self.calib_row)
+        cr.setContentsMargins(0, 0, 0, 0)
+        self.chk_calib = QCheckBox("Wand points")
+        self.chk_calib.setToolTip("Every wand position the calibration used, both ends, coloured by error: "
+                                  "green good, yellow ok, orange poor, red rejected (or, recomputed from the "
+                                  "tracks, disagreeing). Hover one for its frame; click it to go there.")
+        self.chk_pyr = QCheckBox("Camera pyramids")
+        self.chk_pyr.setToolTip("Where each camera stands and which way it looks")
+        self.chk_fov = QCheckBox("Fields of view")
+        self.chk_fov.setToolTip("Each camera's whole field of view, its lens included, to a flat far plane past "
+                                "the wand")
+        self.chk_cover = QCheckBox("Covered by ≥")
+        self.chk_cover.setToolTip("The space at least this many of the chosen cameras see: where 3D is possible "
+                                  "(2) and well determined (3 or more)")
+        self.cmb_cover = QComboBox()
+        from PySide6.QtWidgets import QMenu, QToolButton
+        self.btn_cams = QToolButton()
+        self.btn_cams.setText("Cameras ▾")
+        self.btn_cams.setPopupMode(QToolButton.InstantPopup)
+        self.btn_cams.setToolTip("Choose the cameras whose pyramid and field of view are drawn, and that the "
+                                 "covered space is counted from")
+        self.cams_menu = QMenu(self)
+        self.btn_cams.setMenu(self.cams_menu)
+        self.cam_actions: list = []
+        for w in (self.chk_calib, self.chk_pyr, self.chk_fov, self.chk_cover, self.cmb_cover, self.btn_cams):
+            cr.addWidget(w)
+        cr.addStretch(1)
+        self.calib_row.setVisible(False)
+        lay.addWidget(self.calib_row)
+        for c in (self.chk_calib, self.chk_pyr, self.chk_fov, self.chk_cover):
+            c.toggled.connect(self._calib_ticked)
+        self.cmb_cover.currentIndexChanged.connect(self._cover_n_changed)
         self.canvas = QLabel()
         self.canvas.setMinimumSize(320, 240)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.canvas.setAlignment(Qt.AlignCenter)
         self.canvas.setStyleSheet("background: #181a1e;")
+        self.canvas.setMouseTracking(True)
+        self.canvas.installEventFilter(self)
         lay.addWidget(self.canvas, 1)
         hint = QLabel("drag to orbit · wheel to zoom · middle-drag or Shift+drag to pan · double-click to reset")
         hint.setStyleSheet(f"color: {theme.TEXT_DIM};")
@@ -617,12 +683,207 @@ class View3D(QWidget):
         self._timer.setInterval(15)
         self._timer.timeout.connect(self._render)
         self.last_image: np.ndarray | None = None
+        self._hits: dict = {}
+        self._cover_thread: _CoverageThread | None = None
+        self._cover_gen = 0
+        self._cover_key = None
+        self._base_info = ""
 
     # ---- data
     def set_scene(self, scene: Scene3D, info: str = "") -> None:
+        old = self.scene.calib if self.scene is not None else None
+        if scene.calib is None and old is not None and self._calib_on():
+            scene.calib = old                     # a new instant keeps the calibration picture
+        scene.cover_n = self.scene.cover_n if self.scene is not None else scene.cover_n
         self.scene = scene
-        self.info.setText(info)
+        self._base_info = info
+        if scene.calib is not old:
+            self._picture_changed()
+        self._show_info()
         self.request_render()
+
+    # ---- the wand calibration layers (G185, G186)
+    def set_calib_available(self, on: bool) -> None:
+        """Show the calibration ticks (there is a calibration to draw)."""
+        self.calib_row.setVisible(bool(on))
+
+    def set_calib_picture(self, picture, ticks: tuple = ()) -> None:
+        """Draw `picture` (a calibview.CalibPicture); `ticks` = layers to switch on ("points", "pyramids",
+        "fov", "cover")."""
+        self.calib_row.setVisible(True)
+        self.scene.calib = picture
+        self._picture_changed()
+        boxes = {"points": self.chk_calib, "pyramids": self.chk_pyr, "fov": self.chk_fov, "cover": self.chk_cover}
+        for k in ticks:
+            boxes[k].blockSignals(True)
+            boxes[k].setChecked(True)
+            boxes[k].blockSignals(False)
+        self._calib_ticked()
+
+    def _calib_on(self) -> bool:
+        return any(c.isChecked() for c in (self.chk_calib, self.chk_pyr, self.chk_fov, self.chk_cover))
+
+    def _picture_changed(self) -> None:
+        """A new picture: its cameras in the Cameras menu (all chosen), the covered space to count again."""
+        pic = self.scene.calib
+        self.cams_menu.clear()
+        self.cam_actions = []
+        self._cover_key = None
+        self._cover_gen += 1
+        if pic is None:
+            self.scene.calib_views = None
+            return
+        for label, on in (("All cameras", True), ("No camera", False)):
+            a = self.cams_menu.addAction(label)
+            a.triggered.connect(lambda _=False, on=on: self._set_all_cams(on))
+        self.cams_menu.addSeparator()
+        for cd in pic.cams:
+            a = self.cams_menu.addAction(cd.name)
+            a.setCheckable(True)
+            a.setChecked(True)
+            a.setData(cd.view)
+            a.toggled.connect(lambda _=False: self._cams_changed())
+            self.cam_actions.append(a)
+        self.scene.calib_views = None
+        self._fill_cover_combo()
+
+    def _set_all_cams(self, on: bool) -> None:
+        for a in self.cam_actions:
+            a.blockSignals(True)
+            a.setChecked(on)
+            a.blockSignals(False)
+        self._cams_changed()
+
+    def _chosen_views(self):
+        if not self.cam_actions or all(a.isChecked() for a in self.cam_actions):
+            return None
+        return {int(a.data()) for a in self.cam_actions if a.isChecked()}
+
+    def _cams_changed(self) -> None:
+        self.scene.calib_views = self._chosen_views()
+        self._fill_cover_combo()
+        self._cover_key = None
+        if self.chk_cover.isChecked():
+            self._start_coverage()
+        self._show_info()
+        self.request_render()
+
+    def _fill_cover_combo(self) -> None:
+        n = len(self.cam_actions) if self.scene.calib_views is None else len(self.scene.calib_views)
+        keep = self.scene.cover_n
+        self.cmb_cover.blockSignals(True)
+        self.cmb_cover.clear()
+        for k in range(2, n + 1):
+            self.cmb_cover.addItem(f"{k} cameras" if k < n else f"all {n}", k)
+        i = self.cmb_cover.findData(min(max(keep, 2), max(n, 2)))
+        self.cmb_cover.setCurrentIndex(max(i, 0))
+        self.cmb_cover.blockSignals(False)
+        if self.cmb_cover.count():
+            self.scene.cover_n = int(self.cmb_cover.currentData())
+        self.chk_cover.setEnabled(n >= 2)
+        self.cmb_cover.setEnabled(n >= 2)
+
+    def _cover_n_changed(self, _i=None) -> None:
+        if self.cmb_cover.count():
+            self.scene.cover_n = int(self.cmb_cover.currentData())
+        self.request_render()
+
+    def _calib_ticked(self, _on=None) -> None:
+        if self._calib_on() and self.scene.calib is None:
+            self.calib_wanted.emit()
+        if self.chk_cover.isChecked() and self.scene.calib is not None:
+            self._start_coverage()
+        self._show_info()
+        self.request_render()
+
+    def _start_coverage(self) -> None:
+        pic = self.scene.calib
+        key = (id(pic), None if self.scene.calib_views is None else tuple(sorted(self.scene.calib_views)))
+        if pic is None or key == self._cover_key:
+            return
+        self._cover_key = key
+        self._cover_gen += 1
+        self.stop_threads(wait=False)
+        th = _CoverageThread(pic, self.scene.calib_views, self._cover_gen)
+        th.done.connect(self._coverage_done)
+        self._cover_thread = th
+        self.info.setText((self._base_info + "  ·  " if self._base_info else "") + "counting the covered space…")
+        th.start()
+
+    def _coverage_done(self, res, gen: int) -> None:
+        th = self._cover_thread
+        if th is not None:
+            th.wait()
+        if gen != self._cover_gen or self.scene.calib is None:
+            return
+        if isinstance(res, Exception):
+            self.info.setText(f"The covered space could not be counted: {res}")
+            return
+        self.scene.calib.use_coverage(res)
+        self._show_info()
+        self.request_render()
+
+    def stop_threads(self, wait: bool = True) -> None:
+        """The coverage worker: its result is dropped (generation); with `wait`, until it has ended."""
+        th = self._cover_thread
+        if th is not None and th.isRunning() and wait:
+            th.wait()
+
+    def _show_info(self) -> None:
+        pic = self.scene.calib
+        txt = self._base_info
+        if pic is not None and self._calib_on():
+            lines = list(pic.lines)
+            if not self.chk_cover.isChecked():
+                lines = [ln for ln in lines if not ln.startswith("The wand cloud lies")]
+            if lines:
+                txt = (txt + "  ·  " if txt else "") + "  ".join(lines)
+            self.info.setToolTip("\n".join(pic.lines))
+        self.info.setText(txt)
+
+    def end_screen_points(self) -> np.ndarray | None:
+        """The wand ends' (P, 2) positions on the canvas in the last picture (NaN where not drawn)."""
+        es = self._hits.get("ends")
+        if es is None or self.last_image is None:
+            return None
+        h, w = self.last_image.shape[:2]
+        ox, oy = (self.canvas.width() - w) / 2.0, (self.canvas.height() - h) / 2.0
+        return es + np.array([ox, oy])
+
+    def _pick(self, x: float, y: float, radius: float = 6.0) -> int | None:
+        pts = self.end_screen_points()
+        if pts is None or not len(pts):
+            return None
+        d = np.hypot(pts[:, 0] - x, pts[:, 1] - y)
+        d[~np.isfinite(d)] = np.inf
+        k = int(np.argmin(d))
+        return k if d[k] <= radius else None
+
+    def eventFilter(self, obj, ev):
+        """Mouse on the picture: hover says a wand end's frame and error, a click (no drag) on one emits
+        `end_clicked`; dragging orbits / pans as before."""
+        if obj is self.canvas:
+            t = ev.type()
+            if t == QEvent.MouseMove and self._drag is None:
+                k = self._pick(ev.position().x(), ev.position().y())
+                tip = self.scene.calib.hover_text(k) if (k is not None and self.scene.calib is not None) else ""
+                if tip != self.canvas.toolTip():
+                    self.canvas.setToolTip(tip)
+                    if tip:
+                        from PySide6.QtWidgets import QToolTip
+                        QToolTip.showText(self.canvas.mapToGlobal(QPoint(int(ev.position().x()) + 12,
+                                                                          int(ev.position().y()) + 12)), tip, self.canvas)
+                return False
+            if t == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
+                self._press_at = (ev.position().x(), ev.position().y())
+            elif t == QEvent.MouseButtonRelease and ev.button() == Qt.LeftButton:
+                p0 = getattr(self, "_press_at", None)
+                self._press_at = None
+                if p0 is not None and abs(ev.position().x() - p0[0]) + abs(ev.position().y() - p0[1]) < 3:
+                    k = self._pick(ev.position().x(), ev.position().y())
+                    if k is not None and self.scene.calib is not None:
+                        self.end_clicked.emit(int(self.scene.calib.end_frame[k]))
+        return super().eventFilter(obj, ev)
 
 
     def request_render(self) -> None:
@@ -632,9 +893,14 @@ class View3D(QWidget):
     def _render(self) -> None:
         w = max(64, self.canvas.width())
         h = max(64, self.canvas.height())
+        hits: dict = {}
         img = render_scene(self.scene, (w, h), self.azimuth, self.elevation, self.zoom,
                            self.chk_mesh.isChecked(), self.chk_points.isChecked(),
-                           self.chk_cams.isChecked(), pan=tuple(self.pan))
+                           self.chk_cams.isChecked(), pan=tuple(self.pan),
+                           show_calib=self.chk_calib.isChecked(), show_fov=self.chk_fov.isChecked(),
+                           show_cover=self.chk_cover.isChecked(), hits=hits,
+                           show_pyramids=self.chk_pyr.isChecked())
+        self._hits = hits
         self.last_image = img
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888)
@@ -680,5 +946,7 @@ class View3D(QWidget):
         self.request_render()
 
     def closeEvent(self, ev):
+        self._cover_gen += 1
+        self.stop_threads()
         self.closed.emit()
         super().closeEvent(ev)
