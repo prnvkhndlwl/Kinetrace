@@ -100,17 +100,22 @@ def sec_b():
 def sec_c():
     from kinetrace import calibview as cv3
     P = ws.build(no_wand=(), tag="c3d")
-    bad = [(1, 120, 0), (3, 260, 1), (4, 401, 0)]          # (camera, local frame, end) moved 30 px
+    uv0, fr0 = wd.collect_wand(P, "wand A", "wand B", max_frames=400)
+    picks = [int(fr0[k]) for k in (60, 180, 300)]                        # three sampled reference frames
+    bad = [(1, int(P.local_index(1, picks[0])), 0), (3, int(P.local_index(3, picks[1])), 1),
+           (4, int(P.local_index(4, picks[2])), 0)]                       # (camera, local frame, end) moved 30 px
     for c, f, e in bad:
         s = P.sessions[c]
         j = s.pid_by_name("wand A" if e == 0 else "wand B")
         s.tracks[f, j] += np.float32(30.0)
-    uv, frames = wd.collect_wand(P, "wand A", "wand B", max_frames=100000)
+    uv, frames = wd.collect_wand(P, "wand A", "wand B", max_frames=400)      # as the wizard samples
     focal = [float(f) for f in ws.FOCAL]
     res = wand_mod.calibrate_wand(uv, ws.WAND_L, [(ws.W, ws.H)] * ws.N_CAM, focal=focal, frame_ids=frames,
                                   names=list(P.names))
     pic = cv3.from_wand_result(res, frames, list(P.names))
     bad_ref = {(int(P.reference_index(c, f)), e) for c, f, e in bad}
+    bad_ref &= {(int(fr), e) for fr in frames for e in (0, 1)}            # the moved clicks this sample holds
+    assert bad_ref, "the sample holds none of the moved clicks"
     rej = {(int(fr), int(e)) for fr, e, st in zip(pic.end_frame, pic.end_which, pic.end_state) if st == 3}
     assert bad_ref <= rej, (sorted(bad_ref), sorted(rej)[:10])
     assert len(rej) <= len(bad_ref) + 3, sorted(rej)
