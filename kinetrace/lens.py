@@ -72,6 +72,14 @@ def outlier_limit(errors, floor: float) -> float:
 # ------------------------------------------------------------------ profile
 
 
+def picture_border(w: int, h: int, n: int = 64) -> np.ndarray:
+    """(4n, 2) pixel positions along the picture's four edges: top, bottom, left, right, n each,
+    corners included -- the border every lens-bend number walks (I285)."""
+    xs, ys = np.linspace(0, w - 1, n), np.linspace(0, h - 1, n)
+    return np.concatenate([np.column_stack([xs, np.zeros(n)]), np.column_stack([xs, np.full(n, h - 1.0)]),
+                           np.column_stack([np.zeros(n), ys]), np.column_stack([np.full(n, w - 1.0), ys])])
+
+
 @dataclass
 class LensProfile:
     """One lens (intrinsic) calibration. Identical cameras (same model, lens,
@@ -133,10 +141,7 @@ class LensProfile:
                  the diagonal (nan when a corner is not described)}.
         """
         w, h = self.width, self.height
-        xs = np.linspace(0, w - 1, n)
-        ys = np.linspace(0, h - 1, n)
-        border = np.concatenate([np.column_stack([xs, np.zeros(n)]), np.column_stack([xs, np.full(n, h - 1.0)]),
-                                 np.column_stack([np.zeros(n), ys]), np.column_stack([np.full(n, w - 1.0), ys])])
+        border = picture_border(w, h, n)
         model = OpenCVUndistort(self.K, self.dist, self.fisheye)
         und = model.undistort(border)
         with np.errstate(invalid="ignore", over="ignore"):

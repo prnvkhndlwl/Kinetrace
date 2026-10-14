@@ -1442,11 +1442,13 @@ def _lensed_cameras(cal) -> list[tuple[int, float]]:
         bend = float("nan")
         try:
             w, h = int(c.width), int(c.height)
-            if w > 0 and h > 0:
-                n = 32
-                xs, ys = np.linspace(0, w - 1, n), np.linspace(0, h - 1, n)
-                border = np.concatenate([np.column_stack([xs, np.zeros(n)]), np.column_stack([xs, np.full(n, h - 1.0)]),
-                                         np.column_stack([np.zeros(n), ys]), np.column_stack([np.full(n, w - 1.0), ys])])
+            if w > 0 and h > 0 and getattr(und, "kind", "") == "opencv":
+                # (I285) the lens report's own number (its K frame, its validity rules): the README
+                # said 504 px where the report said 500 for a lens with fx != fy, and could print a
+                # runaway fisheye number the report refuses
+                bend = _lens.LensProfile(w, h, und.K, und.dist, und.fisheye).border_check()["bend_px"]
+            elif w > 0 and h > 0:
+                border = _lens.picture_border(w, h)
                 d = np.linalg.norm(np.asarray(und.undistort(border), np.float64) - border, axis=1)
                 d = d[np.isfinite(d) & (d < 1e5)]
                 if len(d):

@@ -558,6 +558,12 @@ class Calibration:
     def n_calibrated(self) -> int:
         return sum(c is not None for c in self.cameras)
 
+    def n_usable(self, n_views: int) -> int:
+        """(I283) The cameras of an `n_views` project that 3D can use: the calibrated ones -- none
+        when this calibration lists MORE cameras than the project (made for another camera set:
+        Reconstruct refuses it). THE "two or more calibrated cameras" count of the window."""
+        return self.n_calibrated if len(self.cameras) <= int(n_views) else 0
+
     def covers(self, n_views: int) -> bool:
         """Every one of `n_views` cameras is calibrated."""
         return len(self.cameras) >= n_views and all(c is not None for c in self.cameras[:n_views])

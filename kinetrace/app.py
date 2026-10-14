@@ -2031,7 +2031,7 @@ class MainWindow(QMainWindow):
             return False
         cal = p.calibration
         left_out = [p.name(v) for v in range(p.n_views) if cal.camera(v) is None]
-        if len(cal) > p.n_views or p.n_views - len(left_out) < 2:
+        if cal.n_usable(p.n_views) < 2:
             QMessageBox.information(
                 self, what,
                 f"The calibration covers {p.n_views - len(left_out)} of this project's {p.n_views} cameras; "
@@ -2140,8 +2140,7 @@ class MainWindow(QMainWindow):
         # 3D layer: needs several cameras, then a calibration, then a result
         p = self.project
         multi = p is not None and p.n_views > 1 and has_video and not tracking
-        has_cal = (multi and p.calibration is not None and len(p.calibration) <= p.n_views   # (I273) any 2+
-                   and sum(p.calibration.camera(v) is not None for v in range(p.n_views)) >= 2)
+        has_cal = multi and p.calibration is not None and p.calibration.n_usable(p.n_views) >= 2   # (I273, I283)
         # Import Calibration and Sync open with one video too and explain what
         # a further step needs (I115)
         live3d = has_video and not tracking and p is not None
@@ -7804,7 +7803,7 @@ class MainWindow(QMainWindow):
         among them (G25, I273)."""
         p = self.project
         return (p is not None and p.n_views > 1 and p.calibration is not None
-                and sum(p.calibration.camera(v) is not None for v in range(p.n_views)) >= 2)
+                and p.calibration.n_usable(p.n_views) >= 2)                # (I283) as Reconstruct counts
 
     def _epipolar_guides(self, pid: int) -> list:
         """[(polyline (M, 2) native px of the working camera, colour, camera name), ...]: where
@@ -10652,13 +10651,15 @@ class MainWindow(QMainWindow):
                 f"cannot be measured against {p.name(0)}.\n\nApply its numbers as written?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        had_3d = p.reconstruction is not None
+        had_3d, before = p.reconstruction is not None, self._calib_key()
         for v, off, rate in rows:
             p.set_rate(v, rate)
         for v, off, rate in rows:
             p.set_offset(v, off)
-        p.dirty = True
-        self._retimed(had_3d)
+        moved = self._calib_key() != before            # (I284) as Sync compares (I242): a file of the
+        if moved:                                      # timing the project has changes nothing
+            p.dirty = True
+        self._retimed(had_3d, moved)
         n = sum(1 for v, _o, _r in rows if v != 0)
         rebased = (f" The file's numbers were measured against another camera, so they were re-based on "
                    f"{p.name(0)}." if getattr(rows, "rebased", False) else "")
@@ -11728,12 +11729,15 @@ class MainWindow(QMainWindow):
                    "Apply them anyway? (No keeps the current offsets.)"),
                 QMessageBox.Yes | QMessageBox.No, default) != QMessageBox.Yes:
             return
-        p.offsets = [float(o) for o in offs]
-        p.dirty = True
-        self._drop_reconstruction()          # (I242) the reconstruction below makes a new one
-        self._refresh_companions()
-        self._refresh_cameras()
-        self._reconstruct_3d(quiet=True)
+        had_3d, before = p.reconstruction is not None, self._calib_key()
+        for i in range(1, p.n_views):                  # (I284) through set_offset, like every retime
+            p.set_offset(i, float(offs[i]))
+        moved = self._calib_key() != before
+        if moved:
+            p.dirty = True
+        self._retimed(had_3d, moved, reason="")        # silent: the reconstruction below replaces it (I242)
+        if moved or p.reconstruction is None:          # (I284) the same offsets keep the result and volumes
+            self._reconstruct_3d(quiet=True)
 
     def _reconstruct_3d(self, quiet: bool = False):
         from kinetrace.calib import reconstruct
@@ -11762,7 +11766,7 @@ class MainWindow(QMainWindow):
         from kinetrace.calib import reconstruction_report
         widths = [s.width for s in p.sessions if s.width] or [1920]
         heights = [s.height for s in p.sessions if s.height] or [0]
-        n_cal = sum(p.calibration.camera(v) is not None for v in range(p.n_views))         # (I273)
+        n_cal = p.calibration.n_usable(p.n_views)                                         # (I273, I283)
         rep = reconstruction_report(r, n_cal, float(max(widths)), float(max(heights)))     # long side (I250)
         self._recon_report = rep
         self._update_disagreement()             # per-camera disagreement onto the timeline
@@ -12021,8 +12025,7 @@ class MainWindow(QMainWindow):
             info += f" · hull {h.volume():.3g} {unit}³ from {h.n_views} cameras"
         # (G185, G186) the wand calibration's picture, when one is made for THIS calibration
         cal = p.calibration
-        self.view3d.set_calib_available(cal is not None and sum(cal.camera(v) is not None
-                                                                for v in range(p.n_views)) >= 2)
+        self.view3d.set_calib_available(cal is not None and cal.n_usable(p.n_views) >= 2)     # (I283)
         cp = self._calib_pic
         scene.calib = cp[2] if (cp is not None and cp[0] is cal and cp[1] == self._calib_key()) else None
         if scene.unit == "" and cal is not None:

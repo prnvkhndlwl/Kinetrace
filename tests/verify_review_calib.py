@@ -496,6 +496,21 @@ from kinetrace.project import Project  # noqa: E402
 from kinetrace.session import TrackingSession  # noqa: E402
 
 
+@check("I285 the calibration README's lens bend is the lens report's number (fx != fy, one border)")
+def _i285():
+    for fx, fy in ((1000.0, 1010.0), (1200.0, 1185.0)):
+        prof = lens.LensProfile(1920, 1080, np.array([[fx, 0, 960.0], [0, fy, 540.0], [0, 0, 1]]),
+                                np.array([-0.25, 0.08, 0.0, 0.0, -0.01]))
+        cam = CameraCalibration(dlt_from_camera(prof.K, np.eye(3), np.array([0, 0, 3.0])), 1920, 1080,
+                                prof.undistort_model())           # as the wand wizard builds it
+        (k, bend), = cw._lensed_cameras(Calibration([cam], "m"))
+        want = prof.border_check()["bend_px"]
+        assert k == 0 and bend == want, (fx, fy, bend, want)
+        assert f"by up to {want:.0f} px" in cw._dlt_readme(Calibration([cam], "m"), "x_dltCoefs.csv", ["camA"])
+    b = lens.picture_border(1920, 1080, 64)
+    assert b.shape == (256, 2) and b[0].tolist() == [0, 0] and b[-1].tolist() == [1919, 1079]
+
+
 def pump(seconds=0.2):
     end = time.time() + seconds
     while time.time() < end:
