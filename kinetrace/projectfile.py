@@ -219,17 +219,23 @@ def _key(name: str) -> str:
     return unicodedata.normalize("NFC", unicodedata.normalize("NFC", str(name)).casefold())
 
 
-def camera_folders(names: list[str]) -> list[str]:
-    """Zip-safe, case-insensitively unique folder names ([A-Za-z0-9._-])."""
+def _dedupe(bases: list[str]) -> list[str]:
+    """(R47) `base`, `base-2`, `base-3` ...: unique ignoring case (the camera folders' and the landmark files'
+    rule; camera folder names are ASCII, so casefold is their old `lower`)."""
     out, seen = [], set()
-    for i, n in enumerate(names):
-        base = re.sub(f"[^{_FOLDER_CHARS}]+", "_", unicodedata.normalize("NFKD", n)).strip("._") or f"cam{i + 1}"
+    for base in bases:
         f, k = base, 2
-        while f.lower() in seen:
+        while f.casefold() in seen:
             f, k = f"{base}-{k}", k + 1
-        seen.add(f.lower())
+        seen.add(f.casefold())
         out.append(f)
     return out
+
+
+def camera_folders(names: list[str]) -> list[str]:
+    """Zip-safe, case-insensitively unique folder names ([A-Za-z0-9._-])."""
+    return _dedupe([re.sub(f"[^{_FOLDER_CHARS}]+", "_", unicodedata.normalize("NFKD", n)).strip("._")
+                    or f"cam{i + 1}" for i, n in enumerate(names)])
 
 
 _FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -240,19 +246,15 @@ def landmark_files(names: list[str]) -> list[str]:
     """One file name per landmark (`snout.csv`): the name itself where every
     OS allows it (letters of any language kept), characters Windows forbids
     as `_`, no leading dot, no reserved device name, unique ignoring case."""
-    out, seen = [], set()
+    bases = []
     for i, n in enumerate(names):
         base = _FORBIDDEN.sub("_", unicodedata.normalize("NFC", str(n))).strip().strip(".").strip()[:80]
         if not base:
             base = f"point{i + 1}"
         if base.split(".")[0].upper() in _RESERVED:
             base += "_"
-        f, k = base, 2
-        while f.casefold() in seen:
-            f, k = f"{base}-{k}", k + 1
-        seen.add(f.casefold())
-        out.append(f + ".csv")
-    return out
+        bases.append(base)
+    return [f + ".csv" for f in _dedupe(bases)]
 
 
 def f64_text(a: np.ndarray) -> np.ndarray:
@@ -575,6 +577,24 @@ def _put_mesh(files: dict, folder: str, body) -> None:
 
 # ------------------------------------------------------------------ tables (worker thread)
 _LM_KINDS = ("i", "f4", "f4", "f4", "b", "b", "b", "f4")
+# (R47) a landmark CSV's columns after frame, x, y: (column, the session array, how a cell is read), in
+# LANDMARK_COLS order -- what a save writes, a read fills and a missing column defaults to (`_lm_default`)
+LM_FIELDS = (("confidence", "confidence", text_f32), ("visible", "visibility", _bool_col),
+             ("hand_placed", "manual", _bool_col), ("hidden", "occluded", _bool_col), ("radius", "radius", text_f32))
+
+
+def _lm_default(col: str, has: np.ndarray) -> np.ndarray:
+    """A column a file does not have, for rows with (`has`) or without a position: confidence 1 / 0,
+    visible where placed, not hand placed, not hidden, no radius."""
+    n = len(has)
+    return {"confidence": lambda: np.where(has, 1.0, 0.0).astype(np.float32), "visible": has.copy,
+            "hand_placed": lambda: np.zeros(n, bool), "hidden": lambda: np.zeros(n, bool),
+            "radius": lambda: np.full(n, np.nan, np.float32)}[col]()
+
+
+def _point3d_spec(cams_px: list[str]) -> tuple[tuple, tuple]:
+    """(R47) A reconstruction CSV's (columns, kinds): POINT3D_COLS and one `<camera>_px` per camera."""
+    return POINT3D_COLS + tuple(cams_px), ("i", "f8", "f8", "f8", "f8", "i") + ("f4",) * len(cams_px)
 _SIL_KINDS = ("i", "i", "f4", "f4", "f4", "i", "i", "i", "i")
 
 
@@ -584,8 +604,8 @@ def _landmark_table(arrays: dict, j: int, is_ball: bool) -> Table:
     tr, cf, vi = arrays["tracks"][:, j], arrays["confidence"][:, j], arrays["visibility"][:, j]
     ma, tk, oc, ra = arrays["manual"][:, j], arrays["tracked"][:, j], arrays["occluded"][:, j], arrays["radius"][:, j]
     f = np.flatnonzero(tk | ma | oc | vi | np.isfinite(ra) | (cf != 0))
-    data = {"frame": f.astype(np.int64), "x": tr[f, 0], "y": tr[f, 1], "confidence": cf[f],
-            "visible": vi[f], "hand_placed": ma[f], "hidden": oc[f], "radius": ra[f]}
+    data = {"frame": f.astype(np.int64), "x": tr[f, 0], "y": tr[f, 1],
+            **{col: arrays[key][:, j][f] for col, key, _ in LM_FIELDS}}
     with_r = is_ball or bool(np.isfinite(data["radius"]).any())       # radius: ball markers only
     return Table(LANDMARK_COLS, _LM_KINDS, data, LANDMARK_COLS if with_r else LANDMARK_COLS[:-1])
 
@@ -610,7 +630,7 @@ def _point3d_table(arrays: dict, j: int, t0: int, cams_px: list[str]) -> Table:
             "residual": res[f], "n_cams": nc[f].astype(np.int64)}
     for k, c in enumerate(cams_px):
         data[c] = pc[f, k] if pc is not None else np.full(len(f), np.nan, np.float32)
-    return Table(POINT3D_COLS + tuple(cams_px), ("i", "f8", "f8", "f8", "f8", "i") + ("f4",) * len(cams_px), data)
+    return Table(*_point3d_spec(cams_px), data)
 
 
 def _int_col(col, where: str, what: str) -> np.ndarray:
@@ -624,13 +644,9 @@ def _parse_landmark(text: str, where: str) -> Table:
     cols, n = parse_table(text, where, ("frame", "x", "y"), LANDMARK_COLS[3:])
     x, y = text_f32(cols["x"], where), text_f32(cols["y"], where)
     has = np.isfinite(x) & np.isfinite(y)
-    opt = lambda c, conv, default: conv(cols[c], where) if cols.get(c) is not None else default  # noqa: E731
     data = {"frame": _int_col(cols["frame"], where, "frame number"), "x": x, "y": y,
-            "confidence": opt("confidence", text_f32, np.where(has, 1.0, 0.0).astype(np.float32)),
-            "visible": opt("visible", _bool_col, has.copy()),
-            "hand_placed": opt("hand_placed", _bool_col, np.zeros(n, bool)),
-            "hidden": opt("hidden", _bool_col, np.zeros(n, bool)),
-            "radius": opt("radius", text_f32, np.full(n, np.nan, np.float32))}
+            **{col: conv(cols[col], where) if cols.get(col) is not None else _lm_default(col, has)
+               for col, _, conv in LM_FIELDS}}
     return Table(LANDMARK_COLS, _LM_KINDS, data,
                  [c for c in LANDMARK_COLS if c in ("frame", "x", "y") or cols.get(c) is not None])
 
@@ -661,7 +677,7 @@ def _point3d_parser(cams_px: list[str]):
         for c in cams_px:
             v = cols.get(c.lower())
             data[c] = text_f32(v, where) if v is not None else np.full(n, np.nan, np.float32)
-        return Table(POINT3D_COLS + tuple(cams_px), ("i", "f8", "f8", "f8", "f8", "i") + ("f4",) * len(cams_px), data)
+        return Table(*_point3d_spec(cams_px), data)
     return parse
 
 
@@ -680,11 +696,8 @@ def _fill_landmark(arr: dict, j: int, t: Table, T: int, where: str) -> None:
     _check_frames(fr, T, where)
     arr["tracks"][fr, j, 0], arr["tracks"][fr, j, 1] = d["x"], d["y"]
     arr["tracked"][fr, j] = np.isfinite(d["x"]) & np.isfinite(d["y"])
-    arr["confidence"][fr, j] = d["confidence"]
-    arr["visibility"][fr, j] = d["visible"]
-    arr["manual"][fr, j] = d["hand_placed"]
-    arr["occluded"][fr, j] = d["hidden"]
-    arr["radius"][fr, j] = d["radius"]
+    for col, key, _ in LM_FIELDS:
+        arr[key][fr, j] = d[col]
 
 
 def _empty_tracks(T: int, N: int) -> dict:
@@ -785,9 +798,7 @@ def project_root(path: str | Path) -> Path:
 
 def is_project(path: str | Path) -> bool:
     root = project_root(path)
-    if root.is_dir():
-        return (root / META).is_file()
-    return root.is_file() and zipfile.is_zipfile(root)
+    return is_folder_project(root) if root.is_dir() else root.is_file() and zipfile.is_zipfile(root)
 
 
 def is_folder_project(path: str | Path) -> bool:
@@ -1069,17 +1080,21 @@ def _scan_layout(root: Path) -> set[str]:
         except OSError:
             pass
     take(root / "reconstruction", "reconstruction")
-    cams = root / "cameras"
-    try:
-        dirs = [d for d in cams.iterdir() if d.is_dir() and is_camera_folder(d.name)] if cams.is_dir() else []
-    except OSError:
-        dirs = []
-    for d in dirs:
+    for d in _camera_dirs(root):
         out |= {f"cameras/{d.name}/{n}" for n in _CAM_FILES if (d / n).is_file()}
         for sub in _CAM_DIRS:
             if (d / sub).is_dir():
                 take(d / sub, sub)
     return out
+
+
+def _camera_dirs(root: Path) -> list[Path]:
+    """(R47) The project's camera folders on disk (none when cameras/ cannot be listed)."""
+    cams = root / "cameras"
+    try:
+        return [d for d in cams.iterdir() if d.is_dir() and is_camera_folder(d.name)] if cams.is_dir() else []
+    except OSError:
+        return []
 
 
 def _own_files(root: Path, index: dict) -> set[str]:
@@ -1091,12 +1106,7 @@ def _own_files(root: Path, index: dict) -> set[str]:
     hidden one (`.DS_Store`, a lock file), nothing `_layout_rel` rejects --
     what a rollback would refuse to name -- and only what is on disk."""
     out = {r for r in index if isinstance(r, str)}
-    cams = root / "cameras"
-    try:
-        dirs = [d for d in cams.iterdir() if d.is_dir() and is_camera_folder(d.name)] if cams.is_dir() else []
-    except OSError:
-        dirs = []
-    for d in dirs:
+    for d in _camera_dirs(root):
         out |= {f"cameras/{d.name}/{n}" for n in _LEGACY_CAM_FILES if (d / n).is_file()}
     if not index:
         out |= _scan_layout(root)
@@ -1920,12 +1930,12 @@ def _read_points3d(src: _Source):
     ncam = np.zeros((R, N), np.int32)
     per = np.full((R, N, C), np.nan, np.float32) if C else None
     parse = _point3d_parser(cams_px)
-    kinds = ("i", "f8", "f8", "f8", "f8", "i") + ("f4",) * C
+    cols3, kinds = _point3d_spec(cams_px)
     for j, q in enumerate(pts):
         rel = f"reconstruction/{q.get('file', '')}"
         if not src.has(rel):
             continue
-        d = src.load_table(rel, parse, POINT3D_COLS + tuple(cams_px), kinds).data
+        d = src.load_table(rel, parse, cols3, kinds).data
         _check_frames(d["frame"], R, rel, first=t0)
         r = d["frame"] - t0
         xyz[r, j, 0], xyz[r, j, 1], xyz[r, j, 2] = d["x"], d["y"], d["z"]
@@ -2229,15 +2239,8 @@ def tracks_from_table(cols: dict, n: int, points: list, T: int, where: str):
         arr["tracks"][fr, pi, 0], arr["tracks"][fr, pi, 1] = x, y
         has = np.isfinite(x) & np.isfinite(y)
         arr["tracked"][fr, pi] = has
-        arr["confidence"][fr, pi] = (text_f32(cols["confidence"], where) if cols.get("confidence") is not None
-                                     else np.where(has, 1.0, 0.0).astype(np.float32))
-        for key, col in (("visibility", "visible"), ("manual", "hand_placed"), ("occluded", "hidden")):
-            if cols.get(col) is not None:
-                arr[key][fr, pi] = _bool_col(cols[col], where)
-            elif key == "visibility":
-                arr[key][fr, pi] = has
-        if cols.get("radius") is not None:
-            arr["radius"][fr, pi] = text_f32(cols["radius"], where)
+        for col, key, conv in LM_FIELDS:              # (R47) a missing column = the session's empty cell
+            arr[key][fr, pi] = conv(cols[col], where) if cols.get(col) is not None else _lm_default(col, has)
     return arr, points
 
 

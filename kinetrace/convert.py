@@ -344,7 +344,8 @@ def _describe(path: str) -> tuple[list[str], list[str]]:
     from kinetrace import calibio, trackio
     p = Path(path)
     low = p.name.lower()
-    if low.endswith(".kinetrace") or low == "kinetrace.json" or (p.is_dir() and (p / "kinetrace.json").is_file()):
+    from kinetrace import projectfile
+    if low.endswith(projectfile.SUFFIX) or low == projectfile.META or projectfile.is_folder_project(p):
         return _project_lines(path)
     if low.endswith(".csv"):
         try:

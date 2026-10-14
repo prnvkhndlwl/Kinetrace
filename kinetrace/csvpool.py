@@ -138,7 +138,7 @@ def format_tables(jobs: list, fsync: bool = True, workers: int | None = None,
 
 def _serve() -> int:
     """The helper: jobs in on stdin, answers out on stdout, until stdin closes."""
-    from kinetrace.projectfile import Table
+    from kinetrace.projectfile import Table, _write_bytes
     src, out = sys.stdin.buffer, sys.stdout.buffer
     while True:
         job = _recv(src)
@@ -146,14 +146,7 @@ def _serve() -> int:
             return 0
         i, path, cols, kinds, written, data, fsync = job
         try:
-            text = Table(cols, kinds, data, written).csv().encode("utf-8")
-            p = Path(path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with open(p, "wb") as fh:
-                fh.write(text)
-                fh.flush()
-                if fsync:
-                    os.fsync(fh.fileno())
+            _write_bytes(Path(path), Table(cols, kinds, data, written).csv().encode("utf-8"), fsync)   # (R47)
             _send(out, (i, True, ""))
         except Exception as e:      # noqa: BLE001 - reported; the saving process writes it itself
             _send(out, (i, False, f"{type(e).__name__}: {e}"))
