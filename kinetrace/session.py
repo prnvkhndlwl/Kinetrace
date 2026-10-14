@@ -210,8 +210,21 @@ def _sanitize(name: str) -> str:
 def name_key(name: str) -> str:
     """(I288, owner decision M) THE key two point or animal names are the same by: through the export
     sanitizer ("a,b" and "a_b" share a CSV column) and ignoring case ("Head" and "head" share a landmark
-    file and would never be triangulated together)."""
+    file and would never be triangulated together). Unicode forms are not folded: a composed and a
+    decomposed "é" stay two names, as their landmark files do."""
     return _sanitize(name).casefold()
+
+
+def _rename_in(sk: dict | None, old: str, new: str) -> None:
+    """A skeleton (or template) follows a renamed part: landmarks, bones, head, derived rules."""
+    if not sk or old == new:
+        return
+    sk["landmarks"] = [new if n == old else n for n in sk.get("landmarks", [])]
+    sk["bones"] = [[new if n == old else n for n in b] for b in sk.get("bones", [])]
+    if sk.get("head") == old:
+        sk["head"] = new
+    if old in sk.get("derived", {}):
+        sk["derived"][new] = sk["derived"].pop(old)
 
 
 def _midline_array(sm, T: int) -> np.ndarray:
@@ -475,6 +488,18 @@ class TrackingSession:
         while name_key(f"{desired} ({k})") in taken:
             k += 1
         return f"{desired} ({k})"
+
+    def numbered_pid(self, name: str, skip=()) -> int | None:
+        """(I288) The point `name` became when it was taken ignoring case: "head" beside "Head" was made
+        "head (2)", so a second import / template apply finds it there instead of adding "head (3)". None
+        when the name itself is free (a new point gets it as it is) or no numbered copy exists; `skip` =
+        point ids that may not be used (an import's points already filled)."""
+        name = formula_safe(name)
+        if self.unique_name(name) == name:
+            return None
+        ids = {p.name: i for i, p in enumerate(self.points)}
+        return next((ids[c] for k in range(2, self.n_points + 2)
+                     if (c := f"{name} ({k})") in ids and ids[c] not in skip), None)
 
     def _append_point(self, meta: PointMeta) -> int:
         self.points.append(meta)
@@ -1140,6 +1165,12 @@ class TrackingSession:
         t = _formula_safe_template(template)
         part = _clean_skeleton({x: t[x] for x in ("name", "head", "landmarks", "bones", "derived", "note")
                                 if x in t}) or {"name": "", "landmarks": [], "bones": [], "derived": {}}
+        for p in list(part["landmarks"]):
+            # (I288) "snout" on an animal with "Snout" became "snout (2)" the first time: a second
+            # apply uses that point, not a "snout (3)" with another landmark and bone
+            full = qualified(a.name, p)
+            if self.pid_by_name(full) is None and (q := self.numbered_pid(full)) is not None:
+                _rename_in(part, p, self.part_name(q))
         sk = a.skeleton
         if sk:
             sk["landmarks"] = list(sk.get("landmarks", [])) + [n for n in part["landmarks"]
@@ -1175,15 +1206,7 @@ class TrackingSession:
 
     def _rename_part(self, k: int, old: str, new: str) -> None:
         """Animal k's skeleton follows a renamed part (landmarks, bones, head, derived rules)."""
-        sk = self.segments[k].skeleton if 0 <= k < len(self.segments) else None
-        if not sk or old == new:
-            return
-        sk["landmarks"] = [new if n == old else n for n in sk.get("landmarks", [])]
-        sk["bones"] = [[new if n == old else n for n in b] for b in sk.get("bones", [])]
-        if sk.get("head") == old:
-            sk["head"] = new
-        if old in sk.get("derived", {}):
-            sk["derived"][new] = sk["derived"].pop(old)
+        _rename_in(self.segments[k].skeleton if 0 <= k < len(self.segments) else None, old, new)
 
     def clear_skeleton(self, k: int | None = None) -> None:
         """Forget animal k's skeleton (None = every animal's); the points stay."""

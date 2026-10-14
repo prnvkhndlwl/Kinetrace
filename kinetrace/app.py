@@ -606,9 +606,9 @@ class _SaveWorker(QThread):
     repainting. `stats` = what the folder save wrote."""
     done = Signal(bool, str)
 
-    def __init__(self, frozen, path, folder: bool = False, **kw):
+    def __init__(self, frozen, path, folder: bool = False, after=None, **kw):
         super().__init__()
-        self._frozen, self._path, self._folder, self._kw = frozen, path, folder, kw
+        self._frozen, self._path, self._folder, self._after, self._kw = frozen, path, folder, after, kw
         self.stats: dict | None = None
 
     def run(self):
@@ -617,6 +617,8 @@ class _SaveWorker(QThread):
                 self.stats = projectfile.write_folder_over(self._frozen, self._path, **self._kw)
             else:
                 projectfile.write(self._frozen, self._path, **self._kw)
+            if self._after is not None:
+                self._after()          # touches no widget (the recovery's info file, I290)
             self.done.emit(True, "")
         except Exception as e:      # noqa: BLE001 - reported to the user, never silent
             self.done.emit(False, _plain_error(e, "The save did not finish"))      # in words (G54)
@@ -10226,7 +10228,6 @@ class MainWindow(QMainWindow):
 
         def done(ok, err):
             if ok:
-                recovery.write_info(pid, **info)
                 self._recovery_sig = sig
                 self.statusBar().showMessage(f"Unsaved work kept safe ✓  {time.strftime('%H:%M:%S')}", 2000)
                 if recovery.folder()[1] and not self._recovery_fallback_said:
@@ -10236,7 +10237,10 @@ class MainWindow(QMainWindow):
                         f"{recovery.folder()[0]} instead.", "info", 10000)
             else:
                 self.statusBar().showMessage(f"Could not keep a recovery copy: {err}", 10000)
-        self._start_writer(frozen, zp, done, wait=wait, compresslevel=0, fsync=False, backup=False)
+        # (I290) the info file is written on the worker after the copy: a scanner holding it is retried there
+        # (the window never waits on it), and one that outlasts the retries is said, never raised in a slot
+        self._start_writer(frozen, zp, done, wait=wait, compresslevel=0, fsync=False, backup=False,
+                           after=lambda: recovery.write_info(pid, **info))
 
     def _leave_project(self, discard: bool = False) -> None:
         """Before another video or project replaces this one: unsaved work into

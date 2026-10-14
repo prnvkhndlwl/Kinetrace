@@ -2774,6 +2774,11 @@ belong to first.
   point, a new name becomes a new point (and, with several cameras, appears in
   every camera's list). Frames the file has no position for
   keep what they had, so you can import on top of your own work.
+* A name that differs from one of yours **only in capitals** ("head" in the file,
+  "Head" in the camera) is not merged into it: it arrives as a new point
+  "head (2)", since two points may not share a name ignoring capitals. Importing
+  the same file again updates "head (2)"; it does not add a "head (3)". The
+  same goes for a skeleton template applied twice.
 * Pixel conventions are converted for you (DLTdv counts pixels from 1, older
   DLTdv and Argus count up from the bottom edge — its `_pointnames.csv` file
   says which). Confidence comes along (DeepLabCut's likelihood, SLEAP's scores);

@@ -40,10 +40,14 @@ MAP = [
     ([K + "segmenter.py", K + "silhouette.py"], ["verify_segmenter", "verify_animal", "verify_animal_gui",
                                                  "verify_segments_sam", "verify_segment_identity",
                                                  "verify_onbody_rules"]),
-    ([K + "skeletons.py"], ["verify_animal", "verify_layers"]),
+    ([K + "skeletons.py"], ["verify_animal", "verify_layers", "verify_shared_landmarks"]),
+    # (I287) the one Hugging Face token rule: the suites that check which token reaches a model load
+    ([K + "segmenter.py", K + "downloads.py", K + "bodypose.py"], ["verify_review_tracking", "verify_review_leftovers",
+                                                                   "verify_review_body"]),
     # the data model, the window
     ([K + "session.py"], ["verify_core", "verify_gui", "verify_oob", "verify_stress", "verify_layers", "verify_segments",
-                          "verify_segment_targets", "verify_projectfile", "verify_annotate"]),
+                          "verify_segment_targets", "verify_projectfile", "verify_annotate", "verify_review_data",
+                          "verify_shared_landmarks", "verify_interop"]),
     ([K + f for f in ("app.py", "canvas.py", "timeline.py", "widgets.py", "viewgrid.py", "camerapanel.py", "theme.py",
                       "icons.py")], GUI),
     ([K + "threads.py"], ["verify_sweep_fixes", "verify_review_infra", "verify_review_tracking", "verify_review_ui",

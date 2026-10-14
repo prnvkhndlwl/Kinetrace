@@ -33,7 +33,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QMessageBox, QPushButton
 
 from _clean import forget_recovery  # noqa: E402
 from kinetrace.calib import CameraCalibration, NoUndistort, closest_on_polyline, dlt_from_camera
@@ -519,7 +519,7 @@ _co.CameraOrderDialog.exec = lambda self: QDialog.Accepted
 _said = []
 win.statusBar().messageChanged.connect(_said.append)
 try:
-    win._add_video_dialog()
+    QTest.mouseClick(win.cameras.btn_add, Qt.LeftButton)        # the Cameras panel's + Add video
     for _ in range(40):
         pump(0.05)
 finally:
@@ -538,7 +538,7 @@ for _ in range(100):
 _real_save_name = _QFD.getSaveFileName
 _QFD.getSaveFileName = staticmethod(lambda *a, **k: (os.path.join(OUT, "Trial.KINETRACE"), ""))
 try:
-    dlg2._browse()
+    QTest.mouseClick(next(b for b in dlg2.findChildren(QPushButton) if b.text() == "Browse…"), Qt.LeftButton)
 finally:
     _QFD.getSaveFileName = _real_save_name
 QTest.mouseClick(dlg2.buttons.button(QDialogButtonBox.Ok), Qt.LeftButton)

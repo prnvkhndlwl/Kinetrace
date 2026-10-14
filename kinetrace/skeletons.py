@@ -134,14 +134,15 @@ def validate_template(t: dict) -> tuple[dict, list[str]]:
     appearance instead of silently exporting a wrong or empty column); a bone
     that is not a pair of known landmarks is dropped (session.bones() raised on
     it); a head that is not a landmark falls back to the first landmark."""
+    from kinetrace.session import name_key
     problems: list[str] = []
     marks = []
     for m in (t.get("landmarks") or []):
         m = str(m).strip()
         if not m:
             continue
-        if m.casefold() in {x.casefold() for x in marks}:      # (G122, I288) a name twice -- or "Head" and
-            # "head": one landmark -- would become a stray "head (2)" point
+        if name_key(m) in {name_key(x) for x in marks}:      # (G122, I288) a name twice -- or "Head" and
+            # "head", "a,b" and "a_b": one landmark -- would become a stray "head (2)" point
             problems.append(f"landmark '{m}' is listed more than once; the repeat is ignored")
             continue
         marks.append(m)
