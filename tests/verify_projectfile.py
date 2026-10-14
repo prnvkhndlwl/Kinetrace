@@ -19,7 +19,7 @@ sys.stdout.reconfigure(errors="replace")
 import numpy as np  # noqa: E402
 
 from kinetrace import projectfile as pf  # noqa: E402
-from kinetrace.body import BodyTrack, rig_of  # noqa: E402
+from kinetrace.body import BODY_ARRAYS, BodyTrack, rig_of  # noqa: E402
 from kinetrace.calib import (Calibration, CameraCalibration, LWMUndistort, NoUndistort,  # noqa: E402
                              OpenCVUndistort, Reconstruction, dlt_from_camera)
 from kinetrace.lens import LensProfile  # noqa: E402
@@ -96,6 +96,7 @@ def camera(name, T, fps, w, h, seed):
     bt = BodyTrack(T, rig_of("coco17"), 2)
     for f in range(0, T, 3):
         bt.set_person(f, 1, joints2d=r.uniform(0, w, (17, 2)), conf=r.random(17), score=0.9)
+    bt.box_src[::3, 1] = 2                            # (R46) a box source, compared on the round trip
     bt.faces = np.array([[0, 1, 2], [2, 3, 0]], np.int32)
     v = r.uniform(-1, 1, (4, 3)).astype(np.float16)
     v.flags.writeable = False
@@ -198,7 +199,7 @@ def compare(p, q):
         if (a.fingerprint is None) != (b.fingerprint is None) or (a.fingerprint and not a.fingerprint.same(b.fingerprint)):
             check(False, f"{n}: frame fingerprint differs")
         if a.body is not None:
-            for k in ("joints3d", "joints2d", "conf", "score", "bbox", "focal", "cam_t", "faces"):
+            for k in [a.name for a in BODY_ARRAYS] + ["faces"]:          # (R46) the table: box_src too
                 same_array(getattr(a.body, k), getattr(b.body, k), f"{n}.body.{k}")
             meta_a = (a.body.runs, a.body.names, a.body.backend, a.body.rig.name, a.body.n_people, a.body.has_3d,
                       a.body.notes, a.body.n_requested, a.body.step)
