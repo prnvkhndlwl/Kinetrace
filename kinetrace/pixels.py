@@ -13,6 +13,13 @@ def centre_scale(p, s):
     return (p + 0.5) * s - 0.5
 
 
+def centred_origin(c, size, extent) -> int:
+    """(R39) The first pixel of a `size`-wide window centred on `c`, kept inside 0 .. `extent`: the
+    tracker's ROI crop, the balls' crop and the fingerprint's crop. Python's `round` (ties to even) is
+    what all three used; `project.half_up` would move the ties."""
+    return int(np.clip(round(c - size / 2), 0, max(0, extent - size)))
+
+
 def centre_unscale(p, s):
     """The inverse of `centre_scale` (native -> working). A division, never `* (1 / s)`: not the same floats."""
     return (p + 0.5) / s - 0.5

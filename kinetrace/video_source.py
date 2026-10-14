@@ -514,10 +514,16 @@ SEEK_TOL = 0.75          # mean |grey| difference (levels) below which two decod
 _CHECK_W = 96            # width of the grey copies the seek check compares
 
 
-def _small(bgr) -> np.ndarray:
-    h = max(2, int(round(bgr.shape[0] * _CHECK_W / max(1, bgr.shape[1]))))
-    return cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (_CHECK_W, h),
+def grey_small(bgr, width: int) -> np.ndarray:
+    """(R39) A frame shrunk to `width` (height in proportion, at least 2), grey, float32: what the seek
+    check, the motion sync and the fingerprint compare frames on."""
+    h = max(2, int(round(bgr.shape[0] * width / max(1, bgr.shape[1]))))
+    return cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (width, h),
                       interpolation=cv2.INTER_AREA).astype(np.float32)
+
+
+def _small(bgr) -> np.ndarray:
+    return grey_small(bgr, _CHECK_W)
 
 
 def _same(a, b) -> bool:

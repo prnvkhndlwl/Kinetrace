@@ -70,7 +70,7 @@ from PySide6.QtCore import QThread, Signal
 
 from kinetrace import alltracker_backend as at_backend
 from kinetrace.downloads import DownloadError
-from kinetrace.pixels import centre_scale, centre_unscale
+from kinetrace.pixels import centre_scale, centre_unscale, centred_origin
 from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity, bbox_diagonal,
                                      get_segmenter, score_to_confidence, summarize_mask, working_size)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
@@ -867,8 +867,8 @@ class TrackingWorker(QThread):
         ch = int(min(nh, max((y1 - y0) * (1 + 2 * ROI_MARGIN_FRAC), ROI_MIN_H) * grow))
         if max(nw, nh) / max(cw, ch) < ROI_MIN_ZOOM:
             return None
-        cx0 = int(np.clip(round((x0 + x1) / 2 - cw / 2), 0, nw - cw))
-        cy0 = int(np.clip(round((y0 + y1) / 2 - ch / 2), 0, nh - ch))
+        cx0 = centred_origin((x0 + x1) / 2, cw, nw)         # (R39) cw <= nw, ch <= nh
+        cy0 = centred_origin((y0 + y1) / 2, ch, nh)
         return (cx0, cy0, cw, ch)
 
     def _model_step(self, model, frames: list[np.ndarray], device: str, first: bool,

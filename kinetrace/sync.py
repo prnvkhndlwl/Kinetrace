@@ -44,7 +44,7 @@ def motion_signal(path: str, f0: int, f1: int, progress=None, should_cancel=None
     cameras, 40 s): mean |d| correlation 0.53, 99th percentile 0.84, same
     lag. Own VideoCapture, one sequential read after a single seek. NaN where
     a frame did not decode."""
-    from kinetrace.video_source import open_capture, seek_capture
+    from kinetrace.video_source import grey_small, open_capture, seek_capture
     cap = open_capture(str(path))
     if not cap.isOpened():
         raise OSError(f"could not open {path}")
@@ -63,9 +63,7 @@ def motion_signal(path: str, f0: int, f1: int, progress=None, should_cancel=None
             ok, bgr = cap.read()
             if not ok:
                 break
-            h = max(2, int(round(bgr.shape[0] * thumb_w / max(1, bgr.shape[1]))))
-            g = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (thumb_w, h),
-                           interpolation=cv2.INTER_AREA).astype(np.float32)
+            g = grey_small(bgr, thumb_w)
             out[k] = 0.0 if prev is None else float(np.percentile(np.abs(g - prev), MOTION_PCT))
             prev = g
             if progress is not None and (k % 200 == 0 or k == f1 - f0 - 1):

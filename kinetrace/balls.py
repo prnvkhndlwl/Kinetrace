@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from kinetrace.pixels import centred_origin
 from kinetrace.segmenter import Prompt, score_to_confidence
 
 CROP = 960              # native px, the fixed SAM window (working size = native when <= 1024)
@@ -271,8 +272,7 @@ class BallTracker:
         cx = 0.5 * (min(xs) + max(xs))          # bbox centre: one far ball does not drag the others out
         cy = 0.5 * (min(ys) + max(ys))
         w, h = min(self.crop_size, self.W), min(self.crop_size, self.H)
-        x0 = int(np.clip(round(cx - w / 2), 0, self.W - w))
-        y0 = int(np.clip(round(cy - h / 2), 0, self.H - h))
+        x0, y0 = centred_origin(cx, w, self.W), centred_origin(cy, h, self.H)      # (R39) w <= W, h <= H
         return x0, y0, x0 + w, y0 + h
 
     def _crop_for(self, centres) -> tuple[int, int, int, int]:
