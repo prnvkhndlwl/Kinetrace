@@ -402,43 +402,60 @@ src.close()
 vs.set_seek_plan(GAP, None)
 check(not bad, "every frame is the one reading forward gives", str(bad))
 
-print("[6b] (I286) the tracker's 'is this frame damaged?' probe seeks like every other read")
-# frame 150 of the gap file cannot be decoded (a capture whose read of that picture fails); the probe must read
-# frame 150 itself -- a bare seek lands on 149, which decodes, and a damaged frame was called a hiccup
+print("[6b] (I286) a damaged frame after a dropped one: the run says 'damaged', not 'press Track again'")
+# a sky clip (a dark bird, followed by the Moving spot model, no model weights) whose timestamps skip a frame
+# like [6]'s; its frame 150 cannot be decoded: grab() fails on that picture (named by its timestamp), as a
+# damaged frame does -- for the run's own read, for the probe and for any seek that decodes through it. The
+# probe of frame 150 must read frame 150 itself (a bare seek lands on 149, which decodes: "press Track
+# again"), and the probe of a LATER frame must not decode through 150 (it said nothing, and every frame
+# after 150 was silently left untracked)
+sys.path.insert(1, HERE)
+from _synth_spots import make_scene  # noqa: E402
 from kinetrace import tracker as trk  # noqa: E402
-vs.set_seek_plan(GAP, plan)
+_sky, _sky_gt = make_scene("sky", n=200, w=W, h=H)
+GAP2 = os.path.join(OUT, "gap_sky.mp4")
+encode(GAP2, (cv2.cvtColor(f, cv2.COLOR_RGB2BGR) for f in _sky),
+       extra=("-vf", "setpts=(N+gte(N\\,100))/(30*TB)", "-fps_mode", "passthrough", "-video_track_timescale", "30000"))
+plan2 = vs.check_seeks(GAP2, 200)
+vs.set_seek_plan(GAP2, plan2)
 real_open = vs.open_capture
 
 
-class _Unreadable150:
+class _Damaged150:
     def __init__(self, cap):
         self.cap = cap
 
+    def grab(self):
+        if not self.cap.grab():
+            return False
+        return plan2.pts_map is None or plan2.pts_map.index(self.cap.get(cv2.CAP_PROP_PTS)) != 150
+
     def read(self):
-        ok, img = self.cap.read()
-        if ok and ident(ref, img) == 150:
+        if not self.grab():
             return False, None
-        return ok, img
+        return self.cap.retrieve()
 
     def __getattr__(self, name):
         return getattr(self.cap, name)
 
 
-vs.open_capture = lambda path, *a, **k: _Unreadable150(real_open(path, *a, **k))
+vs.open_capture = lambda path, *a, **k: _Damaged150(real_open(path, *a, **k))
 try:
-    probe150, probe151 = trk._frame_decodes(GAP, 150), trk._frame_decodes(GAP, 151)
-    w = trk.TrackingWorker(GAP, 120, None, None, vs.FrameCache(1 << 24), len(ref) - 1, specs=[],
-                           spots=[trk.SpotSpec(0, np.array([100.0, 100.0], np.float32), None, {})])
-    w._check_read_end(150)                       # what a run does when its read of frame 150 fails
-    said = w._decode_failure_text() if w.decode_failed_at is not None else ""
+    run = {"err": None, "last": -1}
+    w = trk.TrackingWorker(GAP2, 120, None, None, vs.FrameCache(1 << 26), 199, specs=[],
+                           spots=[trk.SpotSpec(0, _sky_gt[120], _sky_gt[121] - _sky_gt[120], {})])
+    w.error.connect(lambda m: run.__setitem__("err", m))
+    w.chunk_ready.connect(lambda w0, tr, vi, cf, mm, fr: run.__setitem__("last", max(run["last"], w0 + len(tr) - 1)))
+    w.run()
 finally:
     vs.open_capture = real_open
-    vs.set_seek_plan(GAP, None)
-if old:                                          # the plain seek is wrong on this computer: the bug can show
-    check(probe150 is False and probe151 is True, "the probe reads frame 150 itself (unreadable) and 151",
-          f"150: {probe150}, 151: {probe151}")
-    check(w.decode_failed_at == 150 and not w.decode_transient and "damaged at that frame" in said
-          and "Press Track again" not in said, "the run says frame 150 is damaged, not 'press Track again'", said)
+    vs.set_seek_plan(GAP2, None)
+said = run["err"] or ""
+if not plan2.exact and plan2.pts_map is not None:     # the plain seek is wrong here: the bug can show
+    check(run["last"] == 149 and w.decode_failed_at == 150 and not w.decode_transient and "Frame 150" in said
+          and "damaged at that frame" in said and "Press Track again" not in said,
+          "a Track run stops at 149 and says frame 150 is damaged (not 'press Track again', not silence)",
+          f"last {run['last']}: {said or 'no message'}")
 else:
     print("    (this computer's plain seeks are exact on the gap file: nothing to tell apart)")
 

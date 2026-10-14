@@ -277,19 +277,24 @@ class VideoDecodeError(RuntimeError):
     emitting everything tracked before that frame."""
 
 
-def _frame_decodes(path: str, idx: int) -> bool:
+def _frame_decodes(path: str, idx: int, exact: bool = True) -> bool:
     """True when frame `idx` can be sought to and read. Uses its own capture, so
-    the run's source and the shared frame cache are left alone. (I286) THE seek
-    (`seek_capture`): a bare one lands a frame early on a file that dropped a frame,
-    which read k - 1 and called a damaged frame k a hiccup ("press Track again")."""
+    the run's source and the shared frame cache are left alone. (I286) `exact`: THE
+    seek (`seek_capture`) -- a bare one lands a frame early on a file that dropped a
+    frame, which read k - 1 and called a damaged frame k a hiccup ("press Track
+    again"). Not exact: a plain seek, for "does SOME later frame decode" -- the exact
+    seek reaches a frame by decoding forward to it, through the damaged one."""
     cap = None
     try:
         from kinetrace.video_source import open_capture, seek_capture   # same backend as the run
         cap = open_capture(path)
         if not cap.isOpened():
             return False
-        if not seek_capture(cap, path, int(idx)):
-            return False
+        if exact:
+            if not seek_capture(cap, path, int(idx)):
+                return False
+        else:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
         ok, _ = cap.read()
         return bool(ok)
     except Exception:   # noqa: BLE001 -- a probe that cannot run proves nothing
@@ -830,8 +835,10 @@ class TrackingWorker(QThread):
         if _frame_decodes(self.video_path, k):
             self.decode_failed_at, self.decode_transient = int(k), True
             return
-        for idx in sorted({k + 1, self.n_frames - 1}):
-            if k < idx < self.n_frames and _frame_decodes(self.video_path, idx):
+        # (I286) a later frame, sought plainly (it may land a frame early on a file that dropped
+        # one: k + 2, not k + 1, so it still lands past k)
+        for idx in sorted({k + 2, self.n_frames - 1}):
+            if k < idx < self.n_frames and _frame_decodes(self.video_path, idx, exact=False):
                 self.decode_failed_at = int(k)
                 return
 
