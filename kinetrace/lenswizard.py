@@ -359,8 +359,7 @@ class VideoPage(QWizardPage):
         if prof is None:
             self.status.setText("This video carries no GoPro lens model.")
             return
-        self.wiz.scan = None
-        self.wiz.used_boards = None
+        self.wiz.forget_scan()
         self._loaded_path = None
         self.wiz.result_profile = prof
         self.wiz.result_view = self._view()
@@ -386,8 +385,7 @@ class VideoPage(QWizardPage):
         self.pattern_note.setVisible(bool(self.pattern_note.text()))
         if self.wiz.scan is not None and self.pattern() != tuple(self.wiz.pattern):
             # (G115) the boards were found for ANOTHER board size: they are not this board's corners
-            self.wiz.scan = None
-            self.wiz.used_boards = None
+            self.wiz.forget_scan()
             self.wiz.result_profile = None
             self.status.setText("The board size changed: press 'Find the boards' again.")
             self.completeChanged.emit()
@@ -408,8 +406,7 @@ class VideoPage(QWizardPage):
         self._lock_inputs(True)
         self.bar.setValue(0)
         self.wiz.result_profile = None
-        self.wiz.scan = None
-        self.wiz.used_boards = None
+        self.wiz.forget_scan()
         self._loaded_path = None
         self.completeChanged.emit()
         th = _LensThread(video, self.pattern())
@@ -508,8 +505,7 @@ class VideoPage(QWizardPage):
         if not path:
             return
         self._loaded_path = path
-        self.wiz.scan = None
-        self.wiz.used_boards = None
+        self.wiz.forget_scan()
         self._apply_loaded()
 
     def _apply_loaded(self):
@@ -647,11 +643,9 @@ class ReviewPage(QWizardPage):
             prof = None
             if idx:
                 try:
-                    prof = lens.calibrate_lens([corners[i] for i in idx], pattern, square, scan.size, model,
-                                               max_views=max(len(idx), lens.MAX_VIEWS), base=base)
-                    prof.rotation = scan.rotation       # how the board video's pictures were turned
                     # the errors of the profile that is SHOWN, not of the provisional fit auto_select made
-                    err = lens.per_view_errors(corners, pattern, square, prof)
+                    prof, err = lens.fit_and_score([corners[i] for i in idx], corners, pattern, square, scan.size,
+                                                   model, max(len(idx), lens.MAX_VIEWS), base, scan.rotation)
                 except Exception:                               # noqa: BLE001
                     prof = None
             return idx, err, why, prof
@@ -684,10 +678,8 @@ class ReviewPage(QWizardPage):
         def work():
             # (G116) every ticked board is fitted: the boards were CHOSEN, so calibrate_lens must not
             # thin them to a 40-view spread behind a "Fitted from 120 boards"
-            prof = lens.calibrate_lens(chosen, pattern, square, scan.size, model, max_views=len(chosen),
-                                       base=self.wiz.base_lens)
-            prof.rotation = scan.rotation               # how the board video's pictures were turned
-            return prof, lens.per_view_errors(everything, pattern, square, prof)
+            return lens.fit_and_score(chosen, everything, pattern, square, scan.size, model, len(chosen),
+                                      self.wiz.base_lens, scan.rotation)
         try:
             prof, err = _off_thread(self.wiz, work)
         except Exception as exc:                                # noqa: BLE001
@@ -887,6 +879,12 @@ class LensWizard(QWizard):
         for pid, pg in ((ID_INTRO, self.page_intro), (ID_VIDEO, self.page_video),
                         (ID_REVIEW, self.page_review), (ID_RESULT, self.page_result)):
             self.setPage(pid, pg)
+
+    def forget_scan(self) -> None:
+        """(R35) The boards found and the ones a fit used no longer stand (another video, another board
+        size, GoPro's own lens, a loaded file): each caller also clears what is its own."""
+        self.scan = None
+        self.used_boards = None
 
     def result_views(self) -> list[int]:
         """The cameras the result is attached to on Finish: the one it was made

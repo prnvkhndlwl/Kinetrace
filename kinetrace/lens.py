@@ -61,6 +61,26 @@ def rms_limits(width: float, height: float) -> tuple[float, float]:
     return 0.6 * s, 1.2 * s
 
 
+def _rms_px(d: np.ndarray) -> float:
+    """(R35) RMS length of (N, 2) pixel differences, in their own dtype (the standard fit's are
+    float32, as cv2.projectPoints returns them)."""
+    return float(np.sqrt(np.mean(np.sum(d ** 2, axis=1))))
+
+
+def _board_tilt_deg(rvec) -> float:
+    """(R35) How far a board's pose (Rodrigues vector) turns its normal from the optical axis, deg."""
+    R, _ = cv2.Rodrigues(np.asarray(rvec, np.float64))
+    return float(np.degrees(np.arccos(min(1.0, abs(float(R[2, 2]))))))
+
+
+def fit_and_score(chosen, everything, pattern, square, size, model, max_views, base, rotation):
+    """(R35) The lens wizard's fit: `calibrate_lens` on the `chosen` boards, the board video's turn
+    recorded, and the per-board errors of THAT profile over `everything` -> (profile, errors)."""
+    prof = calibrate_lens(chosen, pattern, square, size, model, max_views=max_views, base=base)
+    prof.rotation = rotation                       # how the board video's pictures were turned
+    return prof, per_view_errors(everything, pattern, square, prof)
+
+
 def outlier_limit(errors, floor: float) -> float:
     """The error above which a view is set aside: 3 x the median of `errors`
     (NaN ignored), never below `floor`."""
@@ -1055,7 +1075,7 @@ def per_view_errors(corner_list: list[np.ndarray], pattern: tuple[int, int], squ
                 continue
             proj = project_with(prof, obj, pose[0], pose[1])
             d = proj - np.asarray(c, np.float64).reshape(-1, 2)
-            out[i] = float(np.sqrt(np.mean(np.sum(d * d, axis=1))))
+            out[i] = _rms_px(d)
         except cv2.error:
             continue
     return out
@@ -1209,12 +1229,9 @@ def _fit_shape(corner_list, pattern, square, base: "LensProfile", fix: tuple = (
     sol = least_squares(res, np.asarray(x0, np.float64), jac_sparsity=S, x_scale="jac", method="trf")
     K = K_of(sol.x)
     r = sol.fun.reshape(-1, npt, 2)
-    per_view = [float(np.sqrt(np.mean(np.sum(rv ** 2, axis=1)))) for rv in r]
-    rms = float(np.sqrt(np.mean(np.sum(r.reshape(-1, 2) ** 2, axis=1))))
-    tilts = []
-    for v in range(len(imgs)):
-        R, _ = cv2.Rodrigues(sol.x[n_in + 6 * v:n_in + 6 * v + 3])
-        tilts.append(float(np.degrees(np.arccos(min(1.0, abs(float(R[2, 2])))))))
+    per_view = [_rms_px(rv) for rv in r]
+    rms = _rms_px(r.reshape(-1, 2))
+    tilts = [_board_tilt_deg(sol.x[n_in + 6 * v:n_in + 6 * v + 3]) for v in range(len(imgs))]
     return rms, K, np.asarray(base.dist, np.float64).ravel(), per_view, tilts
 
 
@@ -1308,7 +1325,7 @@ def _fit(corner_list, pattern, square, size, fisheye: bool):
         per_view = []
         for o, im, r, t in zip(objs, imgs, rvecs, tvecs):
             proj, _ = cv2.fisheye.projectPoints(o, r, t, K, D)
-            per_view.append(float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - im.reshape(-1, 2)) ** 2, axis=1)))))
+            per_view.append(_rms_px(proj.reshape(-1, 2) - im.reshape(-1, 2)))
     else:
         objs = [obj.astype(np.float32) for _ in corner_list]
         imgs = [c.astype(np.float32) for c in corner_list]
@@ -1318,13 +1335,8 @@ def _fit(corner_list, pattern, square, size, fisheye: bool):
         per_view = []
         for o, im, r, t in zip(objs, imgs, rvecs, tvecs):
             proj, _ = cv2.projectPoints(o, r, t, K, D)
-            per_view.append(float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - im.reshape(-1, 2)) ** 2, axis=1)))))
-    tilts = []
-    for r in rvecs:
-        R, _ = cv2.Rodrigues(np.asarray(r, np.float64))
-        # the board normal in camera coordinates vs the optical axis
-        nz = abs(float(R[2, 2]))
-        tilts.append(float(np.degrees(np.arccos(min(1.0, nz)))))
+            per_view.append(_rms_px(proj.reshape(-1, 2) - im.reshape(-1, 2)))
+    tilts = [_board_tilt_deg(r) for r in rvecs]        # the board normal vs the optical axis
     return float(rms), np.asarray(K, np.float64), np.asarray(dist, np.float64), per_view, tilts
 
 
