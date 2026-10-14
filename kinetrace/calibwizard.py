@@ -69,10 +69,6 @@ def lens_turn_unknown(prof, session) -> bool:
                                    display_rotation(session.video_path)))
 
 
-def _same_lens(a, b) -> bool:
-    return _lens.same_profile(a, b)
-
-
 def share_targets(project, view: int, prof=None) -> tuple[list[int], list[int]]:
     """The other cameras a lens profile of camera `view` can be shared with
     (G40: identical cameras, one checkerboard calibration): every camera with
@@ -587,7 +583,7 @@ class CamerasPage(QWizardPage):
                 if " line" in str(prof.source) or "(line " in str(prof.source):    # (I282) "its only line" too
                     text += f" ({prof.source})"
                 twins = [p.name(j) for j in range(p.n_views) if j != c and j < len(p.lenses)
-                         and _same_lens(p.lenses[j], prof)]
+                         and _lens.same_profile(p.lenses[j], prof)]
                 if twins:
                     text += f" — the same profile as {', '.join(twins)}"
             lab = _dim(QLabel(text))
@@ -794,7 +790,7 @@ class CamerasPage(QWizardPage):
             return True
         lenses = self.usable_lenses()
         ticked = self.wiz.views()
-        free = [c in ticked and any(j != c and _same_lens(lenses[j], l) for j in ticked)
+        free = [c in ticked and any(j != c and _lens.same_profile(lenses[j], l) for j in ticked)
                 for c, l in enumerate(lenses)]
         return free if any(free) else False
 
@@ -1427,7 +1423,7 @@ class RunPage(QWizardPage):
 
 
 # the calibration file itself (no Qt) lives in calibio; these names stay here too
-from kinetrace.calibio import calibration_to_kcal, dlt_columns, dlt_csv_matlab, load_kcal  # noqa: E402,F401
+from kinetrace.calibio import calibration_to_kcal, dlt_columns, dlt_csv_matlab, load_kcal, write_kcal  # noqa: E402,F401
 
 
 def _lensed_cameras(cal) -> list[tuple[int, float]]:
@@ -1543,7 +1539,7 @@ def save_calibration_files(res, grav, path: str, cal=None, written: list | None 
     if not p.name.lower().endswith(".kcal.json"):
         p = p.with_name(p.stem + ".kcal.json")
     out = written if written is not None else []
-    p.write_text(json.dumps(calibration_to_kcal(cal, report, grav), indent=1), encoding="utf-8")
+    write_kcal(p, cal, report, grav)
     out.append(str(p))
     stem = p.name[:-len(".kcal.json")]
     csv = p.with_name(stem + "_dltCoefs.csv")

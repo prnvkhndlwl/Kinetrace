@@ -1522,10 +1522,8 @@ def calib_tracks(session, cal: CameraCalibration) -> np.ndarray:
     these at fractional frames is what DLTdv's time shift does too."""
     T, N = session.tracks.shape[:2]
     out = np.full((T, N, 2), np.nan)
-    ok = session.tracked & np.isfinite(session.tracks).all(axis=2)
-    occ = getattr(session, "occluded", None)
-    if occ is not None and occ.shape == ok.shape:
-        ok &= ~occ                        # hand-marked hidden: never triangulated
+    # (R36) the cells that leave the app (hand-marked hidden: never triangulated), with a position
+    ok = session.exportable & np.isfinite(session.tracks).all(axis=2)
     if ok.any():
         out[ok] = cal.to_calib_frame(session.tracks[ok].astype(np.float64))
     return out
@@ -1789,8 +1787,8 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
         return float(r.mean()) if len(r) else float("inf")
 
     try:
-        return _search_offsets(sessions, offsets, offs, cost, prep, rates, t, keep, n_cells, search, step,
-                               refine, passes, reference, report)
+        return _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, passes, reference,
+                               report)
     except _SearchCancelled:
         if report is not None:
             report.update({"verdict": "cancelled", "why": "Cancelled: the offsets were not changed.",
@@ -1803,8 +1801,7 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
             progress(total, total)
 
 
-def _search_offsets(sessions, offsets, offs, cost, prep, rates, t, keep, n_cells, search, step, refine,
-                    passes, reference, report):
+def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, passes, reference, report):
     """The body of `estimate_offsets` (split off so a cancel can unwind it)."""
     before = cost(offs)
     for _ in range(passes):

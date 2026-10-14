@@ -842,13 +842,13 @@ def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, b
     note(0.95, "assembling the result")
     run = _Run(sizes, wand_length, str(unit), free_f, free_d, unknown, best_mult, names, frame_ids,
                _coverage(cov_w, cov_b, sizes))
-    res = _finish(obs, cams, pts3, wand_uv, bg_uv, run, thr, n_out)
+    res = _finish(obs, cams, pts3, wand_uv, run, thr, n_out)
     note(1.0, f"done: wand score {res.report['wand_score_pct']:.2f}%, "
               f"{res.report['reproj_rmse_all']:.2f} px")
     return res
 
 
-def _finish(obs, cams, pts3, wand_uv, bg_uv, run: _Run, thr, n_out) -> WandResult:
+def _finish(obs, cams, pts3, wand_uv, run: _Run, thr, n_out) -> WandResult:
     F, C = wand_uv.shape[:2]
     sizes = run.sizes
     Fs = len(obs.frames)

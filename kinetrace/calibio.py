@@ -136,6 +136,11 @@ def _volume_points(cam: CameraCalibration, probe: np.ndarray | None, n: int = 12
     return np.vstack(pts)
 
 
+def _cam_name(names: list[str] | None, i: int) -> str:
+    """(R36) Camera `i`'s name in `names`, else "cam<i + 1>"."""
+    return names[i] if names and i < len(names) else f"cam{i + 1}"
+
+
 def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarray | None = None) -> Models:
     """Kinetrace calibration -> OpenCV-convention cameras (see the module
     docstring). `probe`: a world point in view (a reconstruction's centroid);
@@ -160,7 +165,7 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
     out: list[CamModel] = []
     notes: list[str] = []
     for i, cam, P in zip(views, cams, Ps):
-        name = names[i] if names and i < len(names) else f"cam{i + 1}"
+        name = _cam_name(names, i)
         M = P[:, :3] @ F
         if np.linalg.det(M) <= 0:
             raise CalibFormatError(f"{name}: its coefficients are mirrored differently from the other cameras'; "
@@ -209,7 +214,7 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
                      "point the cameras look at).")
     left_out = [v for v in range(max(len(cal), len(names or []))) if cal.camera(v) is None]
     if left_out:
-        nm = [names[v] if names and v < len(names) else f"cam{v + 1}" for v in left_out]
+        nm = [_cam_name(names, v) for v in left_out]
         notes.append(f"{', '.join(nm)} {'is' if len(nm) == 1 else 'are'} not calibrated, so not in these files: "
                      "the files hold the calibrated cameras, each under its own name.")
     worst = max((m.check_px for m in out if np.isfinite(m.check_px)), default=0.0)
@@ -638,6 +643,11 @@ def calibration_to_kcal(cal, report: dict | None = None, grav: dict | None = Non
     if getattr(cal, "origin_shift", None) is not None:          # (I229) a K + R/t rig's moved origin
         out["origin_shift"] = [float(v) for v in np.asarray(cal.origin_shift, np.float64).reshape(3)]
     return out
+
+
+def write_kcal(path, cal, report: dict | None = None, grav: dict | None = None) -> None:
+    """(R36) Write `calibration_to_kcal` as the .kcal.json at `path` (the wizard's and convert's file)."""
+    Path(path).write_text(json.dumps(calibration_to_kcal(cal, report, grav), indent=1), encoding="utf-8")
 
 
 def load_kcal(path):

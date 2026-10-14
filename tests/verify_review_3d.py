@@ -1017,6 +1017,29 @@ def t_r33_folds():
 
 check("R33", "even_indices / contiguous_runs / hull_area_pct / voxel_centres equal every old copy", t_r33_folds)
 
+
+def t_r36_folds():
+    cal = rig(3)
+    cal.cameras[1] = None
+    a, b = os.path.join(OUT, "r36_new.kcal.json"), os.path.join(OUT, "r36_old.kcal.json")
+    calibio.write_kcal(a, cal, {"verdict": "good"}, {"g": 9.81})
+    with open(b, "w", encoding="utf-8") as fh:            # the two old copies: write_text(json.dumps(..., indent=1))
+        fh.write(json.dumps(calibio.calibration_to_kcal(cal, {"verdict": "good"}, {"g": 9.81}), indent=1))
+    assert open(a, "rb").read() == open(b, "rb").read()
+    s = TrackingSession("x.mp4", 30, 30.0, W, H)
+    for _ in range(3):
+        s.add_point(0, 10.0, 10.0)
+    s.tracks[:] = rng.uniform(0, 100, s.tracks.shape).astype(s.tracks.dtype)
+    s.tracked[:] = rng.random(s.tracked.shape) < 0.7
+    s.occluded[:] = rng.random(s.occluded.shape) < 0.2
+    s.tracks[3, 1] = np.nan
+    old_ok = s.tracked & np.isfinite(s.tracks).all(axis=2) & ~s.occluded
+    got = calib.calib_tracks(s, rig(1).cameras[0])
+    assert np.array_equal(np.isfinite(got).all(axis=2), old_ok)
+
+
+check("R36", "write_kcal writes the old bytes; calib_tracks keeps exactly the exportable, finite cells", t_r36_folds)
+
 # ============================================================================ G75 / G76
 print("\nG75 / G76 estimate_offsets")
 

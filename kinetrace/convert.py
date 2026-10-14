@@ -20,7 +20,6 @@ On Windows run it with .venv\\Scripts\\python, on Linux / macOS with
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -104,7 +103,7 @@ def cmd_calibration(a) -> int:
                                                 ".yaml": "opencv-yaml", ".json": "opencv-json", ".mat": "matlab",
                                                 ".py": "blender", ".csv": "dlt"})
     if to == "kcal":
-        Path(a.output).write_text(json.dumps(calibio.calibration_to_kcal(cal), indent=1), encoding="utf-8")
+        calibio.write_kcal(a.output, cal)
     elif to == "dlt":
         calibio.dlt_csv_matlab(cal, a.output)
         if any(c.has_lens_correction for c in cams):
