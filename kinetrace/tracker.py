@@ -72,7 +72,7 @@ from kinetrace import alltracker_backend as at_backend
 from kinetrace.downloads import DownloadError
 from kinetrace.pixels import centre_scale, centre_unscale, centred_origin
 from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity, bbox_diagonal,
-                                     get_segmenter, score_to_confidence, summarize_mask, working_size)
+                                     fit_within, get_segmenter, score_to_confidence, summarize_mask, working_size)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
 from kinetrace.session import in_frame
 from kinetrace.video_source import FrameCache, ReadAhead, VideoSource
@@ -964,8 +964,7 @@ class TrackingWorker(QThread):
             # the user set KINETRACE_ALLTRACKER_MAX_DIM above it -- honoured now, I256)
             from kinetrace.device import alltracker_max_dim
             at_dim = alltracker_max_dim(str(device)) if device is not None else ALLTRACKER_MAX_DIM
-        scale = min(1.0, (at_dim if use_at else WORKING_MAX_DIM) / max(cw, ch))
-        ww, wh = max(2, round(cw * scale)), max(2, round(ch * scale))
+        scale, ww, wh = fit_within(cw, ch, at_dim if use_at else WORKING_MAX_DIM)
         # align-corners convention, matching the model's internal rescaling
         to_native = np.array([(cw - 1) / max(ww - 1, 1), (ch - 1) / max(wh - 1, 1)], np.float32)
         to_working = 1.0 / to_native
@@ -1858,9 +1857,7 @@ class TrackingWorker(QThread):
 
     def _display_size(self) -> tuple[float, int, int]:
         """Full frame at working resolution for the display path: (scale, w, h)."""
-        nw, nh = self._frame_wh
-        s = min(1.0, WORKING_MAX_DIM / max(nw, nh))
-        return s, max(2, round(nw * s)), max(2, round(nh * s))
+        return fit_within(*self._frame_wh, WORKING_MAX_DIM)
 
     @staticmethod
     def _display_of(native: np.ndarray, disp: tuple[float, int, int]) -> np.ndarray:

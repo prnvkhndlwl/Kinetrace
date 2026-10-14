@@ -216,9 +216,16 @@ def score_to_confidence(score: float) -> float:
     return float(1.0 / (1.0 + np.exp(-(float(score) - 2.0))))
 
 
+def fit_within(w, h, max_dim) -> tuple[float, int, int]:
+    """(R40) (scale <= 1, w', h'): the picture shrunk so its longer side is at most `max_dim`, each
+    side rounded on its own (I61) and at least 2 px. The segmenter's, the tracker's and the display's
+    working size."""
+    s = min(1.0, max_dim / max(w, h))
+    return s, max(2, int(round(w * s))), max(2, int(round(h * s)))
+
+
 def working_size(native_w: int, native_h: int) -> tuple[int, int]:
-    s = min(1.0, MASK_WORK_MAX_DIM / max(native_w, native_h))
-    return max(2, int(round(native_w * s))), max(2, int(round(native_h * s)))
+    return fit_within(native_w, native_h, MASK_WORK_MAX_DIM)[1:]
 
 
 class Segmenter:
