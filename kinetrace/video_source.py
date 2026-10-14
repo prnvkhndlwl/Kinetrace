@@ -26,6 +26,8 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
+from kinetrace.paths import path_key
+
 
 def _default_cache_bytes() -> int:
     """Frame-cache budget: a quarter of physical RAM, clamped to [2, 24] GB.
@@ -166,9 +168,6 @@ class VideoInfo:
 _ROTATIONS: dict[str, int | None] = {}
 
 
-def _rot_key(path: str) -> str:
-    return os.path.normcase(os.path.abspath(str(path)))
-
 
 def applied_rotation(cap) -> int | None:
     """How far, in degrees clockwise (0 / 90 / 180 / 270), this capture turns the stored pictures
@@ -194,7 +193,7 @@ def display_rotation(path: str) -> int | None:
     """The clockwise turn the decoder applies to this video's pictures (`applied_rotation`), as
     found when the video was opened (`probe_video`) in this run of the program; None when it was
     not opened, or the backend cannot say. Reads no file."""
-    return _ROTATIONS.get(_rot_key(path)) if path else None
+    return _ROTATIONS.get(path_key(path)) if path else None
 
 
 def verified_frame_count(cap, n_header: int, max_probes: int = 24) -> int:
@@ -320,7 +319,7 @@ def probe_video(path: str, vfr_samples: int = 60, progress=None) -> VideoInfo:
                 f"No frame of this video could be decoded ({header} claimed).\n\n"
                 "The file may be damaged, or use a codec this computer cannot read. Re-encoding usually fixes it:\n"
                 f'ffmpeg -i "{Path(path).name}" -c:v libx264 -crf 18 fixed.mp4')
-        _ROTATIONS[_rot_key(path)] = rotation
+        _ROTATIONS[path_key(path)] = rotation
         return VideoInfo(path, n_frames, fps, width, height, vfr, header, fps_source, rotation=rotation)
     finally:
         cap.release()
@@ -410,9 +409,6 @@ _PLANS: dict = {}
 _PLANS_LOCK = threading.Lock()
 
 
-def _plan_key(path) -> str:
-    return os.path.normcase(os.path.abspath(str(path)))
-
 
 def file_identity(path) -> dict:
     """The file as it is on disk: name, size, modification time (ns). {} when it cannot be read."""
@@ -427,15 +423,15 @@ def seek_plan(path) -> SeekPlan | None:
     """The plan `check_seeks` found for this file on this computer, or None (not checked yet: plain
     seeks, as before the check existed)."""
     with _PLANS_LOCK:
-        return _PLANS.get(_plan_key(path))
+        return _PLANS.get(path_key(path))
 
 
 def set_seek_plan(path, plan: SeekPlan | None) -> None:
     with _PLANS_LOCK:
         if plan is None:
-            _PLANS.pop(_plan_key(path), None)
+            _PLANS.pop(path_key(path), None)
         else:
-            _PLANS[_plan_key(path)] = plan
+            _PLANS[path_key(path)] = plan
 
 
 def seek_capture(cap, path, idx: int) -> bool:

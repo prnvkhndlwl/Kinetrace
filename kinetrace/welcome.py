@@ -15,6 +15,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from kinetrace import paths as _paths
+
 FLAG_NAME = "kinetrace-welcome"
 
 
@@ -92,7 +94,7 @@ def finished_text(version: str, folder: str, how: str, system: str) -> str:
 def popup_html(version: str, system: str, folder: str | None = None) -> str:
     """The one-time pop-up the first time the app opens after an install. `folder` = the Kinetrace folder
     (None = this one)."""
-    folder = str(Path(__file__).resolve().parent.parent) if folder is None else folder
+    folder = str(_paths.ROOT) if folder is None else folder
     if system == "Darwin":
         window = ("The Terminal window from the installation is no longer needed: you can close it.")
     else:
@@ -113,7 +115,7 @@ def main(argv: list[str]) -> int:
     import platform
     from kinetrace import APP_VERSION
     how = argv[0] if argv else "console"
-    root = str(Path(__file__).resolve().parent.parent)
+    root = str(_paths.ROOT)
     print(finished_text(APP_VERSION, root, how, platform.system()), flush=True)
     set_pending()
     return 0

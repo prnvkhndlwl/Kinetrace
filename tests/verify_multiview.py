@@ -33,7 +33,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QMessageBox, QPushButton
 
 from _clean import forget_recovery  # noqa: E402
 from kinetrace.calib import CameraCalibration, NoUndistort, closest_on_polyline, dlt_from_camera
@@ -509,6 +509,41 @@ assert back.names == ["cam2", "cam1"] and [os.path.basename(x.video_path) for x 
 print("G30: a folder's videos listed (natural order, headers read in the background), two ticked, put in "
       "camera order (G171), imported as one project named by file, camera 1 = the base, saved at once and "
       "reopened OK")
+# (I291) Cameras -> Add Camera Video with a video already in the project, spelled another way (sub/../cam1.MP4):
+# it is said to be there already, not added as a third camera
+from PySide6.QtWidgets import QFileDialog as _QFD  # noqa: E402
+from kinetrace import cameraorder as _co  # noqa: E402
+_real_open_names, _real_exec = _QFD.getOpenFileNames, _co.CameraOrderDialog.exec
+_QFD.getOpenFileNames = staticmethod(lambda *a, **k: ([os.path.join(FOLD, "sub", "..", "cam1.MP4")], ""))
+_co.CameraOrderDialog.exec = lambda self: QDialog.Accepted
+_said = []
+win.statusBar().messageChanged.connect(_said.append)
+try:
+    QTest.mouseClick(win.cameras.btn_add, Qt.LeftButton)        # the Cameras panel's + Add video
+    for _ in range(40):
+        pump(0.05)
+finally:
+    _QFD.getOpenFileNames, _co.CameraOrderDialog.exec = _real_open_names, _real_exec
+assert win.project.n_views == 2, f"the same video was added again as camera {win.project.n_views}"
+win.statusBar().messageChanged.disconnect(_said.append)
+assert any("already in this project" in m for m in _said), _said
+print("(I291) Add Camera Video with a project's video spelled another way: said, not added again OK")
+# (I292) File -> Open Folder of Videos, Browse... names the project "Trial.KINETRACE" (the suffix in capitals):
+# it is the project's name as given, not a folder "Trial.KINETRACE.kinetrace"
+dlg2 = VideoFolderDialog(win, FOLD)
+for _ in range(100):
+    pump(0.05)
+    if len(dlg2._headers) == 3:
+        break
+_real_save_name = _QFD.getSaveFileName
+_QFD.getSaveFileName = staticmethod(lambda *a, **k: (os.path.join(OUT, "Trial.KINETRACE"), ""))
+try:
+    QTest.mouseClick(next(b for b in dlg2.findChildren(QPushButton) if b.text() == "Browse…"), Qt.LeftButton)
+finally:
+    _QFD.getSaveFileName = _real_save_name
+QTest.mouseClick(dlg2.buttons.button(QDialogButtonBox.Ok), Qt.LeftButton)
+assert dlg2.result_project == os.path.join(OUT, "Trial.KINETRACE"), dlg2.result_project
+print("(I292) a project named 'Trial.KINETRACE' keeps its name (no '.KINETRACE.kinetrace') OK")
 for x in list_videos(FOLD, recursive=True):
     forget_recovery(str(x))
 

@@ -175,6 +175,11 @@ assert s3.rename_point(g, "ball") == "ball (2)", "re-resolving must be stable"
 assert s3.rename_point(p, "ball") == "ball", "renaming to own name is free"
 p3 = s3.add_point(0, 1.0, 1.0)
 assert s3.rename_point(p3, "ball") == "ball (3)"
+# (I288, owner decision M) names are the same ignoring case: "BALL" next to "ball" is "BALL (3)"
+assert s3.rename_point(p3, "BALL") == "BALL (3)", s3.points[p3].name
+_pc = s3.add_point(0, 2.0, 2.0, name="Ball")
+assert s3.points[_pc].name == "Ball (4)", s3.points[_pc].name
+s3.remove_point(_pc)
 s3.remove_point(p3)
 
 # events: reversed range swaps, out-of-range clamps, blank name auto-fills

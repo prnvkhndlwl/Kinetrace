@@ -17,6 +17,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from kinetrace import paths as _paths
+
 W, H = 960, 540
 N_FRAMES = 150
 FPS = 25.0
@@ -26,7 +28,7 @@ PARTS = ("snout", "eye", "tail tip", "left fore foot", "right fore foot")
 # the demo's version is in its name: bump it whenever the drawing, the size or the frame count change, or a
 # demo kept from an earlier release (updates keep demo/) would be filled with truth that no longer matches it
 FILE_NAME = "kinetrace-demo-2.mp4"
-_INSTALL = Path(__file__).resolve().parent.parent / "demo"
+_INSTALL = _paths.ROOT / "demo"
 
 
 def demo_folder() -> Path:

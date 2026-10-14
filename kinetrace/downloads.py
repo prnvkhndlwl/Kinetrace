@@ -22,7 +22,6 @@ from __future__ import annotations
 import errno
 import hashlib
 import http.client
-import io
 import os
 import shutil
 import time
@@ -33,8 +32,10 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from kinetrace.errors import cap_first
+from kinetrace.paths import replace_retry
+from kinetrace import paths as _paths
 
-MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+MODELS_DIR = _paths.MODELS_DIR                      # (R48) the one models folder
 HF_CACHE = MODELS_DIR / "hf" / "hub"      # the Hugging Face cache INSIDE the install, whatever HF_HOME says (I195)
 TIMEOUT_S = 30              # no byte for this long = the download stalled
 CHUNK = 1 << 20
@@ -108,10 +109,6 @@ HF_REVISIONS = {
 HF_ALLOW = {
     "facebook/sam3": ["*.json", "*.txt", "*.safetensors", "LICENSE*"],
 }
-
-
-def _mb(n: float) -> str:
-    return f"{n / 1e6:.0f} MB"
 
 
 def _no_net(label: str, e: Exception, hint: str | None = None) -> DownloadError:
@@ -244,7 +241,7 @@ def fetch(url: str, dest: Path, *, label: str, sha256: str | None = None, size: 
                                 "so it was deleted and not used. Try again later; if it keeps happening, "
                                 "update Kinetrace (Help > Check for Updates).")
     try:
-        os.replace(part, dest)
+        replace_retry(part, dest)              # (R43) a fresh file is often scanned for a moment
     except OSError as e:
         raise _disk_error(label, e, dest.parent) from None
     return dest
@@ -329,7 +326,7 @@ def ensure_code(key: str, progress=None, cancel=lambda: False) -> Path:
                                 "so it was not used. Try again later, or update Kinetrace.")
         if c.dest.exists():
             shutil.rmtree(c.dest)
-        os.replace(tmp, c.dest)
+        replace_retry(tmp, c.dest)
     except zipfile.BadZipFile:
         raise DownloadError(f"The download of {c.label} is damaged; try again.") from None
     except OSError as e:                                    # unpacking into models/ failed: the disk (G93)
@@ -372,16 +369,29 @@ def hf_cached(repo: str) -> bool:
     return any((hub / rev).glob("*.safetensors")) if (hub / rev).is_dir() else False
 
 
-def hf_token() -> str:
-    """The Hugging Face token saved in Settings (models/hf/token, the file `segmenter.save_token`
-    writes), '' when there is none or HF_TOKEN is set (the Hub reads that itself). A gated SAM 3
-    download needs it whichever HF_HOME the user's environment has (I195)."""
+def hf_token(hf_dir: Path | None = None) -> str:
+    """The Hugging Face token saved in Settings (`hf_dir`/token, default models/hf/token: the file
+    `segmenter.save_token` writes), '' when there is none or HF_TOKEN is set (the Hub reads that
+    itself). THE token rule of the downloads, SAM and the body models (I195, I287: the environment
+    wins everywhere)."""
     if os.environ.get("HF_TOKEN"):
         return ""
     try:
-        return (MODELS_DIR / "hf" / "token").read_text(encoding="utf-8").strip()
+        return ((hf_dir or MODELS_DIR / "hf") / "token").read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def hf_pretrained_args(repo: str, hf_dir: Path) -> dict:
+    """`from_pretrained`'s arguments for one of OUR Hugging Face models (I195, I287): the pinned
+    commit (`hf_load_args`), the cache INSIDE `hf_dir`/hub whatever the user's own HF_HOME says (a
+    load that looked in their cache failed after a successful download into models/hf), and the
+    saved token (`hf_token`) when there is one."""
+    kw = {**hf_load_args(repo), "cache_dir": str(hf_dir / "hub")}
+    tok = hf_token(hf_dir)
+    if tok:
+        kw["token"] = tok
+    return kw
 
 
 def hf_snapshot(repo: str, label: str, progress=None, cancel=lambda: False) -> None:

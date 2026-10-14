@@ -35,9 +35,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from kinetrace.body import BOX_DETECTOR, BOX_FRAME, BOX_GIVEN, BOX_UNKNOWN, BodyRig, RIGS, canon, rig_of
+from kinetrace.body import BOX_DETECTOR, BOX_FRAME, BOX_GIVEN, BOX_UNKNOWN, BodyRig, canon, rig_of
+from kinetrace import paths as _paths
 
-MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+MODELS_DIR = _paths.MODELS_DIR                      # (R48) the one models folder
 HF_DIR = MODELS_DIR / "hf"
 os.environ.setdefault("HF_HOME", str(HF_DIR))
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
@@ -50,22 +51,11 @@ class BodyBackendError(RuntimeError):
 
 
 def hf_kwargs(repo: str) -> dict:
-    """from_pretrained's arguments for one of OUR Hugging Face models (I195):
-    the pinned commit (`downloads.hf_load_args`), the cache INSIDE models/hf
-    whatever the user's own HF_HOME says (`setdefault` above keeps theirs, but
-    downloads are written to models/hf/hub, so a load that looked in their
-    cache failed after a successful download), and the token saved in Settings
-    when there is one."""
-    from kinetrace.downloads import hf_load_args
-    kw = dict(hf_load_args(repo))
-    kw["cache_dir"] = str(HF_DIR / "hub")
-    try:
-        tok = (HF_DIR / "token").read_text(encoding="utf-8").strip()
-    except OSError:
-        tok = ""
-    if tok:
-        kw["token"] = tok
-    return kw
+    """from_pretrained's arguments for one of OUR Hugging Face models: `downloads.hf_pretrained_args`
+    on this module's models/hf (the pinned commit, the cache inside models/hf whatever the user's own
+    HF_HOME says, I195, and the saved token unless HF_TOKEN is set, I287)."""
+    from kinetrace.downloads import hf_pretrained_args
+    return hf_pretrained_args(repo, HF_DIR)
 
 # Where a SAM 3D Body GitHub checkout goes. `demo.py` there uses pyrootutils to
 # put the repo root on sys.path; we do the same thing explicitly.

@@ -434,6 +434,7 @@ def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
         return _sanitize(formula_safe(name))        # the form the exporters write a name in (I225)
     index = {key(p.name): i for i, p in enumerate(session.points)}
     claimed: set[int] = set()
+    fixed = {i for i, p in enumerate(session.points) if p.derived or p.is_ball}   # never placed from a file
     new = updated = cells = duplicates = 0
     skipped: list[tuple[str, str]] = []
     for j, name in enumerate(imp.names):
@@ -449,6 +450,10 @@ def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
         if pid is not None and pid in claimed:
             pid = None                  # (I175) a name the file uses twice: its own point, never a merge
             duplicates += 1
+        if pid is None:
+            # (I288) the point an earlier import of this name became ("head" beside "Head" is "head (2)",
+            # a repeat's "head (2)"): a re-import updates it instead of adding "head (3)"
+            pid = session.numbered_pid(name, skip=claimed | fixed)
         if pid is None:
             pid = session._new_point(name, "point", color=PALETTE[len(session.points) % len(PALETTE)],
                                      counted=False)

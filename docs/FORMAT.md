@@ -151,7 +151,7 @@ any more.
 
 | column | meaning |
 |---|---|
-| `name` | unique within the camera; the same name in two cameras is the same landmark (that is how 3D matches them). A point of an animal is named `<animal> <part>` ("squirrel snout") |
+| `name` | unique within the camera, ignoring capitals ("Head" and "head" cannot both be there; the app makes the second "head (2)"); the same name in two cameras is the same landmark (that is how 3D matches them). A point of an animal is named `<animal> <part>` ("squirrel snout") |
 | `animal` | the name of the animal the point belongs to (its `segment.json`'s `name`); empty = Scene, no animal |
 | `file` | its positions: `tracks/<file>` (the name itself, with `< > : " / \ \| ? *` as `_`; blank = from the name) |
 | `kind` | `point` or `group` (a region tracked as a whole) |

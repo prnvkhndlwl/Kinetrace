@@ -651,6 +651,38 @@ BOX_GIVEN = 2        # the segment silhouette, or a box the caller drew
 BOX_FRAME = 3        # no box at all: the whole frame was taken as the person
 
 
+@dataclass(frozen=True)
+class BodyArray:
+    """(R46) One per-frame array of a `BodyTrack`: (frames[, people], *tail) of `dtype`, `fill` where
+    nothing is known. "J" in `tail` = the rig's joint count. `optional`: older files may not have it."""
+    name: str
+    dtype: object
+    fill: float
+    tail: tuple = ()
+    per_person: bool = True
+    optional: bool = False
+
+    def shape(self, T: int, P: int, J: int) -> tuple:
+        return (T,) + ((P,) if self.per_person else ()) + tuple(J if d == "J" else d for d in self.tail)
+
+
+# THE table of a BodyTrack's per-frame arrays, in the order they are saved (like session.POINT_ARRAYS):
+# make, clear, copy, save, read and merge go through it, so a new array cannot be forgotten by one of them
+BODY_ARRAYS = (
+    # where the body's own origin sits in the CAMERA frame (metres, x right, y down, z away from the
+    # camera): SAM 3D Body reports joints3d centred on the body; camera-frame position = joints3d + cam_t.
+    # NaN = not known (a 2D backend, or a run made before this was stored) (I85)
+    BodyArray("cam_t", np.float32, np.nan, (3,), optional=True),
+    BodyArray("joints3d", np.float32, np.nan, ("J", 3)),
+    BodyArray("joints2d", np.float32, np.nan, ("J", 2)),
+    BodyArray("conf", np.float32, 0.0, ("J",)),
+    BodyArray("score", np.float32, np.nan),                       # detection / person score
+    BodyArray("bbox", np.float32, -1, (4,)),                      # native px x0,y0,x1,y1
+    BodyArray("box_src", np.int8, 0, optional=True),              # BOX_* (G136)
+    BodyArray("focal", np.float32, np.nan, per_person=False),     # px, the model's own estimate
+)
+
+
 class BodyTrack:
     """Every body pose in one video: (frames x people x joints).
 
@@ -667,19 +699,8 @@ class BodyTrack:
         self.rig = rig if isinstance(rig, BodyRig) else rig_of(rig)
         self.n_people = max(1, int(n_people))
         J, P, T = self.rig.n_joints, self.n_people, self.n_frames
-        self.joints3d = np.full((T, P, J, 3), np.nan, np.float32)
-        self.joints2d = np.full((T, P, J, 2), np.nan, np.float32)
-        self.conf = np.zeros((T, P, J), np.float32)
-        self.score = np.full((T, P), np.nan, np.float32)       # detection / person score
-        self.bbox = np.full((T, P, 4), -1, np.float32)         # native px x0,y0,x1,y1
-        self.box_src = np.zeros((T, P), np.int8)               # BOX_* (G136)
-        self.focal = np.full(T, np.nan, np.float32)            # px, the model's own estimate
-        # Where the body's own origin sits in the CAMERA frame (metres, x right,
-        # y down, z away from the camera), per frame and person. SAM 3D Body
-        # reports `joints3d` centred on the body (zero global translation);
-        # camera-frame position = joints3d + cam_t. NaN = not known (a 2D
-        # backend, or a run made before this was stored). (I85)
-        self.cam_t = np.full((T, P, 3), np.nan, np.float32)
+        for a in BODY_ARRAYS:                                  # (R46) joints3d, conf, focal, cam_t, ...
+            setattr(self, a.name, np.full(a.shape(T, P, J), a.fill, a.dtype))
         self.names: list[str] = [f"person {i + 1}" for i in range(P)]
         self.backend = ""
         self.has_3d = False
@@ -790,49 +811,15 @@ class BodyTrack:
             del self.mesh[key]
         if gone:
             self.mesh_version += 1
-        self.joints3d[a:b + 1] = np.nan
-        self.joints2d[a:b + 1] = np.nan
-        self.conf[a:b + 1] = 0.0
-        self.score[a:b + 1] = np.nan
-        self.bbox[a:b + 1] = -1
-        self.box_src[a:b + 1] = 0
-        self.focal[a:b + 1] = np.nan
-        self.cam_t[a:b + 1] = np.nan
+        for arr in BODY_ARRAYS:
+            getattr(self, arr.name)[a:b + 1] = arr.fill
         self._version += 1
         return n
 
-    def clear_frames(self, frames) -> None:
-        """Blank a set of individual frames (every person)."""
-        f = np.asarray(frames, np.int64).reshape(-1)
-        f = f[(f >= 0) & (f < self.n_frames)]
-        if not len(f):
-            return
-        fs = set(int(x) for x in f)
-        gone = [k for k in self.mesh if k[0] in fs]
-        for key in gone:
-            del self.mesh[key]
-        if gone:
-            self.mesh_version += 1
-        self.joints3d[f] = np.nan
-        self.joints2d[f] = np.nan
-        self.conf[f] = 0.0
-        self.score[f] = np.nan
-        self.bbox[f] = -1
-        self.box_src[f] = 0
-        self.focal[f] = np.nan
-        self.cam_t[f] = np.nan
-        self._version += 1
-
     def copy(self) -> "BodyTrack":
         bt = BodyTrack(self.n_frames, self.rig, self.n_people)
-        bt.joints3d = self.joints3d.copy()
-        bt.joints2d = self.joints2d.copy()
-        bt.conf = self.conf.copy()
-        bt.score = self.score.copy()
-        bt.bbox = self.bbox.copy()
-        bt.box_src = self.box_src.copy()
-        bt.focal = self.focal.copy()
-        bt.cam_t = self.cam_t.copy()
+        for a in BODY_ARRAYS:
+            setattr(bt, a.name, getattr(self, a.name).copy())
         bt.names = list(self.names)
         bt.backend = self.backend
         bt.has_3d = self.has_3d
@@ -1009,14 +996,7 @@ class BodyTrack:
     def to_arrays(self, prefix: str, mesh: bool = True) -> dict:
         return {
             **(self.mesh_arrays(prefix) if mesh else {}),
-            f"{prefix}cam_t": self.cam_t,
-            f"{prefix}joints3d": self.joints3d,
-            f"{prefix}joints2d": self.joints2d,
-            f"{prefix}conf": self.conf,
-            f"{prefix}score": self.score,
-            f"{prefix}bbox": self.bbox,
-            f"{prefix}box_src": self.box_src,
-            f"{prefix}focal": self.focal,
+            **{f"{prefix}{a.name}": getattr(self, a.name) for a in BODY_ARRAYS},
             f"{prefix}meta": json.dumps({
                 "rig": self.rig.name, "names": self.names, "backend": self.backend,
                 "has_3d": bool(self.has_3d), "notes": self.notes,
@@ -1031,12 +1011,15 @@ class BodyTrack:
         meta = json.loads(str(arrays[f"{prefix}meta"]))
         j3 = np.asarray(arrays[f"{prefix}joints3d"], np.float32)
         bt = cls(j3.shape[0], rig_of(meta.get("rig", DEFAULT_RIG)), j3.shape[1])
-        bt.joints3d = j3
-        bt.joints2d = np.asarray(arrays[f"{prefix}joints2d"], np.float32)
-        bt.conf = np.asarray(arrays[f"{prefix}conf"], np.float32)
-        bt.score = np.asarray(arrays[f"{prefix}score"], np.float32)
-        bt.bbox = np.asarray(arrays[f"{prefix}bbox"], np.float32)
-        bt.focal = np.asarray(arrays[f"{prefix}focal"], np.float32)
+        have = set(getattr(arrays, "files", arrays))
+        for a in BODY_ARRAYS:
+            key = f"{prefix}{a.name}"
+            if not a.optional:
+                setattr(bt, a.name, j3 if a.name == "joints3d" else np.asarray(arrays[key], a.dtype))
+            elif key in have:                        # older files: cam_t / box_src not stored (NaN / unknown)
+                got = np.asarray(arrays[key], a.dtype)
+                if got.shape == getattr(bt, a.name).shape:
+                    setattr(bt, a.name, got)
         bt.names = list(meta.get("names") or bt.names)
         bt.backend = str(meta.get("backend", ""))
         bt.has_3d = bool(meta.get("has_3d", False))
@@ -1047,15 +1030,6 @@ class BodyTrack:
             bt.runs = [(int(a), int(b), max(1, int(c))) for a, b, c in meta.get("runs") or []]
         except (TypeError, ValueError):
             bt.runs = []
-        have = set(getattr(arrays, "files", arrays))
-        if f"{prefix}cam_t" in have:                  # older files: not stored (NaN)
-            ct = np.asarray(arrays[f"{prefix}cam_t"], np.float32)
-            if ct.shape == bt.cam_t.shape:
-                bt.cam_t = ct
-        if f"{prefix}box_src" in have:                # older files: source unknown (G136)
-            bs = np.asarray(arrays[f"{prefix}box_src"], np.int8)
-            if bs.shape == bt.box_src.shape:
-                bt.box_src = bs
         if f"{prefix}mesh_faces" in have:
             faces = np.asarray(arrays[f"{prefix}mesh_faces"], np.int32)
             bt.faces = faces.reshape(-1, 3) if len(faces) else None
@@ -1138,8 +1112,9 @@ def merge_run(old: BodyTrack | None, new: BodyTrack) -> tuple[BodyTrack, str]:
         fr = ex[got[:, p]]
         if not len(fr):
             continue
-        for name in ("joints3d", "joints2d", "conf", "score", "bbox", "cam_t", "box_src"):
-            getattr(out, name)[fr, p] = getattr(new, name)[fr, p]
+        for a in BODY_ARRAYS:
+            if a.per_person:
+                getattr(out, a.name)[fr, p] = getattr(new, a.name)[fr, p]
         fr_set = set(int(f) for f in fr)
         gone = [k for k in out.mesh if k[1] == p and k[0] in fr_set]
         for key in gone:

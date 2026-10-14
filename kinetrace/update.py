@@ -43,10 +43,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kinetrace import APP_VERSION, winlaunch
+from kinetrace import paths as _paths
 
 REPO = "prnvkhndlwl/Kinetrace"
 PAGE = f"https://github.com/{REPO}"
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = _paths.ROOT                                   # (R48) the one install folder
 MANIFEST = ".kinetrace-release.json"      # the files the installed release put here
 STAGING = "update"                         # download + unpack folder, inside the install
 # top-level folders (and files) an update never writes or removes: each user's own
@@ -303,15 +304,9 @@ def _digest(path: Path) -> str | None:
 
 
 def _replace(src: Path, dst: Path, tries: int = 10) -> None:
-    """os.replace, retried: Windows refuses while another program has the file open."""
-    for i in range(tries):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            if i == tries - 1:
-                raise
-            time.sleep(0.2)
+    """os.replace, retried: Windows refuses while another program has the file open (R43)."""
+    from kinetrace.paths import replace_retry
+    replace_retry(src, dst, tries, 0.2)
 
 
 GITHUB_HOSTS = ("api.github.com", "codeload.github.com", "github.com")

@@ -32,8 +32,9 @@ import cv2
 import numpy as np
 
 from kinetrace.pixels import centre_scale
+from kinetrace import paths as _paths
 
-MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+MODELS_DIR = _paths.MODELS_DIR                      # (R48) the one models folder
 HF_DIR = MODELS_DIR / "hf"
 os.environ.setdefault("HF_HOME", str(HF_DIR))
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
@@ -106,11 +107,11 @@ def hf_cache_args() -> dict:
     successful download, and the token saved in Settings was never read. The hub folder is
     where `downloads.hf_snapshot` puts the weights; the token is models/hf/token unless
     HF_TOKEN is set."""
+    from kinetrace.downloads import hf_token
     kw: dict = {"cache_dir": str(HF_DIR / "hub")}
-    if not os.environ.get("HF_TOKEN") and token_path().exists():
-        tok = token_path().read_text(encoding="utf-8").strip()
-        if tok:
-            kw["token"] = tok
+    tok = hf_token(HF_DIR)                     # (I287) the one token rule: the environment wins
+    if tok:
+        kw["token"] = tok
     return kw
 
 
@@ -254,10 +255,10 @@ class Segmenter:
         else:
             from transformers import Sam2VideoModel as M, Sam2VideoProcessor as P
         src = load_path(backend)
-        from kinetrace.downloads import hf_load_args
+        from kinetrace.downloads import hf_pretrained_args
         # a local folder, or the Hub repo at the commit every test ran against (I154): with
-        # that commit's files in models/hf nothing is asked of the Hub
-        rev = {} if local_dir(backend) is not None else {**hf_load_args(src), **hf_cache_args()}
+        # that commit's files in models/hf nothing is asked of the Hub (I287: the one set of arguments)
+        rev = {} if local_dir(backend) is not None else hf_pretrained_args(src, HF_DIR)
         self.model = M.from_pretrained(src, dtype=self.dtype, **rev).to(self.device).eval()
         self.proc = P.from_pretrained(src, **rev)
         self._torch = torch

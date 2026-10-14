@@ -108,6 +108,37 @@ def click(canvas, x, y):
     pump(0.1)
 
 
+def rename_row(pid, text):
+    """Rename the way the user does: double-click the point's LAYERS row, type the name, Enter."""
+    item = win.layers.point_item(pid)
+    par = item.parent()
+    while par is not None:
+        par.setExpanded(True)
+        par = par.parent()
+    win.layers.scrollToItem(item)
+    pump(0.05)
+    at = win.layers.visualItemRect(item).center()
+    QTest.mouseClick(win.layers.viewport(), Qt.LeftButton, Qt.NoModifier, at)      # select the row
+    pump(0.2)
+    item = win.layers.point_item(pid)                    # (the list may be rebuilt on selection)
+    at = win.layers.visualItemRect(item).center()
+    QTest.mouseDClick(win.layers.viewport(), Qt.LeftButton, Qt.NoModifier, at)
+    pump(0.2)
+    ed = QApplication.focusWidget()
+    QTest.keyClick(ed, Qt.Key_A, Qt.ControlModifier)
+    QTest.keyClicks(ed, text)
+    QTest.keyClick(ed, Qt.Key_Return)
+    pump(0.2)
+
+
+def use_template(name):
+    """Edit > Skeleton > Use template: <name> (looked up right before: the menu is rebuilt)."""
+    from PySide6.QtGui import QAction
+    act = next(a for a in win.m_skeleton.findChildren(QAction) if a.text().startswith(f"Use template: {name} "))
+    act.trigger()
+    pump(0.1)
+
+
 def truth(cam, f):
     return cams[cam].project(world(f))[0]
 
@@ -184,6 +215,26 @@ got = win._apply_rename(jb, "snout")
 assert got == "snout" and sa.pid_by_name("snout") is not None and sb.pid_by_name("snout") is not None
 assert sa.pid_by_name(name) is None and sb.pid_by_name(name) is None
 print("rename applies to every camera OK")
+# (I288, owner decision M) a name that differs only in case is the same landmark: N + a click adds a point in
+# every camera, and renaming it "SNOUT" beside "snout" gives "SNOUT (2)" in every camera, said in the status bar
+# -- "SNOUT" and "snout" would never be triangulated together
+QTest.keyClick(win, Qt.Key_Escape)
+pump(0.05)
+QTest.keyClick(win, Qt.Key_N)
+click(win.canvas, 120, 90)
+case_pid = sb.n_points - 1
+said = []
+win.statusBar().messageChanged.connect(said.append)
+rename_row(case_pid, "SNOUT")
+win.statusBar().messageChanged.disconnect(said.append)
+got = sb.points[case_pid].name
+assert got == "SNOUT (2)" and sa.pid_by_name("SNOUT (2)") is not None and sb.pid_by_name("SNOUT (2)") is not None, \
+    (got, [q.name for q in sb.points])
+assert sa.pid_by_name("SNOUT") is None and any("already" in m for m in said), said
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+win._on_delete(sb.pid_by_name("SNOUT (2)"))
+assert sa.pid_by_name("SNOUT (2)") is None and sb.pid_by_name("SNOUT (2)") is None
+print("(I288) a name that differs only in case becomes 'SNOUT (2)' in every camera, and says so OK")
 
 # ---- 5. a new point is one undo step in every camera ---------------------------------------
 QTest.keyClick(win, Qt.Key_Escape)                  # deselect (nothing armed)
@@ -263,6 +314,38 @@ pump(0.2)
 assert win._guides_ready()
 print("a camera added later receives every landmark, in the same order; guides stay among the calibrated OK")
 
+# ---- 9b. (I288) a name taken ignoring case: a second skeleton apply / import finds its "(2)" -----
+# "snout" on an animal with "Snout" becomes "snout (2)" (owner decision M); applying the template again, or
+# importing the same file again, used to add "snout (3)", "(4)", ... -- one more stray point every time
+from kinetrace.session import qualified  # noqa: E402
+an = sb.segments[0].name
+rename_row(sb.pid_by_name(qualified(an, "snout")), "Snout")
+assert sb.pid_by_name(qualified(an, "Snout")) is not None and sa.pid_by_name(qualified(an, "Snout")) is not None, \
+    [q.name for q in sb.points]
+counts = []
+for _ in range(2):
+    use_template("Lizard / iguana")
+    counts.append((sa.n_points, sb.n_points, list(sb.segments[0].skeleton["landmarks"])))
+assert sb.pid_by_name(qualified(an, "snout (2)")) is not None and sa.pid_by_name(qualified(an, "snout (2)")) is not None
+assert counts[0] == counts[1] and sb.pid_by_name(qualified(an, "snout (3)")) is None, counts
+assert "snout (2)" in counts[1][2] and "snout" not in counts[1][2], counts[1][2]
+from PySide6.QtWidgets import QFileDialog  # noqa: E402
+DLC = os.path.join(OUT, "shared_landmarks_dlc.csv")
+with open(DLC, "w") as fh:
+    fh.write("scorer,S,S,S\nbodyparts,SNOUT,SNOUT,SNOUT\ncoords,x,y,likelihood\n0,30,40,0.9\n1,31,41,0.9\n")
+_real_open = QFileDialog.getOpenFileName
+QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (DLC, ""))
+try:
+    for _ in range(2):
+        win.act_import_tracks.trigger()                       # File > Import > Tracks...
+        pump(0.3)
+finally:
+    QFileDialog.getOpenFileName = _real_open
+made = sorted(q.name for q in sb.points if q.name.casefold().startswith("snout"))
+assert made == ["SNOUT (2)", "snout"] and sa.pid_by_name("SNOUT (2)") is not None, made
+assert np.allclose(sb.tracks[1, sb.pid_by_name("SNOUT (2)")], (31, 41)), "the second import updated its point"
+print("(I288) a second skeleton apply / import finds its 'snout (2)' / 'SNOUT (2)' instead of adding '(3)' OK")
+
 # ---- 10. an older project with different lists opens with one list, unchanged on disk -----
 s1 = TrackingSession(paths[0], N, FPS, W, H)
 s2 = TrackingSession(paths[1], N, FPS, W, H)
@@ -289,6 +372,28 @@ assert not q.sessions[0].tracked[:, q.sessions[0].pid_by_name("tail")].any(), "t
 assert not q.dirty, "filling in the shared list does not make the project unsaved"
 assert open(OLD, "rb").read() == before
 print("an older project opens with one shared list, not marked changed OK")
+
+# ---- 11. (I289) animals whose names differ only in case: opening and sharing again add nothing ----------
+s1 = TrackingSession(paths[0], N, FPS, W, H)
+s2 = TrackingSession(paths[1], N, FPS, W, H)
+s1.add_segment("Squirrel")
+s2.add_segment("squirrel")
+CASED = os.path.join(OUT, "shared_landmarks_cased.kinetrace")
+if os.path.isdir(CASED):
+    __import__("shutil").rmtree(CASED)
+projectfile.save(Project([s1, s2], ["camA", "camB"], [0, 0]), CASED)
+win._open_project_from_path(CASED)
+for _ in range(200):
+    pump(0.05)
+    if win.state == READY and win.project is not None and win.project.n_views == 2 \
+            and win.project.sessions[1].segment_names():
+        break
+q = win.project
+win._share_landmarks(undoable=False)               # what every later change does (the open did it once)
+win._share_landmarks(undoable=False)
+segs = [x.segment_names() for x in q.sessions]
+assert segs == [["Squirrel"], ["squirrel"]], f"each sync added another numbered copy: {segs}"
+print("(I289) animals named 'Squirrel' / 'squirrel': opening and sharing again add no copies OK")
 
 win._dev_probe.wait(15000)
 win.close()

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout
                                QWidget)
 
 from kinetrace import theme
+from kinetrace import paths as _paths
 
 
 def wrap_caption(label: QLabel) -> QLabel:
@@ -511,7 +512,7 @@ class OnboardingStrip(QWidget):
             self.hint.setText(text)
 
 
-MANUAL_PATH = Path(__file__).resolve().parent.parent / "docs" / "MANUAL.md"
+MANUAL_PATH = _paths.ROOT / "docs" / "MANUAL.md"
 
 
 def _slug(text: str) -> str:
