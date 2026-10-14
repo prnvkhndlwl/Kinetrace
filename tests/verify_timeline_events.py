@@ -195,6 +195,24 @@ conf[100:140, 1] = 0.2  # a low-confidence stretch for point 2
 s.write_segment(0, fake, np.ones((L, 2), bool), [0, 1], conf)
 app.processEvents()
 
+# (G193) the lane's red = J's stops: frames 100-119 of the stretch marked hidden are not red, 120-139 are
+from kinetrace.timeline import LOW_CONF  # noqa: E402
+s.set_occluded_window([1], 100, 119, True)
+tlp._ensure_columns()
+v0_, v1_ = tlp._view
+w_ = tlp._lane_w()
+
+
+def _red_at(f):
+    c = min(w_ - 1, (f - v0_) * w_ // (v1_ - v0_ + 1))
+    return bool(tlp._trk_col[c, 1] and tlp._conf_col[c, 1] < LOW_CONF)
+
+
+assert s.low_conf_runs([1]) == [(120, 139)], s.low_conf_runs([1])
+assert not _red_at(105) and _red_at(130), f"(G193) red over a hidden cell: 105 {_red_at(105)}, 130 {_red_at(130)}"
+s.set_occluded_window([1], 100, 119, False)
+print("the timeline's red is where J stops, hidden cells excluded (G193) OK")
+
 # ---- timeline click -> seek (pixel <-> frame mapping) ----
 tlp_w = tlp._lane_w()
 target = 300

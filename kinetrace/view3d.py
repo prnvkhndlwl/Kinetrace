@@ -13,12 +13,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPushButton,
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from kinetrace import theme
+from kinetrace.canvas import bgr_pixmap
 from kinetrace.calib import Calibration, CameraCalibration
 from kinetrace.calibio import load_calibration
 from kinetrace.hull import _view_rotation
@@ -425,7 +425,7 @@ def screen_transform(scene: Scene3D, size: tuple[int, int], azimuth: float, elev
 
 
 # (G185) the wand ends by state (BGR): good, ok, poor, rejected / disagreeing
-END_COLOURS = ((110, 210, 110), (60, 205, 235), (40, 140, 255), (70, 70, 240))
+END_COLOURS = ((110, 210, 110), (10, 214, 255), (40, 140, 255), (70, 70, 240))   # ok = theme.OK (G192)
 CAM_COLOURS = ((255, 170, 80), (120, 220, 255), (200, 120, 255), (120, 255, 170), (255, 120, 170),
                (170, 200, 255), (80, 200, 200), (230, 230, 120), (180, 160, 255), (140, 255, 255))
 
@@ -757,7 +757,6 @@ class View3D(QWidget):
         self.last_image: np.ndarray | None = None
         self._last_dpr = 1.0            # the pixel density last_image was drawn at (G187)
         self._hits: dict = {}
-        self._cover_thread: _CoverageThread | None = None
         self._cover_threads: list = []          # every worker until it has finished (see _start_coverage)
         self._cover_gen = 0
         self._cover_key = None
@@ -886,7 +885,6 @@ class View3D(QWidget):
         # is ignored by generation
         self._cover_threads.append(th)
         th.finished.connect(lambda t=th: self._cover_thread_ended(t))
-        self._cover_thread = th
         self.info.setText((self._base_info + "  ·  " if self._base_info else "") + "counting the covered space…")
         th.start()
 
@@ -994,11 +992,7 @@ class View3D(QWidget):
         self._hits = hits
         self._last_dpr = dpr
         self.last_image = img
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888)
-        pm = QPixmap.fromImage(qimg.copy())
-        pm.setDevicePixelRatio(dpr)
-        self.canvas.setPixmap(pm)
+        self.canvas.setPixmap(bgr_pixmap(img, dpr))
 
     def save_png(self, path: str) -> None:
         if self.last_image is None:

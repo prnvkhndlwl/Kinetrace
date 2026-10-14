@@ -21,15 +21,16 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
                                QGroupBox, QHBoxLayout, QLabel, QMenu, QMessageBox,
                                QPushButton, QRadioButton, QSizePolicy, QSpinBox, QToolButton,
                                QVBoxLayout, QWidget)
 
 from kinetrace import theme
+from kinetrace.canvas import bgr_pixmap
 from kinetrace.body import MIN_JOINT_CONF, BodyTrack, canon, is_finger, median_axis
 from kinetrace.hull import _view_rotation
+from kinetrace.render import VideoWriteJob, is_rate
 
 # Left / right / centre, BGR. Colour-coding the sides is the single most
 # useful thing a skeleton drawing can do -- it is how you spot the classic
@@ -917,21 +918,18 @@ class BodyPoseWorker(QThread):
                     pass
 
 
-class SideBySideRenderer(QThread):
+class SideBySideRenderer(VideoWriteJob):
     """Write the side-by-side view to an mp4. After `finished_ok`,
     `frames_written` is how many frames are really in the file and `note` says
     why it is short of what was asked ("" when it is not) -- a video can end
     before the range the session believed it had (I232, like I41)."""
-    progress = Signal(int, int)
-    finished_ok = Signal(str, str)
-    error = Signal(str)
 
     def __init__(self, video_path: str, track: BodyTrack, out_path: str, start: int, end: int,
                  person: int, opts: PoseDrawOptions, fps: float, width: int = 1600,
                  azimuth: float = 25.0, elevation: float = 12.0, plot: bool = True,
                  upright: bool = True, mesh: bool = True):
-        super().__init__()
-        self.video_path, self.out_path = str(video_path), str(out_path)
+        super().__init__(out_path)
+        self.video_path = str(video_path)
         self.track, self.person, self.opts = track, int(person), opts
         # NOT self.start: that name is QThread.start, and shadowing it makes
         # the thread un-startable with a baffling "int object is not callable"
@@ -939,8 +937,6 @@ class SideBySideRenderer(QThread):
         self.fps, self.width = float(fps or 30.0), int(width)
         self.azimuth, self.elevation, self.plot = azimuth, elevation, plot
         self.upright, self.mesh = bool(upright), bool(mesh)
-        self._cancel = False
-        self.frames_written = 0
         # (I90) A run that sampled every Nth frame has a pose on one frame in
         # N; writing every frame strobed the skeleton on and "no pose" off.
         # Such a run writes only its posed frames, at fps / N, so the video
@@ -962,85 +958,41 @@ class SideBySideRenderer(QThread):
             self.out_fps = self.fps
             self.note = ""
 
-    def request_cancel(self) -> None:
-        self._cancel = True
+    def _reader(self):
+        if not is_rate(self.fps):    # (I276) NaN went through `fps or 30.0` into a broken MP4
+            raise BodyRunProblem(f"the frame rate is {self.fps:g}: it must be a number above 0 frames per "
+                                 "second. Set the camera's frame rate with the fps button in the CAMERAS "
+                                 "panel, then export again.")
+        if not self.frames:
+            raise BodyRunProblem("no posed frames in %d-%d" % (self.f0, self.f1))
+        return _FrameReader(self.video_path, self.frames[0])
 
-    def _discard(self) -> None:
-        try:
-            Path(self.out_path).unlink(missing_ok=True)
-        except OSError:
-            pass
+    def _plan(self, reader):
+        first = self.frames[0]
+        bgr = reader.read(first)
+        if bgr is None:
+            raise BodyRunProblem(f"frame {first} could not be decoded (the video ends before "
+                                 f"it, or the file is damaged there), so nothing was written.")
+        probe = self._compose(bgr, first)
+        return self.frames, first, self.out_fps, (probe.shape[1], probe.shape[0])
 
-    def run(self) -> None:
+    def _compose(self, bgr, f):
+        return compose_side_by_side(bgr, self.track, f, self.person, self.opts, self.plot, self.azimuth,
+                                    self.elevation, self.fps, self.width, self.upright, self.mesh)
+
+    def _none_written(self, first: int) -> str:
+        return (f"frame {first} could not be decoded (the video ends before "
+                f"it, or the file is damaged there), so nothing was written.")
+
+    def _short_sentence(self, reader, frames, done: int) -> str:
+        k = reader.failed if reader.failed is not None else frames[done]
+        return (f"Frame {k} could not be decoded (the video ends there, or the file is "
+                f"damaged), so this video stops after frame {frames[done - 1]}: "
+                f"{done} of {len(frames)} frames were written.")
+
+    def _error_text(self, e: BaseException) -> str:
         from kinetrace.errors import plain_error
-        from kinetrace.render import open_writer
-        reader = vw = None
-        created = False               # the writer made / truncated out_path: ours to delete
-        try:
-            if not self.frames:
-                raise BodyRunProblem("no posed frames in %d-%d" % (self.f0, self.f1))
-            first = self.frames[0]
-            reader = _FrameReader(self.video_path, first)
-            bgr = reader.read(first)
-            if bgr is None:
-                raise BodyRunProblem(f"frame {first} could not be decoded (the video ends before "
-                                     f"it, or the file is damaged there), so nothing was written.")
-            probe = compose_side_by_side(bgr, self.track, first, self.person, self.opts,
-                                         self.plot, self.azimuth, self.elevation, self.fps,
-                                         self.width, self.upright, self.mesh)
-            size = (probe.shape[1], probe.shape[0])
-            vw, codec = open_writer(self.out_path, self.out_fps, size)
-            created = True
-            reader.reset(first)
-            total = max(1, len(self.frames))
-            done = 0
-            for f in self.frames:
-                if self._cancel:
-                    break
-                bgr = reader.read(f)
-                if bgr is None:
-                    break
-                img = compose_side_by_side(bgr, self.track, f, self.person, self.opts,
-                                           self.plot, self.azimuth, self.elevation, self.fps,
-                                           self.width, self.upright, self.mesh)
-                if (img.shape[1], img.shape[0]) != size:
-                    img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
-                vw.write(img)
-                done += 1
-                if done % 5 == 0 or done == total:
-                    self.progress.emit(done, total)
-            vw.release()
-            vw = None
-            self.frames_written = done
-            if self._cancel:
-                self._discard()
-                self.error.emit("cancelled")
-                return
-            if done == 0:
-                self._discard()
-                raise BodyRunProblem(f"frame {first} could not be decoded (the video ends before "
-                                     f"it, or the file is damaged there), so nothing was written.")
-            if done < len(self.frames):
-                k = reader.failed if reader.failed is not None else self.frames[done]
-                sentence = (f"Frame {k} could not be decoded (the video ends there, or the file is "
-                            f"damaged), so this video stops after frame {self.frames[done - 1]}: "
-                            f"{done} of {len(self.frames)} frames were written.")
-                self.note = (self.note + "; " if self.note else "") + sentence
-                self.progress.emit(done, total)
-            self.finished_ok.emit(self.out_path, codec)
-        except Exception as exc:                     # noqa: BLE001
-            if vw is not None:
-                vw.release()
-                vw = None
-            if created:
-                self._discard()       # a truncated file is not a result (I232)
-            self.error.emit(str(exc) if isinstance(exc, BodyRunProblem)
-                            else plain_error(exc, "The side-by-side video"))
-        finally:
-            if vw is not None:
-                vw.release()
-            if reader is not None:
-                reader.release()
+        return str(e) if isinstance(e, BodyRunProblem) else plain_error(e, "The side-by-side video")
 
 
 # ------------------------------------------------------------------ dialogs
@@ -1435,9 +1387,7 @@ class BodySideBySide(QWidget):
                 img = cv2.resize(img, (max(2, int(img.shape[1] * sc)), h),
                                  interpolation=cv2.INTER_AREA)
         self.last_image = img
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        qi = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888)
-        self.canvas.setPixmap(QPixmap.fromImage(qi.copy()))
+        self.canvas.setPixmap(bgr_pixmap(img))
 
     def save_png(self, path: str) -> None:
         if self.last_image is None:

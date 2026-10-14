@@ -112,7 +112,8 @@ def truth(t: int):
 
 def _is_complete(p: Path) -> bool:
     """`p` is a whole demo of this version: every frame, at this size."""
-    cap = cv2.VideoCapture(str(p))
+    from kinetrace.video_source import open_capture     # the one way a file is opened (R29)
+    cap = open_capture(str(p))
     try:
         return bool(cap.isOpened() and int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == N_FRAMES
                     and int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) == W and int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) == H)

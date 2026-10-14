@@ -203,7 +203,7 @@ class CalibPicture:
     source: str = "fit"              # "fit" = a wand run's own errors; "tracks" = recomputed from the landmarks
     lines: list = field(default_factory=list)
     cal: Calibration | None = None
-    cover: dict = field(default_factory=dict)       # n -> (verts, faces), filled by `add_coverage`
+    cover: dict = field(default_factory=dict)       # n -> (verts, faces), filled by `use_coverage`
     coverage: Coverage | None = None
 
     def finite_ends(self) -> np.ndarray:
@@ -258,12 +258,6 @@ class CalibPicture:
         self.coverage, self.cover = cov, dict(surfaces)
         self.lines = [ln for ln in self.lines if not ln.startswith("The wand cloud lies")]
         self.lines[:0] = sentences
-
-    def add_coverage(self, n_max: int = 40, views=None) -> Coverage:
-        """`coverage_for` + `use_coverage` in one call (tests, scripts)."""
-        res = self.coverage_for(views, n_max)
-        self.use_coverage(res)
-        return res[0]
 
 
 def _cameras(cal: Calibration, names: list, ends: np.ndarray, probe) -> tuple[list, list[str]]:

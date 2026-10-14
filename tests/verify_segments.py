@@ -286,6 +286,29 @@ pump(0.1)
 cv = win.canvas
 extra = getattr(cv, "_extra_masks", [])
 check(cv._mask_item.isVisible() and extra and extra[0][0].isVisible(), "both silhouettes drawn")
+
+# (G189) the other camera's tile before that camera starts ("not recording yet") clears EVERY silhouette, not only
+# the first animal's: camera B starts 20 frames later, camera A (two animals) is the other tile
+win._on_view_offset(1, 20.0)
+win._set_active_view(1)
+pump(0.2)
+win._goto(30)                               # camera B frame 30 = camera A frame 10: both animals drawn there
+pump(0.3)
+cva = win.grid.canvases[0]
+extra_a = getattr(cva, "_extra_masks", [])
+check(cva._mask_item.isVisible() and extra_a and extra_a[0][0].isVisible(),
+      "(G189 setup) camera A's tile shows both animals")
+win.activateWindow()
+QTest.keyClick(win, Qt.Key_Home)            # camera B frame 0: camera A has not started yet
+pump(0.3)
+check(win.current == 0 and not cva._mask_item.isVisible() and not any(m.isVisible() for m, _ in extra_a),
+      "(G189) a camera that is not recording yet shows no silhouette of any animal",
+      (win.current, cva._mask_item.isVisible(), [m.isVisible() for m, _ in extra_a]))
+win._on_view_offset(1, 0.0)
+win._set_active_view(0)
+pump(0.2)
+win._refresh_overlay()
+pump(0.1)
 from kinetrace.timeline import ANIMAL_H, EVENTS_H  # noqa: E402
 tl = win.timeline
 tl.set_session(ss)

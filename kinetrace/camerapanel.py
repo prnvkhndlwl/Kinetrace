@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget,
 
 from kinetrace import icons, theme
 from kinetrace.project import REFERENCE_VIEW
-from kinetrace.widgets import ElidedLabel
+from kinetrace.widgets import ElidedLabel, wrap_caption
 
 OFFSET_LIMIT = 10_000_000     # frames; far beyond any real clip
 OFFSET_DECIMALS = 3           # sub-frame sync is measured to ~0.01 frame; show a little more
@@ -404,8 +404,7 @@ class CameraPanel(QWidget):
         lay.addLayout(foot)
         self.note = QLabel()                  # wraps (several lines), so it is not elided
         self.note.setStyleSheet(f"color: {theme.TEXT_DIM};")
-        self.note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.note.setWordWrap(True)
+        wrap_caption(self.note)
         lay.addWidget(self.note)
         self._rows: list[_CameraRow] = []
         self._suppress = False

@@ -6,6 +6,11 @@ import re
 import traceback
 
 
+def cap_first(s: str) -> str:
+    """A sentence with its first letter capitalised; an empty one stays empty (I277: `str(e)[0]` raised)."""
+    return s[:1].upper() + s[1:]
+
+
 def plain_error(e: BaseException, what: str, short: bool = False, reading: bool | None = None) -> str:
     """`what` failed because of `e`, in words, with what to do about it (G54):
     a file open in another program, a full drive, a missing folder, too little

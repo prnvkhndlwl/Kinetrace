@@ -31,7 +31,7 @@ from kinetrace import theme
 from kinetrace import wand as _wand
 from kinetrace import wanddata as wd
 from kinetrace.video_source import display_rotation
-from kinetrace.errors import plain_error
+from kinetrace.errors import cap_first, plain_error
 from kinetrace.lenswizard import VERDICT_COLORS, _dim, stop_page_threads
 
 UNITS = [("metres (m)", "m"), ("centimetres (cm)", "cm"), ("millimetres (mm)", "mm"), ("inches (in)", "in"),
@@ -200,7 +200,7 @@ class _CalibThread(QThread):
                            f"cameras (the page suggests one)")
                     e = f"{e} on reference frame {a.get('t', '?')}"
                 res = wand.keep_camera_frame(
-                    res, f"{what[0].upper() + what[1:]} could NOT be set: {e}. The calibration itself is fine "
+                    res, f"{cap_first(what)} could NOT be set: {e}. The calibration itself is fine "
                          f"and keeps {cam1}'s axes. Go Back to 'Which way is up' and {fix}, or choose "
                          f"'Neither'.", what)
             # cameras with a lens profile were solved on UNDISTORTED points: the
@@ -398,18 +398,18 @@ class WandPage(QWizardPage):
                         "Track the wand ends in at least two cameras on the same stretch of the "
                         "recording.</span>")
         elif self._n_frames < GOOD_FRAMES:
-            warn.append(f"<span style='color:#FFD60A'>Under {GOOD_FRAMES} shared frames: it will run, but "
+            warn.append(f"<span style='color:{theme.OK}'>Under {GOOD_FRAMES} shared frames: it will run, but "
                         "the result will be rough. More frames, spread over the recording, help most.</span>")
         if len(views) >= 2:
             weak = [p.name(c) for c in views if shared.get(c, 0) < MIN_FRAMES]
             if weak:
-                warn.append(f"<span style='color:#FFD60A'>{', '.join(weak)} "
+                warn.append(f"<span style='color:{theme.OK}'>{', '.join(weak)} "
                             f"{'shares' if len(weak) == 1 else 'share'} fewer than {MIN_FRAMES} frames with the "
                             "other ticked cameras: untick, or track the wand where it and another ticked "
                             "camera both see it.</span>")
             groups = wd.camera_groups(both, views, MIN_FRAMES)
             if len(groups) > 1:
-                warn.append(f"<span style='color:#FFD60A'>The ticked cameras fall into groups that never see the "
+                warn.append(f"<span style='color:{theme.OK}'>The ticked cameras fall into groups that never see the "
                             "wand together (" + "; ".join(", ".join(p.name(c) for c in g) for g in groups)
                             + "): one calibration cannot join them. Untick one group, or track the wand where "
                             "cameras of both groups see it.</span>")
@@ -460,30 +460,16 @@ class WandPage(QWizardPage):
         for nm, both, _any in rows:
             lines.append(f"<tr><td>{nm}</td><td style='padding-left:12px'>{both} frames with both ends</td></tr>")
         lines.append("</table>")
-        if p.n_views < 2:
-            both = rows[0][1] if rows else 0
-            lines.append(f"<p>Frames with both ends in this one camera: <b>{both}</b>.</p>")
-            self.table.setText("".join(lines))
-            self.warn.setText(
-                "<span style='color:#FFD60A'>One camera cannot be calibrated on its own: the wand's two "
-                "ends give a direction and a scale only when a second camera sees them too. Add the "
-                "other cameras' wand videos to this project (＋ Add video, then Sync) and track the "
-                "same two names there; this page then counts the shared frames and lets you go on. "
-                "Your tracking here is kept and exports normally (Ctrl+E).</span>")
-            self.completeChanged.emit()
-            return
-        lines.append(f"<p>Frames where two or more cameras see both ends: <b>{self._n_frames}</b></p>")
+        # one camera (two or more returned above, through the ticks: `_update_ticks` says how many frames)
+        both = rows[0][1] if rows else 0
+        lines.append(f"<p>Frames with both ends in this one camera: <b>{both}</b>.</p>")
         self.table.setText("".join(lines))
-        if self._n_frames < MIN_FRAMES:
-            self.warn.setText(f"<span style='color:{theme.RED}'>Too few frames (at least {MIN_FRAMES} are needed). "
-                              "Track the wand ends in at least two cameras on the same stretch of the "
-                              "recording.</span>")
-        elif self._n_frames < GOOD_FRAMES:
-            self.warn.setText(f"<span style='color:#FFD60A'>Under {GOOD_FRAMES} shared frames: it will run, but "
-                              "the result will be rough. More frames, spread over the recording, help most."
-                              "</span>")
-        else:
-            self.warn.setText("")
+        self.warn.setText(
+            f"<span style='color:{theme.OK}'>One camera cannot be calibrated on its own: the wand's two "
+            "ends give a direction and a scale only when a second camera sees them too. Add the "
+            "other cameras' wand videos to this project (＋ Add video, then Sync) and track the "
+            "same two names there; this page then counts the shared frames and lets you go on. "
+            "Your tracking here is kept and exports normally (Ctrl+E).</span>")
         self.completeChanged.emit()
 
     def isComplete(self) -> bool:
@@ -1000,7 +986,7 @@ class FramePage(QWizardPage):
                 self.drop_t0.setValue(int(t0 + hits[0]))
                 self.drop_t1.setValue(int(t0 + hits[-1]))
             self.drop_note.setText(
-                rate + f"<span style='color:#FFD60A'>No free fall of “{nm}” was found: it never moves steadily "
+                rate + f"<span style='color:{theme.OK}'>No free fall of “{nm}” was found: it never moves steadily "
                 "in one direction for 6 frames or more in two cameras. If it really was dropped, set the frames "
                 "of the fall by hand; otherwise choose another way below.</span>")
         self._fall = fall
@@ -1596,12 +1582,12 @@ def report_text(report: dict, grav: dict | None, csv_note: str | None = None) ->
 
 def gravity_colour(pct_off: float) -> str:
     """Colour of the gravity check's figure from how many % away from g it is, with
-    wand.py's own bands: green while the sentence says "consistent", amber up to the
+    wand.py's own bands: green while the sentence says "consistent", yellow (theme.OK) up to the
     point where the verdict is capped, red beyond (G137: the colours used 3 % / 8 %
     against sentences that used 2 % / 5 %)."""
     if pct_off <= _wand.G_CONSISTENT_PCT:
         return theme.GREEN
-    return "#FFD60A" if pct_off <= _wand.G_SUSPECT_PCT else theme.RED
+    return theme.OK if pct_off <= _wand.G_SUSPECT_PCT else theme.RED
 
 
 def report_html(report: dict, grav: dict | None, project, unit: str) -> str:

@@ -26,12 +26,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
                                QSizePolicy, QVBoxLayout, QWidget)
 
 from kinetrace import lens, theme
+from kinetrace.canvas import bgr_pixmap
+from kinetrace.widgets import wrap_caption
 
 TILE_W = 300                 # thumbnail width in the gallery
 
@@ -46,14 +48,12 @@ def pixmap(bgr: np.ndarray, width: int | None = None, max_w: int | None = None) 
     elif max_w and img.shape[1] > max_w:
         h = max(1, round(img.shape[0] * max_w / img.shape[1]))
         img = cv2.resize(img, (max_w, h), interpolation=cv2.INTER_AREA)
-    rgb = np.ascontiguousarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    q = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.strides[0], QImage.Format_RGB888)
-    return QPixmap.fromImage(q.copy())
+    return bgr_pixmap(img)
 
 
 def quality(err: float, size: tuple[int, int] | None = None) -> tuple[str, str]:
     """(word, colour) for one view's reprojection error: green up to the lens
-    report's "good" limit, amber up to its "ok" limit, red beyond - the SAME
+    report's "good" limit, yellow (theme.OK) up to its "ok" limit, red beyond - the SAME
     limits the report grades the fit with (`lens.rms_limits`, R19; the tiles
     used a fixed 0.6 / 1.5 px beside the report's resolution-scaled ones)."""
     if not np.isfinite(err):
@@ -62,7 +62,7 @@ def quality(err: float, size: tuple[int, int] | None = None) -> tuple[str, str]:
     if err <= good:
         return f"{err:.2f} px", theme.GREEN
     if err <= ok:
-        return f"{err:.2f} px", "#E0A030"
+        return f"{err:.2f} px", theme.OK             # (G192)
     return f"{err:.2f} px", theme.RED
 
 
@@ -400,8 +400,7 @@ class BoardReview(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         bar = QHBoxLayout()
         self.summary = QLabel("")
-        self.summary.setWordWrap(True)
-        self.summary.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.summary)
         bar.addWidget(self.summary, 1)
         for label, slot, tip in (
                 ("Best spread", self._auto, "Let Kinetrace choose: a spread over the picture, "
@@ -419,8 +418,7 @@ class BoardReview(QWidget):
         # How corner 0 was recognised -- the sentence that tells a first-time
         # user whether the rings SHOULD all sit in the same place on the board.
         self.orient_label = QLabel("")
-        self.orient_label.setWordWrap(True)
-        self.orient_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.orient_label)
         self.orient_label.setStyleSheet(f"color: {theme.TEXT_DIM};")
         lay.addWidget(self.orient_label)
         self.area = QScrollArea()

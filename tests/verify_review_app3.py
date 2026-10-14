@@ -515,7 +515,7 @@ def _g107():
     p.set_offset(1, 0.5)
     win._set_active_view(1)
     win._goto(3, force=True)
-    win._refresh_view3d(force=True)
+    win._refresh_view3d()
     txt = win.view3d.info.text()
     # 2.5 is a tie: the way back to the reference rounds DOWN, like map_frame (I19 / I258), so the 3D
     # window, the hull key and the reference camera's tile all name frame 2

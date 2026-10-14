@@ -35,6 +35,8 @@ from pathlib import Path
 
 import numpy as np
 
+from kinetrace.errors import cap_first
+
 # --------------------------------------------------------------------- names
 
 # Backends spell the same joint several ways ("left-shoulder", "left_shoulder",
@@ -1187,7 +1189,7 @@ def merge_run(old: BodyTrack | None, new: BodyTrack) -> tuple[BodyTrack, str]:
             sent.append(f"Stopped early: {span} posed again; every other frame keeps its "
                         f"earlier pose ({kept} frames).")
         else:
-            sent.append(f"{span[0].upper()}{span[1:]} posed again; the earlier poses on the other "
+            sent.append(f"{cap_first(span)} posed again; the earlier poses on the other "
                         f"{kept} frames were kept.")
     elif stopped:
         sent.append("Stopped early.")

@@ -193,11 +193,18 @@ def code_available(key: str) -> bool:
 DETECTOR_LABEL = "the person detector (RT-DETR v2, 81 MB)"
 
 
+def _local_detector() -> Path | None:
+    """A hand-supplied person detector, models/rtdetr (R29: one test for three places); read at call
+    time, so a test that moves MODELS_DIR is followed."""
+    local = MODELS_DIR / "rtdetr"
+    return local if (local / "config.json").exists() else None
+
+
 def detector_cached() -> bool:
     """The person detector is on disk: a hand-supplied models/rtdetr, or the
     pinned commit in models/hf (G135)."""
     from kinetrace import downloads
-    return (MODELS_DIR / "rtdetr" / "config.json").exists() or downloads.hf_cached(DETECTOR_REPO)
+    return _local_detector() is not None or downloads.hf_cached(DETECTOR_REPO)
 
 
 def backend_status(key: str, device: str | None = None,
@@ -353,8 +360,8 @@ class _PersonDetector:
         import torch
         from transformers import AutoImageProcessor, RTDetrV2ForObjectDetection
         self._torch = torch
-        local = MODELS_DIR / "rtdetr"
-        path = str(local) if local.is_dir() and (local / "config.json").exists() else DETECTOR_REPO
+        local = _local_detector()
+        path = str(local) if local is not None else DETECTOR_REPO
         kw = {} if path != DETECTOR_REPO else hf_kwargs(DETECTOR_REPO)   # pinned commit (I154), models/hf (I195)
         self.proc = AutoImageProcessor.from_pretrained(path, **kw)
         self.model = RTDetrV2ForObjectDetection.from_pretrained(path, **kw).to(device).eval()
@@ -623,8 +630,8 @@ def make_estimator(backend: str, device=None, max_people: int = 1,
         raise BodyBackendError(why)
     torch.hub.set_dir(str(MODELS_DIR))
     from kinetrace import downloads
-    if use_detector and not ((MODELS_DIR / "rtdetr") / "config.json").exists():
-        downloads.hf_snapshot(DETECTOR_REPO, "the person detector (RT-DETR v2, 81 MB)", progress, cancel)
+    if use_detector and _local_detector() is None:
+        downloads.hf_snapshot(DETECTOR_REPO, DETECTOR_LABEL, progress, cancel)
     if spec.kind != "sam3d_body" and local_dir(spec.key) is None:
         downloads.hf_snapshot(spec.repo, f"the pose model ({spec.label})", progress, cancel)
     with _lock:

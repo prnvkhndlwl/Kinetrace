@@ -120,6 +120,24 @@ w.act_export_lens.trigger()
 pump(0.1)
 check(len(ASK["warn"]) == n_warn + 1 and "fisheye" in ASK["warn"][-1] and not os.path.exists(ASK["save"][0]),
       "a fisheye lens as an Argus line is refused in words, nothing written", ASK["warn"][-1:])
+# (I277) a refusal with an EMPTY message still shows its box (`str(e)[0]` raised IndexError in the slot)
+from kinetrace import calibio  # noqa: E402
+_real_write_lens = calibio.write_lens
+
+
+def _refuse_empty(*_a, **_k):
+    raise calibio.CalibFormatError("")
+
+
+calibio.write_lens = _refuse_empty
+try:
+    n_warn = len(ASK["warn"])
+    w.act_export_lens.trigger()
+    pump(0.1)
+finally:
+    calibio.write_lens = _real_write_lens
+check(len(ASK["warn"]) == n_warn + 1 and ASK["warn"][-1] == "",
+      "(I277) an error with an empty message is shown, not raised", ASK["warn"][-1:])
 
 # camB: load the saved file
 w._set_active_view(1)

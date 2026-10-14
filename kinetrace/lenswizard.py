@@ -17,15 +17,16 @@ import numpy as np
 from PySide6.QtCore import QEventLoop, Qt, QThread, Signal
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QHBoxLayout, QLabel, QProgressBar, QPushButton, QRadioButton,
-                               QSizePolicy, QSpinBox, QTextBrowser, QVBoxLayout, QWidget, QWizard,
+                               QSpinBox, QTextBrowser, QVBoxLayout, QWidget, QWizard,
                                QWizardPage)
 
 from kinetrace import gpmf, lens, theme
+from kinetrace.widgets import wrap_caption
 from kinetrace.errors import plain_error
 from kinetrace.video_source import display_rotation
 from kinetrace.boardreview import BoardReview, pixmap
 
-VERDICT_COLORS = {"good": theme.GREEN, "ok": "#FFD60A", "poor": theme.RED}
+VERDICT_COLORS = theme.VERDICT                 # (G192)
 VERDICT_WORDS = {"good": "GOOD — attach this profile to the camera",
                  "ok": "USABLE — but read the notes below",
                  "poor": "NOT GOOD ENOUGH — film the board again as the notes say"}
@@ -246,8 +247,7 @@ class VideoPage(QWizardPage):
         # A symmetric board (8 x 6) cannot show which way up it is; say so the
         # moment it is typed, not after a scan.
         self.pattern_note = _dim(QLabel(""))
-        self.pattern_note.setWordWrap(True)
-        self.pattern_note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.pattern_note)
         self.pattern_note.setStyleSheet(f"color: {VERDICT_COLORS['ok']};")
         form.addRow("", self.pattern_note)
         self.cols.valueChanged.connect(self._pattern_changed)
@@ -284,8 +284,7 @@ class VideoPage(QWizardPage):
         for r in (self.r_gopro, self.r_auto, self.r_std, self.r_fish):
             ml.addWidget(r)
         self.gopro_note = _dim(QLabel(""))
-        self.gopro_note.setWordWrap(True)
-        self.gopro_note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.gopro_note)
         ml.addWidget(self.gopro_note)
         form.addRow("Lens type", mrow)
         lay.addLayout(form)

@@ -35,16 +35,6 @@ from PySide6.QtGui import QBrush, QColor, QCursor, QFontMetrics, QPainter, QPen,
 from PySide6.QtWidgets import QInputDialog, QMenu, QSizePolicy, QToolButton, QWidget
 
 
-def _pop(menu: QMenu, pos):
-    """exec() a context menu and release it afterwards. A shown QMenu otherwise
-    lives on as a child of the widget until the widget dies: one leaked menu
-    (with all its actions) per right-click over a long digitizing session.
-    Tooltips on: menus built per right-click missed the window-wide setting (G15)."""
-    menu.setToolTipsVisible(True)
-    chosen = menu.exec(pos)
-    menu.deleteLater()          # deferred: `chosen` stays valid for the caller's comparisons
-    return chosen
-
 GUTTER_W = 96      # left name column, px
 EVENTS_H = 18      # events lane height, px
 ANIMAL_H = 13      # one segment's presence lane (one per segment, G149; none without a segment)
@@ -53,13 +43,14 @@ STRIP_H = 6        # scroll strip at the bottom while time-zoomed
 DEFAULT_LANES = 10  # lanes assumed for the initial size hint (resize for more)
 MIN_SPAN = 16      # tightest time zoom, frames
 TIME_ZOOM_STEP = 1.5  # time-axis zoom factor per keypress / wheel notch
-LOW_CONF = 0.5     # below this a tracked span gets the warning overlay
+from kinetrace.session import LOW_CONF  # noqa: E402  the warning overlay's threshold, J's too (G193)
 ZOOM_BTN = 15      # the time-zoom buttons in the ruler's corner (G152), px
 
 # colors come from the shared design tokens so the painted panel and the
 # styled widgets read as one surface
 from kinetrace import theme as _t  # noqa: E402
-from kinetrace.widgets import WheelSteps  # noqa: E402
+from kinetrace.widgets import WheelSteps, pop_menu  # noqa: E402
+_pop = pop_menu                # every context menu's one rule (R28); the name tests replace
 
 BG = QColor(_t.BG_WINDOW)
 LANE_BG = QColor("#2C2C33")
@@ -114,6 +105,7 @@ class TimelinePanel(QWidget):
         # distinguishable or a silhouette-only delete would clear points too.
         self.sel_rows: list[int] | None = None
         self.sel_seg = False                   # marquee covers a segment lane
+        self._band_segs: list = []             # the segment lanes the marquee covers (G149)
         self.sel_segs: list[int] | None = None  # ... which ones (G149); None = not named (the active one)
         self._view = (0, 1)                    # displayed frame range, inclusive
         self._scroll = 0                       # first visible lane row
@@ -608,7 +600,8 @@ class TimelinePanel(QWidget):
             return
         trk = s.tracked[v0:v1 + 1]
         self._trk_col = np.maximum.reduceat(trk.astype(np.uint8), bounds, axis=0)
-        conf_masked = np.where(trk, s.confidence[v0:v1 + 1], 1.0).astype(np.float32)
+        # (G193) a cell marked hidden is not doubtful: red only where J stops (`session.low_conf_runs`)
+        conf_masked = np.where(trk & ~s.occluded[v0:v1 + 1], s.confidence[v0:v1 + 1], 1.0).astype(np.float32)
         self._conf_col = np.minimum.reduceat(conf_masked, bounds, axis=0)
         man = (trk & s.manual[v0:v1 + 1]).astype(np.uint8)
         self._man_col = np.maximum.reduceat(man, bounds, axis=0)
@@ -884,7 +877,7 @@ class TimelinePanel(QWidget):
                 self._drag_select_y = y
                 self.sel_range = (f, f)
                 self.sel_rows, self.sel_seg = self._lanes_in_band(y, y)
-                self.sel_segs = list(getattr(self, "_band_segs", [])) if self.sel_seg else None   # (G149)
+                self.sel_segs = list(self._band_segs) if self.sel_seg else None   # (G149)
                 self.update()
                 return
             if x < GUTTER_W:
@@ -918,7 +911,7 @@ class TimelinePanel(QWidget):
             self.sel_range = (min(self._drag_select_from, f),
                               max(self._drag_select_from, f))
             self.sel_rows, self.sel_seg = self._lanes_in_band(self._drag_select_y, y)
-            self.sel_segs = list(getattr(self, "_band_segs", [])) if self.sel_seg else None   # (G149)
+            self.sel_segs = list(self._band_segs) if self.sel_seg else None   # (G149)
             self.update()
             return
         if self._drag_seek and (ev.buttons() & Qt.LeftButton):

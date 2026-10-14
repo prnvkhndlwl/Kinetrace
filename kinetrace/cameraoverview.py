@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QHB
                                QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout)
 
 from kinetrace import gpmf, lens, theme
+from kinetrace.errors import cap_first
 
 BASE_COLUMNS = ("Camera", "Records", "Lens profile", "3D calibration")
 GOPRO_COLUMNS = ("GoPro footage", "Stabilisation", "Shutter / ISO", "Points (tilt, roll)", "Dropped frames", "Moved")
@@ -79,7 +80,7 @@ def camera_facts(project, infos) -> list[CameraFacts]:
             f.lens_label = lens.lens_label(prof)
             fitted, why = lens_for_camera(prof, s, f.name)
             if fitted is None:
-                f.lens_state, f.lens_note = "unused", (why[0].upper() + why[1:] if why else "")
+                f.lens_state, f.lens_note = "unused", cap_first(why)
             else:
                 f.lens_state, f.lens_note = "ok", fitted.summary()
         f.calibrated = None if cal is None else cal.camera(v) is not None      # (I273) any cameras

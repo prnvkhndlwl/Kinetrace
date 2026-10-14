@@ -29,7 +29,7 @@ app = QApplication([])
 EXC: list = []
 sys.excepthook = lambda t, v, tb: EXC.append("".join(traceback.format_exception(t, v, tb))[-400:])
 
-from kinetrace import theme  # noqa: E402
+from kinetrace import theme, threads  # noqa: E402
 from kinetrace.canvas import VideoCanvas  # noqa: E402
 
 FAILS: list[str] = []
@@ -661,16 +661,16 @@ def i199_probe_thread_never_dropped():
         dlg.stop_probe()
         dt = time.time() - t0
         check("I199 stop_probe does not block the dialog on a stalled read", dt < 1.0, f"{dt:.2f}s")
-        orphans = list(fi._ORPHANS)
+        orphans = [t for t in threads.ORPHANS if isinstance(t, fi._HeaderProbe)]
         check("I199 the running header thread is kept referenced (never dropped)",
               len(orphans) == 1 and orphans[0].isRunning(), orphans)
         dlg.deleteLater()
         pump()
         t0 = time.time()
-        while fi._ORPHANS and time.time() - t0 < 8:
+        while orphans[0] in threads.ORPHANS and time.time() - t0 < 8:
             pump(50)
-        check("I199 it leaves the list when it has finished", not fi._ORPHANS, fi._ORPHANS)
-        fi.wait_orphans(100)                  # the helper the app can call at close
+        check("I199 it leaves the list when it has finished", orphans[0] not in threads.ORPHANS)
+        threads.wait_all(100)                 # what the app calls at close (R24)
     finally:
         video_source.open_capture = real
 

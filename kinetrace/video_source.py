@@ -27,13 +27,6 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 
-def _total_ram_bytes() -> int:
-    """Physical RAM, or 0 when it cannot be determined (`device.total_ram_bytes`:
-    ctypes on Windows, sysconf on macOS and Linux)."""
-    from kinetrace.device import total_ram_bytes
-    return total_ram_bytes()
-
-
 def _default_cache_bytes() -> int:
     """Frame-cache budget: a quarter of physical RAM, clamped to [2, 24] GB.
 
@@ -49,7 +42,8 @@ def _default_cache_bytes() -> int:
             return max(1, int(float(override) * 1024**3))
         except ValueError:
             pass
-    total = _total_ram_bytes()
+    from kinetrace.device import total_ram_bytes      # physical RAM, 0 = unknown
+    total = total_ram_bytes()
     if total <= 0:
         return 2 * 1024**3  # unknown RAM: keep the old conservative default
     return int(min(max(total // 4, 2 * 1024**3), 24 * 1024**3))

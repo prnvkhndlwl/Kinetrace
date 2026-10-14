@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel, QPushB
 
 from kinetrace import fingerprint as fpm
 from kinetrace import theme
-from kinetrace import video_source as vs
+from kinetrace.widgets import wrap_caption
 
 
 class FrameCheckWorker(QThread):
@@ -49,12 +49,10 @@ class FrameCheckWorker(QThread):
 
     def run(self):
         try:
-            plan = vs.seek_plan(self.path)
-            if plan is None or plan.file != vs.file_identity(self.path):
-                plan = vs.check_seeks(self.path, self.n_frames, self._cancelled)
-                if self._cancel:
-                    return
-                vs.set_seek_plan(self.path, plan)
+            plan, fresh = fpm.exact_reads(self.path, self.n_frames, self._cancelled)
+            if self._cancel:
+                return
+            if fresh:
                 self.seeks_checked.emit(plan)
             if self.fp is None:
                 if self.make_missing:
@@ -71,7 +69,7 @@ class FrameCheckWorker(QThread):
             self.failed.emit(plain_error(e, f"{self.camera}: checking the video's frames failed", short=True))
 
 
-VERDICT_COLOR = {"good": theme.GREEN, "ok": theme.AMBER, "poor": theme.RED}
+VERDICT_COLOR = theme.VERDICT                  # (G192)
 _SIDE = 168                 # pixels per picture in the dialog
 
 
@@ -122,16 +120,14 @@ class FrameCheckDialog(QDialog):
         self.chip.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         top.addWidget(self.chip, 0, Qt.AlignTop)
         self.sentence = QLabel(result.sentence)
-        self.sentence.setWordWrap(True)
-        self.sentence.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.sentence)
         top.addWidget(self.sentence, 1)
         lay.addLayout(top)
         if reference:
             ref = QLabel("This computer made the fingerprint of this video, so it is the reference: the check "
                          "means something on another computer (it runs there by itself when the project is "
                          "opened). Here it shows which moments are kept.")
-            ref.setWordWrap(True)
-            ref.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            wrap_caption(ref)
             ref.setStyleSheet(f"color:{theme.TEXT_DIM};")
             lay.addWidget(ref)
         nav = QHBoxLayout()
@@ -152,8 +148,7 @@ class FrameCheckDialog(QDialog):
             pic.setAlignment(Qt.AlignCenter)
             pic.setMinimumSize(_SIDE + 8, _SIDE + 8)
             cap.setAlignment(Qt.AlignCenter)
-            cap.setWordWrap(True)
-            cap.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            wrap_caption(cap)
             grid.addWidget(pic, 0, c)
             grid.addWidget(cap, 1, c)
             self.pics.append(pic)
@@ -166,13 +161,11 @@ class FrameCheckDialog(QDialog):
             grid.addWidget(w, 2, c * 2, 1, 2)
         for c, w in ((0, self.whole_cap_saved), (1, self.whole_cap_here)):
             w.setAlignment(Qt.AlignCenter)
-            w.setWordWrap(True)
-            w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            wrap_caption(w)
             grid.addWidget(w, 3, c * 2, 1, 2)
         lay.addLayout(grid)
         self.numbers = QLabel(result.detail)
-        self.numbers.setWordWrap(True)
-        self.numbers.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(self.numbers)
         self.numbers.setStyleSheet(f"color:{theme.TEXT_DIM};")
         self.numbers.setTextInteractionFlags(Qt.TextSelectableByMouse)
         lay.addWidget(self.numbers)
@@ -180,8 +173,7 @@ class FrameCheckDialog(QDialog):
                       "shown on the wrong frames on this computer: work on the computer that made the project, "
                       "or re-encode the video there once (File → Check Video Frames in the manual says how) "
                       "and track on the new file.")
-        what.setWordWrap(True)
-        what.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        wrap_caption(what)
         if result.verdict in ("shifted", "mixed", "different"):
             lay.addWidget(what)
         buttons = QHBoxLayout()

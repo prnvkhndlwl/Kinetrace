@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (QApplication, QGraphicsEllipseItem, QGraphicsItem
                                QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QLabel, QMenu,
                                QToolButton, QWidget)
 
-from kinetrace.widgets import WheelSteps
+from kinetrace.widgets import WheelSteps, pop_menu
 
 HIT_RADIUS_PX = 14      # screen px within which a click grabs a point
 MARKER_RADIUS = 3.0     # screen px (3 by default, was 7)
@@ -70,6 +70,14 @@ def np_to_qimage(rgb: np.ndarray) -> QImage:
     # buffer, so one pass replaces a copy + a conversion (a 4K frame 17.0 ->
     # 8.7 ms on the GUI thread, the same pixels; I135)
     return QImage(rgb.data, w, h, rgb.strides[0], QImage.Format_RGB888).convertToFormat(QImage.Format_RGB32)
+
+
+def bgr_pixmap(bgr: np.ndarray, dpr: float = 1.0) -> QPixmap:
+    """A BGR picture (OpenCV) as a QPixmap that owns its pixels, drawn at `dpr` device pixels per
+    point (R28: the board tiles, the 3D view and the body view each converted it by hand)."""
+    pm = QPixmap.fromImage(np_to_qimage(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)))
+    pm.setDevicePixelRatio(dpr)
+    return pm
 
 
 # the display filters' lookup tables, built once: cv2.LUT on a 4K frame is ~25x
@@ -637,8 +645,7 @@ class VideoCanvas(QGraphicsView):
         self._place_zoom_bar()
         self.set_points(np.zeros((0, 2)), np.zeros(0, bool), [], None)
         self.clear_group_members()
-        self.set_mask(None)
-        self.set_midline(None)
+        self.clear_masks()
         self.set_prompts([], None)
         self.set_guides([])
         self.set_stale(False)
@@ -706,6 +713,10 @@ class VideoCanvas(QGraphicsView):
         item.setPen(pen)
         item.setPath(path)
         item.setVisible(True)
+
+    def clear_masks(self) -> None:
+        """No silhouette of any animal, and no midline (G189: `set_mask(None)` hid only the first)."""
+        self.set_masks([])
 
     def set_masks(self, layers, opacity: float = 0.35) -> None:
         """(G149) Every segment's silhouette on this frame: `layers` = [(outline polygons or None,
@@ -809,7 +820,7 @@ class VideoCanvas(QGraphicsView):
     def _hit_prompt(self, scene_pos: QPointF) -> int | None:
         if len(self._prompt_positions) == 0:
             return None
-        scale = self.transform().m11() or 1.0
+        scale = self._view_scale()
         d = np.linalg.norm(self._prompt_positions - [scene_pos.x(), scene_pos.y()], axis=1)
         k = int(np.argmin(d))
         return k if d[k] <= 12 / scale else None
@@ -978,7 +989,7 @@ class VideoCanvas(QGraphicsView):
         shift = (lambda q: None if q is None else QPointF(q.x() - o.x(), q.y() - o.y()))
         self._loupe.show_at(self._pixitem.pixmap(), self._pixitem.transform(), shift(scene_pt),
                             QPoint(int(view_pos.x()), int(view_pos.y())),
-                            self.transform().m11() or 1.0, shift(marker), color)
+                            self._view_scale(), shift(marker), color)
 
     def _update_cursor(self) -> None:
         if self._pan_mode:
@@ -1113,7 +1124,11 @@ class VideoCanvas(QGraphicsView):
 
     def scene_px_per_screen_px(self) -> float:
         """How many native video pixels one screen pixel covers at this zoom."""
-        return 1.0 / (self.transform().m11() or 1.0)
+        return 1.0 / self._view_scale()
+
+    def _view_scale(self) -> float:
+        """Screen pixels per native video pixel at this zoom (1.0 before the first frame)."""
+        return self.transform().m11() or 1.0
 
     def guide_count(self) -> int:
         """How many epipolar guide lines are drawn now."""
@@ -1240,7 +1255,7 @@ class VideoCanvas(QGraphicsView):
     def _hit_test(self, scene_pos: QPointF) -> int | None:
         if len(self._positions) == 0:
             return None
-        scale = self.transform().m11() or 1.0
+        scale = self._view_scale()
         # grabbing must work on the whole marker even when it is drawn large
         radius = max(HIT_RADIUS_PX, self._marker_radius + 4) / scale
         d = np.linalg.norm(self._positions - [scene_pos.x(), scene_pos.y()], axis=1)
@@ -1351,10 +1366,8 @@ class VideoCanvas(QGraphicsView):
                 k = self._hit_prompt(sp)
                 if k is not None:
                     menu = QMenu(self)
-                    menu.setToolTipsVisible(True)      # (G15)
                     act = menu.addAction("Remove this click")
-                    chosen = menu.exec(ev.globalPosition().toPoint())
-                    menu.deleteLater()
+                    chosen = pop_menu(menu, ev.globalPosition().toPoint())
                     if chosen == act:
                         self.prompt_remove_requested.emit(k)
                 return
@@ -1557,12 +1570,9 @@ class VideoCanvas(QGraphicsView):
         if n == 0:
             return                       # a horizontal swipe is no zoom (G131)
         factor = ZOOM_STEP ** n
-        current = self.transform().m11()
-        if 0.02 < current * factor < 60:
+        if self._zoom_ok(factor):
             self.scale(factor, factor)
-            self._user_zoomed = True
-            self._apply_follow()
-            self._refresh_loupe()
+            self._after_user_zoom()
 
     def zoom_step(self, factor: float, centre: bool = False) -> None:
         """Keyboard zoom (+/-), anchored under the mouse pointer when it is
@@ -1570,8 +1580,7 @@ class VideoCanvas(QGraphicsView):
         centre -- the zoom buttons, whose pointer sits in the corner, G152)."""
         if self._native_size is None:
             return
-        current = self.transform().m11()
-        if not (0.02 < current * factor < 60):
+        if not self._zoom_ok(factor):
             return
         vp = self.viewport()
         pos = vp.mapFromGlobal(QCursor.pos())
@@ -1584,6 +1593,14 @@ class VideoCanvas(QGraphicsView):
         moved = self.mapToScene(pos) - anchor  # pull the anchor back under the pointer
         self.translate(moved.x(), moved.y())
         self.setTransformationAnchor(prev)
+        self._after_user_zoom()
+
+    def _zoom_ok(self, factor: float) -> bool:
+        """The wheel's and the keys' zoom limits (R28: one rule): 2 % to 6000 %."""
+        return 0.02 < self.transform().m11() * factor < 60
+
+    def _after_user_zoom(self) -> None:
+        """A zoom the user made: Follow leaves the view alone from now on, the loupe follows."""
         self._user_zoomed = True
         self._apply_follow()
         self._refresh_loupe()
@@ -1659,8 +1676,7 @@ class VideoCanvas(QGraphicsView):
 
     def _context_menu(self, pid: int, global_pos) -> None:
         menu, acts = self._build_context_menu(pid)
-        chosen = menu.exec(global_pos)
-        menu.deleteLater()          # else every right-click leaves a menu behind as a child
+        chosen = pop_menu(menu, global_pos)
         if callable(self.menu_extra_action) and self.menu_extra_action(chosen, acts, pid):
             return
         if chosen == acts["rename"]:

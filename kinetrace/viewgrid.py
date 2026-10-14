@@ -35,6 +35,7 @@ from PySide6.QtWidgets import QApplication, QGridLayout, QLabel, QMenu, QSizePol
 
 from kinetrace import theme
 from kinetrace.canvas import VideoCanvas
+from kinetrace.widgets import pop_menu
 
 CAPTION_H = 18
 VIEW_MIME = "application/x-kinetrace-view"      # a view dragged by its title bar: its index (G170)
@@ -389,8 +390,7 @@ class ViewGrid(QWidget):
         if len(self._cells) < 2:
             return
         menu, acts = self.build_view_menu(i)
-        chosen = menu.exec(gpos if gpos is not None else QCursor.pos())
-        menu.deleteLater()               # a shown menu is released (see canvas._context_menu)
+        chosen = pop_menu(menu, gpos if gpos is not None else QCursor.pos())
         self.view_menu_action(chosen, acts, i)
 
     def _relayout(self) -> None:

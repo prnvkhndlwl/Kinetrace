@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QDialogBut
                                QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
-from kinetrace import theme
+from kinetrace import theme, threads
 from kinetrace.errors import plain_error
 from kinetrace.project import MAX_VIEWS
 
@@ -51,19 +51,6 @@ def default_project_path(folder: str | os.PathLike) -> Path:
     return root / f"{root.name or 'project'}.kinetrace"
 
 
-# header threads that were still reading when their dialog went away: kept alive
-# until `finished` (like app._ORPHANS); the app's closeEvent can `wait_orphans` (I199)
-_ORPHANS: list = []
-
-
-def wait_orphans(ms: int = 30000) -> None:
-    """Wait for header threads that outlived their dialog (called when the app closes)."""
-    for th in list(_ORPHANS):
-        try:
-            if th.isRunning():
-                th.wait(ms)
-        except RuntimeError:
-            pass
 
 
 class _HeaderProbe(QThread):
@@ -370,8 +357,8 @@ class VideoFolderDialog(QDialog):
 
     def stop_probe(self) -> None:
         """Stop the header thread (a QThread must never be destroyed running). It
-        is told to stop and cut off from the dialog, and kept referenced in
-        `_ORPHANS` until its `finished` fires when a slow header read is still in
+        is told to stop and cut off from the dialog, and kept referenced
+        (`threads.retire`) until its `finished` fires when a slow header read is still in
         progress: dropping a running QThread aborts the process, and waiting for
         it froze the dialog for seconds (I199)."""
         th, self._probe = self._probe, None
@@ -382,9 +369,7 @@ class VideoFolderDialog(QDialog):
             th.got.disconnect(self._on_header)
         except (RuntimeError, TypeError):
             pass
-        if th.isRunning() and th not in _ORPHANS:
-            _ORPHANS.append(th)
-            th.finished.connect(lambda t=th: _ORPHANS.remove(t) if t in _ORPHANS else None)
+        threads.retire(th)          # still reading: kept until it ends; the app's close waits (I199, R24)
 
     def done(self, r: int) -> None:        # noqa: D102 - the header thread stops with the dialog
         self.stop_probe()

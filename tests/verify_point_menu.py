@@ -230,6 +230,26 @@ menu, acts = win.canvas._build_context_menu(s2_pid)
 assert not acts["interp_fill"].isEnabled()
 assert s.interpolate_keyframes(s2_pid) == (0, None)
 print("keyframe interpolation between hand placements OK")
+# (G190) the MULTI-point fill refreshes the Track button at once, like the one-point fill: two points placed by
+# hand only on frames 300 and 340, both selected, the playhead on 320 (no position there: Track is blocked)
+qa = s.add_point(300, 100.0, 100.0)
+qb = s.add_point(300, 200.0, 100.0)
+s.set_position(340, qa, 120.0, 110.0)
+s.set_position(340, qb, 220.0, 110.0)
+win._refresh_point_list()
+win.layers.select_only([qa, qb], current=qa)
+win._on_point_selection_changed()
+win._goto(320)
+app.processEvents()
+blocked_before = win._track_blocked
+assert blocked_before, "(G190 setup) Track is blocked: the selected points have no position on frame 320"
+menu, acts = win._build_multi_menu([qa, qb])
+win._multi_menu_action(acts["fill"], acts, [qa, qb])    # what choosing the menu entry does
+menu.deleteLater()
+assert s.tracked[320, qa] and s.tracked[320, qb], "the gap is filled"
+assert win.current == 320 and win._track_blocked is None, \
+    f"(G190) the Track button is refreshed without moving the playhead: {win._track_blocked!r}"
+print("multi-point fill refreshes the Track button (G190) OK")
 win._on_anchor_toggled(0, True)
 assert s.points[0].anchor
 print("canvas entries untouched OK")

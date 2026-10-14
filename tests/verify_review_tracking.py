@@ -188,26 +188,18 @@ def _():
             self.waits += 1
             return False
 
-    retired = []
-    fake_app = types.ModuleType("kinetrace.app")
-    fake_app._retire = lambda th: retired.append(th)
-    saved = sys.modules.get("kinetrace.app")
-    sys.modules["kinetrace.app"] = fake_app
-    pointtest._ORPHANS.clear()
+    from kinetrace import threads
+    kept = list(threads.ORPHANS)
+    threads.ORPHANS.clear()
     try:
         th = FakeThread()
         dlg = types.SimpleNamespace(_thread=th)
         pointtest.PointModelTest._stop_thread(dlg)      # reject()
         pointtest.PointModelTest._stop_thread(dlg)      # closeEvent() right after it
         assert th.waits == 1 and th.cancels == 1, (th.waits, th.cancels)
-        assert pointtest._ORPHANS == [th], pointtest._ORPHANS
-        assert retired == [th], "the app's registry (what closeEvent waits for) gets it once"
+        assert threads.ORPHANS == [th], "the one registry (what closeEvent waits for, R24) gets it once"
     finally:
-        pointtest._ORPHANS.clear()
-        if saved is None:
-            sys.modules.pop("kinetrace.app", None)
-        else:
-            sys.modules["kinetrace.app"] = saved
+        threads.ORPHANS[:] = kept
 
 
 @check("G118 the verdict and the button say 'for <point>', not 'for this project'")

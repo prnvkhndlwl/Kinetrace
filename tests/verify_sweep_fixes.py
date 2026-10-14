@@ -594,7 +594,7 @@ win._start_tracking = lambda **k: calls.append(k)
 s.seedable_at = lambda f: []
 s.animal_seedable_at = lambda f, i=None: True
 win._run_segment = lambda scope: True        # the segment's row is selected (G61)
-win._run_segments = lambda scope, s=None: [0]      # ... the first segment's (G149: any number)
+win._run_segments = lambda s=None: [0]      # ... the first segment's (G149: any number)
 win._track_step()
 assert calls and calls[0].get("stop_after") == win.current + 1, calls
 s.animal_seedable_at = lambda f, i=None: False
