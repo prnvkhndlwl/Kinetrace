@@ -1433,7 +1433,7 @@ def reconstruction_report(rec: Reconstruction, n_views: int, width_px: float = 1
     camera saw the landmark and where the 3D point projects back -- how much
     the cameras DISAGREE. Thresholds scale with the picture's long side (a
     pixel of 4K is half a pixel of 1080p; `residual_bands`): good <= 1.5 px,
-    usable <= 5 px, poor above, at 1920 wide. A point made from only two rays is blind to one whole
+    usable <= 5 px, poor above, at 1920 on the long side. A point made from only two rays is blind to one whole
     direction (a mistake along the epipolar line triangulates perfectly): with
     two cameras, or when at least `TWO_CAMERA_CAP_FRAC` of the points were
     seen by only two, the report says so and "good" becomes "ok". Returns

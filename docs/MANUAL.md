@@ -2331,7 +2331,7 @@ calibration switches the first one on.
   writes, beside the part in each camera that has it, how well the cameras
   agree: *3D rmse 0.84 px · 2 cams*. It is the reconstruction residual in
   pixels (DLTdv's definition — the number 3D → Reconstruct reports for every
-  frame): green = good (under about 1.5 px at 1920 px wide), yellow = usable,
+  frame): green = good (under about 1.5 px for a 1920 px picture, scaled by its long side), yellow = usable,
   red = one of the placements is off (the good / usable / poor verdicts of the
   picture, the wizards and the reports use these three colours). With only **two** cameras it never reads
   better than yellow ("ok"): a slip along the line joining the two views is
@@ -2368,7 +2368,8 @@ calibration switches the first one on.
 - **A magenta band on the timeline.** After Reconstruct, each lane shows a
   magenta band along its lower edge on every frame where *this camera's*
   position for the part disagrees with the other cameras' by more than about
-  5 px (scaled for larger pictures). It is per camera: switch cameras and the
+  5 px (scaled by the picture's long side, so a portrait 4K camera's limit is 10 px,
+  as in every 3D verdict). It is per camera: switch cameras and the
   bands change. A band that starts and stays is a body part that slid onto
   the wrong spot in this camera; go there, snap or re-place it, track again —
   or let the program do it: **3D → Re-track Disagreeing Stretches…** (it
