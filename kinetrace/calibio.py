@@ -41,8 +41,8 @@ from pathlib import Path
 
 import numpy as np
 
-from kinetrace.calib import (Calibration, CameraCalibration, NoUndistort, OpenCVUndistort, Reconstruction,
-                             dlt_matrix, front_sign, working_probe, world_is_left_handed)
+from kinetrace.calib import (Calibration, CameraCalibration, OpenCVUndistort, Reconstruction,
+                             opencv_projection, working_probe, world_is_left_handed)
 
 
 class CalibFormatError(Exception):
@@ -152,8 +152,7 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
     probe = probe if probe is not None else working_probe(cal)
     Ps = []
     for cam in cams:
-        P = dlt_matrix(cam.coefs) * front_sign(cam.coefs, probe)   # third row = depth, positive in front
-        Ps.append(P)
+        Ps.append(opencv_projection(cam, probe))       # third row = depth, positive in front
     mirrored = world_is_left_handed(cal, probe)        # the one handedness test (calib)
     F = np.diag([1.0, 1.0, -1.0]) if mirrored else np.eye(3)
     shift = (np.asarray(cal.origin_shift, np.float64).reshape(3) if cal.origin_shift is not None
@@ -181,7 +180,7 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
         fisheye = isinstance(und, OpenCVUndistort) and und.fisheye
         dist = np.zeros(4 if fisheye else 5)
         fit = 0.0
-        if not isinstance(und, NoUndistort):
+        if cam.has_lens_correction:
             K, dist, fit = _fit_lens(cam, K0, fisheye)
         m = CamModel(name, int(cam.width), int(cam.height), K, dist, R, t, fisheye, skew, fit)
         X = _volume_points(cam, probe)

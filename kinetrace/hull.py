@@ -106,7 +106,7 @@ def undistorted_mask(cal: CameraCalibration, mask: np.ndarray, dilate_px: int = 
     h, w = m.shape
     map_x, map_y = undistort_maps(cal, w, h)
     # with no lens model the map is the identity (calibrations are 0-based, top-left: I278)
-    if cal.undistort.kind == "none":
+    if not cal.has_lens_correction:
         return m
     return cv2.remap(m, map_x, map_y, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 

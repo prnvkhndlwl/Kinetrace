@@ -411,6 +411,11 @@ class CameraCalibration:
     y_flip: bool = False                   # True: y measured from the bottom edge
     rmse: float = float("nan")             # calibration residual, if the file carried one
 
+    @property
+    def has_lens_correction(self) -> bool:
+        """(R30) The camera's raw pixels are undistorted before the DLT (an LWM or OpenCV model)."""
+        return getattr(self.undistort, "kind", "none") != "none"
+
     def is_internal(self) -> bool:
         """In Kinetrace's own pixels (0-based, top-left): the only convention inside the app."""
         return float(self.pixel_origin) == 0.0 and not self.y_flip
@@ -553,6 +558,10 @@ class Calibration:
     def views(self) -> list[int]:
         """The calibrated cameras' indices, in camera order."""
         return [k for k, c in enumerate(self.cameras) if c is not None]
+
+    def calibrated_cameras(self) -> list[CameraCalibration]:
+        """(R30) The calibrated cameras themselves, in camera order (`views()`'s cameras)."""
+        return [c for c in self.cameras if c is not None]
 
     @property
     def n_calibrated(self) -> int:
@@ -990,10 +999,16 @@ def world_is_left_handed(cal: "Calibration", probe: np.ndarray | None = None) ->
         return False
     probe = probe if probe is not None else working_probe(cal)
     dets = []
-    for cam in (cal.camera(v) for v in cal.views()):
-        P = dlt_matrix(cam.coefs) * front_sign(cam.coefs, probe)
+    for cam in cal.calibrated_cameras():
+        P = opencv_projection(cam, probe)
         dets.append(np.linalg.det(P[:, :3]))
     return sum(d < 0 for d in dets) > len(dets) / 2
+
+
+def opencv_projection(cam: CameraCalibration, probe) -> np.ndarray:
+    """(R30) The camera's 3 x 4 projection matrix with depth (its third row) positive in front:
+    what `world_is_left_handed` and `calibio.to_models` read K, R, t from."""
+    return dlt_matrix(cam.coefs) * front_sign(cam.coefs, probe)
 
 
 def world_axes(origin, px, py, left_handed: bool = False) -> tuple[np.ndarray, np.ndarray]:
@@ -1136,7 +1151,7 @@ def _picture_in_calib_frame(cam: CameraCalibration, margin: float) -> tuple:
     mx, my = margin * cam.width, margin * cam.height
     raw = (-0.5 - mx, -0.5 - my, cam.width - 0.5 + mx, cam.height - 0.5 + my)
     x0, y0, x1, y1 = raw
-    if getattr(cam.undistort, "kind", "none") == "none":
+    if not cam.has_lens_correction:
         q = np.array([[x0, y0], [x1, y0], [x0, y1], [x1, y1]])
     else:
         t = np.linspace(0.0, 1.0, 64)

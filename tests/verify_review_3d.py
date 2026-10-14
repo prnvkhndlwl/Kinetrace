@@ -907,6 +907,26 @@ check("R14", "triangulate() is triangulate_batch() for one point", t_single_equa
 check("R14", "dead code removed (reference_time, sample_track, Reconstruction.valid / to_mat_dict, reference=)",
       t_dead_code_gone)
 
+
+def t_r30_folds():
+    from kinetrace.calib import LWMUndistort
+    g = rng.uniform([0, 0], [W, H], (30, 2))
+    for und in (NoUndistort(), LWMUndistort(g, g + 0.5, 12), OpenCVUndistort(K, np.array([-0.1, 0.01, 0, 0, 0]))):
+        cam = CameraCalibration(rig(1).cameras[0].coefs, W, H, und)
+        old = [getattr(cam.undistort, "kind", "none") != "none", not isinstance(cam.undistort, NoUndistort),
+               type(cam.undistort).__name__ != "NoUndistort"]
+        assert old == [cam.has_lens_correction] * 3, (type(und).__name__, old)
+    cal = rig(3)
+    cal.cameras[1] = None
+    assert cal.calibrated_cameras() == [cal.camera(v) for v in cal.views()] == [cal.cameras[0], cal.cameras[2]]
+    probe = calib.working_probe(cal)
+    for cam in cal.calibrated_cameras():
+        old = calib.dlt_matrix(cam.coefs) * calib.front_sign(cam.coefs, probe)
+        assert np.array_equal(calib.opencv_projection(cam, probe), old)
+
+
+check("R30", "has_lens_correction / calibrated_cameras / opencv_projection equal every old copy exactly", t_r30_folds)
+
 # ============================================================================ G75 / G76
 print("\nG75 / G76 estimate_offsets")
 

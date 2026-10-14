@@ -83,7 +83,7 @@ def fov(cam: CameraCalibration, depth: float, probe, n: int = 24) -> Fov:
     keep = ok
     side = np.repeat(np.arange(4), n)                     # _border_loop's order: n points per side
     return Fov(np.asarray(c, np.float64), pts[keep], raw[keep], rays,
-               getattr(cam.undistort, "kind", "none") == "none", axis[0], float(depth), side[keep])
+               not cam.has_lens_correction, axis[0], float(depth), side[keep])
 
 
 def seen_by(cal: Calibration, X: np.ndarray, probe=None, reach: dict | None = None) -> np.ndarray:
@@ -105,7 +105,7 @@ def seen_by(cal: Calibration, X: np.ndarray, probe=None, reach: dict | None = No
         uv = cam.project(X[idx])
         inside = (np.isfinite(uv).all(axis=1) & (uv[:, 0] >= -0.5) & (uv[:, 0] <= cam.width - 0.5)
                   & (uv[:, 1] >= -0.5) & (uv[:, 1] <= cam.height - 0.5))
-        if getattr(cam.undistort, "kind", "none") != "none" and inside.any():
+        if cam.has_lens_correction and inside.any():
             j = np.nonzero(inside)[0]
             q = cam.to_calib_frame(uv[j])
             tol = max(1.0, 1e-3 * cam.width)
@@ -277,7 +277,7 @@ def _cameras(cal: Calibration, names: list, ends: np.ndarray, probe) -> tuple[li
         else:                       # no wand: past the point the cameras look at
             far = 1.5 * float(np.linalg.norm(look - c)) if look is not None else 2.0 * span
         # (the far plane at the farthest wand end's distance: every end lies before it)
-        pinhole = getattr(cam.undistort, "kind", "none") == "none"
+        pinhole = not cam.has_lens_correction
         # the pose pyramid: the four corners only (a wide lens's bent edge is the field of view's job)
         cams.append(CamDraw(v, name, c, fov(cam, POSE_FRAC * max(scene, 1e-3), probe, n=1),
                             fov(cam, far, probe), pinhole))

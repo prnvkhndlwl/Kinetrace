@@ -1436,9 +1436,9 @@ def _lensed_cameras(cal) -> list[tuple[int, float]]:
     not calibrated carries none)."""
     out = []
     for k, c in enumerate(getattr(cal, "cameras", []) or []):
-        und = getattr(c, "undistort", None) if c is not None else None
-        if und is None or getattr(und, "kind", "none") == "none":
+        if c is None or not c.has_lens_correction:
             continue
+        und = c.undistort
         bend = float("nan")
         try:
             w, h = int(c.width), int(c.height)
@@ -1517,7 +1517,7 @@ def _same_cameras(res, cal) -> bool:
     cameras, identical DLT coefficients (a project saved and reopened keeps
     them bit for bit). (I273) A run on some of the cameras compares with the
     calibrated cameras of `cal`."""
-    a, b = list(res.cameras), [c for c in cal.cameras if c is not None]
+    a, b = list(res.cameras), cal.calibrated_cameras()
     return len(a) == len(b) and all(np.array_equal(np.asarray(x.coefs, np.float64), np.asarray(y.coefs, np.float64))
                                     for x, y in zip(a, b))
 

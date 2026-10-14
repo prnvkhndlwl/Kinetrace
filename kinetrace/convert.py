@@ -79,7 +79,7 @@ def _calibration_in(path, pixels, size_values):
     picture sizes from `--size`, then `to_internal` (I278); the writers convert back."""
     from kinetrace import calibio
     cal = calibio.load_calibration(path)
-    cams = [cal.camera(v) for v in cal.views()]          # (I273) a .kcal.json may leave cameras out
+    cams = cal.calibrated_cameras()                      # (I273) a .kcal.json may leave cameras out
     if pixels:
         po, flip = PIXELS[pixels]
         for c in cams:
@@ -94,7 +94,7 @@ def _calibration_in(path, pixels, size_values):
         cal = cal.to_internal()
     except ValueError as e:
         raise Failure(f"{Path(path).name}: {e}") from None
-    return cal, [cal.camera(v) for v in cal.views()]
+    return cal, cal.calibrated_cameras()
 
 
 def cmd_calibration(a) -> int:
@@ -107,7 +107,7 @@ def cmd_calibration(a) -> int:
         Path(a.output).write_text(json.dumps(calibio.calibration_to_kcal(cal), indent=1), encoding="utf-8")
     elif to == "dlt":
         calibio.dlt_csv_matlab(cal, a.output)
-        if any(type(c.undistort).__name__ != "NoUndistort" for c in cams):
+        if any(c.has_lens_correction for c in cams):
             _say("note: these cameras have a lens correction a dltCoefs.csv cannot hold: its coefficients fit "
                  "lens-corrected pixels only")
     else:
