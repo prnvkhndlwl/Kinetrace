@@ -55,6 +55,7 @@ MAP = [
       "verify_3d_gui", "verify_open_replace"]),
     ([K + "cameraoverview.py"], ["verify_camera_overview", "verify_camera_views"]),
     ([K + f for f in ("projectfile.py", "recovery.py", "csvpool.py", "autoexport.py")], SAVE),
+    ([K + "paths.py"], SAVE),            # (R43) every save / autosave replaces through paths.replace_retry
     # video
     ([K + "video_source.py", K + "framecheck.py", K + "fingerprint.py"],
      ["verify_core", "verify_scrub", "verify_fingerprint", "verify_fingerprint_gui", "verify_decode_identity",

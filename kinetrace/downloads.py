@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from kinetrace.errors import cap_first
+from kinetrace.paths import replace_retry
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 HF_CACHE = MODELS_DIR / "hf" / "hub"      # the Hugging Face cache INSIDE the install, whatever HF_HOME says (I195)
@@ -244,7 +245,7 @@ def fetch(url: str, dest: Path, *, label: str, sha256: str | None = None, size: 
                                 "so it was deleted and not used. Try again later; if it keeps happening, "
                                 "update Kinetrace (Help > Check for Updates).")
     try:
-        os.replace(part, dest)
+        replace_retry(part, dest)              # (R43) a fresh file is often scanned for a moment
     except OSError as e:
         raise _disk_error(label, e, dest.parent) from None
     return dest
@@ -329,7 +330,7 @@ def ensure_code(key: str, progress=None, cancel=lambda: False) -> Path:
                                 "so it was not used. Try again later, or update Kinetrace.")
         if c.dest.exists():
             shutil.rmtree(c.dest)
-        os.replace(tmp, c.dest)
+        replace_retry(tmp, c.dest)
     except zipfile.BadZipFile:
         raise DownloadError(f"The download of {c.label} is damaged; try again.") from None
     except OSError as e:                                    # unpacking into models/ failed: the disk (G93)

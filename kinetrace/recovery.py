@@ -102,10 +102,10 @@ def write_info(project_id: str, *, base_saved_at: str | None, last_path: str | N
     info = {"project_id": project_id, "base_saved_at": base_saved_at, "last_path": last_path,
             "videos": list(videos), "temporary": bool(temporary),
             "written_at": time.strftime("%Y-%m-%d %H:%M:%S")}
-    p = paths(project_id)[1]
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(info, indent=1), encoding="utf-8")
-    os.replace(tmp, p)
+    # (I290) retried: a scanner holding <id>.json for a moment raised in the autosave's done slot, the
+    # info file was never written, and `find` (which needs it) never offered the unsaved work
+    from kinetrace.paths import write_atomic
+    write_atomic(paths(project_id)[1], json.dumps(info, indent=1))
 
 
 def find(project_id: str) -> dict | None:

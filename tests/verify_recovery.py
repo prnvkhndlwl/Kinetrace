@@ -168,6 +168,30 @@ w._autosave(wait=True)
 check(data(P1) == b1, "autosave leaves the saved project byte-identical")
 check(recovery.find(pid1) is not None and recovery.find(pid1)["base_saved_at"] == w._saved_at,
       "the recovery names the save it started from")
+# (I290) the recovery's info file held for a moment by a scanner (antivirus / OneDrive) on an autosave that
+# writes it new: it is written once the lock is gone, the copy can be found after a crash, and it says so
+os.remove(recovery.paths(pid1)[1])
+w.session.set_position(3, 0, 91.0, 95.0)            # a change (not a new point: [2] counts them)
+real_os_replace, n_lock = os.replace, [0]
+
+
+def locked_once(src, dst, *a, **k):
+    if str(dst).endswith(f"{pid1}.json") and n_lock[0] == 0:
+        n_lock[0] += 1
+        raise PermissionError(13, "The process cannot access the file", str(dst))
+    return real_os_replace(src, dst, *a, **k)
+
+
+os.replace = locked_once
+w.statusBar().clearMessage()
+try:
+    w._autosave(wait=True)
+    pump(0.1)
+finally:
+    os.replace = real_os_replace
+check(n_lock[0] == 1 and recovery.find(pid1) is not None and "kept safe" in w.statusBar().currentMessage(),
+      "(I290) a recovery info file locked for a moment is still written: the copy is found after a crash",
+      f"locked {n_lock[0]}, found {recovery.find(pid1) is not None}, said {w.statusBar().currentMessage()!r}")
 
 # ------------------------------------------------------------------ 2
 print("\n[2] Save: .history, edits during a save stay unsaved, a failed write changes nothing")

@@ -21,6 +21,31 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def replace_retry(src, dst, tries: int = 20, delay: float = 0.1) -> None:
+    """(R43) `os.replace`, retried while Windows refuses because another program (an antivirus scan,
+    OneDrive, a viewer) holds the file for a moment; the last refusal is raised. THE replace of every
+    save, autosave, update and download."""
+    import time
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(delay)
+
+
+def write_atomic(path, text: str, encoding: str = "utf-8", newline: str | None = None) -> None:
+    """(I290, R43) Write `text` to `path` whole or not at all: a `<name>.tmp` beside it, then
+    `replace_retry`. `newline=None` writes the platform's line endings, as `Path.write_text` does."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding=encoding, newline=newline) as fh:
+        fh.write(text)
+    replace_retry(tmp, path)
+
+
 @dataclass
 class Place:
     what: str            # one short phrase

@@ -753,14 +753,9 @@ def write(frozen: Frozen, path: str | Path, *, compresslevel: int = 1, fsync: bo
 
 
 def _replace(src: Path, dst: Path) -> None:
-    for attempt in range(20):                # Windows: antivirus / OneDrive hold files briefly
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            if attempt == 19:
-                raise
-            time.sleep(0.1)
+    """Windows: antivirus / OneDrive hold files briefly (R43: `paths.replace_retry`; tests patch this name)."""
+    from kinetrace.paths import replace_retry
+    replace_retry(src, dst)
 
 
 # ------------------------------------------------------------------ the project folder (I145)
