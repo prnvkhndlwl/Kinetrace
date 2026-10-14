@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, Q
 from kinetrace import APP_NAME, APP_TAGLINE, APP_VERSION, theme
 from kinetrace import alltracker_backend
 from kinetrace import threads as _threads
+from kinetrace.paths import path_key
 from kinetrace.pixels import centre_scale, centre_unscale
 from kinetrace.camerapanel import CameraPanel
 from kinetrace.layers import LayersPanel, ROLE_HAS, ROLE_NAME
@@ -2996,7 +2997,7 @@ class MainWindow(QMainWindow):
         s = self.session
         if self._demo_path is None or s is None:
             return False
-        return os.path.normcase(os.path.abspath(s.video_path)) == os.path.normcase(os.path.abspath(self._demo_path))
+        return path_key(s.video_path) == path_key(self._demo_path)
 
     def _start_tour(self, demo_ok: bool = True) -> None:
         """Help → Take the Interface Tour (and Take the tour at the first start). Over the window as it is; an
@@ -3764,7 +3765,7 @@ class MainWindow(QMainWindow):
         if i < 0:
             return
         s = self.project.sessions[i]
-        if s.fingerprint is None and os.path.normcase(str(s.video_path)) == os.path.normcase(str(rt.info.path)):
+        if s.fingerprint is None and path_key(s.video_path) == path_key(rt.info.path):
             s.fingerprint = fp            # not a change the user made: saved with the project's next save
             moving = sum(m.sep >= 0.004 for m in fp.marks)
             self.statusBar().showMessage(
@@ -3933,7 +3934,7 @@ class MainWindow(QMainWindow):
         loading card up; it used to freeze the window ~2.3 s per 4K file)."""
         if self.project is None or self.project.n_views >= MAX_VIEWS:
             return False
-        if any(rt.info.path == path for rt in self._views):
+        if any(path_key(rt.info.path) == path_key(path) for rt in self._views):     # (I291) one file, any spelling
             self.statusBar().showMessage(f"{Path(path).name} is already in this project", 5000)
             return False
         info = probed if probed is not None else \
@@ -4452,9 +4453,9 @@ class MainWindow(QMainWindow):
         # (I167) the opened file is ONE camera of the recovered project, not necessarily its
         # active one: match it by path, compare THAT camera's frame count, make it the
         # active camera (the open video is its picture), and take the whole project
-        want = os.path.normcase(os.path.abspath(self.info.path))
+        want = path_key(self.info.path)
         mine = next((k for k, s in enumerate(proj.sessions)
-                     if os.path.normcase(os.path.abspath(s.video_path)) == want), proj.active)
+                     if path_key(s.video_path) == want), proj.active)
         n_saved = proj.sessions[mine].n_frames
         if n_saved != self.info.n_frames and not (getattr(self.info, "header_frames", 0) == n_saved
                                                   and self.info.n_frames < n_saved):

@@ -21,6 +21,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def path_key(path) -> str:
+    """(R44, I291) THE "same file" key of a path: absolute, case-folded where the file system ignores case
+    (normcase), so `sub/../a.mp4`, a backslashed and a forward-slashed spelling of one video are one."""
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
 def replace_retry(src, dst, tries: int = 20, delay: float = 0.1) -> None:
     """(R43) `os.replace`, retried while Windows refuses because another program (an antivirus scan,
     OneDrive, a viewer) holds the file for a moment; the last refusal is raised. THE replace of every

@@ -509,6 +509,25 @@ assert back.names == ["cam2", "cam1"] and [os.path.basename(x.video_path) for x 
 print("G30: a folder's videos listed (natural order, headers read in the background), two ticked, put in "
       "camera order (G171), imported as one project named by file, camera 1 = the base, saved at once and "
       "reopened OK")
+# (I291) Cameras -> Add Camera Video with a video already in the project, spelled another way (sub/../cam1.MP4):
+# it is said to be there already, not added as a third camera
+from PySide6.QtWidgets import QFileDialog as _QFD  # noqa: E402
+from kinetrace import cameraorder as _co  # noqa: E402
+_real_open_names, _real_exec = _QFD.getOpenFileNames, _co.CameraOrderDialog.exec
+_QFD.getOpenFileNames = staticmethod(lambda *a, **k: ([os.path.join(FOLD, "sub", "..", "cam1.MP4")], ""))
+_co.CameraOrderDialog.exec = lambda self: QDialog.Accepted
+_said = []
+win.statusBar().messageChanged.connect(_said.append)
+try:
+    win._add_video_dialog()
+    for _ in range(40):
+        pump(0.05)
+finally:
+    _QFD.getOpenFileNames, _co.CameraOrderDialog.exec = _real_open_names, _real_exec
+assert win.project.n_views == 2, f"the same video was added again as camera {win.project.n_views}"
+win.statusBar().messageChanged.disconnect(_said.append)
+assert any("already in this project" in m for m in _said), _said
+print("(I291) Add Camera Video with a project's video spelled another way: said, not added again OK")
 for x in list_videos(FOLD, recursive=True):
     forget_recovery(str(x))
 

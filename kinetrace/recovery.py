@@ -141,9 +141,10 @@ def scan() -> list[dict]:
 def for_video(video_path: str) -> dict | None:
     """A never-saved session's recovery that used this video (opening the video
     alone offers it)."""
-    want = os.path.normcase(os.path.abspath(video_path))
+    from kinetrace.paths import path_key
+    want = path_key(video_path)
     for info in scan():
-        if info.get("temporary") and any(os.path.normcase(os.path.abspath(v)) == want
+        if info.get("temporary") and any(path_key(v) == want
                                          for v in info.get("videos", [])):
             return info
     return None
