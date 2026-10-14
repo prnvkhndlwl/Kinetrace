@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from kinetrace.calib import (Calibration, CameraCalibration, calib_frame_ok, dlt_project, dlt_ray, front_sign,
-                             in_front, reconstruct, residual_bands, residual_scale, working_probe)
+                             in_front, reconstruct, residual_bands, residual_scale, round_trip_tol, working_probe)
 
 GOOD, OK, POOR, REJECTED = 0, 1, 2, 3
 STATE_WORDS = {GOOD: "good", OK: "ok", POOR: "poor", REJECTED: "rejected by the fit"}
@@ -108,7 +108,7 @@ def seen_by(cal: Calibration, X: np.ndarray, probe=None, reach: dict | None = No
         if cam.has_lens_correction and inside.any():
             j = np.nonzero(inside)[0]
             q = cam.to_calib_frame(uv[j])
-            tol = max(1.0, 1e-3 * cam.width)
+            tol = round_trip_tol(cam.width)
             good = np.isfinite(q).all(axis=1)
             good[good] &= np.linalg.norm(q[good] - dlt_project(cam.coefs, X[idx[j[good]]]), axis=1) < tol
             inside[j] = good

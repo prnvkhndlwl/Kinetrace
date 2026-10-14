@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 
 from kinetrace import theme
 from kinetrace.canvas import bgr_pixmap
-from kinetrace.calib import Calibration, CameraCalibration
+from kinetrace.calib import PIXEL_CONVENTIONS, Calibration, CameraCalibration
 from kinetrace.calibio import load_calibration
 from kinetrace.hull import _view_rotation
 
@@ -31,10 +31,10 @@ CALIB_FILTER = ("Calibration files (*.json *.csv *.mat *.txt *.toml *.yml *.yaml
                 "MATLAB cameras (*.mat);;OpenCV cameras K + R/t (*.json *.txt);;All files (*)")
 
 CONVENTIONS = [
-    # label, pixel_origin, y_flip
-    ("DLTdv8 / easyWand — MATLAB pixels (1-based, y down from the top)", 1.0, False),
-    ("DLTdv5-style — y measured from the BOTTOM edge", 1.0, True),
-    ("OpenCV / Python — 0-based pixels, y down", 0.0, False),
+    # label, pixel_origin, y_flip (R32: calib.PIXEL_CONVENTIONS, in the same order)
+    ("DLTdv8 / easyWand — MATLAB pixels (1-based, y down from the top)", *PIXEL_CONVENTIONS["matlab"]),
+    ("DLTdv5-style — y measured from the BOTTOM edge", *PIXEL_CONVENTIONS["bottom-left"]),
+    ("OpenCV / Python — 0-based pixels, y down", *PIXEL_CONVENTIONS["opencv"]),
 ]
 
 

@@ -31,7 +31,7 @@ TRACK_FORMATS = {"dlc": "DeepLabCut CSV", "dltdv": "DLTdv8 xypts (first pixel 1,
                  "dltdv-bottomleft": "DLTdv / Argus xypts, y from the bottom", "wide": "wide CSV",
                  "sparse": "sparse TSV", "kinetrace": "a Kinetrace project (.kinetrace)"}
 P3_FORMATS = {"kinetrace": "Kinetrace xyz CSV", "dltdv": "DLTdv xyzpts", "anipose": "Anipose points_3d CSV"}
-PIXELS = {"matlab": (1.0, False), "bottom-left": (1.0, True), "opencv": (0.0, False)}
+from kinetrace.calib import PIXEL_CONVENTIONS as PIXELS  # noqa: E402  (R32) the import dialog's table
 # (I278) said when a file does not state its pixel convention (the import dialog's sentence)
 ASK_PIXELS = ("does not say how its pixels were numbered: give --pixels matlab (DLTdv8 / easyWand: the first "
               "pixel is 1, y down from the top), --pixels bottom-left (older DLTdv: y from the bottom edge) or "

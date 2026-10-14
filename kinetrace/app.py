@@ -7890,7 +7890,7 @@ class MainWindow(QMainWindow):
         "note" ("" or why two cameras cannot say "good")}; None with fewer. Two rays are blind to
         a mistake along the line, so two cameras cap at "ok" as the Reconstruct report does (G83,
         I101)."""
-        from kinetrace.calib import dlt_ray, triangulate
+        from kinetrace.calib import dlt_ray, triangulate, widest_angle_deg
         rows = []
         for c, cal, uv in obs:
             q = cal.to_calib_frame(uv)[0]
@@ -7910,11 +7910,12 @@ class MainWindow(QMainWindow):
         if len(views) == 2 and verdict == "good":
             verdict = "ok"
         return {"xyz": xyz, "residual": float(res),
-                "angle_deg": float(np.degrees(np.arccos(np.abs(np.clip(dirs @ dirs.T, -1.0, 1.0)).min()))),
+                "angle_deg": widest_angle_deg(dirs),
                 "views": views, "verdict": verdict, "note": self.TWO_CAM_NOTE if len(views) == 2 else ""}
 
     def _residual_sentence(self, name: str) -> str:
         """'P1 in 2 cameras: 3D rmse 0.84 px (ok: ...)' -- or '' below two cameras (G28)."""
+        from kinetrace.calib import PARALLEL_LINES_DEG
         if not self._guides_ready():
             return ""
         tri = self._triangulate(self._observations(name, self.current, exclude=-1))
@@ -7922,7 +7923,8 @@ class MainWindow(QMainWindow):
             return ""
         return (f"{name} in {len(tri['views'])} cameras: 3D rmse {tri['residual']:.2f} px ({tri['verdict']}"
                 + (f", {tri['note']}" if tri["note"] else "")
-                + (", the rays are nearly parallel so its depth is uncertain" if tri["angle_deg"] < 5.0 else "")
+                + (", the rays are nearly parallel so its depth is uncertain"
+                   if tri["angle_deg"] < PARALLEL_LINES_DEG else "")
                 + ")")
 
     def _probe_guides(self, target: int) -> list:
@@ -7966,6 +7968,7 @@ class MainWindow(QMainWindow):
         visible = set(self.grid.visible_indices()) if show else set()
         name = (self.session.points[pid].name
                 if pid is not None and self.session is not None and pid < self.session.n_points else None)
+        from kinetrace.calib import PARALLEL_LINES_DEG
         allobs = self._observations(name, self.current, exclude=-1) if (name is not None and visible) else []
         tri = self._triangulate(allobs)
         placed_at = {c: uv for c, _cal, uv in allobs}
@@ -7979,7 +7982,7 @@ class MainWindow(QMainWindow):
                     notes.append((float(placed_at[t][0]), float(placed_at[t][1]),
                                   f"3D rmse {tri['residual']:.2f} px · "
                                   + (tri["note"] if tri["note"] else f"{len(tri['views'])} cams")
-                                  + (" · rays nearly parallel" if tri["angle_deg"] < 5.0 else ""),
+                                  + (" · rays nearly parallel" if tri["angle_deg"] < PARALLEL_LINES_DEG else ""),
                                   (q.red(), q.green(), q.blue())))
                 if name is not None:
                     if not have_depth:

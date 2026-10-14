@@ -963,6 +963,25 @@ def t_r31_folds():
 check("R31", "Reconstruction.index / points_at, Project.probe_at, Calibration.with_cameras equal the old copies",
       t_r31_folds)
 
+
+def t_r32_folds():
+    from kinetrace import convert, view3d
+    for n in (2, 3, 6):
+        for _ in range(200):
+            U = rng.normal(size=(n, 3))
+            U /= np.linalg.norm(U, axis=1, keepdims=True)
+            old = float(np.degrees(np.arccos(np.abs(np.clip(U @ U.T, -1.0, 1.0)).min())))
+            assert calib.widest_angle_deg(U) == old
+    for w in (0, 640, 1000, 1920, 3840, 5312):
+        assert calib.round_trip_tol(w) == max(1.0, 1e-3 * w)
+        assert max(0.5, calib.PROJECTION_TRUST_TOL * w) == max(0.5, 5e-4 * w)
+    old = {"matlab": (1.0, False), "bottom-left": (1.0, True), "opencv": (0.0, False)}
+    assert calib.PIXEL_CONVENTIONS == old and convert.PIXELS == old
+    assert [c[1:] for c in view3d.CONVENTIONS] == [(1.0, False), (1.0, True), (0.0, False)]
+
+
+check("R32", "widest_angle_deg / round_trip_tol / PIXEL_CONVENTIONS equal the old copies", t_r32_folds)
+
 # ============================================================================ G75 / G76
 print("\nG75 / G76 estimate_offsets")
 

@@ -1142,7 +1142,7 @@ def calib_frame_ok(cam: CameraCalibration, raw: np.ndarray) -> tuple[np.ndarray,
     raw = np.asarray(raw, np.float64).reshape(-1, 2)
     q = cam.to_calib_frame(raw)
     back = cam.from_calib_frame(q)
-    tol = max(1.0, 1e-3 * cam.width)
+    tol = round_trip_tol(cam.width)
     ok = np.isfinite(q).all(axis=1) & np.isfinite(back).all(axis=1)
     ok[ok] &= np.linalg.norm(back[ok] - raw[ok], axis=1) < tol
     return q, ok
@@ -1289,7 +1289,7 @@ def epipolar_polyline(src: CameraCalibration, dst: CameraCalibration, uv_raw_src
             # a polynomial lens model extrapolates past its boards and can run away;
             # where it no longer inverts consistently it is guessing
             back = dst.to_calib_frame(uv)
-            tol = max(0.5, 5e-4 * dst.width)
+            tol = max(0.5, PROJECTION_TRUST_TOL * dst.width)
             trusted = np.isfinite(back).all(axis=1)
             trusted[trusted] &= np.linalg.norm(back[trusted] - und[trusted], axis=1) < tol
         uv, trusted = _clip_polyline_to_box(uv, trusted, raw_box)
@@ -1330,6 +1330,20 @@ def closest_on_polyline(pts: np.ndarray, p) -> np.ndarray | None:
     return q[np.argmin(np.linalg.norm(q - p, axis=1))]
 
 
+def widest_angle_deg(U: np.ndarray) -> float:
+    """(R32) The widest angle in degrees between unit vectors (rows of U), sign-free: two lines'
+    normals or two cameras' rays. Under `PARALLEL_LINES_DEG` they do not "cross"."""
+    return float(np.degrees(np.arccos(np.abs(np.clip(U @ U.T, -1.0, 1.0)).min())))
+
+
+def round_trip_tol(width: float) -> float:
+    """(R32) How far (px) a raw pixel may come back from the lens model's undistort -> distort and
+    still count as described by it: max(1, 0.001 x the picture width)."""
+    return max(1.0, 1e-3 * width)
+
+
+PROJECTION_TRUST_TOL = 5e-4       # (R32) x width, at least 0.5 px: a projected point the lens still inverts
+PIXEL_CONVENTIONS = {"matlab": (1.0, False), "bottom-left": (1.0, True), "opencv": (0.0, False)}   # (R32)
 PARALLEL_LINES_DEG = 5.0    # epipolar lines closer than this in angle do not "cross" (THE 5-degree rule:
                             # intersect_polylines, the app's prediction diamond and the guides' "parallel" wording)
 
@@ -1374,9 +1388,7 @@ def intersect_polylines(lines: list[np.ndarray], near, info: dict | None = None)
     if len(A) < 2:
         return closest_on_polyline(cands[0], near)
     N = np.asarray(A)
-    # the widest angle between two lines = between their normals (sign-free)
-    cosines = np.abs(np.clip(N @ N.T, -1.0, 1.0))
-    widest = float(np.degrees(np.arccos(cosines.min())))
+    widest = widest_angle_deg(N)                   # between two lines = between their normals
     if info is not None:
         info.update({"angle_deg": widest})
     if widest < PARALLEL_LINES_DEG:
