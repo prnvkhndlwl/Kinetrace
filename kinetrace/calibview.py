@@ -172,8 +172,8 @@ def coverage(cal: Calibration, lo: np.ndarray, hi: np.ndarray, n_max: int = 64, 
     hi = np.asarray(hi, np.float64)
     voxel = float(max(np.max(hi - lo), 1e-9) / max(n_max - 1, 1))
     n = np.maximum(np.ceil((hi - lo) / voxel).astype(int) + 1, 2)
-    g = np.meshgrid(*(np.arange(k) for k in n), indexing="ij")
-    centres = lo + np.column_stack([a.ravel() for a in g]) * voxel
+    from kinetrace.hull import voxel_centres
+    centres = voxel_centres(lo, n, voxel)
     counts = seen_by(cal, centres, probe, reach).reshape(tuple(n)).astype(np.int8)
     return Coverage(counts, lo, voxel, cal.n_calibrated)
 

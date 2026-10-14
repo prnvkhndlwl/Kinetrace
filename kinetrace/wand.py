@@ -79,7 +79,8 @@ from scipy.optimize import least_squares
 from scipy.sparse import coo_matrix
 
 from .calib import (Calibration, CameraCalibration, NoUndistort, OpenCVUndistort,
-                    dlt_from_camera, residual_scale)
+                    dlt_from_camera, even_indices, residual_scale)
+from .lens import hull_area_pct
 
 FOCAL_GRID = (0.25, 0.4, 0.55, 0.75, 1.0, 1.3, 1.7, 2.2)   # initial f as a multiple of image width
 OUTLIER_FLOOR_PX = 2.0      # automatic rejection threshold floor at 1080p (scaled by max(w, h) / 1920):
@@ -817,7 +818,7 @@ def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, b
             progress(float(frac), str(msg))
 
     if F > int(max_frames) > 0:
-        sel = np.unique(np.round(np.linspace(0, F - 1, int(max_frames))).astype(int))
+        sel = even_indices(F, int(max_frames))
     else:
         sel = np.arange(F)
     obs = _Obs(wand_uv, bg_uv, sel)
@@ -964,8 +965,7 @@ def _coverage(wand_uv: np.ndarray, bg_uv, sizes) -> list:
         if len(p) < 3 or w <= 0 or h <= 0:
             out.append(0.0)
             continue
-        hull = cv2.convexHull(p.astype(np.float32))
-        out.append(float(100.0 * cv2.contourArea(hull) / (w * h)))
+        out.append(hull_area_pct(p.astype(np.float32), w, h))
     return out
 
 

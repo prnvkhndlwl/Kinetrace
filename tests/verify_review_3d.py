@@ -982,6 +982,41 @@ def t_r32_folds():
 
 check("R32", "widest_angle_deg / round_trip_tol / PIXEL_CONVENTIONS equal the old copies", t_r32_folds)
 
+
+def t_r33_folds():
+    from kinetrace import hull as hullmod, lens as lensmod
+    from kinetrace.kinematics import contiguous_runs
+    from kinetrace.session import TrackingSession as _S  # noqa: F401
+    for n in list(range(1, 300)) + [997, 1499, 40000]:
+        for k in sorted({1, 2, 3, n // 3, n // 2, n - 1, n} - {0}):
+            if k > n or k < 1:
+                continue
+            new = calib.even_indices(n, k)
+            assert np.array_equal(new, np.linspace(0, n - 1, k).round().astype(int))
+            assert np.array_equal(new, np.round(np.linspace(0, n - 1, k)).astype(int))
+            assert np.array_equal(new, np.unique(np.linspace(0, n - 1, k).round().astype(int)))
+    for size in (0, 1, 2, 7, 50):
+        for _ in range(60):
+            ok = rng.random(size) < rng.random()
+            d = np.diff(np.concatenate([[0], ok.astype(np.int8), [0]]))
+            old_w = list(zip(np.nonzero(d == 1)[0].tolist(), (np.nonzero(d == -1)[0] - 1).tolist()))
+            d2 = np.diff(ok.astype(np.int8), prepend=0, append=0)
+            old_t = list(zip(np.nonzero(d2 == 1)[0].tolist(), np.nonzero(d2 == -1)[0].tolist())) if ok.any() else []
+            runs = contiguous_runs(ok)
+            assert runs == old_w and [(a, b + 1) for a, b in runs] == old_t, (ok, runs)
+    for _ in range(100):
+        pts = rng.uniform(0, 640, (int(rng.randint(3, 60)), 2)).astype(np.float32)
+        old = float(100.0 * cv2.contourArea(cv2.convexHull(pts)) / (640 * 480))
+        old2 = float(100.0 * cv2.contourArea(cv2.convexHull(pts.reshape(-1, 1, 2))) / (640 * 480))
+        assert lensmod.hull_area_pct(pts, 640, 480) == old == old2
+    lo, n, vox = np.array([-0.3, 0.1, 2.0]), np.array([4, 3, 5]), 0.07
+    gx, gy, gz = np.meshgrid(np.arange(n[0]), np.arange(n[1]), np.arange(n[2]), indexing="ij")
+    assert np.array_equal(hullmod.voxel_centres(lo, n, vox),
+                          lo + np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]) * vox)
+
+
+check("R33", "even_indices / contiguous_runs / hull_area_pct / voxel_centres equal every old copy", t_r33_folds)
+
 # ============================================================================ G75 / G76
 print("\nG75 / G76 estimate_offsets")
 

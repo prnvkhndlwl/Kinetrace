@@ -1330,6 +1330,12 @@ def closest_on_polyline(pts: np.ndarray, p) -> np.ndarray | None:
     return q[np.argmin(np.linalg.norm(q - p, axis=1))]
 
 
+def even_indices(n: int, k: int) -> np.ndarray:
+    """(R33) `k` indices spread evenly over 0 .. n - 1, ends included (k <= n): the frames, boards
+    or instants a long list is thinned to."""
+    return np.linspace(0, n - 1, k).round().astype(int)
+
+
 def widest_angle_deg(U: np.ndarray) -> float:
     """(R32) The widest angle in degrees between unit vectors (rows of U), sign-free: two lines'
     normals or two cameras' rays. Under `PARALLEL_LINES_DEG` they do not "cross"."""
@@ -1729,7 +1735,7 @@ def _scoring_instants(prep: "_Prepared", rates, offs, t_all: np.ndarray, search:
             if len(moving) >= 10:
                 usable = moving
         if len(usable) > MAX_SCORE_INSTANTS:
-            usable = usable[np.round(np.linspace(0, len(usable) - 1, MAX_SCORE_INSTANTS)).astype(int)]
+            usable = usable[even_indices(len(usable), MAX_SCORE_INSTANTS)]
     if len(usable) == 0:
         usable = np.arange(len(t_scan))
     return t_scan[usable], keep[usable], n_cells

@@ -623,13 +623,9 @@ class TimelinePanel(QWidget):
 
     @staticmethod
     def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
-        """[(start, end_exclusive)] of True runs in a 1-D bool array."""
-        if not mask.any():
-            return []
-        d = np.diff(mask.astype(np.int8), prepend=0, append=0)
-        starts = np.nonzero(d == 1)[0]
-        ends = np.nonzero(d == -1)[0]
-        return list(zip(starts.tolist(), ends.tolist()))
+        """[(start, end_exclusive)] of True runs in a 1-D bool array (R33: `contiguous_runs`)."""
+        from kinetrace.kinematics import contiguous_runs
+        return [(a, b + 1) for a, b in contiguous_runs(mask)]
 
     # ----------------------------------------------------------------- paint
 

@@ -928,7 +928,8 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
         fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
         if n <= 0:
             raise OSError("the video reports no frames")
-        idx = np.unique(np.linspace(0, n - 1, min(n, int(max_candidates))).round().astype(int))
+        from kinetrace.calib import even_indices
+        idx = even_indices(n, min(n, int(max_candidates)))
         frames, corners, thumbs, orient = [], [], [], []
         sample = None
         scale = min(1.0, downscale_max / max(w, h))
@@ -1423,13 +1424,18 @@ def _same_view_scores(corner_list, fits: dict, fitted: dict, pattern, square, si
     return out
 
 
+def hull_area_pct(pts: np.ndarray, w: int, h: int) -> float:
+    """(R33) The convex hull of points (float32, any (..., 2) shape) as % of a w x h picture: the
+    coverage the lens report and the wand report give."""
+    hull = cv2.convexHull(np.asarray(pts, np.float32).reshape(-1, 1, 2))
+    return float(100.0 * cv2.contourArea(hull) / (w * h))
+
+
 def coverage_pct(corner_list: list[np.ndarray], size: tuple[int, int]) -> float:
     """Convex-hull area of every detected corner as % of the picture."""
     if not corner_list:
         return 0.0
-    pts = np.concatenate(corner_list).astype(np.float32)
-    hull = cv2.convexHull(pts.reshape(-1, 1, 2))
-    return float(100.0 * cv2.contourArea(hull) / (size[0] * size[1]))
+    return hull_area_pct(np.concatenate(corner_list).astype(np.float32), size[0], size[1])
 
 
 def edge_reach_pct(corner_list: list[np.ndarray], size: tuple[int, int]) -> float:

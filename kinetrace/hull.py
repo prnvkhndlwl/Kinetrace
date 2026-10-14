@@ -46,6 +46,13 @@ THIN_WARN_FRAC = 0.10  # ... and the app warns when more of its voxels than this
 # ------------------------------------------------------------- silhouettes
 
 
+def voxel_centres(lo: np.ndarray, n, voxel: float) -> np.ndarray:
+    """(R33) The centres of an n[0] x n[1] x n[2] grid of voxels of size `voxel` from corner `lo`,
+    (prod(n), 3) in C order: the carver's and the covered-space view's grid."""
+    g = np.meshgrid(*(np.arange(k) for k in n), indexing="ij")
+    return lo + np.column_stack([a.ravel() for a in g]) * voxel
+
+
 def undistort_maps(cal: CameraCalibration, width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
     """Remap tables from the UNDISTORTED canvas (same size as the raw frame,
     Kinetrace 0-based pixels) to raw pixel coordinates, for `cv2.remap`. The
@@ -213,8 +220,7 @@ def carve(cams: list[CameraCalibration], masks: list[np.ndarray | None],
     inside = np.zeros(n.prod(), np.int16)
     seen = np.zeros(n.prod(), np.int16)
     if views:
-        gx, gy, gz = np.meshgrid(np.arange(n[0]), np.arange(n[1]), np.arange(n[2]), indexing="ij")
-        centres = lo + np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]) * voxel
+        centres = voxel_centres(lo, n, voxel)
         # only points IN FRONT of a camera vote. The DLT denominator is the
         # depth up to a sign that depends on the calibration's handedness, so
         # the sign is read off a point known to be in view: the centre of the
