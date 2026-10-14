@@ -184,6 +184,23 @@ got = win._apply_rename(jb, "snout")
 assert got == "snout" and sa.pid_by_name("snout") is not None and sb.pid_by_name("snout") is not None
 assert sa.pid_by_name(name) is None and sb.pid_by_name(name) is None
 print("rename applies to every camera OK")
+# (I288, owner decision M) a name that differs only in case is the same landmark: N + a click adds a point in
+# every camera, and renaming it "SNOUT" beside "snout" gives "SNOUT (2)" in every camera, said in the status bar
+# -- "SNOUT" and "snout" would never be triangulated together
+QTest.keyClick(win, Qt.Key_Escape)
+pump(0.05)
+QTest.keyClick(win, Qt.Key_N)
+click(win.canvas, 120, 90)
+case_pid = sb.n_points - 1
+got = win._apply_rename(case_pid, "SNOUT")
+assert got == "SNOUT (2)" and sa.pid_by_name("SNOUT (2)") is not None and sb.pid_by_name("SNOUT (2)") is not None, \
+    (got, [q.name for q in sb.points])
+assert sa.pid_by_name("SNOUT") is None and "already" in win.statusBar().currentMessage(), \
+    win.statusBar().currentMessage()
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+win._on_delete(sb.pid_by_name("SNOUT (2)"))
+assert sa.pid_by_name("SNOUT (2)") is None and sb.pid_by_name("SNOUT (2)") is None
+print("(I288) a name that differs only in case becomes 'SNOUT (2)' in every camera, and says so OK")
 
 # ---- 5. a new point is one undo step in every camera ---------------------------------------
 QTest.keyClick(win, Qt.Key_Escape)                  # deselect (nothing armed)
@@ -289,6 +306,28 @@ assert not q.sessions[0].tracked[:, q.sessions[0].pid_by_name("tail")].any(), "t
 assert not q.dirty, "filling in the shared list does not make the project unsaved"
 assert open(OLD, "rb").read() == before
 print("an older project opens with one shared list, not marked changed OK")
+
+# ---- 11. (I289) animals whose names differ only in case: opening and sharing again add nothing ----------
+s1 = TrackingSession(paths[0], N, FPS, W, H)
+s2 = TrackingSession(paths[1], N, FPS, W, H)
+s1.add_segment("Squirrel")
+s2.add_segment("squirrel")
+CASED = os.path.join(OUT, "shared_landmarks_cased.kinetrace")
+if os.path.isdir(CASED):
+    __import__("shutil").rmtree(CASED)
+projectfile.save(Project([s1, s2], ["camA", "camB"], [0, 0]), CASED)
+win._open_project_from_path(CASED)
+for _ in range(200):
+    pump(0.05)
+    if win.state == READY and win.project is not None and win.project.n_views == 2 \
+            and win.project.sessions[1].segment_names():
+        break
+q = win.project
+win._share_landmarks(undoable=False)               # what every later change does (the open did it once)
+win._share_landmarks(undoable=False)
+segs = [x.segment_names() for x in q.sessions]
+assert segs == [["Squirrel"], ["squirrel"]], f"each sync added another numbered copy: {segs}"
+print("(I289) animals named 'Squirrel' / 'squirrel': opening and sharing again add no copies OK")
 
 win._dev_probe.wait(15000)
 win.close()

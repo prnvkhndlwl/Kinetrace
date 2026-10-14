@@ -63,7 +63,7 @@ from pathlib import Path
 import numpy as np
 
 from kinetrace.calib import Calibration, Reconstruction
-from kinetrace.session import TrackingSession
+from kinetrace.session import TrackingSession, name_key
 
 MAX_VIEWS = 15         # a 4x4 grid; past this the tiles stop being readable at all
 REFERENCE_VIEW = 0     # the first camera loaded: the clock everything is measured against
@@ -547,15 +547,17 @@ class Project:
     # silhouette; its skeleton and hold) in every camera -- one animal in every view (its visual hull,
     # its landmarks). Its points are named "<animal> <part>" in every camera alike.
     def missing_segments(self) -> dict[int, list]:
-        """{view: [AnimalMeta another camera has and this one lacks, ...]}."""
+        """{view: [AnimalMeta another camera has and this one lacks, ...]}. (I289) Compared by
+        `session.name_key`, the rule `add_segment` names by: "Squirrel" and "squirrel" are one animal --
+        compared exactly, every sync added another numbered copy in each camera ("squirrel 2", ...)."""
         first: dict[str, object] = {}
         for s in self.sessions:
             for a in s.segments:
-                first.setdefault(a.name, a)
+                first.setdefault(name_key(a.name), a)
         out: dict[int, list] = {}
         for v, s in enumerate(self.sessions):
-            have = set(s.segment_names())
-            lack = [a for n, a in first.items() if n not in have]
+            have = {name_key(n) for n in s.segment_names()}
+            lack = [a for k, a in first.items() if k not in have]
             if lack:
                 out[v] = lack
         return out

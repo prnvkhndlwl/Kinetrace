@@ -207,6 +207,13 @@ def _sanitize(name: str) -> str:
     return name.replace(",", "_").replace("\t", "_").replace("\n", " ").strip() or "point"
 
 
+def name_key(name: str) -> str:
+    """(I288, owner decision M) THE key two point or animal names are the same by: through the export
+    sanitizer ("a,b" and "a_b" share a CSV column) and ignoring case ("Head" and "head" share a landmark
+    file and would never be triangulated together)."""
+    return _sanitize(name).casefold()
+
+
 def _midline_array(sm, T: int) -> np.ndarray:
     """(R42) A silhouette's midline per frame for the .mat export: (T, MIDLINE_SAMPLES, 2) float64, NaN on
     frames without one (or with a partial one)."""
@@ -457,15 +464,15 @@ class TrackingSession:
 
     def unique_name(self, desired: str, exclude_pid: int | None = None) -> str:
         """`desired` if free, else 'desired (2)', 'desired (3)', … so a rename
-        can never shadow another point's data. Compared through the export
-        sanitizer too — "a,b" and "a_b" would otherwise merge into one CSV
-        column even though the raw names differ."""
+        can never shadow another point's data. Compared by `name_key`: through the
+        export sanitizer ("a,b" and "a_b" would merge into one CSV column) and
+        ignoring case ("head" next to "Head" is "head (2)", I288)."""
         desired = formula_safe(desired)
-        taken = {_sanitize(p.name) for i, p in enumerate(self.points) if i != exclude_pid}
-        if _sanitize(desired) not in taken:
+        taken = {name_key(p.name) for i, p in enumerate(self.points) if i != exclude_pid}
+        if name_key(desired) not in taken:
             return desired
         k = 2
-        while _sanitize(f"{desired} ({k})") in taken:
+        while name_key(f"{desired} ({k})") in taken:
             k += 1
         return f"{desired} ({k})"
 
@@ -897,11 +904,11 @@ class TrackingSession:
 
     def unique_segment_name(self, desired: str, exclude: int | None = None) -> str:
         desired = formula_safe(desired or "animal", "animal")
-        taken = {_sanitize(s.name).lower() for i, s in enumerate(self.segments) if i != exclude}
-        if _sanitize(desired).lower() not in taken:
+        taken = {name_key(s.name) for i, s in enumerate(self.segments) if i != exclude}
+        if name_key(desired) not in taken:
             return desired
         k = 2
-        while _sanitize(f"{desired} {k}").lower() in taken:
+        while name_key(f"{desired} {k}") in taken:
             k += 1
         return f"{desired} {k}"
 

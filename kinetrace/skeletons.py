@@ -138,7 +138,8 @@ def validate_template(t: dict) -> tuple[dict, list[str]]:
         m = str(m).strip()
         if not m:
             continue
-        if m in marks:       # (G122) a name twice would become a stray "head (2)" point
+        if m.casefold() in {x.casefold() for x in marks}:      # (G122, I288) a name twice -- or "Head" and
+            # "head": one landmark -- would become a stray "head (2)" point
             problems.append(f"landmark '{m}' is listed more than once; the repeat is ignored")
             continue
         marks.append(m)
