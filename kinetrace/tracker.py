@@ -91,7 +91,6 @@ WORKING_MAX_DIM = 1280
 #     pyramid, so it cannot be expressed here.
 # Left exact-but-slow deliberately; see docs/HANDOFF.md.
 POINT_BACKENDS = ("cotracker3", "alltracker")
-ALLTRACKER_MAX_DIM = 1024        # AllTracker correlates every pixel pair of a window: memory ~ (H*W/64)^2
 
 # auto-pause: confidence below the threshold for this many consecutive
 # in-frame frames = the model has lost the point. Occlusion also drops
@@ -963,7 +962,7 @@ class TrackingWorker(QThread):
             # (the device rule never exceeds 1024 by itself, so this is the old min(...) unless
             # the user set KINETRACE_ALLTRACKER_MAX_DIM above it -- honoured now, I256)
             from kinetrace.device import alltracker_max_dim
-            at_dim = alltracker_max_dim(str(device)) if device is not None else ALLTRACKER_MAX_DIM
+            at_dim = alltracker_max_dim(str(device))     # (R41) device is the model's, never None here
         scale, ww, wh = fit_within(cw, ch, at_dim if use_at else WORKING_MAX_DIM)
         # align-corners convention, matching the model's internal rescaling
         to_native = np.array([(cw - 1) / max(ww - 1, 1), (ch - 1) / max(wh - 1, 1)], np.float32)
@@ -1256,9 +1255,8 @@ class TrackingWorker(QThread):
                     "it on this frame, then start tracking again.")
         fm = self._seg.step(native, abs_idx, prompts or None)
         self._seg_last = abs_idx
-        sxy = getattr(fm, "scale_xy", None)
-        if sxy is not None:
-            self._sxy = np.asarray(sxy, np.float32)
+        sxy = fm.scale_xy                     # (R41) FrameMasks always has it; the float64 pair goes to summarize_mask
+        self._sxy = np.asarray(sxy, np.float32)
         for st in live:
             self._cur = st
             if st.obj_id in fm.obj_ids:
@@ -1267,7 +1265,7 @@ class TrackingWorker(QThread):
             else:
                 mask = np.zeros(fm.masks.shape[1:], bool)
                 score = -10.0
-            summ = summarize_mask(mask, sxy if sxy is not None else fm.scale, score)
+            summ = summarize_mask(mask, sxy, score)
             if self._identity_end is None and st.ended is None:
                 # (I260) a prompted frame (the start's seed too) is the user's segment by definition
                 end = self._identity.check(abs_idx, summ, prompted=st.k in prompted)
@@ -1279,7 +1277,7 @@ class TrackingWorker(QThread):
                 # another object, or a segment that ended (G149): this frame has no silhouette of it
                 # (nothing derived from it, nothing constrained to it, nothing stored)
                 mask = np.zeros_like(mask)
-                summ = summarize_mask(mask, sxy if sxy is not None else fm.scale, score)
+                summ = summarize_mask(mask, sxy, score)
             self._mask_hist[abs_idx] = (mask, fm.scale)
             summ["frame"] = abs_idx
             summ["seg"] = int(st.spec.index)

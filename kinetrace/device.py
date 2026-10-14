@@ -248,7 +248,7 @@ def supports_sam3d_body(device: str) -> bool:
     return device == "cuda" or os.environ.get("KINETRACE_ALLOW_SAM3D_CPU", "") == "1"
 
 
-ALLTRACKER_DIM_GPU = 1024           # the app's verified working size on CUDA (tracker.ALLTRACKER_MAX_DIM)
+ALLTRACKER_DIM_GPU = 1024           # the app's verified working size on CUDA; memory ~ (H*W/64)^2 per window
 ALLTRACKER_PEAK_GB_AT_1024 = 18.4   # measured peak RSS, CPU, one 16-frame window of a full 4K frame at 1024
 
 

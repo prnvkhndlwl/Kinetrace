@@ -251,15 +251,10 @@ class AllTrackerStream:
         with torch.no_grad():
             self._buf.append(self._prep(frame_rgb))
         self._n_fed += 1
-        if self._first and len(self._buf) == WINDOW:
-            imgs = torch.cat(self._buf, dim=0)
-            out = self._run_window(imgs, 0)
+        if len(self._buf) == WINDOW:
+            # (R41) the first window starts at 0 = n_fed - WINDOW: until it has run, every frame fed is buffered
+            out = self._run_window(torch.cat(self._buf, dim=0), self._n_fed - WINDOW)
             self._buf = self._buf[STRIDE:]          # keep the overlapping half
-            return out
-        if not self._first and len(self._buf) == WINDOW:
-            imgs = torch.cat(self._buf, dim=0)
-            out = self._run_window(imgs, self._n_fed - WINDOW)
-            self._buf = self._buf[STRIDE:]
             return out
         return None
 
@@ -274,6 +269,5 @@ class AllTrackerStream:
             return None
         pad = WINDOW - n_real
         imgs = torch.cat(self._buf + [self._buf[-1]] * pad, dim=0)
-        start = 0 if self._first else self._n_fed - n_real
-        idx, tr, vis, conf = self._run_window(imgs, start)
+        idx, tr, vis, conf = self._run_window(imgs, self._n_fed - n_real)      # (R41) 0 for a first window
         return idx, tr[:n_real], vis[:n_real], conf[:n_real]

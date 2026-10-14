@@ -382,7 +382,7 @@ class _MaskPreviewWorker(QThread):
             fm = sess.step(rgb, self._frame, [prompt])
             mask = fm.mask(1)
             # per axis: working size rounds each side on its own (I61)
-            sx, sy = getattr(fm, "scale_xy", (fm.scale, fm.scale))
+            sx, sy = fm.scale_xy
             summ = summarize_mask(mask, (sx, sy), float(fm.scores[fm.index(1)]))
             summ["frame"] = self._frame
             if summ["area"] > 0:
