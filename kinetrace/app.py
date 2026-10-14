@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, Q
 from kinetrace import APP_NAME, APP_TAGLINE, APP_VERSION, theme
 from kinetrace import alltracker_backend
 from kinetrace import threads as _threads
+from kinetrace.pixels import centre_scale, centre_unscale
 from kinetrace.camerapanel import CameraPanel
 from kinetrace.layers import LayersPanel, ROLE_HAS, ROLE_NAME
 from kinetrace.view3d import CalibrationDialog, Scene3D, View3D
@@ -387,11 +388,11 @@ class _MaskPreviewWorker(QThread):
             if summ["area"] > 0:
                 anchor = None
                 if self._head is not None:
-                    anchor = ((self._head[0] + 0.5) / sx - 0.5, (self._head[1] + 0.5) / sy - 0.5)
+                    anchor = (centre_unscale(self._head[0], sx), centre_unscale(self._head[1], sy))
                 ml = silhouette_midline(mask, anchor=anchor)
                 if ml is not None and len(ml.path) >= 2:
-                    summ["midline"] = ((resample(ml.path, MIDLINE_SAMPLES) + 0.5)
-                                       * np.array([sx, sy], np.float32) - 0.5)
+                    summ["midline"] = centre_scale(resample(ml.path, MIDLINE_SAMPLES),
+                                                   np.array([sx, sy], np.float32))
             self.done.emit(summ)
         except Exception as e:  # noqa: BLE001 — reported to the user with guidance
             from kinetrace.downloads import DownloadError

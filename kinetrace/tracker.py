@@ -70,6 +70,7 @@ from PySide6.QtCore import QThread, Signal
 
 from kinetrace import alltracker_backend as at_backend
 from kinetrace.downloads import DownloadError
+from kinetrace.pixels import centre_scale, centre_unscale
 from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity,
                                      get_segmenter, score_to_confidence, summarize_mask, working_size)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
@@ -1220,11 +1221,11 @@ class TrackingWorker(QThread):
         the segmenter has said its (sx, sy); `scale` (one number) stays the
         factor for LENGTHS (I61)."""
         s = self._sxy if self._sxy is not None else scale
-        return (np.asarray(p, np.float32) + 0.5) * s - 0.5
+        return centre_scale(np.asarray(p, np.float32), s)
 
     def _n2w(self, p, scale: float) -> np.ndarray:
         s = self._sxy if self._sxy is not None else scale
-        return (np.asarray(p, np.float32) + 0.5) / s - 0.5
+        return centre_unscale(np.asarray(p, np.float32), s)
 
     def _first(self) -> "_SegState":
         return self._segs[0] if self._segs else self._none

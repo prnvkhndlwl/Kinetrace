@@ -31,6 +31,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from kinetrace.pixels import centre_scale
+
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 HF_DIR = MODELS_DIR / "hf"
 os.environ.setdefault("HF_HOME", str(HF_DIR))
@@ -370,7 +372,7 @@ def outline_polygons(mask_work: np.ndarray, scale, eps: float = CONTOUR_EPS_WORK
     for c in cs:
         c = cv2.approxPolyDP(c, eps, True).reshape(-1, 2).astype(np.float64)
         if len(c) >= 3:
-            polys.append(np.round((c + 0.5) * sxy - 0.5).astype(np.int32))
+            polys.append(np.round(centre_scale(c, sxy)).astype(np.int32))
     return polys
 
 
@@ -391,7 +393,7 @@ def summarize_mask(mask_work: np.ndarray, scale, score: float,
     d["bbox"] = (int(round(xs.min() * sx)), int(round(ys.min() * sy)),
                  int(round((xs.max() + 1) * sx) - 1), int(round((ys.max() + 1) * sy) - 1))
     d["area"] = int(round(area_w * sx * sy))
-    d["centroid"] = ((float(xs.mean()) + 0.5) * sx - 0.5, (float(ys.mean()) + 0.5) * sy - 0.5)
+    d["centroid"] = (centre_scale(float(xs.mean()), sx), centre_scale(float(ys.mean()), sy))
     d["polys"] = outline_polygons(m8, (sx, sy))
     if midline is not None and len(midline):
         d["midline"] = np.asarray(midline, np.float32).reshape(-1, 2)
@@ -540,7 +542,7 @@ class MaskTrack:
             sy = height / self.native_h if self.native_h else 1.0
             # the inverse of outline_polygons' pixel-centre mapping; p * s shifted a
             # 4K outline by +0.37 working px
-            scaled = [np.round((p.astype(np.float64) + 0.5) * [sx, sy] - 0.5).astype(np.int32).reshape(-1, 1, 2)
+            scaled = [np.round(centre_scale(p.astype(np.float64), [sx, sy])).astype(np.int32).reshape(-1, 1, 2)
                       for p in polys]
             cv2.fillPoly(out, scaled, 1)
         return out.astype(bool)

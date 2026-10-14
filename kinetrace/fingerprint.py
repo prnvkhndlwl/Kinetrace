@@ -44,6 +44,7 @@ import cv2
 import numpy as np
 
 from kinetrace.sync import THUMB_W
+from kinetrace.pixels import centre_scale
 from kinetrace.video_source import check_seeks, file_identity, open_capture, seek_capture, seek_plan, set_seek_plan
 
 FORMAT_VERSION = 1
@@ -260,7 +261,7 @@ def _place(t_prev, t, t_next, width: int, height: int, side: int) -> tuple[tuple
     k = max(1, int(round(side / s)))
     acc = cv2.boxFilter(d, -1, (k, k), normalize=False, borderType=cv2.BORDER_CONSTANT)
     yy, xx = np.unravel_index(int(np.argmax(acc)), acc.shape)
-    cx, cy = (xx + 0.5) * s - 0.5, (yy + 0.5) * s - 0.5
+    cx, cy = centre_scale(xx, s), centre_scale(yy, s)
     x0 = int(np.clip(round(cx - side / 2), 0, max(0, width - side)))
     y0 = int(np.clip(round(cy - side / 2), 0, max(0, height - side)))
     return (x0, y0, side), float(acc[yy, xx]) / float(k * k)
