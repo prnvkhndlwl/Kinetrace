@@ -80,7 +80,7 @@ from scipy.sparse import coo_matrix
 
 from .calib import (Calibration, CameraCalibration, NoUndistort, OpenCVUndistort,
                     dlt_from_camera, even_indices, residual_scale)
-from .lens import hull_area_pct
+from .lens import hull_area_pct, outlier_limit
 
 FOCAL_GRID = (0.25, 0.4, 0.55, 0.75, 1.0, 1.3, 1.7, 2.2)   # initial f as a multiple of image width
 OUTLIER_FLOOR_PX = 2.0      # automatic rejection threshold floor at 1080p (scaled by max(w, h) / 1920):
@@ -608,7 +608,7 @@ def _reject(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, outlier_px, floor_px:
     if not cur.any():
         return float("nan"), 0
     if outlier_px is None:
-        thr = max(3.0 * float(np.median(e[cur])), float(floor_px))
+        thr = outlier_limit(e[cur], floor_px)             # (R34) the lens fit's rule
     else:
         thr = float(outlier_px)
     n_new = 0
@@ -1294,7 +1294,7 @@ def align_gravity(res: WandResult, drop_uv, fps: float, g: float | None = None,
     coef, resid = fit(ok)
     if ok.sum() >= 6:
         keep = ok.copy()
-        keep[ok] = resid <= max(3.0 * float(np.median(resid)), 1e-9)
+        keep[ok] = resid <= outlier_limit(resid, 1e-9)    # (R34)
         if 4 <= keep.sum() < ok.sum():
             ok = keep
             coef, resid = fit(ok)

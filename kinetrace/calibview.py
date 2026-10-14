@@ -30,7 +30,6 @@ STATE_WORDS = {GOOD: "good", OK: "ok", POOR: "poor", REJECTED: "rejected by the 
 COVER_GOOD_PCT, COVER_OK_PCT = 90.0, 70.0      # share of the wand cloud inside the covered space
 POSE_FRAC = 0.03                               # the pose pyramid's depth, of the scene (wand + cameras) size (G187)
 FOV_REACH = 1.15                               # the field of view reaches this far past the farthest wand end
-WAND_RMSE_GOOD_PX, WAND_RMSE_OK_PX = 1.0, 2.5  # the wand report's bands at 1080p (wand.RMSE_GOOD_PX / _OK_PX)
 
 
 def _cover_word(pct: float) -> str:
@@ -318,8 +317,8 @@ def from_wand_result(res, frames, names: list, end_names: tuple = ("end 1", "end
     for o in res.report.get("outliers", []):
         if o.get("kind") == "wand" and 0 <= int(o.get("row", -1)) < F:
             rej[int(o["row"]), int(o["end"])] = True
-    state = _states(np.nan_to_num(worst_n.reshape(-1), nan=np.inf), rej.reshape(-1),
-                    WAND_RMSE_GOOD_PX, WAND_RMSE_OK_PX)
+    from kinetrace.wand import RMSE_GOOD_PX, RMSE_OK_PX     # (R34) the wand report's own bands at 1080p
+    state = _states(np.nan_to_num(worst_n.reshape(-1), nan=np.inf), rej.reshape(-1), RMSE_GOOD_PX, RMSE_OK_PX)
     both = np.isfinite(res.wand_xyz).all(axis=(1, 2))
     pairs = np.column_stack([2 * np.nonzero(both)[0], 2 * np.nonzero(both)[0] + 1])
     cal = Calibration(list(res.cameras), res.unit)

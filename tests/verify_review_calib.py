@@ -289,6 +289,22 @@ def _():
     assert np.allclose(s, [2.0, 2.0, 1.0, 1.0]), s
 
 
+@check("R34 wand: the outlier threshold is lens.outlier_limit, equal to both old copies (finite and all-NaN)")
+def _():
+    rng = np.random.default_rng(34)
+    for n in (1, 2, 3, 10, 101, 5000):
+        for floor in (1e-9, 0.5, 2.0, 7.5):
+            e = rng.gamma(2.0, 0.6, n)
+            assert lens.outlier_limit(e, floor) == max(3.0 * float(np.median(e)), float(floor))
+    nan = np.full(8, np.nan)
+    with np.errstate(invalid="ignore"):
+        old_keep = nan <= max(3.0 * float(np.median(nan)), 1e-9)
+    assert np.array_equal(nan <= lens.outlier_limit(nan, 1e-9), old_keep) and not old_keep.any()
+    s2 = wand._px_scale([(2160, 3840), (1280, 720), (5312, 2988)])
+    assert np.array_equal(s2, np.maximum(1.0, np.asarray([[2160, 3840], [1280, 720], [5312, 2988]],
+                                                         np.float64).max(axis=1) / 1920.0)), s2
+
+
 # ==================================================================== lens (no Qt)
 print("-- lens")
 K_STD = np.array([[820.0, 0, 480.0], [0, 815.0, 360.0], [0, 0, 1.0]])
