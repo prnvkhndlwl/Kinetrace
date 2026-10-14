@@ -400,6 +400,13 @@ def summarize_mask(mask_work: np.ndarray, scale, score: float,
     return d
 
 
+def bbox_diagonal(bbox) -> float:
+    """(R38) The diagonal of an inclusive pixel bounding box (x0, y0, x1, y1), in its own pixels: a
+    silhouette's size for the identity check and the tracker's on-body bands."""
+    x0, y0, x1, y1 = bbox
+    return float(np.hypot(x1 - x0 + 1, y1 - y0 + 1))
+
+
 IDENTITY_BODY_K = 2.0     # a silhouette back after a gap may lie this many body sizes from where the animal was heading
 IDENTITY_SPEED_K = 1.0    # ... plus this many times the distance its speed covers over the gap
 IDENTITY_JUMP_K = 4.0     # no gap: a one-frame jump beyond this x (body size + speed) is another object
@@ -429,8 +436,7 @@ class SegmentIdentity:
         if summ["area"] <= 0:
             return None
         cx, cy = (float(v) for v in summ["centroid"])
-        x0, y0, x1, y1 = summ["bbox"]
-        size = float(np.hypot(x1 - x0 + 1, y1 - y0 + 1))
+        size = bbox_diagonal(summ["bbox"])
         if not (np.isfinite(cx) and np.isfinite(cy)):
             return None
         if prompted or not self._hist:

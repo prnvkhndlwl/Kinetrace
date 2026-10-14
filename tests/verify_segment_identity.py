@@ -173,5 +173,15 @@ g = run(other, clicks=clicked)
 check("a click on the other object at frame 30 makes it the animal: no stop",
       g["auto"] is None and g["end"][0] == N - 1, f"{g['auto']} {g['end']} {g['reason']!r}")
 
+# (R38) one bounding-box diagonal: the identity check's and the tracker's three on-body bands' old expression
+from kinetrace.segmenter import bbox_diagonal  # noqa: E402
+_rng = np.random.default_rng(38)
+_ok = True
+for _ in range(20000):
+    x0, y0 = (int(v) for v in _rng.integers(-50, 4000, 2))
+    x1, y1 = x0 + int(_rng.integers(0, 3000)), y0 + int(_rng.integers(0, 3000))
+    _ok &= bbox_diagonal((x0, y0, x1, y1)) == float(np.hypot(x1 - x0 + 1, y1 - y0 + 1))
+check("(R38) bbox_diagonal is the old expression, bit for bit", _ok)
+
 print("\nverify_segment_identity: " + ("PASSED" if not FAILS else f"FAILED ({len(FAILS)}): " + "; ".join(FAILS)))
 sys.exit(1 if FAILS else 0)

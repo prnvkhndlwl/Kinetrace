@@ -71,7 +71,7 @@ from PySide6.QtCore import QThread, Signal
 from kinetrace import alltracker_backend as at_backend
 from kinetrace.downloads import DownloadError
 from kinetrace.pixels import centre_scale, centre_unscale
-from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity,
+from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity, bbox_diagonal,
                                      get_segmenter, score_to_confidence, summarize_mask, working_size)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
 from kinetrace.session import in_frame
@@ -1390,8 +1390,7 @@ class TrackingWorker(QThread):
             summ = self._summ.get(f)
             diag_w = float("nan")
             if summ is not None and summ["area"] > 0:
-                x0, y0, x1, y1 = summ["bbox"]                      # native px
-                diag_w = float(np.hypot(x1 - x0 + 1, y1 - y0 + 1)) / scale   # -> working px, like ml.length
+                diag_w = bbox_diagonal(summ["bbox"]) / scale       # native -> working px, like ml.length
             short = ((self._prev_len is not None and ml.length < ANCHOR_SHORT_FRAC * self._prev_len)
                      or (np.isfinite(diag_w) and ml.length < 0.5 * diag_w))
             last = self._anchor_verdict
@@ -1633,8 +1632,7 @@ class TrackingWorker(QThread):
             h, w = mask.shape
             summ = self._summ.get(f)
             if summ is not None and summ["area"] > 0:
-                x0, y0, x1, y1 = summ["bbox"]
-                diag = float(np.hypot(x1 - x0 + 1, y1 - y0 + 1)) / scale
+                diag = bbox_diagonal(summ["bbox"]) / scale
             else:
                 diag = float(np.hypot(w, h))
             band_w = max(EXIT_BAND_MIN_PX / scale, EXIT_BAND_FRAC * diag)   # working px, like `diag`
@@ -1723,8 +1721,7 @@ class TrackingWorker(QThread):
             mask, scale = hist
             dil = self._dil_cache.get(f)
             if dil is None:
-                x0, y0, x1, y1 = summ["bbox"]
-                pad = max(EXIT_BAND_MIN_PX, EXIT_BAND_FRAC * float(np.hypot(x1 - x0 + 1, y1 - y0 + 1))) / scale
+                pad = max(EXIT_BAND_MIN_PX, EXIT_BAND_FRAC * bbox_diagonal(summ["bbox"])) / scale
                 k = 2 * int(np.ceil(pad)) + 1
                 dil = cv2.dilate(mask.astype(np.uint8), np.ones((k, k), np.uint8))
                 self._dil_cache[f] = dil
