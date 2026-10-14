@@ -151,7 +151,7 @@ class _TestRun(QThread):
                         continue
                     judged.add(g)
                     p = out.get(g)
-                    if p is None or float(np.hypot(*(p - clicks[g]))) > limit:
+                    if p is None or spots.click_error(p, clicks[g]) > limit:
                         wk.request_pause()
                         break
             wk.chunk_ready.connect(chunk)

@@ -86,6 +86,11 @@ class CircleFit:
         return ball_confidence(self.quality, self.score)
 
 
+def _click_box(x: float, y: float, r: float | None):
+    """(R42) A box round a click at a known ball radius (crop px), or None when the radius is not known."""
+    return (x - 1.1 * r, y - 1.1 * r, x + 1.1 * r, y + 1.1 * r) if r is not None and r > 0 else None
+
+
 def ball_confidence(quality: float, score: float) -> float:
     """quality x presence, on the point tracker's 0..1 scale."""
     return float(np.clip(quality, 0, 1) * score_to_confidence(score))
@@ -310,10 +315,7 @@ class BallTracker:
 
     def _click_prompt(self, obj: int, xy, r: float | None, x0: int, y0: int) -> Prompt:
         bx, by = xy[0] - x0, xy[1] - y0
-        box = None
-        if r is not None and r > 0:
-            box = (bx - 1.1 * r, by - 1.1 * r, bx + 1.1 * r, by + 1.1 * r)
-        return Prompt(obj, points=np.array([[bx, by]]), labels=np.array([1]), box=box)
+        return Prompt(obj, points=np.array([[bx, by]]), labels=np.array([1]), box=_click_box(bx, by, r))
 
     # --------------------------------------------------------------- step
     def step(self, rgb: np.ndarray, frame_idx: int, prompts: list[BallPrompt] | None = None
@@ -541,9 +543,7 @@ class BallTracker:
             pos = pt[lab > 0] if (lab > 0).any() else pt
             xy = (float(pos[:, 0].mean()), float(pos[:, 1].mean()))
             r = p.radius
-            box = None
-            if r is not None and r > 0:
-                box = (xy[0] - x0 - 1.1 * r, xy[1] - y0 - 1.1 * r, xy[0] - x0 + 1.1 * r, xy[1] - y0 + 1.1 * r)
+            box = _click_box(xy[0] - x0, xy[1] - y0, r)
             sel = np.array([self._inside(self.crop, q) for q in pt], bool)
             if self._inside(self.crop, xy) and (sel[lab > 0].any() if (lab > 0).any() else sel.any()):
                 sam_prompts.append(Prompt(p.obj, points=pt[sel] - [x0, y0], labels=lab[sel], box=box))

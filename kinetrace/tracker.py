@@ -72,7 +72,7 @@ from kinetrace import alltracker_backend as at_backend
 from kinetrace.downloads import DownloadError
 from kinetrace.pixels import centre_scale, centre_unscale, centred_origin
 from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity, bbox_diagonal,
-                                     fit_within, get_segmenter, score_to_confidence, summarize_mask, working_size)
+                                     click_arrays, fit_within, get_segmenter, score_to_confidence, summarize_mask, working_size)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
 from kinetrace.session import in_frame
 from kinetrace.video_source import FrameCache, ReadAhead, VideoSource
@@ -408,6 +408,17 @@ def fit_group(seed_pts: np.ndarray, seed_center: np.ndarray, cur_pts: np.ndarray
     conf = 0.6 * float(valid.mean()) * float(np.median(conf_m[valid]))
     visible = bool(np.mean(vis_m[valid]) > 0.5)
     return center, visible, min(conf, 1.0)
+
+
+def _drop_before(d: dict, first_kept) -> None:
+    """(R42) Forget a frame-keyed cache's entries before `first_kept`: windows only move forward."""
+    for k in [k for k in d if k < first_kept]:
+        del d[k]
+
+
+def _empty_cols(L: int, K: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(R42) A chunk of L frames x K outputs with nothing in it: (tracks NaN, visible False, confidence 0)."""
+    return np.full((L, K, 2), np.nan, np.float32), np.zeros((L, K), bool), np.zeros((L, K), np.float32)
 
 
 def _drain(gen):
@@ -1030,9 +1041,7 @@ class TrackingWorker(QThread):
                 self._constrain_to_mask(w0, tr, specs, out_map, first_seg, col_idx)
             self._cur = self._first()
 
-            out_tr = np.full((L, K, 2), np.nan, np.float32)
-            out_vi = np.zeros((L, K), bool)
-            out_cf = np.zeros((L, K), np.float32)
+            out_tr, out_vi, out_cf = _empty_cols(L, K)
             members: dict[int, np.ndarray] = {}
             for a, om in enumerate(out_map):
                 k = col_idx[a]
@@ -1163,9 +1172,7 @@ class TrackingWorker(QThread):
                 if n == 1:
                     if first_seg:
                         # single-frame run: the seed row is already known
-                        out_tr = np.full((1, K, 2), np.nan, np.float32)
-                        out_vi = np.zeros((1, K), bool)
-                        out_cf = np.zeros((1, K), np.float32)
+                        out_tr, out_vi, out_cf = _empty_cols(1, K)
                         for a, sp in enumerate(specs):
                             out_tr[0, col_idx[a]] = sp.seed
                             out_vi[0, col_idx[a]] = True
@@ -1241,8 +1248,7 @@ class TrackingWorker(QThread):
             clicks = a.prompts.get(abs_idx, [])
             box = a.boxes.get(abs_idx)
             if clicks or box is not None:
-                pts = np.array([[c[0], c[1]] for c in clicks], np.float32) if clicks else None
-                labs = np.array([c[2] for c in clicks], np.int64) if clicks else None
+                pts, labs = click_arrays(clicks)
                 prompts.append(Prompt(st.obj_id, pts, labs, box))
                 prompted.add(st.k)
             elif abs_idx == self.start_frame and a.seed_mask is not None and a.seed_mask.any():
@@ -1578,8 +1584,7 @@ class TrackingWorker(QThread):
         # caches keep ~16 frames, not the ~97 of MASK_HIST (a label image is ~2.4 MB at
         # 1024 x 576, ~230 MB per camera; ~2.7 GB with 8 cameras on Every camera) (R3)
         for cache in (self._snap_cache, self._dil_cache):
-            for k in [k for k in cache if k < w0]:
-                del cache[k]
+            _drop_before(cache, w0)
         if col_idx is None:
             col_idx = list(range(len(specs)))
         self._col2q = {a: om[1] for a, om in enumerate(out_map) if om[0] == "point"}
@@ -1880,9 +1885,7 @@ class TrackingWorker(QThread):
             if not buf:
                 return
             w0, L = buf[0], len(buf)
-            out_tr = np.full((L, K, 2), np.nan, np.float32)
-            out_vi = np.zeros((L, K), bool)
-            out_cf = np.zeros((L, K), np.float32)
+            out_tr, out_vi, out_cf = _empty_cols(L, K)
             self._finish_chunk(w0, out_tr, out_vi, out_cf, {}, pending)
             last = w0 + L - 1
             pending, buf = [], []
@@ -1938,8 +1941,7 @@ class TrackingWorker(QThread):
                 self._ball_ended.pop(int(b.pid), None)
             obj = self._ball_obj[b.pid]
             if cs:
-                pts = np.array([[c[0], c[1]] for c in cs], np.float32)
-                labs = np.array([int(c[2]) for c in cs], np.int64)
+                pts, labs = click_arrays(cs)
                 r = b.radius
                 st = trk.active.get(obj)
                 if st is not None and st.r:
@@ -1968,14 +1970,17 @@ class TrackingWorker(QThread):
             first_bad = max(self.start_frame, abs_idx - miss)
             # (the "apart" reason of I58 -- balls too far apart for one crop -- cannot reach
             # here since I143: far-apart balls get a crop per group)
-            # kept with auto-pause OFF too, so the app can say which ball ended where (I127)
-            self._ball_ended[int(pid)] = (int(first_bad), "lost")
-            if self.autopause and self._autopause_hit is None:
-                self._autopause_hit = (int(first_bad), int(pid))
-                self._autopause_reason = "lost"
-                self._detector_stop = True      # the frames read so far still get their tail (I192)
-        for k in [k for k in self._ball_res if k < abs_idx - 4 * MASK_HIST]:
-            del self._ball_res[k]
+            self._detector_end(self._ball_ended, pid, first_bad, "lost", "lost")
+        _drop_before(self._ball_res, abs_idx - 4 * MASK_HIST)
+
+    def _detector_end(self, ended: dict, pid, frame, why: str, reason: str) -> None:
+        """(R42) A ball / spot ended at `frame`: kept with auto-pause OFF too, so the app can say which
+        one ended where (I127); with auto-pause on, the run pauses there (`reason`)."""
+        ended[int(pid)] = (int(frame), why)
+        if self.autopause and self._autopause_hit is None:
+            self._autopause_hit = (int(frame), int(pid))
+            self._autopause_reason = reason
+            self._detector_stop = True      # the frames read so far still get their tail (I192)
 
     def _fill_balls(self, w0: int, out_tr: np.ndarray, out_vi: np.ndarray, out_cf: np.ndarray) -> None:
         """Ball columns of a window from the per-frame circle fits; emits the
@@ -2018,14 +2023,8 @@ class TrackingWorker(QThread):
             frame, why = trk.stopped
             if why == "left":
                 continue
-            # kept with auto-pause OFF too, so the app can say which spot ended where
-            self._spot_ended[int(pid)] = (int(frame), why)
-            if self.autopause and self._autopause_hit is None:
-                self._autopause_hit = (int(frame), int(pid))
-                self._autopause_reason = "spot"
-                self._detector_stop = True      # the frames read so far still get their tail (I192)
-        for k in [k for k in self._spot_res if k < abs_idx - 4 * MASK_HIST]:
-            del self._spot_res[k]
+            self._detector_end(self._spot_ended, pid, frame, why, "spot")
+        _drop_before(self._spot_res, abs_idx - 4 * MASK_HIST)
 
     def _fill_spots(self, w0: int, out_tr: np.ndarray, out_vi: np.ndarray, out_cf: np.ndarray) -> None:
         """Spot columns of a window from the per-frame fixes (they follow the balls')."""
@@ -2255,8 +2254,5 @@ class TrackingWorker(QThread):
                     if snapped is not None:
                         out[i][q] = snapped + self._template_frac.get(sp.pid, 0.0)
             self._refined[f] = out[i].copy()
-        # keep the chain buffer bounded
-        for k in list(self._refined):
-            if k < w0 - 2:
-                del self._refined[k]
+        _drop_before(self._refined, w0 - 2)        # keep the chain buffer bounded
         return out

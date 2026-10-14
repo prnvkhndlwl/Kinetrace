@@ -357,7 +357,7 @@ class _MaskPreviewWorker(QThread):
 
     def run(self):
         try:
-            from kinetrace.segmenter import (MIDLINE_SAMPLES, Prompt, get_segmenter,
+            from kinetrace.segmenter import (MIDLINE_SAMPLES, Prompt, click_arrays, get_segmenter,
                                                  summarize_mask)
             from kinetrace.silhouette import midline as silhouette_midline, resample
             self.loading.emit(self._backend)
@@ -374,10 +374,7 @@ class _MaskPreviewWorker(QThread):
                 if rgb is None:
                     raise RuntimeError(f"Could not decode frame {self._frame}")
             sess = seg.new_session(self._frame, self._size)
-            pts = (np.array([[c[0], c[1]] for c in self._clicks], np.float32)
-                   if self._clicks else None)
-            labs = (np.array([c[2] for c in self._clicks], np.int64)
-                    if self._clicks else None)
+            pts, labs = click_arrays(self._clicks)
             prompt = Prompt(1, pts, labs, self._box)
             fm = sess.step(rgb, self._frame, [prompt])
             mask = fm.mask(1)

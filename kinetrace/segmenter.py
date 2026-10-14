@@ -171,6 +171,15 @@ class Prompt:
     mask: np.ndarray | None = None
 
 
+def click_arrays(clicks) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """(R42) [(x, y, label), ...] -> a Prompt's (points float32 (n, 2), labels int64 (n,)); (None, None)
+    for no clicks."""
+    if not clicks:
+        return None, None
+    return (np.array([[c[0], c[1]] for c in clicks], np.float32),
+            np.array([int(c[2]) for c in clicks], np.int64))
+
+
 @dataclass
 class FrameMasks:
     """Masks of all tracked objects on one frame, at the WORKING resolution

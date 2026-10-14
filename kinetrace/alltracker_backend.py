@@ -222,10 +222,10 @@ class AllTrackerStream:
                 self._fmaps2 = self._fmaps(imgs)
                 self._first = False
             else:
-                self._flows8 = torch.cat([self._flows8[:, STRIDE:STRIDE + S // 2],
-                                          self._flows8[:, STRIDE + S // 2 - 1:STRIDE + S // 2].repeat(1, S // 2, 1, 1, 1)], dim=1)
-                self._visconfs8 = torch.cat([self._visconfs8[:, STRIDE:STRIDE + S // 2],
-                                             self._visconfs8[:, STRIDE + S // 2 - 1:STRIDE + S // 2].repeat(1, S // 2, 1, 1, 1)], dim=1)
+                def shift(t):                   # (R42) keep the overlapping half, repeat its last frame
+                    return torch.cat([t[:, STRIDE:STRIDE + S // 2],
+                                      t[:, STRIDE + S // 2 - 1:STRIDE + S // 2].repeat(1, S // 2, 1, 1, 1)], dim=1)
+                self._flows8, self._visconfs8 = shift(self._flows8), shift(self._visconfs8)
                 self._fmaps2 = torch.cat([self._fmaps2[:, STRIDE:STRIDE + S // 2],
                                           self._fmaps(imgs[S // 2:])], dim=1)
             flows8 = self._flows8.reshape(S, 2, H8, W8).detach()
