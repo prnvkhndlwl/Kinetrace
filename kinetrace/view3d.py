@@ -303,7 +303,8 @@ class CalibrationDialog(QDialog):
         """OK needs a file of two or more cameras and its pixel convention (I278: asked when the
         file does not say)."""
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(
-            self._loaded is not None and getattr(self, "_n_file_cams", 0) >= 2 and self.conv.currentIndex() >= 0)
+            self._loaded is not None and getattr(self, "_n_file_cams", 0) >= 2
+            and (self.conv.currentIndex() >= 0 or getattr(self, "_self_described", False)))
 
     def _accept(self) -> None:
         if self._loaded is None:
@@ -349,9 +350,10 @@ class CalibrationDialog(QDialog):
                     "videos were resized after calibrating). Use this mapping anyway?",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
-        if self.conv.currentIndex() < 0:
+        self_described = getattr(self, "_self_described", False)
+        if self.conv.currentIndex() < 0 and not self_described:
             return                                      # (I278) OK is grey until the convention is chosen
-        label, origin, flip = CONVENTIONS[self.conv.currentIndex()]
+        origin, flip = CONVENTIONS[self.conv.currentIndex()][1:] if self.conv.currentIndex() >= 0 else (0.0, False)
         cams = []
         for i, k in enumerate(chosen):
             if k < 0:                                   # (I273) not calibrated
@@ -359,7 +361,7 @@ class CalibrationDialog(QDialog):
                 continue
             src = self._loaded.cameras[k]
             w, h = self.view_sizes[i] if i < len(self.view_sizes) else (src.width, src.height)
-            if getattr(self, "_self_described", False):
+            if self_described:
                 origin, flip = src.pixel_origin, src.y_flip
             cams.append(CameraCalibration(src.coefs.copy(), int(w), int(h), src.undistort,
                                           origin, flip, src.rmse))

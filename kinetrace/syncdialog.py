@@ -302,7 +302,8 @@ class SyncDialog(QDialog):
             tick.setChecked(v != "none")
             self.table.setCellWidget(r, 0, tick)
             self.table.setItem(r, 1, QTableWidgetItem(self.project.name(cs.view)))
-            self.table.setItem(r, 2, QTableWidgetItem(f"{cs.offset:+.0f}"))
+            # (I279) the offset Apply will store (half up), not format()'s half-to-even
+            self.table.setItem(r, 2, QTableWidgetItem(f"{half_up(cs.offset):+d}"))
             it = QTableWidgetItem(VERDICT_WORDS.get(v, v))
             it.setForeground(Qt.GlobalColor.white)
             it.setBackground(Qt.GlobalColor.transparent)

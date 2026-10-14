@@ -129,7 +129,7 @@ class TimelinePanel(QWidget):
         # others' (from the last reconstruction, mapped by the app), NaN = no 3D
         self._disagree: np.ndarray | None = None      # (T, N) float32
         self._dis_col = None                   # (W, N) float32, column max of the above
-        self._disagree_px = 5.0                # threshold, px (set_disagreement scales it by picture width)
+        self._disagree_px = 5.0                # threshold, px (set_disagreement scales it by the long side)
         self._drag_seek = False
         self._drag_select_from: int | None = None
         self._drag_select_y: float | None = None

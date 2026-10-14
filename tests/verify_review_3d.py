@@ -354,6 +354,19 @@ def t_dialog_convention_reset():
     # (I278) a dltCoefs.csv does not say: the choice is RESET to none, and OK waits for it
     assert dlg.conv.currentIndex() == -1 and dlg.conv.isEnabled(), (dlg.conv.currentIndex(), dlg.conv.isEnabled())
     assert not dlg.buttons.button(dlg.buttons.StandardButton.Ok).isEnabled()
+    # a file that states a convention the list does not name (0-based, y from the bottom: a hand-made
+    # .kcal.json) is still imported, in its own convention, into Kinetrace's pixels (review of I278)
+    with open(kc, encoding="utf-8") as fh:
+        d = json.load(fh)
+    for c in d["cameras"]:
+        c["y_flip"] = True
+    odd = os.path.join(OUT, "dlg_odd.kcal.json")
+    with open(odd, "w", encoding="utf-8") as fh:
+        json.dump(d, fh)
+    assert dlg.load(odd) and dlg.conv.currentIndex() == -1 and not dlg.conv.isEnabled()
+    assert dlg.buttons.button(dlg.buttons.StandardButton.Ok).isEnabled()
+    dlg._accept()
+    assert dlg.result_calibration is not None and dlg.result_calibration.is_internal()
     dlg.deleteLater()
 
 

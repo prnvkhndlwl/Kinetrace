@@ -1444,7 +1444,7 @@ def _lensed_cameras(cal) -> list[tuple[int, float]]:
                 # runaway fisheye number the report refuses
                 bend = _lens.LensProfile(w, h, und.K, und.dist, und.fisheye).border_check()["bend_px"]
             elif w > 0 and h > 0:
-                border = _lens.picture_border(w, h)
+                border = _lens.picture_border(w, h, 32)
                 d = np.linalg.norm(np.asarray(und.undistort(border), np.float64) - border, axis=1)
                 d = d[np.isfinite(d) & (d < 1e5)]
                 if len(d):

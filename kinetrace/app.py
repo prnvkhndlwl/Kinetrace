@@ -11720,10 +11720,10 @@ class MainWindow(QMainWindow):
                    "Apply them anyway? (No keeps the current offsets.)"),
                 QMessageBox.Yes | QMessageBox.No, default) != QMessageBox.Yes:
             return
-        had_3d, before = p.reconstruction is not None, self._calib_key()
+        had_3d, timing0 = p.reconstruction is not None, self._calib_key()
         for i in range(1, p.n_views):                  # (I284) through set_offset, like every retime
             p.set_offset(i, float(offs[i]))
-        moved = self._calib_key() != before
+        moved = self._calib_key() != timing0
         if moved:
             p.dirty = True
         self._retimed(had_3d, moved, reason="")        # silent: the reconstruction below replaces it (I242)

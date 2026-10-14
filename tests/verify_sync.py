@@ -381,6 +381,7 @@ pump(0.1)
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 assert dlg4.btn_apply.isEnabled()
+assert dlg4.table.item(0, 2).text() == "-37", dlg4.table.item(0, 2).text()   # the cell shows what Apply stores
 QTest.mouseClick(dlg4.btn_apply, Qt.LeftButton)
 pump(0.2)
 assert win.project.offsets[1] == -37.0, win.project.offsets
