@@ -8,6 +8,7 @@ Threading rules (the GUI thread never blocks):
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -10178,6 +10179,30 @@ class MainWindow(QMainWindow):
             self._in_background("Finishing the exports", lambda: w.wait(),
                                 detail="Bringing exports/ up to date before the next save…")
 
+    def _writer_busy(self) -> bool:
+        return self._save_worker is not None and self._save_worker.isRunning()
+
+    def _finish_writer(self) -> None:
+        """(R49) Wait for the project / recovery writer, WITHOUT a timeout: the window must not close,
+        nor a second writer start, while a save is writing (0xC0000409, I201). A writer cannot wait on
+        Kinetrace itself (the lock fails fast, the PermissionError retry is bounded)."""
+        if self._writer_busy():
+            self._save_worker.wait()
+
+    def _freeze_now(self, pid: str, target, **kw):
+        """(R49) The project as it is now, for a writer: the working state recorded first."""
+        self._sync_ui_state()
+        return projectfile.freeze(self.project, self._ui_global_state(), pid, target=target, **kw)
+
+    @contextlib.contextmanager
+    def _saving_guard(self):
+        """(R49) No Save / autosave write while a save or a single-file export writes (G48)."""
+        self._saving = True
+        try:
+            yield
+        finally:
+            self._saving = False
+
     def _autosave(self, wait: bool = False):
         """Unsaved work -> the recovery folder, every 30 s and after runs. The
         project file itself changes only on Save, so the last Save is always
@@ -10188,18 +10213,16 @@ class MainWindow(QMainWindow):
         sig = self._signature()
         if sig == self._recovery_sig:
             return
-        if self._save_worker is not None and self._save_worker.isRunning():
+        if self._writer_busy():
             if not wait:
                 return                         # the next tick catches up
-            self._save_worker.wait()
-        self._sync_ui_state()
+            self._finish_writer()
         pid = self._project_id
         zp = recovery.paths(pid)[0]
         info = dict(base_saved_at=self._saved_at,
                     last_path=str(self.project_path) if self.project_path else None,
                     videos=[x.video_path for x in p.sessions], temporary=self._saved_at is None)
-        frozen = projectfile.freeze(p, self._ui_global_state(), pid, target=self.project_path, binary_tracks=True,
-                                    layout=self._project_layout())
+        frozen = self._freeze_now(pid, self.project_path, binary_tracks=True, layout=self._project_layout())
 
         def done(ok, err):
             if ok:
@@ -10225,8 +10248,7 @@ class MainWindow(QMainWindow):
         if self.project is None:
             return
         if discard:
-            if self._save_worker is not None and self._save_worker.isRunning():
-                self._save_worker.wait()
+            self._finish_writer()
             recovery.discard(self._project_id)
             self._recovery_sig = self._signature()
             return
@@ -10283,22 +10305,17 @@ class MainWindow(QMainWindow):
             self._keep_single_file = ans == QMessageBox.No
         # (I201) the question above comes first: a recovery copy the 30 s autosave starts while it
         # is open is waited for here, not orphaned by the save's own writer
-        if self._save_worker is not None and self._save_worker.isRunning():
-            self._save_worker.wait()
+        self._finish_writer()
         self._wait_for_exports()                 # it reads the folder this save rewrites (G42)
         folder = self._project_layout() == "folder"
-        self._saving = True
-        try:
-            self._sync_ui_state()
+        with self._saving_guard():
             sig = self._signature()
             saved_at = projectfile.timestamp()
-            frozen = projectfile.freeze(self.project, self._ui_global_state(), self._project_id,
-                                        target=path, saved_at=saved_at, layout="folder" if folder else "zip")
+            frozen = self._freeze_now(self._project_id, path, saved_at=saved_at,
+                                      layout="folder" if folder else "zip")
             self.statusBar().showMessage("Saving…")
             ok, err = self._start_writer(frozen, path, wait=True, folder=folder, title=f"Saving {path.name}",
                                          detail="Writing the files that changed since the last save…")
-        finally:
-            self._saving = False
         if not ok:
             QMessageBox.critical(
                 self, "Could not save the project",
@@ -10358,8 +10375,7 @@ class MainWindow(QMainWindow):
             return ""
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            self._sync_ui_state()
-            frozen = projectfile.freeze(p, self._ui_global_state(), self._project_id, target=path)
+            frozen = self._freeze_now(self._project_id, path)
             got = projectfile.changes_since_save(frozen, path)
             if got is None:
                 return ""
@@ -10461,20 +10477,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Export project as one file",
                                 f"{out}\n\nis a folder (a project folder, perhaps). Choose another name.")
             return
-        if self._save_worker is not None and self._save_worker.isRunning():
-            self._save_worker.wait()
-        self._sync_ui_state()
+        self._finish_writer()
         # (I243) the export is a COPY: its own project id, so it and the original never share a recovery slot
-        frozen = projectfile.freeze(self.project, self._ui_global_state(), projectfile.new_id(), target=out,
-                                    layout="zip")
+        frozen = self._freeze_now(projectfile.new_id(), out, layout="zip")
         self.statusBar().showMessage("Writing the single file…")
-        self._saving = True                      # no Save / autosave write meanwhile (G48)
-        try:
+        with self._saving_guard():               # no Save / autosave write meanwhile (G48)
             ok, err = self._start_writer(frozen, out, wait=True, backup=False, title=f"Writing {out.name}",
                                          detail="The whole project into one file (the larger the project, "
                                                 "the longer: about 2 s per million tracked rows)…")
-        finally:
-            self._saving = False
         if not ok:
             QMessageBox.critical(self, "Could not export the project", f"{out}\n\n{err}")
             return
@@ -12941,13 +12951,11 @@ class MainWindow(QMainWindow):
                 ev.ignore()
                 return
         elif answer == QMessageBox.Discard:
-            if self._save_worker is not None and self._save_worker.isRunning():
-                self._save_worker.wait()
+            self._finish_writer()
             recovery.discard(self._project_id)
         else:
             self._leave_project()
-        if self._save_worker is not None and self._save_worker.isRunning():
-            self._save_worker.wait()
+        self._finish_writer()
         if self._exports_worker is not None and self._exports_worker.isRunning():
             self._exports_worker.cancel()            # stops between files (G42)
             self._exports_worker.wait()
