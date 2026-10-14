@@ -129,10 +129,10 @@ import kinetrace.tracker as _tk  # noqa: E402
 _frame_decodes = _tk._frame_decodes
 
 
-def _damaged_300(path, idx):
+def _damaged_300(path, idx, exact=True):
     """A damaged frame cannot be read by a FRESH capture either (I240: a frame that a fresh
     capture does read is a hiccup, not damage)."""
-    return False if idx == 300 else _frame_decodes(path, idx)
+    return False if idx == 300 else _frame_decodes(path, idx, exact)
 
 
 vs.VideoSource.read_next = _fails_at_300
