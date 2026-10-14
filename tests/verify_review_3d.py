@@ -927,6 +927,42 @@ def t_r30_folds():
 
 check("R30", "has_lens_correction / calibrated_cameras / opencv_projection equal every old copy exactly", t_r30_folds)
 
+
+def t_r31_folds():
+    xyz = rng.normal(size=(6, 3, 3))
+    xyz[2] = np.nan                       # a row with nothing solved
+    xyz[4, 1] = np.nan                    # one landmark missing
+    r = Reconstruction(5, ["a", "b", "c"], xyz, np.ones((6, 3)), np.full((6, 3), 3, np.int32))
+    for t in (4, 5, 7, 9, 10, 11):
+        old_in = r.t0 <= t < r.t0 + r.n_frames
+        assert (r.index(t) is not None) == old_in and (not old_in or r.index(t) == t - r.t0)
+        if old_in:
+            row = r.xyz[t - r.t0]
+            assert np.array_equal(r.points_at(t), row[np.isfinite(row).all(axis=1)])
+        else:
+            assert r.points_at(t).shape == (0, 3)
+    # Project.probe_at = the guides' / Re-track's old inline probe
+    cal = rig(3)
+    p = Project([TrackingSession(f"{k}.mp4", 20, 30.0, W, H) for k in range(3)], ["a", "b", "c"], [0, 2, -1])
+    p.calibration = cal
+    p.reconstruction = r
+    for view, f in ((0, 6), (1, 8), (2, 6), (1, 7), (0, 1)):
+        t = p.reference_index(view, f)
+        k = t - r.t0
+        row = r.xyz[k] if 0 <= k < r.n_frames else np.zeros((0, 3))
+        row = row[np.isfinite(row).all(axis=1)]
+        old = row.mean(axis=0) if len(row) else calib.working_probe(cal)
+        assert np.array_equal(p.probe_at(view, f), old), (view, f)
+    # with_cameras: unit, source, moved origin, notes and the report travel; reframed and the spread use it
+    cal.origin_shift, cal.notes, cal.report = np.array([1.0, 2, 3]), ["a note"], {"verdict": "good"}
+    c2 = cal.with_cameras([cal.cameras[0], None, cal.cameras[2]])
+    assert (c2.unit, c2.source, c2.notes, c2.report) == (cal.unit, cal.source, ["a note"], {"verdict": "good"})
+    assert c2.notes is not cal.notes and np.array_equal(c2.origin_shift, cal.origin_shift)
+
+
+check("R31", "Reconstruction.index / points_at, Project.probe_at, Calibration.with_cameras equal the old copies",
+      t_r31_folds)
+
 # ============================================================================ G75 / G76
 print("\nG75 / G76 estimate_offsets")
 

@@ -7771,22 +7771,10 @@ class MainWindow(QMainWindow):
                     (255, 140, 120), (200, 170, 255)]
 
     def _guide_depth(self, f: int):
-        """A 3D point in front of the cameras for the guides' forward sign: this
-        instant's reconstruction centroid, else calib.working_probe."""
-        from kinetrace.calib import working_probe
-        p = self.project
-        r = p.reconstruction
-        # the reference frame of this instant with `map_frame`'s tie rule, not floor(t + .5) (I258)
-        k = p.reference_index(p.active, f) - r.t0 if r is not None else -1
-        if r is not None and r.n_frames and 0 <= k < r.n_frames:
-            # the row is the REFERENCE instant: comparing the working camera's own
-            # frame number with the reference range raised IndexError (or wrapped
-            # to another row) whenever the working camera is not camera 1 (I67)
-            row = r.xyz[k]
-            row = row[np.isfinite(row).all(axis=1)]
-            if len(row):
-                return row.mean(axis=0)
-        return working_probe(p.calibration)
+        """A 3D point in front of the cameras for the guides' forward sign: this instant's
+        reconstruction centroid, else calib.working_probe (`Project.probe_at`: the row of the
+        REFERENCE instant, I67, by `map_frame`'s tie rule, I258)."""
+        return self.project.probe_at(self.project.active, f)
 
     def _cal_cam(self, v: int):
         """Camera `v`'s calibration, or None when the calibration does not cover
@@ -11891,12 +11879,10 @@ class MainWindow(QMainWindow):
                     "is not the animal's. Segment the animal in at least THREE cameras that look at it "
                     "from clearly different directions, then carve again.")
             return
-        pts = None
         r = p.reconstruction
-        if r is not None and r.t0 <= t < r.t0 + r.n_frames:
-            row = r.xyz[t - r.t0]
-            row = row[np.isfinite(row).all(axis=1)]
-            pts = row if len(row) else None
+        pts = r.points_at(t) if r is not None else None
+        if pts is not None and not len(pts):
+            pts = None
         if pts is None:
             self.toast.show_message(
                 "Reconstruct the landmarks first (Ctrl+3): they tell the carver where in space "
@@ -12002,10 +11988,11 @@ class MainWindow(QMainWindow):
         if r is not None:
             scene.points_all = r.xyz
             scene.names = list(r.names)
-            if r.t0 <= t < r.t0 + r.n_frames:
-                scene.points = r.xyz[t - r.t0]
+            k = r.index(t)
+            if k is not None:
+                scene.points = r.xyz[k]                     # every row: they line up with the names
                 n_ok = int(np.isfinite(scene.points).all(axis=1).sum())
-                res = r.residual[t - r.t0]
+                res = r.residual[k]
                 med = float(np.nanmedian(res)) if n_ok else float("nan")
                 info += f" · {n_ok}/{len(r.names)} landmarks · residual {med:.2f} px"
             idx = {nm: i for i, nm in enumerate(r.names)}
@@ -13057,8 +13044,8 @@ class _WorldAxesDialog(QDialog):
             a = np.asarray(r.xyz[:, j], np.float64)
             a = a[np.isfinite(a).all(axis=1)]
             return np.median(a, axis=0) if len(a) else np.full(3, np.nan)
-        k = self._t - int(r.t0)
-        return np.asarray(r.xyz[k, j], np.float64) if 0 <= k < r.n_frames else np.full(3, np.nan)
+        k = r.index(self._t)
+        return np.asarray(r.xyz[k, j], np.float64) if k is not None else np.full(3, np.nan)
 
     def _compute(self):
         """-> (B, o, note, text); B is None when the choice cannot make axes (text says why)."""

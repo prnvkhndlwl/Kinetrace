@@ -269,6 +269,15 @@ class Project:
                 out.append((c, cam, uv))
         return out
 
+    def probe_at(self, view: int, frame) -> np.ndarray:
+        """(R31) A 3D point in front of the cameras at `view`'s `frame`: the centroid of the landmarks
+        solved at that instant (its reference frame by `reference_index`, I258), else the
+        calibration's `working_probe`. The guides' and Re-track's forward sign."""
+        from kinetrace.calib import working_probe
+        r = self.reconstruction
+        pts = r.points_at(self.reference_index(view, int(frame))) if r is not None else ()
+        return pts.mean(axis=0) if len(pts) else working_probe(self.calibration)
+
     def reference_index(self, view: int, frame) -> int | np.ndarray:
         """The reference frame nearest local `frame` of `view`: `map_frame`'s
         tie rule for the way back towards an earlier view -- a .5 tie rounds

@@ -1698,16 +1698,10 @@ def spread_calibration(cal, views: list[int], n_views: int):
     views = list(views)
     if views == list(range(n_views)):
         return cal
-    from kinetrace.calib import Calibration
     cams = [None] * n_views
     for k, v in enumerate(views):
         cams[v] = cal.cameras[k]
-    out = Calibration(cams, cal.unit, cal.source)
-    out.origin_shift = cal.origin_shift
-    out.notes = list(getattr(cal, "notes", []) or [])
-    if hasattr(cal, "report"):
-        out.report = cal.report
-    return out
+    return cal.with_cameras(cams)
 
 
 class WandWizard(QWizard):

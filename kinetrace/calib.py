@@ -856,10 +856,7 @@ class Calibration:
             cams.append(CameraCalibration(np.concatenate([P[0], P[1], P[2, :3]]), cam.width, cam.height,
                                           cam.undistort, cam.pixel_origin, cam.y_flip, cam.rmse))
         src = re.sub(r"\s*\(world: .*\)\s*$", "", self.source or "")
-        out = Calibration(cams, self.unit, f"{src} ({note})".strip() if note else src)
-        out.notes = list(self.notes)
-        if hasattr(self, "report"):
-            out.report = self.report
+        out = self.with_cameras(cams, f"{src} ({note})".strip() if note else src)
         out.origin_shift = None
         return out
 
@@ -936,6 +933,20 @@ class Reconstruction:
     @property
     def n_frames(self) -> int:
         return self.xyz.shape[0]
+
+    def index(self, t) -> int | None:
+        """(R31) The row of reference frame `t`, or None outside the result."""
+        k = int(t) - int(self.t0)
+        return k if 0 <= k < self.n_frames else None
+
+    def points_at(self, t) -> np.ndarray:
+        """(R31) The landmarks solved at reference frame `t`, (M, 3): rows without a position left
+        out, none outside the result. (A row that must line up with `names` is `xyz[index(t)]`.)"""
+        k = self.index(t)
+        if k is None:
+            return self.xyz[:0].reshape(0, 3)
+        row = self.xyz[k]
+        return row[np.isfinite(row).all(axis=1)]
 
     def reframed(self, B: np.ndarray, o: np.ndarray) -> "Reconstruction":
         """The same 3D result in the world `Calibration.reframed(B, o)` makes:

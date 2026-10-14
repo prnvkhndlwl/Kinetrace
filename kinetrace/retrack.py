@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from kinetrace.calib import epipolar_polyline, intersect_polylines, working_probe
+from kinetrace.calib import epipolar_polyline, intersect_polylines
 
 MIN_RUN = 3             # frames: shorter runs are noise, not a slide
 GAP_JOIN = 2            # runs separated by <= this many clean frames are one stretch
@@ -135,14 +135,7 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
     if pid is None:
         return None
     if probe is None:
-        r = p.reconstruction
-        t = p.reference_index(view, int(local_frame))        # (I258)
-        if r is not None and r.t0 <= t < r.t0 + r.n_frames:
-            row = r.xyz[t - r.t0]
-            row = row[np.isfinite(row).all(axis=1)]
-            probe = row.mean(axis=0) if len(row) else None
-        if probe is None:
-            probe = working_probe(cal)
+        probe = p.probe_at(view, local_frame)                # (I258, R31)
     if observations is None:
         observations = p.observations(name, view, int(local_frame))
     kw = {} if margin is None else {"margin": float(margin)}
