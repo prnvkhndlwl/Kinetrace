@@ -526,7 +526,9 @@ to bring the names back. The Track button always keeps its words.
   "*animal part*" everywhere — in exports, in 3D and in the other cameras — for
   example *squirrel snout*; the tree shows only the part (*snout*), and
   renaming it in the tree changes the part. Renaming an animal renames its
-  points in every camera. A name may not start with **= + -**
+  points in every camera. Two names that differ only in capitals are the same
+  name: *head* next to *Head* becomes *head (2)* (cameras join a point by its
+  name, so *Head* and *head* would never meet in 3D). A name may not start with **= + -**
   or **@**: a spreadsheet opening an export would run it as a formula, so such
   a name is refused (and taken off a name that arrives in a file). Renaming a point
   in capital letters only (`snout` → `Snout`) works, and the next save keeps its
