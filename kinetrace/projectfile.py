@@ -1784,7 +1784,14 @@ def read(path: str | Path):
     p = Project(sessions, names, offsets, active, rates)
     for s in p.sessions:                         # window-wide toggles live once, in state.json
         s.ui_state.update({k: v for k, v in state["tools"].items() if k in DEFAULT_UI_STATE})
-    p.calibration = _read_calibration(src)
+    cal = _read_calibration(src)
+    if cal is not None:
+        with _parsing("calibration.json"):
+            for v, c in enumerate(cal.cameras):        # a flip needs the picture height: the video's if unsaved
+                if c is not None and c.y_flip and c.height <= 0 and v < len(p.sessions):
+                    c.height = int(p.sessions[v].height)
+            cal = cal.to_internal()    # (I278) a file saved 1-based: the same cameras in Kinetrace's pixels
+    p.calibration = cal
     lenses = _read_lenses(src, len(sessions))
     if lenses is not None:
         p.lenses = lenses

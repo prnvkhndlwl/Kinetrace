@@ -420,6 +420,20 @@ assert p.name(3) in win.toast.text() and "not calibrated" in win.toast.text(), w
 win._remove_view(3)
 pump(0.2)
 print("G25: a camera added after calibrating leaves the guides and diamonds among the calibrated cameras OK")
+# (I283) a calibration listing MORE cameras than the project (made for another camera set) is refused by
+# Reconstruct; the guides, Snap and the 3D window's calibration row now count the same way (they ran on it)
+from kinetrace.calib import Calibration  # noqa: E402
+full_cal = p.calibration
+p.calibration = Calibration(list(full_cal.cameras) + [full_cal.cameras[0]], "m", "another rig")
+win.layers.setCurrentItem(win.layers.point_item(win.session.pid_by_name(name)))
+win._refresh_guides()
+pump(0.1)
+assert not win._guides_ready() and not win.canvas._guides.lines, "guides drawn from a calibration 3D refuses"
+p.calibration = full_cal
+win._refresh_guides()
+pump(0.1)
+assert win._guides_ready() and win.canvas._guides.lines
+print("(I283) a calibration for another camera set draws no guides, as Reconstruct refuses it OK")
 
 # ---- 9. (G26) POINTS -> New point, one order in every camera ------------------------------
 n0 = win.session.n_points

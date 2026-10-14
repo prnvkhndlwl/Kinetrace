@@ -454,7 +454,8 @@ print("the hull / mesh key is the reference instant (I114) OK")
 
 # I67: epipolar guides in a non-reference camera never index past the 3D rows
 pj.calibration = Calibration(cams)
-pj.reconstruction = SimpleNamespace(t0=0, n_frames=10, xyz=np.zeros((10, 1, 3)), per_cam=None, names=["P1"])
+from kinetrace.calib import Reconstruction  # noqa: E402
+pj.reconstruction = Reconstruction(0, ["P1"], np.zeros((10, 1, 3)), np.zeros((10, 1)), np.full((10, 1), 2, np.int32))
 win._goto(5)                         # reference instant 5 - 7 = -2: outside the rows
 try:
     win._epipolar_guides(0)

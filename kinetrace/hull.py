@@ -46,6 +46,13 @@ THIN_WARN_FRAC = 0.10  # ... and the app warns when more of its voxels than this
 # ------------------------------------------------------------- silhouettes
 
 
+def voxel_centres(lo: np.ndarray, n, voxel: float) -> np.ndarray:
+    """(R33) The centres of an n[0] x n[1] x n[2] grid of voxels of size `voxel` from corner `lo`,
+    (prod(n), 3) in C order: the carver's and the covered-space view's grid."""
+    g = np.meshgrid(*(np.arange(k) for k in n), indexing="ij")
+    return lo + np.column_stack([a.ravel() for a in g]) * voxel
+
+
 def undistort_maps(cal: CameraCalibration, width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
     """Remap tables from the UNDISTORTED canvas (same size as the raw frame,
     Kinetrace 0-based pixels) to raw pixel coordinates, for `cv2.remap`. The
@@ -67,8 +74,8 @@ def undistort_maps(cal: CameraCalibration, width: int, height: int) -> tuple[np.
     gy = np.unique(np.concatenate([np.arange(0, height, MAP_STEP), [height - 1]])).astype(np.float64)
     xs, ys = np.meshgrid(gx, gy)
     canvas = np.column_stack([xs.ravel(), ys.ravel()])
-    # canvas (0-based undistorted) -> calibration frame -> raw canvas
-    raw = cal.from_calib_frame(cal.to_dlt_pixels(canvas))
+    # canvas (0-based undistorted = the calibration frame, I278) -> raw canvas
+    raw = cal.from_calib_frame(canvas)
     from scipy.interpolate import RegularGridInterpolator
     full_y, full_x = np.mgrid[0:height, 0:width]
     q = np.column_stack([full_y.ravel().astype(np.float64), full_x.ravel().astype(np.float64)])
@@ -105,18 +112,10 @@ def undistorted_mask(cal: CameraCalibration, mask: np.ndarray, dilate_px: int = 
         m = cv2.dilate(m, np.ones((k, k), np.uint8))
     h, w = m.shape
     map_x, map_y = undistort_maps(cal, w, h)
-    # (R14) with no lens model and no flip the map is the identity WHATEVER the
-    # pixel origin is (it is added and taken off again): the old test also
-    # asked for origin 0 and so remapped every 1-based calibration for nothing
-    if cal.undistort.kind == "none" and not cal.y_flip:
+    # with no lens model the map is the identity (calibrations are 0-based, top-left: I278)
+    if not cal.has_lens_correction:
         return m
     return cv2.remap(m, map_x, map_y, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-
-
-def calib_canvas_xy(cal: CameraCalibration, uv: np.ndarray) -> np.ndarray:
-    """Calibration-frame (undistorted) coordinates -> undistorted-canvas
-    pixel coordinates (float), the frame `undistorted_mask` is in."""
-    return cal.from_dlt_pixels(uv)
 
 
 # ------------------------------------------------------------------ carving
@@ -221,8 +220,7 @@ def carve(cams: list[CameraCalibration], masks: list[np.ndarray | None],
     inside = np.zeros(n.prod(), np.int16)
     seen = np.zeros(n.prod(), np.int16)
     if views:
-        gx, gy, gz = np.meshgrid(np.arange(n[0]), np.arange(n[1]), np.arange(n[2]), indexing="ij")
-        centres = lo + np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]) * voxel
+        centres = voxel_centres(lo, n, voxel)
         # only points IN FRONT of a camera vote. The DLT denominator is the
         # depth up to a sign that depends on the calibration's handedness, so
         # the sign is read off a point known to be in view: the centre of the
@@ -235,8 +233,7 @@ def carve(cams: list[CameraCalibration], masks: list[np.ndarray | None],
             X = centres[s:s + chunk]
             for (cal, um), sgn, valid, whole, box in zip(views, fronts, valids, framed, boxes):
                 h, w = um.shape
-                calib_uv = dlt_project(cal.coefs, X)
-                uv = calib_canvas_xy(cal, calib_uv)
+                uv = calib_uv = dlt_project(cal.coefs, X)      # the undistorted canvas's own pixels (I278)
                 front = in_front(cal.coefs, X, sgn)
                 xi = np.round(uv[:, 0]).astype(np.int64)
                 yi = np.round(uv[:, 1]).astype(np.int64)

@@ -234,9 +234,12 @@ values fall back to the defaults: this is never data.
  "coefs": [[L1, …, L11], …], "origin_shift": [x, y, z], "notes": []}
 ```
 
-Per camera the 11 DLT coefficients (`coefs`, in camera order) and the
-convention they were fitted in: `pixel_origin` 1 = MATLAB pixels (DLTdv,
-easyWand), 0 = OpenCV; `y_flip` = y counted up from the bottom edge;
+Per camera the 11 DLT coefficients (`coefs`, in camera order), always in
+Kinetrace's own pixels: `pixel_origin` 0 and `y_flip` false (0-based, y down
+from the top). A calibration imported from MATLAB (DLTdv, easyWand: pixels
+counted from 1) or counted from the bottom edge is converted once, on import;
+a file written with `pixel_origin` 1 (an older save) is converted when the
+project opens and saved 0-based. The dltCoefs.csv export adds the 1 back.
 `undistort` = the lens correction applied to raw pixels before the DLT
 (`none`, `opencv` with K / dist / optional P, or `lwm` with control points).
 A camera the calibration does not cover (left out of a wand calibration) is

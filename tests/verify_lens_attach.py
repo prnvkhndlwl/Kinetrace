@@ -171,6 +171,9 @@ check(p.lenses[1] is not None and np.isclose(p.lenses[1].f_square, 320.0)
       and p.lenses[0] is not None and np.isclose(p.lenses[0].f_square, 301.0),
       "A2 got the file's camera-2 line; A1 (not ticked: it would replace) kept its profile",
       [None if l is None else l.f_square for l in p.lenses])
+check(p.lenses[1] is not None and p.lenses[1].source == "rig.txt (the line for camera 2)",
+      "(I282) its source names the file and the line used, as the wand wizard's does",
+      None if p.lenses[1] is None else p.lenses[1].source)
 
 w.project.dirty = False
 w.close()

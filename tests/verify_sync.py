@@ -367,6 +367,25 @@ print(f"dialog opened on {win.project.name(1)} frame 200: centred on reference f
       f"(the same instant: {want})")
 assert dlg3.centre.value() == want == 237, (dlg3.centre.value(), want)
 dlg3.close()
+# (I279) a .5 tie: the box shows the reference frame the reference tile shows (a tie goes DOWN on the way
+# back to camera 1; Python's round sent 237.5 to 238), and Apply stores the offset rounded half UP, as
+# every frame mapping rounds (round(-37.5) was -38)
+win.project.set_offset(1, -37.5)
+win._goto(200)
+pump(0.3)
+dlg4 = SyncDialog(win, win.project, [rt.info.path for rt in win._views], win.current)
+dlg4.show()
+assert dlg4.centre.value() == win._reference_instant() == 237, (dlg4.centre.value(), win._reference_instant())
+dlg4._done([sync.CameraSync(1, -37.5, sync.AlignResult(0.0, 0.9, 0.5, "clear", "a test row"))])
+pump(0.1)
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+assert dlg4.btn_apply.isEnabled()
+assert dlg4.table.item(0, 2).text() == "-37", dlg4.table.item(0, 2).text()   # the cell shows what Apply stores
+QTest.mouseClick(dlg4.btn_apply, Qt.LeftButton)
+pump(0.2)
+assert win.project.offsets[1] == -37.0, win.project.offsets
+print("(I279) a .5 tie: the box shows the reference tile's frame, Apply rounds half up OK")
 win._set_active_view(0)
 pump(0.3)
 print("the sync dialog names the silent file (I11) and centres on the instant on screen (I12) OK")

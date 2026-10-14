@@ -2031,7 +2031,7 @@ class MainWindow(QMainWindow):
             return False
         cal = p.calibration
         left_out = [p.name(v) for v in range(p.n_views) if cal.camera(v) is None]
-        if len(cal) > p.n_views or p.n_views - len(left_out) < 2:
+        if cal.n_usable(p.n_views) < 2:
             QMessageBox.information(
                 self, what,
                 f"The calibration covers {p.n_views - len(left_out)} of this project's {p.n_views} cameras; "
@@ -2140,8 +2140,7 @@ class MainWindow(QMainWindow):
         # 3D layer: needs several cameras, then a calibration, then a result
         p = self.project
         multi = p is not None and p.n_views > 1 and has_video and not tracking
-        has_cal = (multi and p.calibration is not None and len(p.calibration) <= p.n_views   # (I273) any 2+
-                   and sum(p.calibration.camera(v) is not None for v in range(p.n_views)) >= 2)
+        has_cal = multi and p.calibration is not None and p.calibration.n_usable(p.n_views) >= 2   # (I273, I283)
         # Import Calibration and Sync open with one video too and explain what
         # a further step needs (I115)
         live3d = has_video and not tracking and p is not None
@@ -7772,22 +7771,10 @@ class MainWindow(QMainWindow):
                     (255, 140, 120), (200, 170, 255)]
 
     def _guide_depth(self, f: int):
-        """A 3D point in front of the cameras for the guides' forward sign: this
-        instant's reconstruction centroid, else calib.working_probe."""
-        from kinetrace.calib import working_probe
-        p = self.project
-        r = p.reconstruction
-        # the reference frame of this instant with `map_frame`'s tie rule, not floor(t + .5) (I258)
-        k = p.reference_index(p.active, f) - r.t0 if r is not None else -1
-        if r is not None and r.n_frames and 0 <= k < r.n_frames:
-            # the row is the REFERENCE instant: comparing the working camera's own
-            # frame number with the reference range raised IndexError (or wrapped
-            # to another row) whenever the working camera is not camera 1 (I67)
-            row = r.xyz[k]
-            row = row[np.isfinite(row).all(axis=1)]
-            if len(row):
-                return row.mean(axis=0)
-        return working_probe(p.calibration)
+        """A 3D point in front of the cameras for the guides' forward sign: this instant's
+        reconstruction centroid, else calib.working_probe (`Project.probe_at`: the row of the
+        REFERENCE instant, I67, by `map_frame`'s tie rule, I258)."""
+        return self.project.probe_at(self.project.active, f)
 
     def _cal_cam(self, v: int):
         """Camera `v`'s calibration, or None when the calibration does not cover
@@ -7804,7 +7791,7 @@ class MainWindow(QMainWindow):
         among them (G25, I273)."""
         p = self.project
         return (p is not None and p.n_views > 1 and p.calibration is not None
-                and sum(p.calibration.camera(v) is not None for v in range(p.n_views)) >= 2)
+                and p.calibration.n_usable(p.n_views) >= 2)                # (I283) as Reconstruct counts
 
     def _epipolar_guides(self, pid: int) -> list:
         """[(polyline (M, 2) native px of the working camera, colour, camera name), ...]: where
@@ -7817,45 +7804,9 @@ class MainWindow(QMainWindow):
         return self._guides_into(self.project.active, s.points[pid].name, self.current)
 
     def _observations(self, name: str, f: int, exclude: int) -> list:
-        """[(view, calibration, raw (x, y)), ...]: the calibrated cameras other
-        than `exclude` that have landmark `name` at the instant of the working
-        camera's frame `f` (hidden cells left out). Read at the FRACTIONAL frame the way Reconstruct
-        does (I253): between the two neighbouring frames when both have a position, else at the
-        nearest frame -- with a sub-frame offset or a 2x camera the nearest frame is up to half a
-        frame of motion off, and A stores the prediction as a hand placement."""
-        p = self.project
-        out = []
-        for c in range(p.n_views):
-            cal = self._cal_cam(c)
-            if c == exclude or cal is None:
-                continue
-            sc = p.sessions[c]
-            j = sc.pid_by_name(name)
-            if j is None:
-                continue
-            uv = None
-            fx = p.map_frame_exact(p.active, c, f)
-            lo = int(np.floor(fx))
-            a = fx - lo
-            if 1e-9 < a < 1.0 - 1e-9:
-                u0, u1 = self._cell_xy(sc, lo, j), self._cell_xy(sc, lo + 1, j)
-                if u0 is not None and u1 is not None:
-                    uv = (1.0 - a) * u0 + a * u1
-            if uv is None:
-                fc = p.map_frame(p.active, c, f)
-                uv = self._cell_xy(sc, fc, j) if fc is not None else None
-            if uv is not None:
-                out.append((c, cal, uv))
-        return out
-
-    @staticmethod
-    def _cell_xy(sc, fr: int, j: int):
-        """Landmark `j`'s position at frame `fr` of session `sc`, or None (outside the video, no
-        position, hidden, not finite)."""
-        if not (0 <= fr < sc.n_frames) or not sc.exportable_at(fr, j):
-            return None
-        uv = sc.tracks[fr, j]
-        return np.asarray(uv, np.float64) if np.isfinite(uv).all() else None
+        """`Project.observations` at the working camera's frame `f` (I253, I281: the one reader, at
+        the fractional instant, that Re-track uses too)."""
+        return self.project.observations(name, self.project.active, f, exclude)
 
     def _guides_into(self, target: int, name: str, f: int, trusted: list | None = None,
                      obs: list | None = None, depth=None) -> list:
@@ -7939,7 +7890,7 @@ class MainWindow(QMainWindow):
         "note" ("" or why two cameras cannot say "good")}; None with fewer. Two rays are blind to
         a mistake along the line, so two cameras cap at "ok" as the Reconstruct report does (G83,
         I101)."""
-        from kinetrace.calib import dlt_ray, triangulate
+        from kinetrace.calib import dlt_ray, triangulate, widest_angle_deg
         rows = []
         for c, cal, uv in obs:
             q = cal.to_calib_frame(uv)[0]
@@ -7959,11 +7910,12 @@ class MainWindow(QMainWindow):
         if len(views) == 2 and verdict == "good":
             verdict = "ok"
         return {"xyz": xyz, "residual": float(res),
-                "angle_deg": float(np.degrees(np.arccos(np.abs(np.clip(dirs @ dirs.T, -1.0, 1.0)).min()))),
+                "angle_deg": widest_angle_deg(dirs),
                 "views": views, "verdict": verdict, "note": self.TWO_CAM_NOTE if len(views) == 2 else ""}
 
     def _residual_sentence(self, name: str) -> str:
         """'P1 in 2 cameras: 3D rmse 0.84 px (ok: ...)' -- or '' below two cameras (G28)."""
+        from kinetrace.calib import PARALLEL_LINES_DEG
         if not self._guides_ready():
             return ""
         tri = self._triangulate(self._observations(name, self.current, exclude=-1))
@@ -7971,7 +7923,8 @@ class MainWindow(QMainWindow):
             return ""
         return (f"{name} in {len(tri['views'])} cameras: 3D rmse {tri['residual']:.2f} px ({tri['verdict']}"
                 + (f", {tri['note']}" if tri["note"] else "")
-                + (", the rays are nearly parallel so its depth is uncertain" if tri["angle_deg"] < 5.0 else "")
+                + (", the rays are nearly parallel so its depth is uncertain"
+                   if tri["angle_deg"] < PARALLEL_LINES_DEG else "")
                 + ")")
 
     def _probe_guides(self, target: int) -> list:
@@ -8015,6 +7968,7 @@ class MainWindow(QMainWindow):
         visible = set(self.grid.visible_indices()) if show else set()
         name = (self.session.points[pid].name
                 if pid is not None and self.session is not None and pid < self.session.n_points else None)
+        from kinetrace.calib import PARALLEL_LINES_DEG
         allobs = self._observations(name, self.current, exclude=-1) if (name is not None and visible) else []
         tri = self._triangulate(allobs)
         placed_at = {c: uv for c, _cal, uv in allobs}
@@ -8028,7 +7982,7 @@ class MainWindow(QMainWindow):
                     notes.append((float(placed_at[t][0]), float(placed_at[t][1]),
                                   f"3D rmse {tri['residual']:.2f} px · "
                                   + (tri["note"] if tri["note"] else f"{len(tri['views'])} cams")
-                                  + (" · rays nearly parallel" if tri["angle_deg"] < 5.0 else ""),
+                                  + (" · rays nearly parallel" if tri["angle_deg"] < PARALLEL_LINES_DEG else ""),
                                   (q.red(), q.green(), q.blue())))
                 if name is not None:
                     if not have_depth:
@@ -8189,11 +8143,11 @@ class MainWindow(QMainWindow):
     # ------------------------------------------- automatic epipolar re-tracking
 
     def _disagree_thresholds(self) -> list[float]:
-        """The timeline's band threshold per camera: 5 px at 1920 wide, scaled -- the timeline's own
-        rule (`disagree_threshold`), so the band drawn and the stretches re-tracked are one
-        (R6, G83)."""
+        """The timeline's band threshold per camera: 5 px at 1920 on the long side, scaled -- the
+        timeline's own rule (`disagree_threshold`), so the band drawn and the stretches re-tracked
+        are one (R6, G83, I280)."""
         from kinetrace.timeline import disagree_threshold
-        return [disagree_threshold(s.width or 1920) for s in self.project.sessions]
+        return [disagree_threshold(s.width or 1920, s.height or 0) for s in self.project.sessions]
 
     def _retrack_dialog(self):
         """3D → Re-track Disagreeing Stretches: explain, list, ask, run."""
@@ -10688,13 +10642,15 @@ class MainWindow(QMainWindow):
                 f"cannot be measured against {p.name(0)}.\n\nApply its numbers as written?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        had_3d = p.reconstruction is not None
+        had_3d, before = p.reconstruction is not None, self._calib_key()
         for v, off, rate in rows:
             p.set_rate(v, rate)
         for v, off, rate in rows:
             p.set_offset(v, off)
-        p.dirty = True
-        self._retimed(had_3d)
+        moved = self._calib_key() != before            # (I284) as Sync compares (I242): a file of the
+        if moved:                                      # timing the project has changes nothing
+            p.dirty = True
+        self._retimed(had_3d, moved)
         n = sum(1 for v, _o, _r in rows if v != 0)
         rebased = (f" The file's numbers were measured against another camera, so they were re-based on "
                    f"{p.name(0)}." if getattr(rows, "rebased", False) else "")
@@ -11764,12 +11720,15 @@ class MainWindow(QMainWindow):
                    "Apply them anyway? (No keeps the current offsets.)"),
                 QMessageBox.Yes | QMessageBox.No, default) != QMessageBox.Yes:
             return
-        p.offsets = [float(o) for o in offs]
-        p.dirty = True
-        self._drop_reconstruction()          # (I242) the reconstruction below makes a new one
-        self._refresh_companions()
-        self._refresh_cameras()
-        self._reconstruct_3d(quiet=True)
+        had_3d, timing0 = p.reconstruction is not None, self._calib_key()
+        for i in range(1, p.n_views):                  # (I284) through set_offset, like every retime
+            p.set_offset(i, float(offs[i]))
+        moved = self._calib_key() != timing0
+        if moved:
+            p.dirty = True
+        self._retimed(had_3d, moved, reason="")        # silent: the reconstruction below replaces it (I242)
+        if moved or p.reconstruction is None:          # (I284) the same offsets keep the result and volumes
+            self._reconstruct_3d(quiet=True)
 
     def _reconstruct_3d(self, quiet: bool = False):
         from kinetrace.calib import reconstruct
@@ -11798,7 +11757,7 @@ class MainWindow(QMainWindow):
         from kinetrace.calib import reconstruction_report
         widths = [s.width for s in p.sessions if s.width] or [1920]
         heights = [s.height for s in p.sessions if s.height] or [0]
-        n_cal = sum(p.calibration.camera(v) is not None for v in range(p.n_views))         # (I273)
+        n_cal = p.calibration.n_usable(p.n_views)                                         # (I273, I283)
         rep = reconstruction_report(r, n_cal, float(max(widths)), float(max(heights)))     # long side (I250)
         self._recon_report = rep
         self._update_disagreement()             # per-camera disagreement onto the timeline
@@ -11923,12 +11882,10 @@ class MainWindow(QMainWindow):
                     "is not the animal's. Segment the animal in at least THREE cameras that look at it "
                     "from clearly different directions, then carve again.")
             return
-        pts = None
         r = p.reconstruction
-        if r is not None and r.t0 <= t < r.t0 + r.n_frames:
-            row = r.xyz[t - r.t0]
-            row = row[np.isfinite(row).all(axis=1)]
-            pts = row if len(row) else None
+        pts = r.points_at(t) if r is not None else None
+        if pts is not None and not len(pts):
+            pts = None
         if pts is None:
             self.toast.show_message(
                 "Reconstruct the landmarks first (Ctrl+3): they tell the carver where in space "
@@ -12034,10 +11991,11 @@ class MainWindow(QMainWindow):
         if r is not None:
             scene.points_all = r.xyz
             scene.names = list(r.names)
-            if r.t0 <= t < r.t0 + r.n_frames:
-                scene.points = r.xyz[t - r.t0]
+            k = r.index(t)
+            if k is not None:
+                scene.points = r.xyz[k]                     # every row: they line up with the names
                 n_ok = int(np.isfinite(scene.points).all(axis=1).sum())
-                res = r.residual[t - r.t0]
+                res = r.residual[k]
                 med = float(np.nanmedian(res)) if n_ok else float("nan")
                 info += f" · {n_ok}/{len(r.names)} landmarks · residual {med:.2f} px"
             idx = {nm: i for i, nm in enumerate(r.names)}
@@ -12057,8 +12015,7 @@ class MainWindow(QMainWindow):
             info += f" · hull {h.volume():.3g} {unit}³ from {h.n_views} cameras"
         # (G185, G186) the wand calibration's picture, when one is made for THIS calibration
         cal = p.calibration
-        self.view3d.set_calib_available(cal is not None and sum(cal.camera(v) is not None
-                                                                for v in range(p.n_views)) >= 2)
+        self.view3d.set_calib_available(cal is not None and cal.n_usable(p.n_views) >= 2)     # (I283)
         cp = self._calib_pic
         scene.calib = cp[2] if (cp is not None and cp[0] is cal and cp[1] == self._calib_key()) else None
         if scene.unit == "" and cal is not None:
@@ -13090,8 +13047,8 @@ class _WorldAxesDialog(QDialog):
             a = np.asarray(r.xyz[:, j], np.float64)
             a = a[np.isfinite(a).all(axis=1)]
             return np.median(a, axis=0) if len(a) else np.full(3, np.nan)
-        k = self._t - int(r.t0)
-        return np.asarray(r.xyz[k, j], np.float64) if 0 <= k < r.n_frames else np.full(3, np.nan)
+        k = r.index(self._t)
+        return np.asarray(r.xyz[k, j], np.float64) if k is not None else np.full(3, np.nan)
 
     def _compute(self):
         """-> (B, o, note, text); B is None when the choice cannot make axes (text says why)."""

@@ -261,11 +261,11 @@ print("gravity check is unit-aware OK")
 # ---- DLTdv csv export (1-based pixels) and .kcal.json round trip --------------
 csv_path = os.path.join(OUT, "wand_dltCoefs.csv")
 export_dlt_csv(res_ax, csv_path, pixel_origin_out=1.0)
-cal1 = Calibration.load_dlt_csv(csv_path, sizes, pixel_origin=1.0)
+cal1 = Calibration.load_dlt_csv(csv_path, sizes, pixel_origin=1.0).to_internal()   # (I278) as an import does
 assert len(cal1) == 5
 for c in range(5):
     a = res_ax.cameras[c].project(X)
-    b = cal1.cameras[c].project(X)                               # 1-based coefs, origin fix applied back
+    b = cal1.cameras[c].project(X)                               # 1-based coefs, brought into Kinetrace pixels
     assert np.abs(a - b).max() < 1e-6, (c, np.abs(a - b).max())
     raw = np.genfromtxt(csv_path, delimiter=",")
     assert raw.shape == (11, 5)

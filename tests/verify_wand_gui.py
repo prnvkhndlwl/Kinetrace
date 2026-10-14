@@ -284,6 +284,7 @@ print("export / re-import OK")
 # ---- (I33) exporting a DIFFERENT calibration must not carry this wand run's report ----
 import json as _json  # noqa: E402
 own_cal = p.calibration
+mat = mat.to_internal()                               # (I278) as an import brings it in
 p.calibration = mat                                   # e.g. an imported easyWand / DLTdv csv
 kcal2 = os.path.join(SCRATCH, "wand_gui_imported.kcal.json")
 rep2 = os.path.join(SCRATCH, "wand_gui_imported_report.txt")

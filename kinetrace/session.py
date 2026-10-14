@@ -722,10 +722,8 @@ class TrackingSession:
                & ~self.occluded[:, cols]).any(axis=1)
         if not low.any():
             return []
-        d = np.diff(low.astype(np.int8), prepend=0, append=0)
-        starts = np.nonzero(d == 1)[0]
-        ends = np.nonzero(d == -1)[0] - 1
-        return list(zip(starts.tolist(), ends.tolist()))
+        from kinetrace.kinematics import contiguous_runs
+        return contiguous_runs(low)                    # (R33)
 
     def next_low_conf(self, frame: int, forward: bool = True, pids: list[int] | None = None,
                       threshold: float = LOW_CONF) -> tuple[int, int] | None:

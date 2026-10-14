@@ -341,7 +341,15 @@ def sec_e():
 def sec_f():
     """A 4-frame sync mistake on camera 2 is found; a correct rig gets no suggestion."""
     P = build(no_wand=(), error=[0, 4, 0, 0, 0], tag="subf")
-    tc = wd.timing_check(P, "wand A", "wand B", list(range(N_CAM)), [None] * N_CAM)
+    # (I280) the inlier band scales like every residual verdict (long side / 1920, never below 1): 1.5 px
+    # at 1280x720, not 1.0
+    seen_thr, real_share = [], wd._inlier_share
+    wd._inlier_share = lambda xa, xb, thr: (seen_thr.append(thr), real_share(xa, xb, thr))[1]
+    try:
+        tc = wd.timing_check(P, "wand A", "wand B", list(range(N_CAM)), [None] * N_CAM)
+    finally:
+        wd._inlier_share = real_share
+    assert seen_thr and all(t_ == 1.5 for t_ in seen_thr), sorted(set(seen_thr))
     assert tc.suggestions == {1: -4}, (tc.suggestions, tc.lines)
     P_ok = build(no_wand=(), tag="subf_ok")
     tc_ok = wd.timing_check(P_ok, "wand A", "wand B", list(range(N_CAM)), [None] * N_CAM)

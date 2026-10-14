@@ -23,17 +23,20 @@ residual ratio of 0.9999.
 Image coordinate conventions (this is where 3D pipelines silently break)
 -------------------------------------------------------------------------
 The DLT coefficients are fitted to whatever 2D coordinates the calibration
-software was given, so the SAME convention must be applied to Kinetrace's
-tracks before triangulating. `CameraCalibration` carries it explicitly:
+software was given. (I278) Inside Kinetrace EVERY calibration is in Kinetrace's
+own pixels -- 0-based, y down from the top -- like the tracks: a file's
+convention is converted once where it enters (`Calibration.to_internal`: the
+import dialog, opening a project, `convert`) and back only for the programs
+that want theirs (dltCoefs.csv / MATLAB: +1). A file's convention, until then:
 
 * ``pixel_origin`` — MATLAB (DLTdv, easyWand) numbers pixel centres from 1,
   OpenCV/Kinetrace from 0: a MATLAB-fitted DLT wants ``x + 1, y + 1``.
 * ``y_flip`` — some exports measure y from the bottom edge (``height - y``).
   DLTdv8 projects use a top-left origin (checked on a real DLTdv8 project:
-  the clicked coordinates land on the animal only unflipped), so the default is
-  False; older DLTdv5-era files may need True.
-* the undistortion model, applied AFTER the origin fix, because the
-  calibration was fitted on undistorted points. `LWMUndistort` reproduces
+  the clicked coordinates land on the animal only unflipped); older
+  DLTdv5-era files may need True. A file that does not say (a bare
+  dltCoefs.csv, easyWand) is asked about.
+* the undistortion model, fitted on undistorted points. `LWMUndistort` reproduces
   MATLAB's `fitgeotrans(..., 'lwm', N)` local weighted mean transform
   (Goshtasby 1988) from its control points, which is how DLTdv undistorts
   GoPro footage; it matches DLTdv to 0.55–1.7 px median on real clicks (the
@@ -398,17 +401,54 @@ def _assign_lwm_profiles(n: int, cells: list, ids: list) -> tuple[list, str]:
 @dataclass
 class CameraCalibration:
     """One camera's DLT coefficients plus the coordinate convention they were
-    fitted in (see the module docstring)."""
+    fitted in (see the module docstring): 0 / False for every camera inside the
+    app (`to_internal`); a file's own only between its reader and `to_internal`."""
     coefs: np.ndarray                      # (11,)
     width: int = 0
     height: int = 0
     undistort: object = field(default_factory=NoUndistort)
-    pixel_origin: float = 1.0              # 1.0 = MATLAB-fitted (DLTdv/easyWand), 0.0 = OpenCV
+    pixel_origin: float = 0.0              # 1.0 = MATLAB-fitted (DLTdv/easyWand), 0.0 = OpenCV / Kinetrace
     y_flip: bool = False                   # True: y measured from the bottom edge
     rmse: float = float("nan")             # calibration residual, if the file carried one
 
-    # (R14) THE pixel-convention transform: calib, hull and calibio all go
-    # through these three, so the convention is written down once.
+    @property
+    def has_lens_correction(self) -> bool:
+        """(R30) The camera's raw pixels are undistorted before the DLT (an LWM or OpenCV model)."""
+        return getattr(self.undistort, "kind", "none") != "none"
+
+    def is_internal(self) -> bool:
+        """In Kinetrace's own pixels (0-based, top-left): the only convention inside the app."""
+        return float(self.pixel_origin) == 0.0 and not self.y_flip
+
+    def to_internal(self) -> "CameraCalibration":
+        """(I278) This camera re-expressed in Kinetrace's own pixels. Exact: the coefficients go
+        through `pixel_matrix` (its last row is (0, 0, 1), so L9..L11 and the scale are kept),
+        an LWM lens model's control points and an OpenCV model's principal point move the same
+        way, and the world, the camera centre and every residual are unchanged. ValueError (a
+        sentence) for a bottom-left file without its picture height, and for an OpenCV lens
+        model measured from the bottom (no file makes one)."""
+        if self.is_internal():
+            return self
+        if self.y_flip and self.height <= 0:
+            raise ValueError("this calibration measures y from the bottom edge of the picture, so its picture "
+                             "height is needed to turn it over; open it with the project's videos (or give "
+                             "--size WIDTHxHEIGHT)")
+        A = self.pixel_matrix()
+        P = A @ dlt_matrix(self.coefs)
+        und = self.undistort
+        if isinstance(und, LWMUndistort):
+            und = LWMUndistort(self.from_dlt_pixels(und.raw_pts), self.from_dlt_pixels(und.und_pts),
+                               und.n_neighbours)
+        elif isinstance(und, OpenCVUndistort):
+            if self.y_flip:
+                raise ValueError("an OpenCV lens model with y measured from the bottom edge cannot be used; "
+                                 "OpenCV lens models are 0-based, y down from the top")
+            und = OpenCVUndistort(A @ und.K, und.dist, und.fisheye, None if und.P is und.K else A @ und.P)
+        return CameraCalibration(np.concatenate([P[0], P[1], P[2, :3]]), self.width, self.height, und,
+                                 0.0, False, self.rmse)
+
+    # (R14) THE pixel-convention transform, now used only to bring a file's
+    # convention in (`to_internal`) and to write it out again.
     def to_dlt_pixels(self, pts_xy: np.ndarray) -> np.ndarray:
         """Kinetrace pixels (0-based, top-left) -> the DLT's pixel convention,
         WITHOUT undistortion (`pixel_origin`, then `y_flip`)."""
@@ -448,13 +488,13 @@ class CameraCalibration:
 
     def to_calib_frame(self, pts_xy: np.ndarray) -> np.ndarray:
         """Kinetrace pixels (0-based, top-left) -> undistorted coordinates in
-        the frame the DLT was fitted in."""
-        return self.undistort.undistort(self.to_dlt_pixels(pts_xy))
+        the frame the DLT was fitted in (the same pixels: `to_internal`)."""
+        return self.undistort.undistort(pts_xy)
 
     def from_calib_frame(self, pts_uv: np.ndarray) -> np.ndarray:
         """Inverse of `to_calib_frame`: calibration-frame coordinates (e.g. a DLT
         projection) -> raw Kinetrace pixels."""
-        return self.from_dlt_pixels(self.undistort.distort(np.atleast_2d(np.asarray(pts_uv, np.float64))))
+        return self.undistort.distort(np.atleast_2d(np.asarray(pts_uv, np.float64)))
 
     def project(self, xyz: np.ndarray) -> np.ndarray:
         """World -> raw Kinetrace pixels (distortion re-applied)."""
@@ -485,6 +525,28 @@ class Calibration:
         # store that failed to parse, distortion lines it did not apply), shown
         # by the import dialog instead of a generic "no undistortion" (I102)
         self.notes: list[str] = []
+        # (I278) False: the file does not say how it counted pixels (a bare dltCoefs.csv, easyWand),
+        # so the user is asked before `to_internal`
+        self.convention_stated = True
+
+    def with_cameras(self, cams: list, source: str | None = None) -> "Calibration":
+        """The same calibration with other cameras: unit, source (or `source`), the moved
+        origin, the importer's notes and the quality report travel with it."""
+        out = Calibration(cams, self.unit, self.source if source is None else source)
+        out.origin_shift = self.origin_shift
+        out.notes = list(self.notes)
+        if hasattr(self, "report"):
+            out.report = self.report
+        return out
+
+    def is_internal(self) -> bool:
+        return all(c is None or c.is_internal() for c in self.cameras)
+
+    def to_internal(self) -> "Calibration":
+        """(I278) Every camera in Kinetrace's own pixels (`CameraCalibration.to_internal`); itself
+        when they already are."""
+        return self if self.is_internal() else self.with_cameras(
+            [None if c is None else c.to_internal() for c in self.cameras])
 
     def __len__(self) -> int:
         return len(self.cameras)
@@ -497,9 +559,19 @@ class Calibration:
         """The calibrated cameras' indices, in camera order."""
         return [k for k, c in enumerate(self.cameras) if c is not None]
 
+    def calibrated_cameras(self) -> list[CameraCalibration]:
+        """(R30) The calibrated cameras themselves, in camera order (`views()`'s cameras)."""
+        return [c for c in self.cameras if c is not None]
+
     @property
     def n_calibrated(self) -> int:
         return sum(c is not None for c in self.cameras)
+
+    def n_usable(self, n_views: int) -> int:
+        """(I283) The cameras of an `n_views` project that 3D can use: the calibrated ones -- none
+        when this calibration lists MORE cameras than the project (made for another camera set:
+        Reconstruct refuses it). THE "two or more calibrated cameras" count of the window."""
+        return self.n_calibrated if len(self.cameras) <= int(n_views) else 0
 
     def covers(self, n_views: int) -> bool:
         """Every one of `n_views` cameras is calibrated."""
@@ -529,7 +601,9 @@ class Calibration:
             w, h = (sizes[c] if sizes and c < len(sizes) else (0, 0))
             cams.append(CameraCalibration(raw[:, c].copy(), int(w), int(h), NoUndistort(),
                                           pixel_origin, y_flip))
-        return Calibration(cams, source=Path(path).name)
+        cal = Calibration(cams, source=Path(path).name)
+        cal.convention_stated = False          # DLTdv, easyWand and Argus all write this file: ask (I278)
+        return cal
 
     @staticmethod
     def load_easywand_mat(path: str | Path, pixel_origin: float = 1.0,
@@ -554,6 +628,7 @@ class Calibration:
                                   pixel_origin, y_flip, float(rm[c]) if c < len(rm) else np.nan)
                 for c in range(n)]
         cal = Calibration(cams, source=Path(path).name)
+        cal.convention_stated = False          # MATLAB's 1-based pixels, but y from the top or the bottom: ask
         wl = getattr(ew, "wandLen", None)
         if wl is not None:
             cal.unit = f"wand={float(wl):g}"
@@ -574,7 +649,8 @@ class Calibration:
         coefs = np.asarray(ud.data.dltcoef, np.float64)
         sizes = np.atleast_2d(np.asarray(ud.data.movsizes)).astype(int)   # rows: (h, w)
         n = coefs.shape[1]
-        cams = [CameraCalibration(coefs[:, c].copy(), int(sizes[c, 1]), int(sizes[c, 0]))
+        cams = [CameraCalibration(coefs[:, c].copy(), int(sizes[c, 1]), int(sizes[c, 0]), NoUndistort(),
+                                  1.0, False)            # DLTdv8: MATLAB pixels, y down from the top
                 for c in range(n)]
         notes: list[str] = []
         # undistortion: DLTdv stores one MATLAB geometric transform per camera in
@@ -780,10 +856,7 @@ class Calibration:
             cams.append(CameraCalibration(np.concatenate([P[0], P[1], P[2, :3]]), cam.width, cam.height,
                                           cam.undistort, cam.pixel_origin, cam.y_flip, cam.rmse))
         src = re.sub(r"\s*\(world: .*\)\s*$", "", self.source or "")
-        out = Calibration(cams, self.unit, f"{src} ({note})".strip() if note else src)
-        out.notes = list(self.notes)
-        if hasattr(self, "report"):
-            out.report = self.report
+        out = self.with_cameras(cams, f"{src} ({note})".strip() if note else src)
         out.origin_shift = None
         return out
 
@@ -823,7 +896,7 @@ class Calibration:
                 continue
             cams.append(CameraCalibration(L.copy(), int(d.get("width", 0)), int(d.get("height", 0)),
                                           undistort_from_json(d.get("undistort", {})),
-                                          float(d.get("pixel_origin", 1.0)), bool(d.get("y_flip", False)),
+                                          float(d.get("pixel_origin", 0.0)), bool(d.get("y_flip", False)),
                                           float(d.get("rmse", np.nan))))
         cal = Calibration(cams, str(meta.get("unit", "")), str(meta.get("source", "")))
         if meta.get("origin_shift") is not None:
@@ -860,6 +933,20 @@ class Reconstruction:
     @property
     def n_frames(self) -> int:
         return self.xyz.shape[0]
+
+    def index(self, t) -> int | None:
+        """(R31) The row of reference frame `t`, or None outside the result."""
+        k = int(t) - int(self.t0)
+        return k if 0 <= k < self.n_frames else None
+
+    def points_at(self, t) -> np.ndarray:
+        """(R31) The landmarks solved at reference frame `t`, (M, 3): rows without a position left
+        out, none outside the result. (A row that must line up with `names` is `xyz[index(t)]`.)"""
+        k = self.index(t)
+        if k is None:
+            return self.xyz[:0].reshape(0, 3)
+        row = self.xyz[k]
+        return row[np.isfinite(row).all(axis=1)]
 
     def reframed(self, B: np.ndarray, o: np.ndarray) -> "Reconstruction":
         """The same 3D result in the world `Calibration.reframed(B, o)` makes:
@@ -923,10 +1010,16 @@ def world_is_left_handed(cal: "Calibration", probe: np.ndarray | None = None) ->
         return False
     probe = probe if probe is not None else working_probe(cal)
     dets = []
-    for cam in (cal.camera(v) for v in cal.views()):
-        P = cam.pixel_matrix() @ dlt_matrix(cam.coefs) * front_sign(cam.coefs, probe)
+    for cam in cal.calibrated_cameras():
+        P = opencv_projection(cam, probe)
         dets.append(np.linalg.det(P[:, :3]))
     return sum(d < 0 for d in dets) > len(dets) / 2
+
+
+def opencv_projection(cam: CameraCalibration, probe) -> np.ndarray:
+    """(R30) The camera's 3 x 4 projection matrix with depth (its third row) positive in front:
+    what `world_is_left_handed` and `calibio.to_models` read K, R, t from."""
+    return dlt_matrix(cam.coefs) * front_sign(cam.coefs, probe)
 
 
 def world_axes(origin, px, py, left_handed: bool = False) -> tuple[np.ndarray, np.ndarray]:
@@ -1049,7 +1142,7 @@ def calib_frame_ok(cam: CameraCalibration, raw: np.ndarray) -> tuple[np.ndarray,
     raw = np.asarray(raw, np.float64).reshape(-1, 2)
     q = cam.to_calib_frame(raw)
     back = cam.from_calib_frame(q)
-    tol = max(1.0, 1e-3 * cam.width)
+    tol = round_trip_tol(cam.width)
     ok = np.isfinite(q).all(axis=1) & np.isfinite(back).all(axis=1)
     ok[ok] &= np.linalg.norm(back[ok] - raw[ok], axis=1) < tol
     return q, ok
@@ -1062,15 +1155,15 @@ def _picture_in_calib_frame(cam: CameraCalibration, margin: float) -> tuple:
     of its undistorted border -- the points of it the model round-trips (a
     model that runs away past its boards must not blow the box up); the exact
     cut is made afterwards in raw pixels."""
-    key = (float(margin), cam.width, cam.height, id(cam.undistort), cam.pixel_origin, cam.y_flip)
+    key = (float(margin), cam.width, cam.height, id(cam.undistort))
     cached = getattr(cam, "_picture_box_cache", None)
     if cached is not None and cached[0] == key:
         return cached[1]
     mx, my = margin * cam.width, margin * cam.height
     raw = (-0.5 - mx, -0.5 - my, cam.width - 0.5 + mx, cam.height - 0.5 + my)
     x0, y0, x1, y1 = raw
-    if getattr(cam.undistort, "kind", "none") == "none":
-        q = cam.to_dlt_pixels(np.array([[x0, y0], [x1, y0], [x0, y1], [x1, y1]]))
+    if not cam.has_lens_correction:
+        q = np.array([[x0, y0], [x1, y0], [x0, y1], [x1, y1]])
     else:
         t = np.linspace(0.0, 1.0, 64)
         border = np.vstack([np.column_stack([x0 + t * (x1 - x0), np.full_like(t, y0)]),
@@ -1078,7 +1171,7 @@ def _picture_in_calib_frame(cam: CameraCalibration, margin: float) -> tuple:
                             np.column_stack([np.full_like(t, x0), y0 + t * (y1 - y0)]),
                             np.column_stack([np.full_like(t, x1), y0 + t * (y1 - y0)])])
         q, ok = calib_frame_ok(cam, border)
-        q = q[ok] if ok.sum() >= 8 else cam.to_dlt_pixels(border)
+        q = q[ok] if ok.sum() >= 8 else border
     box = (float(q[:, 0].min()), float(q[:, 1].min()), float(q[:, 0].max()), float(q[:, 1].max()))
     out = (raw, box)
     try:
@@ -1196,7 +1289,7 @@ def epipolar_polyline(src: CameraCalibration, dst: CameraCalibration, uv_raw_src
             # a polynomial lens model extrapolates past its boards and can run away;
             # where it no longer inverts consistently it is guessing
             back = dst.to_calib_frame(uv)
-            tol = max(0.5, 5e-4 * dst.width)
+            tol = max(0.5, PROJECTION_TRUST_TOL * dst.width)
             trusted = np.isfinite(back).all(axis=1)
             trusted[trusted] &= np.linalg.norm(back[trusted] - und[trusted], axis=1) < tol
         uv, trusted = _clip_polyline_to_box(uv, trusted, raw_box)
@@ -1237,6 +1330,26 @@ def closest_on_polyline(pts: np.ndarray, p) -> np.ndarray | None:
     return q[np.argmin(np.linalg.norm(q - p, axis=1))]
 
 
+def even_indices(n: int, k: int) -> np.ndarray:
+    """(R33) `k` indices spread evenly over 0 .. n - 1, ends included (k <= n): the frames, boards
+    or instants a long list is thinned to."""
+    return np.linspace(0, n - 1, k).round().astype(int)
+
+
+def widest_angle_deg(U: np.ndarray) -> float:
+    """(R32) The widest angle in degrees between unit vectors (rows of U), sign-free: two lines'
+    normals or two cameras' rays. Under `PARALLEL_LINES_DEG` they do not "cross"."""
+    return float(np.degrees(np.arccos(np.abs(np.clip(U @ U.T, -1.0, 1.0)).min())))
+
+
+def round_trip_tol(width: float) -> float:
+    """(R32) How far (px) a raw pixel may come back from the lens model's undistort -> distort and
+    still count as described by it: max(1, 0.001 x the picture width)."""
+    return max(1.0, 1e-3 * width)
+
+
+PROJECTION_TRUST_TOL = 5e-4       # (R32) x width, at least 0.5 px: a projected point the lens still inverts
+PIXEL_CONVENTIONS = {"matlab": (1.0, False), "bottom-left": (1.0, True), "opencv": (0.0, False)}   # (R32)
 PARALLEL_LINES_DEG = 5.0    # epipolar lines closer than this in angle do not "cross" (THE 5-degree rule:
                             # intersect_polylines, the app's prediction diamond and the guides' "parallel" wording)
 
@@ -1281,9 +1394,7 @@ def intersect_polylines(lines: list[np.ndarray], near, info: dict | None = None)
     if len(A) < 2:
         return closest_on_polyline(cands[0], near)
     N = np.asarray(A)
-    # the widest angle between two lines = between their normals (sign-free)
-    cosines = np.abs(np.clip(N @ N.T, -1.0, 1.0))
-    widest = float(np.degrees(np.arccos(cosines.min())))
+    widest = widest_angle_deg(N)                   # between two lines = between their normals
     if info is not None:
         info.update({"angle_deg": widest})
     if widest < PARALLEL_LINES_DEG:
@@ -1322,7 +1433,7 @@ def reconstruction_report(rec: Reconstruction, n_views: int, width_px: float = 1
     camera saw the landmark and where the 3D point projects back -- how much
     the cameras DISAGREE. Thresholds scale with the picture's long side (a
     pixel of 4K is half a pixel of 1080p; `residual_bands`): good <= 1.5 px,
-    usable <= 5 px, poor above, at 1920 wide. A point made from only two rays is blind to one whole
+    usable <= 5 px, poor above, at 1920 on the long side. A point made from only two rays is blind to one whole
     direction (a mistake along the epipolar line triangulates perfectly): with
     two cameras, or when at least `TWO_CAMERA_CAP_FRAC` of the points were
     seen by only two, the report says so and "good" becomes "ok". Returns
@@ -1411,10 +1522,8 @@ def calib_tracks(session, cal: CameraCalibration) -> np.ndarray:
     these at fractional frames is what DLTdv's time shift does too."""
     T, N = session.tracks.shape[:2]
     out = np.full((T, N, 2), np.nan)
-    ok = session.tracked & np.isfinite(session.tracks).all(axis=2)
-    occ = getattr(session, "occluded", None)
-    if occ is not None and occ.shape == ok.shape:
-        ok &= ~occ                        # hand-marked hidden: never triangulated
+    # (R36) the cells that leave the app (hand-marked hidden: never triangulated), with a position
+    ok = session.exportable & np.isfinite(session.tracks).all(axis=2)
     if ok.any():
         out[ok] = cal.to_calib_frame(session.tracks[ok].astype(np.float64))
     return out
@@ -1624,7 +1733,7 @@ def _scoring_instants(prep: "_Prepared", rates, offs, t_all: np.ndarray, search:
             if len(moving) >= 10:
                 usable = moving
         if len(usable) > MAX_SCORE_INSTANTS:
-            usable = usable[np.round(np.linspace(0, len(usable) - 1, MAX_SCORE_INSTANTS)).astype(int)]
+            usable = usable[even_indices(len(usable), MAX_SCORE_INSTANTS)]
     if len(usable) == 0:
         usable = np.arange(len(t_scan))
     return t_scan[usable], keep[usable], n_cells
@@ -1678,8 +1787,8 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
         return float(r.mean()) if len(r) else float("inf")
 
     try:
-        return _search_offsets(sessions, offsets, offs, cost, prep, rates, t, keep, n_cells, search, step,
-                               refine, passes, reference, report)
+        return _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, passes, reference,
+                               report)
     except _SearchCancelled:
         if report is not None:
             report.update({"verdict": "cancelled", "why": "Cancelled: the offsets were not changed.",
@@ -1692,8 +1801,7 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
             progress(total, total)
 
 
-def _search_offsets(sessions, offsets, offs, cost, prep, rates, t, keep, n_cells, search, step, refine,
-                    passes, reference, report):
+def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, passes, reference, report):
     """The body of `estimate_offsets` (split off so a cancel can unwind it)."""
     before = cost(offs)
     for _ in range(passes):

@@ -322,7 +322,7 @@ for c in rig(dist=False):
     K1[:2, 2] += 1.0                                  # MATLAB pixels
     L = dlt_from_camera(K1, c["R"] @ F, c["t"])       # world mirrored: X' = F X
     lh.append(CameraCalibration(L, CW, CH, NoUndistort(), pixel_origin=1.0))
-cal_lh = Calibration(lh, "m", "left-handed")
+cal_lh = Calibration(lh, "m", "left-handed").to_internal()   # (I278) as every import does
 ms_lh = calibio.to_models(cal_lh)
 check(ms_lh.mirrored and any("mirrored" in n for n in ms_lh.notes), "a left-handed world is exported mirrored, "
       "and said")
@@ -336,7 +336,7 @@ for c in rig(dist=False):
     A = np.array([[1, 0, 0], [0, -1, CH - 1], [0, 0, 1.0]])     # ours -> bottom-left 0-based
     L = dlt_from_camera(A @ c["K"], c["R"], c["t"])
     yf.append(CameraCalibration(L, CW, CH, NoUndistort(), pixel_origin=0.0, y_flip=True))
-cal_yf = Calibration(yf, "m")
+cal_yf = Calibration(yf, "m").to_internal()
 ms_yf = calibio.to_models(cal_yf)
 check(worst_diff(cal_yf, ms_yf) < 1e-6 and max(np.abs(m.K - c["K"]).max() for m, c in zip(ms_yf.cameras, rig()))
       < 1e-6, "a bottom-left calibration gives the ordinary top-left camera")
@@ -588,19 +588,34 @@ check(code == 0 and len(back) == 3 and max(np.abs(b_.K - c["K"]).max() for b_, c
 dltc = os.path.join(OUT, "cli_dltCoefs.csv")
 code, out = convert("calibration", kc, dltc)
 check(code == 0 and os.path.exists(dltc), "calibration: into a dltCoefs.csv (MATLAB pixels)", out)
-code, out = convert("calibration", dltc, os.path.join(OUT, "cli_cams.yml"))
-check(code == 2 and "--size" in out, "a dltCoefs.csv without --size is refused with what to add", out)
 code, out = convert("calibration", dltc, os.path.join(OUT, "cli_cams.yml"), "--size", f"{CW}x{CH}")
+check(code == 2 and "--pixels matlab" in out and "does not say how its pixels were numbered" in out,
+      "(I278) a dltCoefs.csv without --pixels is refused: it does not say how it counted pixels, and why it "
+      "matters is said", out)
+code, out = convert("calibration", dltc, os.path.join(OUT, "cli_cams.yml"), "--pixels", "matlab")
+check(code == 2 and "--size" in out, "a dltCoefs.csv without --size is refused with what to add", out)
+code, out = convert("calibration", dltc, os.path.join(OUT, "cli_cams.yml"), "--size", f"{CW}x{CH}",
+                    "--pixels", "matlab")
 yb = calibio.read_cameras(os.path.join(OUT, "cli_cams.yml")) if code == 0 else []
 ok_px = False
 if yb:
     Xw = np.random.default_rng(9).uniform(-0.3, 0.3, (50, 3))
-    ref_c = calibio.load_calibration(dltc)
+    ref_c = calibio.load_calibration(dltc)            # MATLAB pixels, no lens (a csv holds none)
     for c_ in ref_c.cameras:
-        c_.width, c_.height = CW, CH
-    ms_ = calibio.to_models(ref_c)
+        c_.width, c_.height, c_.pixel_origin = CW, CH, 1.0
+    ms_ = calibio.to_models(ref_c.to_internal())
     ok_px = max(float(np.abs(m_.project(Xw) - y_.project(Xw)).max()) for m_, y_ in zip(ms_.cameras, yb)) < 1e-6
 check(code == 0 and ok_px, "... and with --size it becomes OpenCV cameras (the 1-based pixels converted)", out)
+# (I278) a MATLAB dltCoefs.csv comes in 0-based and goes out 1-based again: the file read back is the file
+code, out = convert("calibration", dltc, os.path.join(OUT, "cli_again.kcal.json"), "--pixels", "matlab")
+again = calibio.load_kcal(os.path.join(OUT, "cli_again.kcal.json")) if code == 0 else None
+dlt2 = os.path.join(OUT, "cli_again_dltCoefs.csv")
+if again is not None:
+    calibio.dlt_csv_matlab(again, dlt2)
+a1, a2 = np.genfromtxt(dltc, delimiter=","), (np.genfromtxt(dlt2, delimiter=",") if again is not None else None)
+check(again is not None and again.is_internal() and a2 is not None
+      and float(np.abs(a2 - a1).max() / np.abs(a1).max()) < 1e-9,
+      "(I278) a MATLAB dltCoefs.csv is 0-based inside (.kcal.json) and its export is the same file again", out)
 code, out = convert("tracks", os.path.join(OUT, "dlc_roundtrip.csv"), os.path.join(OUT, "cli_xypts.csv"),
                     "--to", "dltdv", "--size", f"{W}x{H}", "--frames", T)
 s, imp, summ = imported_into(os.path.join(OUT, "cli_xypts.csv")) if code == 0 else (None, None, None)

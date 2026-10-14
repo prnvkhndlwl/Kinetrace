@@ -469,6 +469,14 @@ def r6_timeline_geometry():
     tl.set_session(s2)
     tl.set_disagreement(np.zeros((50, 1), np.float32))
     check("R6 the panel's default threshold is that rule", tl._disagree_px == 10.0, tl._disagree_px)
+    # (I280) by the LONG side, like every residual verdict: a portrait 4K camera's band is 10 px (it was 5.6)
+    from kinetrace.calib import residual_bands
+    s3 = TrackingSession("p.mp4", 50, 30.0, 2160, 3840)
+    s3.add_point(0, 1.0, 1.0)
+    tl.set_session(s3)
+    tl.set_disagreement(np.full((50, 1), 7.0, np.float32))
+    check("(I280) a portrait 4K camera: 10 px, as calib.residual_bands says, so a 7 px cell is not magenta",
+          tl._disagree_px == 10.0 == residual_bands(2160, 3840)[1], tl._disagree_px)
 
 
 @section

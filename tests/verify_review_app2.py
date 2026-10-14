@@ -694,6 +694,16 @@ del win.timeline.set_disagreement
 p.set_offset(1, 0.0)
 win._set_active_view(0)
 
+# ---- I280: Re-track's limit is the band's, by the LONG side (a portrait 4K camera: 10 px, not 5.6)
+sizes0 = [(s.width, s.height) for s in p.sessions]
+for s in p.sessions:
+    s.width, s.height = 2160, 3840
+thr_p = win._disagree_thresholds()
+for s, (w_, h_) in zip(p.sessions, sizes0):
+    s.width, s.height = w_, h_
+check("I280 portrait 4K cameras: Re-track and the band start at 10 px (long side), like the 3D verdict",
+      thr_p == [10.0, 10.0, 10.0], thr_p)
+
 # ---- G68: a rename is ONE undo step in every camera
 win._goto(F + 5, force=True)
 win._on_select(0)

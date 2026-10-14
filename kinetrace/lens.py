@@ -52,19 +52,33 @@ OUTLIER_FLOOR_PICK_PX = 0.5
 QUARTER_TURNS = (0, 90, 180, 270)   # the turns a video's rotation tag can ask for
 
 
-def px_scale(width: float, height: float) -> float:
-    """How many times a 1080p pixel one of this picture's pixels is, by the
-    LONGER side (I250: a portrait 4K clip was judged ~1.8 x stricter than the
-    same lens in landscape by max(1, width / 1920))."""
-    return max(1.0, max(float(width), float(height)) / 1920.0)
-
-
 def rms_limits(width: float, height: float) -> tuple[float, float]:
     """(good, ok) limits of one reprojection error in px for a picture of this
     size: at or under the first reads good, over the second poor. The ONE rule
     behind the report's fit verdict and the review board's tile colours."""
-    s = px_scale(width, height)
+    from kinetrace.calib import residual_scale
+    s = residual_scale(width, height)              # (I250) by the longer side
     return 0.6 * s, 1.2 * s
+
+
+def _rms_px(d: np.ndarray) -> float:
+    """(R35) RMS length of (N, 2) pixel differences, in their own dtype (the standard fit's are
+    float32, as cv2.projectPoints returns them)."""
+    return float(np.sqrt(np.mean(np.sum(d ** 2, axis=1))))
+
+
+def _board_tilt_deg(rvec) -> float:
+    """(R35) How far a board's pose (Rodrigues vector) turns its normal from the optical axis, deg."""
+    R, _ = cv2.Rodrigues(np.asarray(rvec, np.float64))
+    return float(np.degrees(np.arccos(min(1.0, abs(float(R[2, 2]))))))
+
+
+def fit_and_score(chosen, everything, pattern, square, size, model, max_views, base, rotation):
+    """(R35) The lens wizard's fit: `calibrate_lens` on the `chosen` boards, the board video's turn
+    recorded, and the per-board errors of THAT profile over `everything` -> (profile, errors)."""
+    prof = calibrate_lens(chosen, pattern, square, size, model, max_views=max_views, base=base)
+    prof.rotation = rotation                       # how the board video's pictures were turned
+    return prof, per_view_errors(everything, pattern, square, prof)
 
 
 def outlier_limit(errors, floor: float) -> float:
@@ -76,6 +90,14 @@ def outlier_limit(errors, floor: float) -> float:
 
 
 # ------------------------------------------------------------------ profile
+
+
+def picture_border(w: int, h: int, n: int = 64) -> np.ndarray:
+    """(4n, 2) pixel positions along the picture's four edges: top, bottom, left, right, n each,
+    corners included -- the border every lens-bend number walks (I285)."""
+    xs, ys = np.linspace(0, w - 1, n), np.linspace(0, h - 1, n)
+    return np.concatenate([np.column_stack([xs, np.zeros(n)]), np.column_stack([xs, np.full(n, h - 1.0)]),
+                           np.column_stack([np.zeros(n), ys]), np.column_stack([np.full(n, w - 1.0), ys])])
 
 
 @dataclass
@@ -139,10 +161,7 @@ class LensProfile:
                  the diagonal (nan when a corner is not described)}.
         """
         w, h = self.width, self.height
-        xs = np.linspace(0, w - 1, n)
-        ys = np.linspace(0, h - 1, n)
-        border = np.concatenate([np.column_stack([xs, np.zeros(n)]), np.column_stack([xs, np.full(n, h - 1.0)]),
-                                 np.column_stack([np.zeros(n), ys]), np.column_stack([np.full(n, w - 1.0), ys])])
+        border = picture_border(w, h, n)
         model = OpenCVUndistort(self.K, self.dist, self.fisheye)
         und = model.undistort(border)
         with np.errstate(invalid="ignore", over="ignore"):
@@ -303,17 +322,21 @@ def read_lens_for(path: str | Path, view: int, cam_name: str = "") -> tuple[Lens
     an OpenCV .yml / .json (`calibio.read_lens`), else an Argus / DLTdv profile
     text, where the file's own camera column decides which line camera `view`
     gets (`argus_profile_for`, I80). -> (profile or None, a sentence: the line
-    that was used, or why there is none)."""
+    that was used, or why there is none). (I282) An Argus line's profile is named
+    "<file> (<the line used>)" here, whichever door it came through."""
     from kinetrace import calibio
     suf = Path(path).suffix.lower()
     if suf in (".json", ".yml", ".yaml", ".xml"):
         return calibio.read_lens_file(path), ""
     try:
-        return argus_profile_for(path, view, cam_name)
+        prof, which = argus_profile_for(path, view, cam_name)
     except ValueError:                  # no camera lines: an OpenCV file under another name is read by content
         if suf == ".txt":
             raise
         return calibio.read_lens_file(path), ""
+    if prof is not None and which:
+        prof.source = f"{Path(path).name}{which}"
+    return prof, which
 
 
 def load_argus_profile(path: str | Path) -> list[LensProfile]:
@@ -925,7 +948,8 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
         fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
         if n <= 0:
             raise OSError("the video reports no frames")
-        idx = np.unique(np.linspace(0, n - 1, min(n, int(max_candidates))).round().astype(int))
+        from kinetrace.calib import even_indices
+        idx = even_indices(n, min(n, int(max_candidates)))
         frames, corners, thumbs, orient = [], [], [], []
         sample = None
         scale = min(1.0, downscale_max / max(w, h))
@@ -1051,7 +1075,7 @@ def per_view_errors(corner_list: list[np.ndarray], pattern: tuple[int, int], squ
                 continue
             proj = project_with(prof, obj, pose[0], pose[1])
             d = proj - np.asarray(c, np.float64).reshape(-1, 2)
-            out[i] = float(np.sqrt(np.mean(np.sum(d * d, axis=1))))
+            out[i] = _rms_px(d)
         except cv2.error:
             continue
     return out
@@ -1205,12 +1229,9 @@ def _fit_shape(corner_list, pattern, square, base: "LensProfile", fix: tuple = (
     sol = least_squares(res, np.asarray(x0, np.float64), jac_sparsity=S, x_scale="jac", method="trf")
     K = K_of(sol.x)
     r = sol.fun.reshape(-1, npt, 2)
-    per_view = [float(np.sqrt(np.mean(np.sum(rv ** 2, axis=1)))) for rv in r]
-    rms = float(np.sqrt(np.mean(np.sum(r.reshape(-1, 2) ** 2, axis=1))))
-    tilts = []
-    for v in range(len(imgs)):
-        R, _ = cv2.Rodrigues(sol.x[n_in + 6 * v:n_in + 6 * v + 3])
-        tilts.append(float(np.degrees(np.arccos(min(1.0, abs(float(R[2, 2])))))))
+    per_view = [_rms_px(rv) for rv in r]
+    rms = _rms_px(r.reshape(-1, 2))
+    tilts = [_board_tilt_deg(sol.x[n_in + 6 * v:n_in + 6 * v + 3]) for v in range(len(imgs))]
     return rms, K, np.asarray(base.dist, np.float64).ravel(), per_view, tilts
 
 
@@ -1304,7 +1325,7 @@ def _fit(corner_list, pattern, square, size, fisheye: bool):
         per_view = []
         for o, im, r, t in zip(objs, imgs, rvecs, tvecs):
             proj, _ = cv2.fisheye.projectPoints(o, r, t, K, D)
-            per_view.append(float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - im.reshape(-1, 2)) ** 2, axis=1)))))
+            per_view.append(_rms_px(proj.reshape(-1, 2) - im.reshape(-1, 2)))
     else:
         objs = [obj.astype(np.float32) for _ in corner_list]
         imgs = [c.astype(np.float32) for c in corner_list]
@@ -1314,13 +1335,8 @@ def _fit(corner_list, pattern, square, size, fisheye: bool):
         per_view = []
         for o, im, r, t in zip(objs, imgs, rvecs, tvecs):
             proj, _ = cv2.projectPoints(o, r, t, K, D)
-            per_view.append(float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - im.reshape(-1, 2)) ** 2, axis=1)))))
-    tilts = []
-    for r in rvecs:
-        R, _ = cv2.Rodrigues(np.asarray(r, np.float64))
-        # the board normal in camera coordinates vs the optical axis
-        nz = abs(float(R[2, 2]))
-        tilts.append(float(np.degrees(np.arccos(min(1.0, nz)))))
+            per_view.append(_rms_px(proj.reshape(-1, 2) - im.reshape(-1, 2)))
+    tilts = [_board_tilt_deg(r) for r in rvecs]        # the board normal vs the optical axis
     return float(rms), np.asarray(K, np.float64), np.asarray(dist, np.float64), per_view, tilts
 
 
@@ -1420,13 +1436,18 @@ def _same_view_scores(corner_list, fits: dict, fitted: dict, pattern, square, si
     return out
 
 
+def hull_area_pct(pts: np.ndarray, w: int, h: int) -> float:
+    """(R33) The convex hull of points (float32, any (..., 2) shape) as % of a w x h picture: the
+    coverage the lens report and the wand report give."""
+    hull = cv2.convexHull(np.asarray(pts, np.float32).reshape(-1, 1, 2))
+    return float(100.0 * cv2.contourArea(hull) / (w * h))
+
+
 def coverage_pct(corner_list: list[np.ndarray], size: tuple[int, int]) -> float:
     """Convex-hull area of every detected corner as % of the picture."""
     if not corner_list:
         return 0.0
-    pts = np.concatenate(corner_list).astype(np.float32)
-    hull = cv2.convexHull(pts.reshape(-1, 1, 2))
-    return float(100.0 * cv2.contourArea(hull) / (size[0] * size[1]))
+    return hull_area_pct(np.concatenate(corner_list).astype(np.float32), size[0], size[1])
 
 
 def edge_reach_pct(corner_list: list[np.ndarray], size: tuple[int, int]) -> float:
@@ -1443,7 +1464,8 @@ def lens_report(prof: LensProfile, views: list[np.ndarray], per_view: list[float
                 rms_by_model: dict, errors: dict, model_requested: str,
                 fisheye_runaway: dict | None = None, curve_known: bool = False) -> dict:
     w, h = prof.width, prof.height
-    scale = px_scale(w, h)                                  # (I250) by the longer side
+    from kinetrace.calib import residual_scale
+    scale = residual_scale(w, h)                            # (I250) by the longer side
     cov = coverage_pct(views, (w, h))
     reach = edge_reach_pct(views, (w, h))
     # (I179) views of one held pose are ONE pose: the view and tilt rules count distinct poses

@@ -79,7 +79,8 @@ from scipy.optimize import least_squares
 from scipy.sparse import coo_matrix
 
 from .calib import (Calibration, CameraCalibration, NoUndistort, OpenCVUndistort,
-                    dlt_from_camera)
+                    dlt_from_camera, even_indices, residual_scale)
+from .lens import hull_area_pct, outlier_limit
 
 FOCAL_GRID = (0.25, 0.4, 0.55, 0.75, 1.0, 1.3, 1.7, 2.2)   # initial f as a multiple of image width
 OUTLIER_FLOOR_PX = 2.0      # automatic rejection threshold floor at 1080p (scaled by max(w, h) / 1920):
@@ -129,8 +130,7 @@ def _px_scale(sizes) -> np.ndarray:
     LONGER side (I250: a portrait 4K clip is as sharp as a landscape one, and
     max(1, width / 1920) judged it 1.8 x stricter). The one rule for the
     outlier floor, the soft-L1 knee and the reprojection verdict."""
-    s = np.asarray([[w, h] for w, h in sizes], np.float64)
-    return np.maximum(1.0, s.max(axis=1) / 1920.0)
+    return np.array([residual_scale(w, h) for w, h in sizes], np.float64)     # (I280) the one rule
 
 
 def _per_camera(value, C: int, what: str, dtype=bool) -> np.ndarray:
@@ -608,7 +608,7 @@ def _reject(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, outlier_px, floor_px:
     if not cur.any():
         return float("nan"), 0
     if outlier_px is None:
-        thr = max(3.0 * float(np.median(e[cur])), float(floor_px))
+        thr = outlier_limit(e[cur], floor_px)             # (R34) the lens fit's rule
     else:
         thr = float(outlier_px)
     n_new = 0
@@ -818,7 +818,7 @@ def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, b
             progress(float(frac), str(msg))
 
     if F > int(max_frames) > 0:
-        sel = np.unique(np.round(np.linspace(0, F - 1, int(max_frames))).astype(int))
+        sel = even_indices(F, int(max_frames))
     else:
         sel = np.arange(F)
     obs = _Obs(wand_uv, bg_uv, sel)
@@ -842,13 +842,13 @@ def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, b
     note(0.95, "assembling the result")
     run = _Run(sizes, wand_length, str(unit), free_f, free_d, unknown, best_mult, names, frame_ids,
                _coverage(cov_w, cov_b, sizes))
-    res = _finish(obs, cams, pts3, wand_uv, bg_uv, run, thr, n_out)
+    res = _finish(obs, cams, pts3, wand_uv, run, thr, n_out)
     note(1.0, f"done: wand score {res.report['wand_score_pct']:.2f}%, "
               f"{res.report['reproj_rmse_all']:.2f} px")
     return res
 
 
-def _finish(obs, cams, pts3, wand_uv, bg_uv, run: _Run, thr, n_out) -> WandResult:
+def _finish(obs, cams, pts3, wand_uv, run: _Run, thr, n_out) -> WandResult:
     F, C = wand_uv.shape[:2]
     sizes = run.sizes
     Fs = len(obs.frames)
@@ -965,8 +965,7 @@ def _coverage(wand_uv: np.ndarray, bg_uv, sizes) -> list:
         if len(p) < 3 or w <= 0 or h <= 0:
             out.append(0.0)
             continue
-        hull = cv2.convexHull(p.astype(np.float32))
-        out.append(float(100.0 * cv2.contourArea(hull) / (w * h)))
+        out.append(hull_area_pct(p.astype(np.float32), w, h))
     return out
 
 
@@ -1295,7 +1294,7 @@ def align_gravity(res: WandResult, drop_uv, fps: float, g: float | None = None,
     coef, resid = fit(ok)
     if ok.sum() >= 6:
         keep = ok.copy()
-        keep[ok] = resid <= max(3.0 * float(np.median(resid)), 1e-9)
+        keep[ok] = resid <= outlier_limit(resid, 1e-9)    # (R34)
         if 4 <= keep.sum() < ok.sum():
             ok = keep
             coef, resid = fit(ok)

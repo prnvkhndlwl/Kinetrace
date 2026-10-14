@@ -351,7 +351,22 @@ def t_dialog_convention_reset():
     dlg = CalibrationDialog(None, ["a", "b"], [(1920, 1080), (848, 480)])
     assert dlg.load(kc) and dlg.conv.currentIndex() == 2 and not dlg.conv.isEnabled()
     assert dlg.load(dl)
-    assert dlg.conv.currentIndex() == 0 and dlg.conv.isEnabled(), (dlg.conv.currentIndex(), dlg.conv.isEnabled())
+    # (I278) a dltCoefs.csv does not say: the choice is RESET to none, and OK waits for it
+    assert dlg.conv.currentIndex() == -1 and dlg.conv.isEnabled(), (dlg.conv.currentIndex(), dlg.conv.isEnabled())
+    assert not dlg.buttons.button(dlg.buttons.StandardButton.Ok).isEnabled()
+    # a file that states a convention the list does not name (0-based, y from the bottom: a hand-made
+    # .kcal.json) is still imported, in its own convention, into Kinetrace's pixels (review of I278)
+    with open(kc, encoding="utf-8") as fh:
+        d = json.load(fh)
+    for c in d["cameras"]:
+        c["y_flip"] = True
+    odd = os.path.join(OUT, "dlg_odd.kcal.json")
+    with open(odd, "w", encoding="utf-8") as fh:
+        json.dump(d, fh)
+    assert dlg.load(odd) and dlg.conv.currentIndex() == -1 and not dlg.conv.isEnabled()
+    assert dlg.buttons.button(dlg.buttons.StandardButton.Ok).isEnabled()
+    dlg._accept()
+    assert dlg.result_calibration is not None and dlg.result_calibration.is_internal()
     dlg.deleteLater()
 
 
@@ -810,12 +825,12 @@ def t_pixel_convention_one_place():
         assert np.allclose(cam.from_dlt_pixels(q), pts, atol=1e-9)
         hom = np.column_stack([q, np.ones(20)]) @ cam.pixel_matrix().T
         assert np.allclose(hom[:, :2], pts, atol=1e-9), (po, flip)
-        # the MATLAB-side coefficients project the 1-based pixels of the same points
-        L1 = cam.coefs_for_origin(1.0)
+        # (I278) the camera in Kinetrace's pixels puts every point where the file's DLT did, and its
+        # MATLAB-side coefficients (the dltCoefs.csv export) project the 1-based pixels of the same points
+        cami = cam.to_internal()
         X = rng.uniform(-0.3, 0.3, (10, 3))
-        want = cam.to_dlt_pixels(cam.project(X))
-        got = dlt_project(L1, X)
-        assert np.allclose(got - (1.0 - po), want - 0.0, atol=1e-6) or np.allclose(got, want + (1.0 - po), atol=1e-6)
+        assert np.allclose(cam.to_dlt_pixels(cami.project(X)), dlt_project(cam.coefs, X), atol=1e-6), (po, flip)
+        assert np.allclose(dlt_project(cami.coefs_for_origin(1.0), X), cami.project(X) + 1.0, atol=1e-6)
         # one DLT matrix / denominator / front rule
         assert np.allclose(calib.dlt_denominator(cam.coefs, X), calib.dlt_matrix(cam.coefs)[2] @ np.vstack([X.T, np.ones(10)]))
 
@@ -847,9 +862,196 @@ def t_dead_code_gone():
 check("I250", "the verdict bands scale with the LONG side: portrait 4K judged like landscape 4K", t_report_long_side)
 check("R14", "one pixel-convention transform (matrix / affine / coefficient shift agree), one DLT matrix",
       t_pixel_convention_one_place)
+
+
+def t_to_internal_lens_models():
+    from kinetrace.calib import LWMUndistort
+    L0 = rig(1).cameras[0].coefs
+    # control points as clicked (a jittered grid): on an exact grid the 12-nearest-neighbour choice has ties
+    # that a flip breaks differently (up to 6e-4 px; DLTdv8 projects are never flipped)
+    g = np.stack(np.meshgrid(np.linspace(0, W, 9), np.linspace(0, H, 7)), -1).reshape(-1, 2)
+    g = g + rng.uniform(-4.0, 4.0, g.shape)
+    X = rng.uniform(-0.3, 0.3, (40, 3))
+    q = rng.uniform([0.1 * W, 0.1 * H], [0.9 * W, 0.9 * H], (40, 2))
+    for po, flip in ((1.0, False), (1.0, True)):
+        proto = CameraCalibration(L0, W, H, NoUndistort(), po, flip)
+        raw = proto.to_dlt_pixels(g)                  # control points in the FILE's pixels (DLTdv8: 1-based)
+        und = raw + 1e-3 * (raw - [W / 2, H / 2]) * np.linalg.norm(raw - [W / 2, H / 2], axis=1)[:, None] / W
+        cam = CameraCalibration(L0, W, H, LWMUndistort(raw, und, 12), po, flip)
+        new = cam.to_internal()
+        assert new.is_internal() and isinstance(new.undistort, LWMUndistort)
+        # the old pipeline: file pixels in, undistorted, DLT; and back
+        old_xy = cam.from_dlt_pixels(cam.undistort.distort(dlt_project(cam.coefs, X)))
+        ok = np.isfinite(old_xy).all(1)
+        assert ok.sum() > 20 and np.abs(new.project(X)[ok] - old_xy[ok]).max() < 1e-6, (
+            po, flip, int(ok.sum()), float(np.nanmax(np.abs(new.project(X) - old_xy))))
+        old_u = cam.from_dlt_pixels(cam.undistort.undistort(cam.to_dlt_pixels(q)))
+        assert np.nanmax(np.abs(new.to_calib_frame(q) - old_u)) < 1e-6, (po, flip)
+    # an OpenCV model fitted 1-based: its principal point moves
+    K = np.array([[600.0, 0, W / 2 + 1], [0, 600.0, H / 2 + 1], [0, 0, 1]])
+    cam = CameraCalibration(L0, W, H, OpenCVUndistort(K, np.array([-0.1, 0.01, 0, 0, 0])), 1.0, False)
+    new = cam.to_internal()
+    assert np.allclose(new.undistort.K[:2, 2], [W / 2, H / 2]) and new.undistort.P is new.undistort.K
+    old_xy = cam.from_dlt_pixels(cam.undistort.distort(dlt_project(cam.coefs, X)))
+    assert np.nanmax(np.abs(new.project(X) - old_xy)) < 1e-6
+    # a bottom-left file needs its picture height; a 1-based one does not
+    for c, refused in ((CameraCalibration(L0, W, 0, NoUndistort(), 1.0, True), True),
+                       (CameraCalibration(L0, W, 0, NoUndistort(), 1.0, False), False)):
+        try:
+            c.to_internal()
+            said = ""
+        except ValueError as e:
+            said = str(e)
+        assert bool(said) == refused and (not said or "picture height" in said), said
+    # the project accepts only Kinetrace pixels
+    p = Project([TrackingSession("a.mp4", 10, 30.0, W, H)], ["a"])
+    try:
+        p.calibration = Calibration([CameraCalibration(L0, W, H, NoUndistort(), 1.0, False)])
+        raised = False
+    except ValueError:
+        raised = True
+    assert raised and p.calibration is None
+
+
+check("I278", "to_internal: an LWM / OpenCV lens model moves with the pixels (every point where it was), a "
+      "bottom-left file without its height is refused in words, the project takes Kinetrace pixels only",
+      t_to_internal_lens_models)
 check("R14", "triangulate() is triangulate_batch() for one point", t_single_equals_batch)
 check("R14", "dead code removed (reference_time, sample_track, Reconstruction.valid / to_mat_dict, reference=)",
       t_dead_code_gone)
+
+
+def t_r30_folds():
+    from kinetrace.calib import LWMUndistort
+    g = rng.uniform([0, 0], [W, H], (30, 2))
+    for und in (NoUndistort(), LWMUndistort(g, g + 0.5, 12), OpenCVUndistort(K, np.array([-0.1, 0.01, 0, 0, 0]))):
+        cam = CameraCalibration(rig(1).cameras[0].coefs, W, H, und)
+        old = [getattr(cam.undistort, "kind", "none") != "none", not isinstance(cam.undistort, NoUndistort),
+               type(cam.undistort).__name__ != "NoUndistort"]
+        assert old == [cam.has_lens_correction] * 3, (type(und).__name__, old)
+    cal = rig(3)
+    cal.cameras[1] = None
+    assert cal.calibrated_cameras() == [cal.camera(v) for v in cal.views()] == [cal.cameras[0], cal.cameras[2]]
+    probe = calib.working_probe(cal)
+    for cam in cal.calibrated_cameras():
+        old = calib.dlt_matrix(cam.coefs) * calib.front_sign(cam.coefs, probe)
+        assert np.array_equal(calib.opencv_projection(cam, probe), old)
+
+
+check("R30", "has_lens_correction / calibrated_cameras / opencv_projection equal every old copy exactly", t_r30_folds)
+
+
+def t_r31_folds():
+    xyz = rng.normal(size=(6, 3, 3))
+    xyz[2] = np.nan                       # a row with nothing solved
+    xyz[4, 1] = np.nan                    # one landmark missing
+    r = Reconstruction(5, ["a", "b", "c"], xyz, np.ones((6, 3)), np.full((6, 3), 3, np.int32))
+    for t in (4, 5, 7, 9, 10, 11):
+        old_in = r.t0 <= t < r.t0 + r.n_frames
+        assert (r.index(t) is not None) == old_in and (not old_in or r.index(t) == t - r.t0)
+        if old_in:
+            row = r.xyz[t - r.t0]
+            assert np.array_equal(r.points_at(t), row[np.isfinite(row).all(axis=1)])
+        else:
+            assert r.points_at(t).shape == (0, 3)
+    # Project.probe_at = the guides' / Re-track's old inline probe
+    cal = rig(3)
+    p = Project([TrackingSession(f"{k}.mp4", 20, 30.0, W, H) for k in range(3)], ["a", "b", "c"], [0, 2, -1])
+    p.calibration = cal
+    p.reconstruction = r
+    for view, f in ((0, 6), (1, 8), (2, 6), (1, 7), (0, 1)):
+        t = p.reference_index(view, f)
+        k = t - r.t0
+        row = r.xyz[k] if 0 <= k < r.n_frames else np.zeros((0, 3))
+        row = row[np.isfinite(row).all(axis=1)]
+        old = row.mean(axis=0) if len(row) else calib.working_probe(cal)
+        assert np.array_equal(p.probe_at(view, f), old), (view, f)
+    # with_cameras: unit, source, moved origin, notes and the report travel; reframed and the spread use it
+    cal.origin_shift, cal.notes, cal.report = np.array([1.0, 2, 3]), ["a note"], {"verdict": "good"}
+    c2 = cal.with_cameras([cal.cameras[0], None, cal.cameras[2]])
+    assert (c2.unit, c2.source, c2.notes, c2.report) == (cal.unit, cal.source, ["a note"], {"verdict": "good"})
+    assert c2.notes is not cal.notes and np.array_equal(c2.origin_shift, cal.origin_shift)
+
+
+check("R31", "Reconstruction.index / points_at, Project.probe_at, Calibration.with_cameras equal the old copies",
+      t_r31_folds)
+
+
+def t_r32_folds():
+    from kinetrace import convert, view3d
+    for n in (2, 3, 6):
+        for _ in range(200):
+            U = rng.normal(size=(n, 3))
+            U /= np.linalg.norm(U, axis=1, keepdims=True)
+            old = float(np.degrees(np.arccos(np.abs(np.clip(U @ U.T, -1.0, 1.0)).min())))
+            assert calib.widest_angle_deg(U) == old
+    for w in (0, 640, 1000, 1920, 3840, 5312):
+        assert calib.round_trip_tol(w) == max(1.0, 1e-3 * w)
+        assert max(0.5, calib.PROJECTION_TRUST_TOL * w) == max(0.5, 5e-4 * w)
+    old = {"matlab": (1.0, False), "bottom-left": (1.0, True), "opencv": (0.0, False)}
+    assert calib.PIXEL_CONVENTIONS == old and convert.PIXELS == old
+    assert [c[1:] for c in view3d.CONVENTIONS] == [(1.0, False), (1.0, True), (0.0, False)]
+
+
+check("R32", "widest_angle_deg / round_trip_tol / PIXEL_CONVENTIONS equal the old copies", t_r32_folds)
+
+
+def t_r33_folds():
+    from kinetrace import hull as hullmod, lens as lensmod
+    from kinetrace.kinematics import contiguous_runs
+    from kinetrace.session import TrackingSession as _S  # noqa: F401
+    for n in list(range(1, 300)) + [997, 1499, 40000]:
+        for k in sorted({1, 2, 3, n // 3, n // 2, n - 1, n} - {0}):
+            if k > n or k < 1:
+                continue
+            new = calib.even_indices(n, k)
+            assert np.array_equal(new, np.linspace(0, n - 1, k).round().astype(int))
+            assert np.array_equal(new, np.round(np.linspace(0, n - 1, k)).astype(int))
+            assert np.array_equal(new, np.unique(np.linspace(0, n - 1, k).round().astype(int)))
+    for size in (0, 1, 2, 7, 50):
+        for _ in range(60):
+            ok = rng.random(size) < rng.random()
+            d = np.diff(np.concatenate([[0], ok.astype(np.int8), [0]]))
+            old_w = list(zip(np.nonzero(d == 1)[0].tolist(), (np.nonzero(d == -1)[0] - 1).tolist()))
+            d2 = np.diff(ok.astype(np.int8), prepend=0, append=0)
+            old_t = list(zip(np.nonzero(d2 == 1)[0].tolist(), np.nonzero(d2 == -1)[0].tolist())) if ok.any() else []
+            runs = contiguous_runs(ok)
+            assert runs == old_w and [(a, b + 1) for a, b in runs] == old_t, (ok, runs)
+    for _ in range(100):
+        pts = rng.uniform(0, 640, (int(rng.randint(3, 60)), 2)).astype(np.float32)
+        old = float(100.0 * cv2.contourArea(cv2.convexHull(pts)) / (640 * 480))
+        old2 = float(100.0 * cv2.contourArea(cv2.convexHull(pts.reshape(-1, 1, 2))) / (640 * 480))
+        assert lensmod.hull_area_pct(pts, 640, 480) == old == old2
+    lo, n, vox = np.array([-0.3, 0.1, 2.0]), np.array([4, 3, 5]), 0.07
+    gx, gy, gz = np.meshgrid(np.arange(n[0]), np.arange(n[1]), np.arange(n[2]), indexing="ij")
+    assert np.array_equal(hullmod.voxel_centres(lo, n, vox),
+                          lo + np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()]) * vox)
+
+
+check("R33", "even_indices / contiguous_runs / hull_area_pct / voxel_centres equal every old copy", t_r33_folds)
+
+
+def t_r36_folds():
+    cal = rig(3)
+    cal.cameras[1] = None
+    a, b = os.path.join(OUT, "r36_new.kcal.json"), os.path.join(OUT, "r36_old.kcal.json")
+    calibio.write_kcal(a, cal, {"verdict": "good"}, {"g": 9.81})
+    with open(b, "w", encoding="utf-8") as fh:            # the two old copies: write_text(json.dumps(..., indent=1))
+        fh.write(json.dumps(calibio.calibration_to_kcal(cal, {"verdict": "good"}, {"g": 9.81}), indent=1))
+    assert open(a, "rb").read() == open(b, "rb").read()
+    s = TrackingSession("x.mp4", 30, 30.0, W, H)
+    for _ in range(3):
+        s.add_point(0, 10.0, 10.0)
+    s.tracks[:] = rng.uniform(0, 100, s.tracks.shape).astype(s.tracks.dtype)
+    s.tracked[:] = rng.random(s.tracked.shape) < 0.7
+    s.occluded[:] = rng.random(s.occluded.shape) < 0.2
+    s.tracks[3, 1] = np.nan
+    old_ok = s.tracked & np.isfinite(s.tracks).all(axis=2) & ~s.occluded
+    got = calib.calib_tracks(s, rig(1).cameras[0])
+    assert np.array_equal(np.isfinite(got).all(axis=2), old_ok)
+
+
+check("R36", "write_kcal writes the old bytes; calib_tracks keeps exactly the exportable, finite cells", t_r36_folds)
 
 # ============================================================================ G75 / G76
 print("\nG75 / G76 estimate_offsets")

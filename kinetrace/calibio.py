@@ -41,8 +41,8 @@ from pathlib import Path
 
 import numpy as np
 
-from kinetrace.calib import (Calibration, CameraCalibration, NoUndistort, OpenCVUndistort, Reconstruction,
-                             dlt_matrix, front_sign, working_probe, world_is_left_handed)
+from kinetrace.calib import (Calibration, CameraCalibration, OpenCVUndistort, Reconstruction,
+                             opencv_projection, working_probe, world_is_left_handed)
 
 
 class CalibFormatError(Exception):
@@ -136,6 +136,11 @@ def _volume_points(cam: CameraCalibration, probe: np.ndarray | None, n: int = 12
     return np.vstack(pts)
 
 
+def _cam_name(names: list[str] | None, i: int) -> str:
+    """(R36) Camera `i`'s name in `names`, else "cam<i + 1>"."""
+    return names[i] if names and i < len(names) else f"cam{i + 1}"
+
+
 def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarray | None = None) -> Models:
     """Kinetrace calibration -> OpenCV-convention cameras (see the module
     docstring). `probe`: a world point in view (a reconstruction's centroid);
@@ -152,9 +157,7 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
     probe = probe if probe is not None else working_probe(cal)
     Ps = []
     for cam in cams:
-        P = cam.pixel_matrix() @ dlt_matrix(cam.coefs)
-        P = P * front_sign(cam.coefs, probe)           # third row = depth, positive in front
-        Ps.append(P)
+        Ps.append(opencv_projection(cam, probe))       # third row = depth, positive in front
     mirrored = world_is_left_handed(cal, probe)        # the one handedness test (calib)
     F = np.diag([1.0, 1.0, -1.0]) if mirrored else np.eye(3)
     shift = (np.asarray(cal.origin_shift, np.float64).reshape(3) if cal.origin_shift is not None
@@ -162,7 +165,7 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
     out: list[CamModel] = []
     notes: list[str] = []
     for i, cam, P in zip(views, cams, Ps):
-        name = names[i] if names and i < len(names) else f"cam{i + 1}"
+        name = _cam_name(names, i)
         M = P[:, :3] @ F
         if np.linalg.det(M) <= 0:
             raise CalibFormatError(f"{name}: its coefficients are mirrored differently from the other cameras'; "
@@ -182,7 +185,7 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
         fisheye = isinstance(und, OpenCVUndistort) and und.fisheye
         dist = np.zeros(4 if fisheye else 5)
         fit = 0.0
-        if not isinstance(und, NoUndistort):
+        if cam.has_lens_correction:
             K, dist, fit = _fit_lens(cam, K0, fisheye)
         m = CamModel(name, int(cam.width), int(cam.height), K, dist, R, t, fisheye, skew, fit)
         X = _volume_points(cam, probe)
@@ -211,7 +214,7 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
                      "point the cameras look at).")
     left_out = [v for v in range(max(len(cal), len(names or []))) if cal.camera(v) is None]
     if left_out:
-        nm = [names[v] if names and v < len(names) else f"cam{v + 1}" for v in left_out]
+        nm = [_cam_name(names, v) for v in left_out]
         notes.append(f"{', '.join(nm)} {'is' if len(nm) == 1 else 'are'} not calibrated, so not in these files: "
                      "the files hold the calibrated cameras, each under its own name.")
     worst = max((m.check_px for m in out if np.isfinite(m.check_px)), default=0.0)
@@ -229,9 +232,7 @@ def _fit_lens(cam: CameraCalibration, K0: np.ndarray, fisheye: bool):
     W, H = cam.width, cam.height
     gx, gy = np.meshgrid(np.linspace(0, W - 1, 41), np.linspace(0, H - 1, 31))
     raw = np.column_stack([gx.ravel(), gy.ravel()])
-    und_file = cam.to_calib_frame(raw)                  # the calibration's own undistorted pixels
-    A = cam.pixel_matrix()
-    und = und_file @ A[:2, :2].T + A[:2, 2]
+    und = cam.to_calib_frame(raw)                       # the calibration's own undistorted pixels
     ok = np.isfinite(und).all(axis=1)
     raw, und = raw[ok], und[ok]
     n = np.column_stack([und, np.ones(len(und))]) @ np.linalg.inv(K0).T
@@ -644,6 +645,11 @@ def calibration_to_kcal(cal, report: dict | None = None, grav: dict | None = Non
     return out
 
 
+def write_kcal(path, cal, report: dict | None = None, grav: dict | None = None) -> None:
+    """(R36) Write `calibration_to_kcal` as the .kcal.json at `path` (the wizard's and convert's file)."""
+    Path(path).write_text(json.dumps(calibration_to_kcal(cal, report, grav), indent=1), encoding="utf-8")
+
+
 def load_kcal(path):
     """`*.kcal.json` -> `calib.Calibration` (cameras in file order; null = not calibrated)."""
     from kinetrace.calib import undistort_from_json
@@ -681,8 +687,8 @@ def dlt_columns(cal, names: list[str] | None = None) -> list[str] | None:
 
 def dlt_csv_matlab(cal, path, pixel_origin_out: float = 1.0) -> None:
     """dltCoefs.csv for DLTdv / easyWand users: 11 rows, one column per camera,
-    converted to MATLAB's 1-based pixels when the calibration was fitted on
-    0-based ones (u' = u + 1: L1..L3 += L9..L11, L4 += 1; same for v).
+    converted to MATLAB's 1-based pixels (every calibration is 0-based inside
+    Kinetrace, I278: u' = u + 1: L1..L3 += L9..L11, L4 += 1; same for v).
     `pixel_origin_out` = the convention written (1.0 = MATLAB, 0.0 = Kinetrace's own); (R20)
     `wand.export_dlt_csv` is this function. (I273) Only the calibrated cameras have a column, in
     camera order (`dlt_columns` says which camera each column is)."""

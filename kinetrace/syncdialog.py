@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout
 from kinetrace import audiosync, gpmf, sync, theme, threads
 from kinetrace.widgets import wrap_caption
 from kinetrace.errors import plain_error
+from kinetrace.project import half_up
 
 VERDICT_WORDS = {"clear": "CLEAR - use it", "weak": "WEAK - check by eye first",
                  "none": "NONE - do not apply"}
@@ -150,7 +151,9 @@ class SyncDialog(QDialog):
         active = int(getattr(project, "active", 0) or 0) if project is not None else 0
         centre0 = int(current_frame)
         if active != 0:
-            centre0 = int(round(project.map_frame_exact(active, 0, float(current_frame))))
+            # (I279) the reference frame the reference tile shows (map_frame's tie rule back to
+            # camera 1: a .5 goes DOWN), not Python's round
+            centre0 = int(project.reference_index(active, current_frame))
             centre0 = min(max(centre0, 0), max(int(project.sessions[0].n_frames) - 1, 0))
         self.centre.setValue(centre0)
         self.centre.setToolTip(f"A frame of {ref_name} in the middle of the stretch to compare")
@@ -299,7 +302,8 @@ class SyncDialog(QDialog):
             tick.setChecked(v != "none")
             self.table.setCellWidget(r, 0, tick)
             self.table.setItem(r, 1, QTableWidgetItem(self.project.name(cs.view)))
-            self.table.setItem(r, 2, QTableWidgetItem(f"{cs.offset:+.0f}"))
+            # (I279) the offset Apply will store (half up), not format()'s half-to-even
+            self.table.setItem(r, 2, QTableWidgetItem(f"{half_up(cs.offset):+d}"))
             it = QTableWidgetItem(VERDICT_WORDS.get(v, v))
             it.setForeground(Qt.GlobalColor.white)
             it.setBackground(Qt.GlobalColor.transparent)
@@ -362,7 +366,8 @@ class SyncDialog(QDialog):
     def _apply(self):
         applied = 0
         for cs in self.chosen():
-            self.project.set_offset(cs.view, float(round(cs.offset)))
+            # (I279) half up, as every frame mapping rounds (Python's round sent -37.5 to -38)
+            self.project.set_offset(cs.view, float(half_up(cs.offset)))
             applied += 1
         self.applied = applied
         self.accept()

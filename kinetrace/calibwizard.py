@@ -69,10 +69,6 @@ def lens_turn_unknown(prof, session) -> bool:
                                    display_rotation(session.video_path)))
 
 
-def _same_lens(a, b) -> bool:
-    return _lens.same_profile(a, b)
-
-
 def share_targets(project, view: int, prof=None) -> tuple[list[int], list[int]]:
     """The other cameras a lens profile of camera `view` can be shared with
     (G40: identical cameras, one checkerboard calibration): every camera with
@@ -584,10 +580,10 @@ class CamerasPage(QWizardPage):
             else:
                 # the picture size (and an Argus file's line) in the row, so a wrong profile shows (I31)
                 text = f"{prof.summary()}; for {int(prof.width)}×{int(prof.height)} pictures"
-                if "line " in str(prof.source):
+                if " line" in str(prof.source) or "(line " in str(prof.source):    # (I282) "its only line" too
                     text += f" ({prof.source})"
                 twins = [p.name(j) for j in range(p.n_views) if j != c and j < len(p.lenses)
-                         and _same_lens(p.lenses[j], prof)]
+                         and _lens.same_profile(p.lenses[j], prof)]
                 if twins:
                     text += f" — the same profile as {', '.join(twins)}"
             lab = _dim(QLabel(text))
@@ -702,8 +698,6 @@ class CamerasPage(QWizardPage):
         if prof is None:
             self._refuse_lens(c, which)
             return
-        if which:
-            prof.source = f"{Path(path).name}{which}"
         fitted, bad = lens_for_camera(prof, p.sessions[c], p.name(c))
         read = ""
         if fitted is None and lens_turn_unknown(prof, p.sessions[c]) and _lens.kinetrace_lens_file(path):
@@ -796,7 +790,7 @@ class CamerasPage(QWizardPage):
             return True
         lenses = self.usable_lenses()
         ticked = self.wiz.views()
-        free = [c in ticked and any(j != c and _same_lens(lenses[j], l) for j in ticked)
+        free = [c in ticked and any(j != c and _lens.same_profile(lenses[j], l) for j in ticked)
                 for c, l in enumerate(lenses)]
         return free if any(free) else False
 
@@ -1429,7 +1423,7 @@ class RunPage(QWizardPage):
 
 
 # the calibration file itself (no Qt) lives in calibio; these names stay here too
-from kinetrace.calibio import calibration_to_kcal, dlt_columns, dlt_csv_matlab, load_kcal  # noqa: E402,F401
+from kinetrace.calibio import calibration_to_kcal, dlt_columns, dlt_csv_matlab, load_kcal, write_kcal  # noqa: E402,F401
 
 
 def _lensed_cameras(cal) -> list[tuple[int, float]]:
@@ -1438,17 +1432,19 @@ def _lensed_cameras(cal) -> list[tuple[int, float]]:
     not calibrated carries none)."""
     out = []
     for k, c in enumerate(getattr(cal, "cameras", []) or []):
-        und = getattr(c, "undistort", None) if c is not None else None
-        if und is None or getattr(und, "kind", "none") == "none":
+        if c is None or not c.has_lens_correction:
             continue
+        und = c.undistort
         bend = float("nan")
         try:
             w, h = int(c.width), int(c.height)
-            if w > 0 and h > 0:
-                n = 32
-                xs, ys = np.linspace(0, w - 1, n), np.linspace(0, h - 1, n)
-                border = np.concatenate([np.column_stack([xs, np.zeros(n)]), np.column_stack([xs, np.full(n, h - 1.0)]),
-                                         np.column_stack([np.zeros(n), ys]), np.column_stack([np.full(n, w - 1.0), ys])])
+            if w > 0 and h > 0 and getattr(und, "kind", "") == "opencv":
+                # (I285) the lens report's own number (its K frame, its validity rules): the README
+                # said 504 px where the report said 500 for a lens with fx != fy, and could print a
+                # runaway fisheye number the report refuses
+                bend = _lens.LensProfile(w, h, und.K, und.dist, und.fisheye).border_check()["bend_px"]
+            elif w > 0 and h > 0:
+                border = _lens.picture_border(w, h, 32)
                 d = np.linalg.norm(np.asarray(und.undistort(border), np.float64) - border, axis=1)
                 d = d[np.isfinite(d) & (d < 1e5)]
                 if len(d):
@@ -1517,7 +1513,7 @@ def _same_cameras(res, cal) -> bool:
     cameras, identical DLT coefficients (a project saved and reopened keeps
     them bit for bit). (I273) A run on some of the cameras compares with the
     calibrated cameras of `cal`."""
-    a, b = list(res.cameras), [c for c in cal.cameras if c is not None]
+    a, b = list(res.cameras), cal.calibrated_cameras()
     return len(a) == len(b) and all(np.array_equal(np.asarray(x.coefs, np.float64), np.asarray(y.coefs, np.float64))
                                     for x, y in zip(a, b))
 
@@ -1543,7 +1539,7 @@ def save_calibration_files(res, grav, path: str, cal=None, written: list | None 
     if not p.name.lower().endswith(".kcal.json"):
         p = p.with_name(p.stem + ".kcal.json")
     out = written if written is not None else []
-    p.write_text(json.dumps(calibration_to_kcal(cal, report, grav), indent=1), encoding="utf-8")
+    write_kcal(p, cal, report, grav)
     out.append(str(p))
     stem = p.name[:-len(".kcal.json")]
     csv = p.with_name(stem + "_dltCoefs.csv")
@@ -1698,16 +1694,10 @@ def spread_calibration(cal, views: list[int], n_views: int):
     views = list(views)
     if views == list(range(n_views)):
         return cal
-    from kinetrace.calib import Calibration
     cams = [None] * n_views
     for k, v in enumerate(views):
         cams[v] = cal.cameras[k]
-    out = Calibration(cams, cal.unit, cal.source)
-    out.origin_shift = cal.origin_shift
-    out.notes = list(getattr(cal, "notes", []) or [])
-    if hasattr(cal, "report"):
-        out.report = cal.report
-    return out
+    return cal.with_cameras(cams)
 
 
 class WandWizard(QWizard):

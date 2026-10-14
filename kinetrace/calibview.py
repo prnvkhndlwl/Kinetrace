@@ -23,14 +23,13 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from kinetrace.calib import (Calibration, CameraCalibration, calib_frame_ok, dlt_project, dlt_ray, front_sign,
-                             in_front, reconstruct, residual_bands, residual_scale, working_probe)
+                             in_front, reconstruct, residual_bands, residual_scale, round_trip_tol, working_probe)
 
 GOOD, OK, POOR, REJECTED = 0, 1, 2, 3
 STATE_WORDS = {GOOD: "good", OK: "ok", POOR: "poor", REJECTED: "rejected by the fit"}
 COVER_GOOD_PCT, COVER_OK_PCT = 90.0, 70.0      # share of the wand cloud inside the covered space
 POSE_FRAC = 0.03                               # the pose pyramid's depth, of the scene (wand + cameras) size (G187)
 FOV_REACH = 1.15                               # the field of view reaches this far past the farthest wand end
-WAND_RMSE_GOOD_PX, WAND_RMSE_OK_PX = 1.0, 2.5  # the wand report's bands at 1080p (wand.RMSE_GOOD_PX / _OK_PX)
 
 
 def _cover_word(pct: float) -> str:
@@ -83,7 +82,7 @@ def fov(cam: CameraCalibration, depth: float, probe, n: int = 24) -> Fov:
     keep = ok
     side = np.repeat(np.arange(4), n)                     # _border_loop's order: n points per side
     return Fov(np.asarray(c, np.float64), pts[keep], raw[keep], rays,
-               getattr(cam.undistort, "kind", "none") == "none", axis[0], float(depth), side[keep])
+               not cam.has_lens_correction, axis[0], float(depth), side[keep])
 
 
 def seen_by(cal: Calibration, X: np.ndarray, probe=None, reach: dict | None = None) -> np.ndarray:
@@ -105,10 +104,10 @@ def seen_by(cal: Calibration, X: np.ndarray, probe=None, reach: dict | None = No
         uv = cam.project(X[idx])
         inside = (np.isfinite(uv).all(axis=1) & (uv[:, 0] >= -0.5) & (uv[:, 0] <= cam.width - 0.5)
                   & (uv[:, 1] >= -0.5) & (uv[:, 1] <= cam.height - 0.5))
-        if getattr(cam.undistort, "kind", "none") != "none" and inside.any():
+        if cam.has_lens_correction and inside.any():
             j = np.nonzero(inside)[0]
             q = cam.to_calib_frame(uv[j])
-            tol = max(1.0, 1e-3 * cam.width)
+            tol = round_trip_tol(cam.width)
             good = np.isfinite(q).all(axis=1)
             good[good] &= np.linalg.norm(q[good] - dlt_project(cam.coefs, X[idx[j[good]]]), axis=1) < tol
             inside[j] = good
@@ -172,8 +171,8 @@ def coverage(cal: Calibration, lo: np.ndarray, hi: np.ndarray, n_max: int = 64, 
     hi = np.asarray(hi, np.float64)
     voxel = float(max(np.max(hi - lo), 1e-9) / max(n_max - 1, 1))
     n = np.maximum(np.ceil((hi - lo) / voxel).astype(int) + 1, 2)
-    g = np.meshgrid(*(np.arange(k) for k in n), indexing="ij")
-    centres = lo + np.column_stack([a.ravel() for a in g]) * voxel
+    from kinetrace.hull import voxel_centres
+    centres = voxel_centres(lo, n, voxel)
     counts = seen_by(cal, centres, probe, reach).reshape(tuple(n)).astype(np.int8)
     return Coverage(counts, lo, voxel, cal.n_calibrated)
 
@@ -277,7 +276,7 @@ def _cameras(cal: Calibration, names: list, ends: np.ndarray, probe) -> tuple[li
         else:                       # no wand: past the point the cameras look at
             far = 1.5 * float(np.linalg.norm(look - c)) if look is not None else 2.0 * span
         # (the far plane at the farthest wand end's distance: every end lies before it)
-        pinhole = getattr(cam.undistort, "kind", "none") == "none"
+        pinhole = not cam.has_lens_correction
         # the pose pyramid: the four corners only (a wide lens's bent edge is the field of view's job)
         cams.append(CamDraw(v, name, c, fov(cam, POSE_FRAC * max(scene, 1e-3), probe, n=1),
                             fov(cam, far, probe), pinhole))
@@ -318,8 +317,8 @@ def from_wand_result(res, frames, names: list, end_names: tuple = ("end 1", "end
     for o in res.report.get("outliers", []):
         if o.get("kind") == "wand" and 0 <= int(o.get("row", -1)) < F:
             rej[int(o["row"]), int(o["end"])] = True
-    state = _states(np.nan_to_num(worst_n.reshape(-1), nan=np.inf), rej.reshape(-1),
-                    WAND_RMSE_GOOD_PX, WAND_RMSE_OK_PX)
+    from kinetrace.wand import RMSE_GOOD_PX, RMSE_OK_PX     # (R34) the wand report's own bands at 1080p
+    state = _states(np.nan_to_num(worst_n.reshape(-1), nan=np.inf), rej.reshape(-1), RMSE_GOOD_PX, RMSE_OK_PX)
     both = np.isfinite(res.wand_xyz).all(axis=(1, 2))
     pairs = np.column_stack([2 * np.nonzero(both)[0], 2 * np.nonzero(both)[0] + 1])
     cal = Calibration(list(res.cameras), res.unit)

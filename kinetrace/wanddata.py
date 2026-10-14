@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from kinetrace.calib import sample_tracks_at
+from kinetrace.calib import even_indices, residual_scale, sample_tracks_at
+from kinetrace.kinematics import contiguous_runs
 
 
 def raw_track(session, j: int) -> np.ndarray:
@@ -98,7 +99,7 @@ def _sample_name(project, name: str, t: np.ndarray) -> np.ndarray:
 def _thin(idx: np.ndarray, n_max: int) -> np.ndarray:
     if len(idx) <= n_max:
         return idx
-    return idx[np.linspace(0, len(idx) - 1, n_max).round().astype(int)]
+    return idx[even_indices(len(idx), n_max)]
 
 
 def collect_wand(project, name_a: str, name_b: str, max_frames: int = 400,
@@ -176,12 +177,6 @@ def best_common_frame(project, names: list[str], min_views: int = 2) -> int | No
     return int(t[hits[0]]) if len(hits) else None
 
 
-def _runs(ok: np.ndarray) -> list[tuple[int, int]]:
-    """Inclusive (first, last) index of every run of True."""
-    d = np.diff(np.concatenate([[0], ok.astype(np.int8), [0]]))
-    return list(zip(np.nonzero(d == 1)[0].tolist(), (np.nonzero(d == -1)[0] - 1).tolist()))
-
-
 def _fall_in_run(uv: np.ndarray, seen: np.ndarray, still: np.ndarray, min_frames: int):
     """(first, last, trimmed_start, trimmed_end) indices of the free fall in one
     stretch where >= 2 cameras see the object, or None. `still` = per camera
@@ -253,7 +248,7 @@ def find_fall(project, name: str, t0: int | None = None, t1: int | None = None,
     # "not moving": 1 px per frame at 640 px wide, 3 px at 4K (a hand-digitized jitter)
     still = np.array([max(1.0, 0.0008 * float(s.width or 0)) for s in project.sessions])
     best = None
-    for a, b in _runs(ok):
+    for a, b in contiguous_runs(ok):
         r = _fall_in_run(uv[a:b + 1], seen[a:b + 1], still, min_frames)
         if r is None:
             continue
@@ -437,14 +432,15 @@ def timing_check(project, name_a: str, name_b: str, views: list[int], lens_model
         b = sample_tracks_at(tracks[v][1], local)[:, 0]
         return a, b
 
-    long_side = {v: max(project.sessions[v].width, project.sessions[v].height) or 1920 for v in views}
+    # (I280) the one pixel scale (long side / 1920, never below 1) every residual verdict uses
+    scale = {v: residual_scale(project.sessions[v].width, project.sessions[v].height) for v in views}
     have = [v for v in views if v in tracks]
     pairs = [(i, j) for k, i in enumerate(have) for j in have[k + 1:]]
     for n_done, (i, j) in enumerate(pairs):
         if progress is not None:
             progress(n_done / max(len(pairs), 1), f"Checking the timing of {project.name(i)} and {project.name(j)}")
         ai, bi = sample(i, 0)
-        thr = TIMING_THR_PX * max(long_side[i], long_side[j]) / 1920.0
+        thr = TIMING_THR_PX * max(scale[i], scale[j])
         shares, rows = {}, 0
 
         def score(d):

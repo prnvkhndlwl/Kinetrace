@@ -2176,13 +2176,18 @@ Four steps, in this order:
    ordinary (v7) format, choose the `…dvProject.mat` instead — it also carries
    the lens correction for GoPro-style cameras, which the plain CSV does not. In
    the dialog, tell the program which column belongs to which camera and how the
-   calibration counted pixels. **DLTdv and easyWand** count from 1 with y
-   downwards, which is the first choice and almost always right; if your 3D
-   comes out wrong by a constant amount, this setting is the first thing to
-   check. The choice starts fresh for every file you open (it never carries over
-   from the last one). A Kinetrace `.kcal.json` states its own convention, and
-   so does an OpenCV-style camera file (below), so for those the choice is
-   locked. When
+   calibration counted pixels. A `dltCoefs.csv` and an easyWand file do not say,
+   so the choice starts empty and **OK stays grey until you pick one**:
+   **DLTdv8 and easyWand** count from 1 with y downwards (the first choice, almost
+   always right); files from older DLTdv versions may count y up from the bottom
+   edge; OpenCV and Python count from 0. A wrong choice moves every 3D point by
+   about a pixel's worth while the residual still looks normal, which is why the
+   program asks instead of guessing. The choice starts fresh for every file you
+   open. A Kinetrace `.kcal.json`, a DLTdv8 project and an OpenCV-style camera
+   file (below) state their own convention, so for those the choice is locked.
+   Inside the program every calibration is then kept the way Kinetrace counts
+   pixels (from 0, y downwards); the export for DLTdv / easyWand / MATLAB adds
+   the 1 back. When
    the file records each camera's picture size, the dialog matches columns to
    cameras by size where it can and asks before accepting a column whose size
    differs from the video's; a `dltCoefs.csv` records no sizes, so match its
@@ -2326,7 +2331,7 @@ calibration switches the first one on.
   writes, beside the part in each camera that has it, how well the cameras
   agree: *3D rmse 0.84 px · 2 cams*. It is the reconstruction residual in
   pixels (DLTdv's definition — the number 3D → Reconstruct reports for every
-  frame): green = good (under about 1.5 px at 1920 px wide), yellow = usable,
+  frame): green = good (under about 1.5 px for a 1920 px picture, scaled by its long side), yellow = usable,
   red = one of the placements is off (the good / usable / poor verdicts of the
   picture, the wizards and the reports use these three colours). With only **two** cameras it never reads
   better than yellow ("ok"): a slip along the line joining the two views is
@@ -2363,7 +2368,8 @@ calibration switches the first one on.
 - **A magenta band on the timeline.** After Reconstruct, each lane shows a
   magenta band along its lower edge on every frame where *this camera's*
   position for the part disagrees with the other cameras' by more than about
-  5 px (scaled for larger pictures). It is per camera: switch cameras and the
+  5 px (scaled by the picture's long side, so a portrait 4K camera's limit is 10 px,
+  as in every 3D verdict). It is per camera: switch cameras and the
   bands change. A band that starts and stays is a body part that slid onto
   the wrong spot in this camera; go there, snap or re-place it, track again —
   or let the program do it: **3D → Re-track Disagreeing Stretches…** (it

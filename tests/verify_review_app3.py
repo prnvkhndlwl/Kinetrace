@@ -485,6 +485,41 @@ def _i242():
     check("WHY-TEXT" in txt and "do not move enough" in txt and "shares no landmark" in txt,
           f"the question uses the report's sentence and the flat / none labels: {txt[:120]!r}")
 
+    # (I284) the timing the project already has, from a file or from the estimate, changes nothing: not
+    # marked unsaved, the 3D result and the carved volumes kept (both used to be dropped and rebuilt)
+    from kinetrace import calibio
+    if p.reconstruction is None:
+        win._reconstruct_3d(quiet=True)
+    same = os.path.join(OUT, "offs_same.csv")
+    calibio.write_offsets(p, same)
+    rec, sentinel = p.reconstruction, ("verts", "faces", "hull")
+    win._hull_cache[-7] = sentinel
+    p.dirty = False
+    NEXT["open"] = same
+    clear_logs()
+    win.act_import_offsets.trigger()
+    pump()
+    check(not p.dirty and p.reconstruction is rec and win._hull_cache.get(-7) is sentinel,
+          f"(I284) importing the project's own timing changes nothing (dirty={p.dirty}, "
+          f"3D kept={p.reconstruction is rec}, volumes kept={-7 in win._hull_cache})")
+
+    def fake3(sessions, cal, rates, offsets, t_range, names=None, search=1.0, step=0.05, refine=0.005, passes=2,
+              report=None, progress=None, cancelled=None):
+        report.update(verdict="reliable", why="Same as now.", per_view={1: "sharp", 2: "sharp"}, n_cells=50)
+        return list(offsets), 1.0, 1.0
+    calib.estimate_offsets = fake3
+    ASK["answer"] = QMessageBox.Yes
+    try:
+        clear_logs()
+        win.act_offsets3d.trigger()
+        pump()
+    finally:
+        calib.estimate_offsets = real
+    check(ASK["log"] and not p.dirty and p.reconstruction is rec and win._hull_cache.get(-7) is sentinel,
+          f"(I284) applying an estimate that moves no offset keeps the 3D result and the volumes, not unsaved "
+          f"(asked={bool(ASK['log'])}, dirty={p.dirty}, 3D kept={p.reconstruction is rec})")
+    win._hull_cache.pop(-7, None)
+
 
 @section("I172 a hull with a camera cutting the animal is warned about")
 def _i172():

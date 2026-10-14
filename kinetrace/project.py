@@ -81,6 +81,22 @@ def rate_of(fps: float, ref_fps: float) -> float:
     return float(round(fps / ref_fps, 6))
 
 
+def half_up(x) -> int | np.ndarray:
+    """THE rounding of a frame number or an offset: a .5 tie goes UP (floor(x + .5)), never Python's
+    half-to-even `round` (I19, I258, I279: -37.5 -> -37, 237.5 -> 238)."""
+    out = np.floor(np.asarray(x, np.float64) + 0.5).astype(np.int64)
+    return int(out) if out.ndim == 0 else out
+
+
+def cell_xy(sc, fr, j: int):
+    """Landmark `j`'s position at frame `fr` of session `sc` (float64), or None (no frame, outside
+    the video, no position, hidden, not finite)."""
+    if fr is None or not (0 <= fr < sc.n_frames) or not sc.exportable_at(fr, j):
+        return None
+    uv = sc.tracks[fr, j]
+    return np.asarray(uv, np.float64) if np.isfinite(uv).all() else None
+
+
 class Project:
     """The views of one project and the offsets that align them."""
 
@@ -117,12 +133,27 @@ class Project:
             self.rates[REFERENCE_VIEW] = 1.0
         self.active = int(np.clip(active, 0, max(n - 1, 0)))
         self.path: str | None = None       # where this project was last saved
-        self.calibration: Calibration | None = None    # DLT per view, view order
+        self.calibration = None                         # the property below (I278)
         self.reconstruction: Reconstruction | None = None   # last 3D result
         self.lenses: list = [None] * n                  # lens.LensProfile per view (or None)
         # the formats written into the project's exports/ folder at every save (G42)
         self.exports: list[str] = []
         self._normalize()
+
+    @property
+    def calibration(self) -> Calibration | None:
+        """DLT per view, view order; every camera in Kinetrace's own pixels (I278)."""
+        return self._calibration
+
+    @calibration.setter
+    def calibration(self, cal: Calibration | None) -> None:
+        # (I278) a calibration in a file's own pixel convention must have gone through
+        # `Calibration.to_internal` where it came in; one that did not would be a pixel off
+        # everywhere with a normal-looking residual, so it is refused here, loudly
+        if cal is not None and not cal.is_internal():
+            raise ValueError("internal error: a calibration in its file's pixel convention reached the "
+                             "project (it must go through Calibration.to_internal first)")
+        self._calibration = cal
 
     # -------------------------------------------------------------- accessors
 
@@ -202,9 +233,50 @@ class Project:
         the way it does towards a later view. No range check. (I258: retrack
         used Python's round / np.rint, whose half-to-even disagreed with
         `map_frame` at every .5 offset and shifted stretch ends by one.)"""
-        x = self.rates[view] * np.asarray(t, np.float64) + self.offsets[view]
-        out = np.floor(x + 0.5).astype(np.int64)
-        return int(out) if out.ndim == 0 else out
+        return half_up(self.rates[view] * np.asarray(t, np.float64) + self.offsets[view])
+
+    def observations(self, name: str, src: int, frame, exclude: int | None = None) -> list:
+        """[(camera, its calibration, raw (x, y) float64), ...]: the calibrated cameras other than
+        `exclude` (None = `src`, -1 = none) that have landmark `name` at the instant of `src`'s
+        `frame` (hidden cells left out). Read at the FRACTIONAL frame the way Reconstruct does
+        (I253): between the two neighbouring frames when both have a position, else at the nearest
+        frame (`map_frame`) -- with a sub-frame offset or a slower camera the nearest frame is up to
+        half a frame of motion off. THE reader of Snap, the guides and Re-track (I281)."""
+        cal = self.calibration
+        if cal is None:
+            return []
+        exclude = src if exclude is None else exclude
+        out = []
+        for c in range(self.n_views):
+            cam = cal.camera(c)
+            if c == exclude or cam is None:
+                continue
+            sc = self.sessions[c]
+            j = sc.pid_by_name(name)
+            if j is None:
+                continue
+            uv = None
+            fx = self.map_frame_exact(src, c, frame)
+            lo = int(np.floor(fx))
+            a = fx - lo
+            if 1e-9 < a < 1.0 - 1e-9:
+                u0, u1 = cell_xy(sc, lo, j), cell_xy(sc, lo + 1, j)
+                if u0 is not None and u1 is not None:
+                    uv = (1.0 - a) * u0 + a * u1
+            if uv is None:
+                uv = cell_xy(sc, self.map_frame(src, c, frame), j)
+            if uv is not None:
+                out.append((c, cam, uv))
+        return out
+
+    def probe_at(self, view: int, frame) -> np.ndarray:
+        """(R31) A 3D point in front of the cameras at `view`'s `frame`: the centroid of the landmarks
+        solved at that instant (its reference frame by `reference_index`, I258), else the
+        calibration's `working_probe`. The guides' and Re-track's forward sign."""
+        from kinetrace.calib import working_probe
+        r = self.reconstruction
+        pts = r.points_at(self.reference_index(view, int(frame))) if r is not None else ()
+        return pts.mean(axis=0) if len(pts) else working_probe(self.calibration)
 
     def reference_index(self, view: int, frame) -> int | np.ndarray:
         """The reference frame nearest local `frame` of `view`: `map_frame`'s
