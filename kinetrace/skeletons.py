@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-SKELETON_DIR = Path(__file__).resolve().parent.parent / "skeletons"
+from kinetrace import paths as _paths
+
+SKELETON_DIR = _paths.ROOT / "skeletons"
 
 DERIVED_CHOICES: list[tuple[str, str]] = [
     ("tip", "tail tip (end of the midline)"),

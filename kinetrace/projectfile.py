@@ -75,7 +75,7 @@ def add_suffix(name: str) -> str:
 META = "kinetrace.json"
 CACHE_DIR, HISTORY_DIR, SAVING_DIR = ".cache", ".history", ".saving"
 EXPORTS_DIR, VIDEOS_DIR = "exports", "videos"
-_NOT_DATA = (CACHE_DIR, HISTORY_DIR, SAVING_DIR, EXPORTS_DIR, VIDEOS_DIR)   # never read as project data
+_NOT_DATA = (EXPORTS_DIR, VIDEOS_DIR)       # never read as project data (.cache / .history / .saving: every dot dir)
 # the ui_state entries kept per camera (view.json); every other one is window-wide (state.json)
 # (G103) selected_names / segment_selected / segments_selected = the run scope: the points selected in LAYERS
 # (BY NAME), whether an animal row is, and which animals (by name, G161); view.json keeps them as
@@ -779,14 +779,13 @@ def _replace(src: Path, dst: Path) -> None:
 
 # ------------------------------------------------------------------ the project folder (I145)
 _TOP_FILES = {META, "project.json", "state.json", "calibration.json", "lenses.json", "README.txt"}
-_CAM_FILES = {"view.json", "points.csv", "tracks.csv", "events.csv", "notes.csv", "ball_prompts.json", "spots.json",
-              "skeleton.json", "segment.json", "tracks.npy", "confidence.npy", "visibility.npy", "manual.npy",
-              "tracked.npy", "occluded.npy", "radius.npy"}
-_CAM_DIRS = ("tracks", "silhouette", "body", "segments", "fingerprint")
 # files an older layout left in a camera folder (format 1's tracks.csv, the recovery form's dense arrays): a save
 # removes them if they are there, besides what the previous save wrote (I164)
 _LEGACY_CAM_FILES = ("skeleton.json", "tracks.csv", "tracks.npy", "confidence.npy", "visibility.npy", "manual.npy", "tracked.npy",
                      "occluded.npy", "radius.npy")
+_CAM_FILES = {"view.json", "points.csv", "events.csv", "notes.csv", "ball_prompts.json", "spots.json", "segment.json",
+              *_LEGACY_CAM_FILES}                       # (R48) the legacy names written once
+_CAM_DIRS = ("tracks", "silhouette", "body", "segments", "fingerprint")
 _OWN_DOT = (CACHE_DIR, HISTORY_DIR, SAVING_DIR, ".lock")      # the dot entries Kinetrace itself makes
 
 

@@ -32,8 +32,9 @@ import cv2
 import numpy as np
 
 from kinetrace.pixels import centre_scale
+from kinetrace import paths as _paths
 
-MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+MODELS_DIR = _paths.MODELS_DIR                      # (R48) the one models folder
 HF_DIR = MODELS_DIR / "hf"
 os.environ.setdefault("HF_HOME", str(HF_DIR))
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")

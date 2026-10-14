@@ -32,7 +32,9 @@ import sys
 from ctypes import POINTER, byref, c_void_p, c_wchar_p
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from kinetrace import paths as _paths
+
+ROOT = _paths.ROOT                                   # (R48) the one install folder
 APP_ID = "Kinetrace.Kinetrace"          # = app.main's SetCurrentProcessExplicitAppUserModelID
 SHORTCUT_VERSION = "1"                  # bump when the target / arguments / icon change: run.bat rewrites it
 LINK_NAME = "Kinetrace.lnk"

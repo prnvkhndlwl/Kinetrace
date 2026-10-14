@@ -35,7 +35,9 @@ from pathlib import Path
 
 import numpy as np
 
-MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+from kinetrace import paths as _paths
+
+MODELS_DIR = _paths.MODELS_DIR                      # (R48) the one models folder
 REPO_DIR = MODELS_DIR / "alltracker"
 CHECKPOINT = MODELS_DIR / "checkpoints" / "alltracker.pth"     # downloads.FILES["alltracker"] (pinned, checked)
 WINDOW = 16

@@ -76,8 +76,9 @@ from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, Segme
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
 from kinetrace.session import in_frame
 from kinetrace.video_source import FrameCache, ReadAhead, VideoSource
+from kinetrace import paths as _paths
 
-MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+MODELS_DIR = _paths.MODELS_DIR                      # (R48) the one models folder
 WORKING_MAX_DIM = 1280
 # LK refinement is the largest non-overlapped cost at 4K (measured 174 ms per
 # 16-frame window, 33% of wall — MORE than the model itself), because

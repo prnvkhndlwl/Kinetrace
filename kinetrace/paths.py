@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+MODELS_DIR = ROOT / "models"           # (R48) every model's folder; each module keeps its own name (tests patch it)
 
 
 def path_key(path) -> str:

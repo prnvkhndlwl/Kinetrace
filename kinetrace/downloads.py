@@ -22,7 +22,6 @@ from __future__ import annotations
 import errno
 import hashlib
 import http.client
-import io
 import os
 import shutil
 import time
@@ -34,8 +33,9 @@ from pathlib import Path, PurePosixPath
 
 from kinetrace.errors import cap_first
 from kinetrace.paths import replace_retry
+from kinetrace import paths as _paths
 
-MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+MODELS_DIR = _paths.MODELS_DIR                      # (R48) the one models folder
 HF_CACHE = MODELS_DIR / "hf" / "hub"      # the Hugging Face cache INSIDE the install, whatever HF_HOME says (I195)
 TIMEOUT_S = 30              # no byte for this long = the download stalled
 CHUNK = 1 << 20
@@ -109,10 +109,6 @@ HF_REVISIONS = {
 HF_ALLOW = {
     "facebook/sam3": ["*.json", "*.txt", "*.safetensors", "LICENSE*"],
 }
-
-
-def _mb(n: float) -> str:
-    return f"{n / 1e6:.0f} MB"
 
 
 def _no_net(label: str, e: Exception, hint: str | None = None) -> DownloadError:

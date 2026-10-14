@@ -27,8 +27,10 @@ import threading
 import time
 from pathlib import Path
 
+from kinetrace import paths as _paths
+
 MIN_ROWS = 1_500_000          # below this a save formats in its own thread (about 1.5 s of work)
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = _paths.ROOT                                   # (R48) the one install folder
 
 
 def n_workers() -> int:

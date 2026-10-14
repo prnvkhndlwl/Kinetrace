@@ -816,28 +816,6 @@ class BodyTrack:
         self._version += 1
         return n
 
-    def clear_frames(self, frames) -> None:
-        """Blank a set of individual frames (every person)."""
-        f = np.asarray(frames, np.int64).reshape(-1)
-        f = f[(f >= 0) & (f < self.n_frames)]
-        if not len(f):
-            return
-        fs = set(int(x) for x in f)
-        gone = [k for k in self.mesh if k[0] in fs]
-        for key in gone:
-            del self.mesh[key]
-        if gone:
-            self.mesh_version += 1
-        self.joints3d[f] = np.nan
-        self.joints2d[f] = np.nan
-        self.conf[f] = 0.0
-        self.score[f] = np.nan
-        self.bbox[f] = -1
-        self.box_src[f] = 0
-        self.focal[f] = np.nan
-        self.cam_t[f] = np.nan
-        self._version += 1
-
     def copy(self) -> "BodyTrack":
         bt = BodyTrack(self.n_frames, self.rig, self.n_people)
         for a in BODY_ARRAYS:

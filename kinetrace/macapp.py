@@ -32,7 +32,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from kinetrace import paths as _paths
+
+ROOT = _paths.ROOT                                   # (R48) the one install folder
 APP = ROOT / "Kinetrace.app"
 BUNDLE_VERSION = "2"          # bump when the launcher / plist below change: run.sh rebuilds the app
 ICON_SIZES = (16, 32, 128, 256, 512)

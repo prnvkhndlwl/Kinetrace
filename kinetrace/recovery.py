@@ -22,8 +22,10 @@ import sys
 import time
 from pathlib import Path
 
+from kinetrace import paths as _paths
+
 ENV = "KINETRACE_RECOVERY_DIR"
-_INSTALL = Path(__file__).resolve().parent.parent / "recovery"
+_INSTALL = _paths.ROOT / "recovery"
 _cached: tuple[Path, bool] | None = None
 
 

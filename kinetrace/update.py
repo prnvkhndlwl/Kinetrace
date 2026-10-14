@@ -43,10 +43,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from kinetrace import APP_VERSION, winlaunch
+from kinetrace import paths as _paths
 
 REPO = "prnvkhndlwl/Kinetrace"
 PAGE = f"https://github.com/{REPO}"
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = _paths.ROOT                                   # (R48) the one install folder
 MANIFEST = ".kinetrace-release.json"      # the files the installed release put here
 STAGING = "update"                         # download + unpack folder, inside the install
 # top-level folders (and files) an update never writes or removes: each user's own

@@ -29,7 +29,6 @@ import os
 import platform
 import shutil
 import subprocess
-import sys
 
 FORCE_ENV = "KINETRACE_DEVICE"
 DRIVER_MIN = 580            # NVIDIA driver branch the CUDA 13 PyTorch build needs
