@@ -372,16 +372,29 @@ def hf_cached(repo: str) -> bool:
     return any((hub / rev).glob("*.safetensors")) if (hub / rev).is_dir() else False
 
 
-def hf_token() -> str:
-    """The Hugging Face token saved in Settings (models/hf/token, the file `segmenter.save_token`
-    writes), '' when there is none or HF_TOKEN is set (the Hub reads that itself). A gated SAM 3
-    download needs it whichever HF_HOME the user's environment has (I195)."""
+def hf_token(hf_dir: Path | None = None) -> str:
+    """The Hugging Face token saved in Settings (`hf_dir`/token, default models/hf/token: the file
+    `segmenter.save_token` writes), '' when there is none or HF_TOKEN is set (the Hub reads that
+    itself). THE token rule of the downloads, SAM and the body models (I195, I287: the environment
+    wins everywhere)."""
     if os.environ.get("HF_TOKEN"):
         return ""
     try:
-        return (MODELS_DIR / "hf" / "token").read_text(encoding="utf-8").strip()
+        return ((hf_dir or MODELS_DIR / "hf") / "token").read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+def hf_pretrained_args(repo: str, hf_dir: Path) -> dict:
+    """`from_pretrained`'s arguments for one of OUR Hugging Face models (I195, I287): the pinned
+    commit (`hf_load_args`), the cache INSIDE `hf_dir`/hub whatever the user's own HF_HOME says (a
+    load that looked in their cache failed after a successful download into models/hf), and the
+    saved token (`hf_token`) when there is one."""
+    kw = {**hf_load_args(repo), "cache_dir": str(hf_dir / "hub")}
+    tok = hf_token(hf_dir)
+    if tok:
+        kw["token"] = tok
+    return kw
 
 
 def hf_snapshot(repo: str, label: str, progress=None, cancel=lambda: False) -> None:

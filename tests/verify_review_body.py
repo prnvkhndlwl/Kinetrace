@@ -579,6 +579,28 @@ def _i195():
     check(kw.get("token") == "hf_test_token", "with the token saved in models/hf/token")
     kd = seen.get("FakeDet", ("", {}))[1]
     check(kd.get("cache_dir") == str(tmp / "hub"), "and so is the person detector", str(kd.get("cache_dir")))
+    # (I287, owner decision G) HF_TOKEN set: the environment wins, as for SAM and the downloads -- the saved
+    # file's token is not passed (the Hub reads HF_TOKEN itself)
+    seen.clear()
+    had = os.environ.get("HF_TOKEN")
+    os.environ["HF_TOKEN"] = "hf_env_token"
+    try:
+        transformers.AutoProcessor, transformers.VitPoseForPoseEstimation = FakeProc, FakeVit
+        transformers.AutoImageProcessor, transformers.RTDetrV2ForObjectDetection = FakeProc2, FakeDet
+        bodypose.HF_DIR = tmp
+        bodypose.ViTPoseEstimator(spec, "cpu", use_detector=True)
+    finally:
+        bodypose.HF_DIR = real_hf
+        for n in names:
+            vars(transformers).pop(n, None)
+        if had is None:
+            os.environ.pop("HF_TOKEN", None)
+        else:
+            os.environ["HF_TOKEN"] = had
+    kv, kd = seen.get("FakeVit", ("", {}))[1], seen.get("FakeDet", ("", {}))[1]
+    check("token" not in kv and "token" not in kd and kv.get("cache_dir") == str(tmp / "hub"),
+          "(I287) with HF_TOKEN set the saved token is not passed (the environment wins, as for SAM)",
+          f"{kv.get('token')!r} {kd.get('token')!r}")
 
     # G135
     real_cached = downloads.hf_cached
