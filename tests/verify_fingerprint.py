@@ -402,5 +402,45 @@ src.close()
 vs.set_seek_plan(GAP, None)
 check(not bad, "every frame is the one reading forward gives", str(bad))
 
+print("[6b] (I286) the tracker's 'is this frame damaged?' probe seeks like every other read")
+# frame 150 of the gap file cannot be decoded (a capture whose read of that picture fails); the probe must read
+# frame 150 itself -- a bare seek lands on 149, which decodes, and a damaged frame was called a hiccup
+from kinetrace import tracker as trk  # noqa: E402
+vs.set_seek_plan(GAP, plan)
+real_open = vs.open_capture
+
+
+class _Unreadable150:
+    def __init__(self, cap):
+        self.cap = cap
+
+    def read(self):
+        ok, img = self.cap.read()
+        if ok and ident(ref, img) == 150:
+            return False, None
+        return ok, img
+
+    def __getattr__(self, name):
+        return getattr(self.cap, name)
+
+
+vs.open_capture = lambda path, *a, **k: _Unreadable150(real_open(path, *a, **k))
+try:
+    probe150, probe151 = trk._frame_decodes(GAP, 150), trk._frame_decodes(GAP, 151)
+    w = trk.TrackingWorker(GAP, 120, None, None, vs.FrameCache(1 << 24), len(ref) - 1, specs=[],
+                           spots=[trk.SpotSpec(0, np.array([100.0, 100.0], np.float32), None, {})])
+    w._check_read_end(150)                       # what a run does when its read of frame 150 fails
+    said = w._decode_failure_text() if w.decode_failed_at is not None else ""
+finally:
+    vs.open_capture = real_open
+    vs.set_seek_plan(GAP, None)
+if old:                                          # the plain seek is wrong on this computer: the bug can show
+    check(probe150 is False and probe151 is True, "the probe reads frame 150 itself (unreadable) and 151",
+          f"150: {probe150}, 151: {probe151}")
+    check(w.decode_failed_at == 150 and not w.decode_transient and "damaged at that frame" in said
+          and "Press Track again" not in said, "the run says frame 150 is damaged, not 'press Track again'", said)
+else:
+    print("    (this computer's plain seeks are exact on the gap file: nothing to tell apart)")
+
 print("\nverify_fingerprint: " + ("PASSED" if not FAILS else f"FAILED ({len(FAILS)}): " + "; ".join(FAILS)))
 sys.exit(1 if FAILS else 0)

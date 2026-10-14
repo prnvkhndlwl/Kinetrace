@@ -279,14 +279,17 @@ class VideoDecodeError(RuntimeError):
 
 def _frame_decodes(path: str, idx: int) -> bool:
     """True when frame `idx` can be sought to and read. Uses its own capture, so
-    the run's source and the shared frame cache are left alone."""
+    the run's source and the shared frame cache are left alone. (I286) THE seek
+    (`seek_capture`): a bare one lands a frame early on a file that dropped a frame,
+    which read k - 1 and called a damaged frame k a hiccup ("press Track again")."""
     cap = None
     try:
-        from kinetrace.video_source import open_capture   # same backend as the run
+        from kinetrace.video_source import open_capture, seek_capture   # same backend as the run
         cap = open_capture(path)
         if not cap.isOpened():
             return False
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        if not seek_capture(cap, path, int(idx)):
+            return False
         ok, _ = cap.read()
         return bool(ok)
     except Exception:   # noqa: BLE001 -- a probe that cannot run proves nothing
