@@ -26,6 +26,8 @@ import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import dijkstra
 
+from kinetrace.pixels import centre_scale, centre_unscale
+
 MAX_NODES = 30_000          # analysis-resolution pixel budget per component
 MIN_COMPONENT_PX = 12       # smaller silhouettes carry no usable geometry
 EXTREMITY_MAX = 8           # feet/hands/wing tips returned at most
@@ -251,7 +253,7 @@ def midline(mask: np.ndarray, anchor: tuple[float, float] | None = None,
         # recover thin structures the nearest-neighbour shrink may have severed
         small = cv2.dilate(small, np.ones((3, 3), np.uint8)) & cv2.resize(
             cv2.dilate(m8, np.ones((3, 3), np.uint8)), (sw, sh), interpolation=cv2.INTER_NEAREST_EXACT)
-        anc = None if anchor is None else ((anchor[0] + 0.5) * sxy[0] - 0.5, (anchor[1] + 0.5) * sxy[1] - 0.5)
+        anc = None if anchor is None else (centre_scale(anchor[0], sxy[0]), centre_scale(anchor[1], sxy[1]))
     else:
         small, anc = m8, anchor
     comp = largest_component(small, anc)
@@ -337,8 +339,8 @@ def midline(mask: np.ndarray, anchor: tuple[float, float] | None = None,
 
     path_s = _smooth(path_s)
     if s < 1.0:  # back to the caller's pixel frame (cell centres, per axis)
-        path = (path_s + 0.5) / sxy - 0.5
-        ext = (ext_s + 0.5) / sxy - 0.5 if len(ext_s) else ext_s
+        path = centre_unscale(path_s, sxy)
+        ext = centre_unscale(ext_s, sxy) if len(ext_s) else ext_s
         width = width_s / float(sxy.mean())
     else:
         path, ext, width = path_s, ext_s, width_s

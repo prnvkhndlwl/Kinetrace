@@ -207,6 +207,16 @@ def _sanitize(name: str) -> str:
     return name.replace(",", "_").replace("\t", "_").replace("\n", " ").strip() or "point"
 
 
+def _midline_array(sm, T: int) -> np.ndarray:
+    """(R42) A silhouette's midline per frame for the .mat export: (T, MIDLINE_SAMPLES, 2) float64, NaN on
+    frames without one (or with a partial one)."""
+    mk = np.full((T, MIDLINE_SAMPLES, 2), np.nan, np.float64)
+    for f, pts in sm.midline.items():
+        if len(pts) == MIDLINE_SAMPLES:
+            mk[f] = pts
+    return mk
+
+
 def dltdv_convention_text(flip_y: bool, pixel_origin: float = 1.0) -> str:
     """One plain sentence naming the pixel convention an xypts file was
     written in, for its sidecar and the export dialog. Both writers write
@@ -1796,10 +1806,7 @@ class TrackingSession:
             # the top level as before
             segs = {}
             for k, (sm, sg) in enumerate(zip(self.seg_masks, self.segments)):
-                mk = np.full((T, MIDLINE_SAMPLES, 2), np.nan, np.float64)
-                for f, pts in sm.midline.items():
-                    if len(pts) == MIDLINE_SAMPLES:
-                        mk[f] = pts
+                mk = _midline_array(sm, T)
                 key = re.sub(r"[^A-Za-z0-9_]", "_", sg.name) or f"segment{k + 1}"
                 if not key[0].isalpha():
                     key = "s_" + key
@@ -1816,10 +1823,7 @@ class TrackingSession:
             if segs:
                 d["segments"] = segs
             m = self.seg_masks[0]
-            mid = np.full((T, MIDLINE_SAMPLES, 2), np.nan, np.float64)
-            for f, pts in m.midline.items():
-                if len(pts) == MIDLINE_SAMPLES:
-                    mid[f] = pts
+            mid = _midline_array(m, T)
             first = self.segments[0] if self.segments else None
             d.update({
                 "segment_name": first.name if first else "segment",

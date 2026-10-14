@@ -70,8 +70,9 @@ from PySide6.QtCore import QThread, Signal
 
 from kinetrace import alltracker_backend as at_backend
 from kinetrace.downloads import DownloadError
-from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity,
-                                     get_segmenter, score_to_confidence, summarize_mask, working_size)
+from kinetrace.pixels import centre_scale, centre_unscale, centred_origin
+from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity, bbox_diagonal,
+                                     click_arrays, fit_within, get_segmenter, score_to_confidence, summarize_mask, working_size)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
 from kinetrace.session import in_frame
 from kinetrace.video_source import FrameCache, ReadAhead, VideoSource
@@ -90,7 +91,6 @@ WORKING_MAX_DIM = 1280
 #     pyramid, so it cannot be expressed here.
 # Left exact-but-slow deliberately; see docs/HANDOFF.md.
 POINT_BACKENDS = ("cotracker3", "alltracker")
-ALLTRACKER_MAX_DIM = 1024        # AllTracker correlates every pixel pair of a window: memory ~ (H*W/64)^2
 
 # auto-pause: confidence below the threshold for this many consecutive
 # in-frame frames = the model has lost the point. Occlusion also drops
@@ -277,16 +277,24 @@ class VideoDecodeError(RuntimeError):
     emitting everything tracked before that frame."""
 
 
-def _frame_decodes(path: str, idx: int) -> bool:
+def _frame_decodes(path: str, idx: int, exact: bool = True) -> bool:
     """True when frame `idx` can be sought to and read. Uses its own capture, so
-    the run's source and the shared frame cache are left alone."""
+    the run's source and the shared frame cache are left alone. (I286) `exact`: THE
+    seek (`seek_capture`) -- a bare one lands a frame early on a file that dropped a
+    frame, which read k - 1 and called a damaged frame k a hiccup ("press Track
+    again"). Not exact: a plain seek, for "does SOME later frame decode" -- the exact
+    seek reaches a frame by decoding forward to it, through the damaged one."""
     cap = None
     try:
-        from kinetrace.video_source import open_capture   # same backend as the run
+        from kinetrace.video_source import open_capture, seek_capture   # same backend as the run
         cap = open_capture(path)
         if not cap.isOpened():
             return False
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+        if exact:
+            if not seek_capture(cap, path, int(idx)):
+                return False
+        else:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
         ok, _ = cap.read()
         return bool(ok)
     except Exception:   # noqa: BLE001 -- a probe that cannot run proves nothing
@@ -405,6 +413,17 @@ def fit_group(seed_pts: np.ndarray, seed_center: np.ndarray, cur_pts: np.ndarray
     conf = 0.6 * float(valid.mean()) * float(np.median(conf_m[valid]))
     visible = bool(np.mean(vis_m[valid]) > 0.5)
     return center, visible, min(conf, 1.0)
+
+
+def _drop_before(d: dict, first_kept) -> None:
+    """(R42) Forget a frame-keyed cache's entries before `first_kept`: windows only move forward."""
+    for k in [k for k in d if k < first_kept]:
+        del d[k]
+
+
+def _empty_cols(L: int, K: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(R42) A chunk of L frames x K outputs with nothing in it: (tracks NaN, visible False, confidence 0)."""
+    return np.full((L, K, 2), np.nan, np.float32), np.zeros((L, K), bool), np.zeros((L, K), np.float32)
 
 
 def _drain(gen):
@@ -816,8 +835,10 @@ class TrackingWorker(QThread):
         if _frame_decodes(self.video_path, k):
             self.decode_failed_at, self.decode_transient = int(k), True
             return
-        for idx in sorted({k + 1, self.n_frames - 1}):
-            if k < idx < self.n_frames and _frame_decodes(self.video_path, idx):
+        # (I286) a later frame, sought plainly (it may land a frame early on a file that dropped
+        # one: k + 2, not k + 1, so it still lands past k)
+        for idx in sorted({k + 2, self.n_frames - 1}):
+            if k < idx < self.n_frames and _frame_decodes(self.video_path, idx, exact=False):
                 self.decode_failed_at = int(k)
                 return
 
@@ -863,8 +884,8 @@ class TrackingWorker(QThread):
         ch = int(min(nh, max((y1 - y0) * (1 + 2 * ROI_MARGIN_FRAC), ROI_MIN_H) * grow))
         if max(nw, nh) / max(cw, ch) < ROI_MIN_ZOOM:
             return None
-        cx0 = int(np.clip(round((x0 + x1) / 2 - cw / 2), 0, nw - cw))
-        cy0 = int(np.clip(round((y0 + y1) / 2 - ch / 2), 0, nh - ch))
+        cx0 = centred_origin((x0 + x1) / 2, cw, nw)         # (R39) cw <= nw, ch <= nh
+        cy0 = centred_origin((y0 + y1) / 2, ch, nh)
         return (cx0, cy0, cw, ch)
 
     def _model_step(self, model, frames: list[np.ndarray], device: str, first: bool,
@@ -959,9 +980,8 @@ class TrackingWorker(QThread):
             # (the device rule never exceeds 1024 by itself, so this is the old min(...) unless
             # the user set KINETRACE_ALLTRACKER_MAX_DIM above it -- honoured now, I256)
             from kinetrace.device import alltracker_max_dim
-            at_dim = alltracker_max_dim(str(device)) if device is not None else ALLTRACKER_MAX_DIM
-        scale = min(1.0, (at_dim if use_at else WORKING_MAX_DIM) / max(cw, ch))
-        ww, wh = max(2, round(cw * scale)), max(2, round(ch * scale))
+            at_dim = alltracker_max_dim(str(device))     # (R41) device is the model's, never None here
+        scale, ww, wh = fit_within(cw, ch, at_dim if use_at else WORKING_MAX_DIM)
         # align-corners convention, matching the model's internal rescaling
         to_native = np.array([(cw - 1) / max(ww - 1, 1), (ch - 1) / max(wh - 1, 1)], np.float32)
         to_working = 1.0 / to_native
@@ -1028,9 +1048,7 @@ class TrackingWorker(QThread):
                 self._constrain_to_mask(w0, tr, specs, out_map, first_seg, col_idx)
             self._cur = self._first()
 
-            out_tr = np.full((L, K, 2), np.nan, np.float32)
-            out_vi = np.zeros((L, K), bool)
-            out_cf = np.zeros((L, K), np.float32)
+            out_tr, out_vi, out_cf = _empty_cols(L, K)
             members: dict[int, np.ndarray] = {}
             for a, om in enumerate(out_map):
                 k = col_idx[a]
@@ -1161,9 +1179,7 @@ class TrackingWorker(QThread):
                 if n == 1:
                     if first_seg:
                         # single-frame run: the seed row is already known
-                        out_tr = np.full((1, K, 2), np.nan, np.float32)
-                        out_vi = np.zeros((1, K), bool)
-                        out_cf = np.zeros((1, K), np.float32)
+                        out_tr, out_vi, out_cf = _empty_cols(1, K)
                         for a, sp in enumerate(specs):
                             out_tr[0, col_idx[a]] = sp.seed
                             out_vi[0, col_idx[a]] = True
@@ -1217,11 +1233,11 @@ class TrackingWorker(QThread):
         the segmenter has said its (sx, sy); `scale` (one number) stays the
         factor for LENGTHS (I61)."""
         s = self._sxy if self._sxy is not None else scale
-        return (np.asarray(p, np.float32) + 0.5) * s - 0.5
+        return centre_scale(np.asarray(p, np.float32), s)
 
     def _n2w(self, p, scale: float) -> np.ndarray:
         s = self._sxy if self._sxy is not None else scale
-        return (np.asarray(p, np.float32) + 0.5) / s - 0.5
+        return centre_unscale(np.asarray(p, np.float32), s)
 
     def _first(self) -> "_SegState":
         return self._segs[0] if self._segs else self._none
@@ -1239,8 +1255,7 @@ class TrackingWorker(QThread):
             clicks = a.prompts.get(abs_idx, [])
             box = a.boxes.get(abs_idx)
             if clicks or box is not None:
-                pts = np.array([[c[0], c[1]] for c in clicks], np.float32) if clicks else None
-                labs = np.array([c[2] for c in clicks], np.int64) if clicks else None
+                pts, labs = click_arrays(clicks)
                 prompts.append(Prompt(st.obj_id, pts, labs, box))
                 prompted.add(st.k)
             elif abs_idx == self.start_frame and a.seed_mask is not None and a.seed_mask.any():
@@ -1253,9 +1268,8 @@ class TrackingWorker(QThread):
                     "it on this frame, then start tracking again.")
         fm = self._seg.step(native, abs_idx, prompts or None)
         self._seg_last = abs_idx
-        sxy = getattr(fm, "scale_xy", None)
-        if sxy is not None:
-            self._sxy = np.asarray(sxy, np.float32)
+        sxy = fm.scale_xy                     # (R41) FrameMasks always has it; the float64 pair goes to summarize_mask
+        self._sxy = np.asarray(sxy, np.float32)
         for st in live:
             self._cur = st
             if st.obj_id in fm.obj_ids:
@@ -1264,7 +1278,7 @@ class TrackingWorker(QThread):
             else:
                 mask = np.zeros(fm.masks.shape[1:], bool)
                 score = -10.0
-            summ = summarize_mask(mask, sxy if sxy is not None else fm.scale, score)
+            summ = summarize_mask(mask, sxy, score)
             if self._identity_end is None and st.ended is None:
                 # (I260) a prompted frame (the start's seed too) is the user's segment by definition
                 end = self._identity.check(abs_idx, summ, prompted=st.k in prompted)
@@ -1276,7 +1290,7 @@ class TrackingWorker(QThread):
                 # another object, or a segment that ended (G149): this frame has no silhouette of it
                 # (nothing derived from it, nothing constrained to it, nothing stored)
                 mask = np.zeros_like(mask)
-                summ = summarize_mask(mask, sxy if sxy is not None else fm.scale, score)
+                summ = summarize_mask(mask, sxy, score)
             self._mask_hist[abs_idx] = (mask, fm.scale)
             summ["frame"] = abs_idx
             summ["seg"] = int(st.spec.index)
@@ -1386,8 +1400,7 @@ class TrackingWorker(QThread):
             summ = self._summ.get(f)
             diag_w = float("nan")
             if summ is not None and summ["area"] > 0:
-                x0, y0, x1, y1 = summ["bbox"]                      # native px
-                diag_w = float(np.hypot(x1 - x0 + 1, y1 - y0 + 1)) / scale   # -> working px, like ml.length
+                diag_w = bbox_diagonal(summ["bbox"]) / scale       # native -> working px, like ml.length
             short = ((self._prev_len is not None and ml.length < ANCHOR_SHORT_FRAC * self._prev_len)
                      or (np.isfinite(diag_w) and ml.length < 0.5 * diag_w))
             last = self._anchor_verdict
@@ -1578,8 +1591,7 @@ class TrackingWorker(QThread):
         # caches keep ~16 frames, not the ~97 of MASK_HIST (a label image is ~2.4 MB at
         # 1024 x 576, ~230 MB per camera; ~2.7 GB with 8 cameras on Every camera) (R3)
         for cache in (self._snap_cache, self._dil_cache):
-            for k in [k for k in cache if k < w0]:
-                del cache[k]
+            _drop_before(cache, w0)
         if col_idx is None:
             col_idx = list(range(len(specs)))
         self._col2q = {a: om[1] for a, om in enumerate(out_map) if om[0] == "point"}
@@ -1629,8 +1641,7 @@ class TrackingWorker(QThread):
             h, w = mask.shape
             summ = self._summ.get(f)
             if summ is not None and summ["area"] > 0:
-                x0, y0, x1, y1 = summ["bbox"]
-                diag = float(np.hypot(x1 - x0 + 1, y1 - y0 + 1)) / scale
+                diag = bbox_diagonal(summ["bbox"]) / scale
             else:
                 diag = float(np.hypot(w, h))
             band_w = max(EXIT_BAND_MIN_PX / scale, EXIT_BAND_FRAC * diag)   # working px, like `diag`
@@ -1719,8 +1730,7 @@ class TrackingWorker(QThread):
             mask, scale = hist
             dil = self._dil_cache.get(f)
             if dil is None:
-                x0, y0, x1, y1 = summ["bbox"]
-                pad = max(EXIT_BAND_MIN_PX, EXIT_BAND_FRAC * float(np.hypot(x1 - x0 + 1, y1 - y0 + 1))) / scale
+                pad = max(EXIT_BAND_MIN_PX, EXIT_BAND_FRAC * bbox_diagonal(summ["bbox"])) / scale
                 k = 2 * int(np.ceil(pad)) + 1
                 dil = cv2.dilate(mask.astype(np.uint8), np.ones((k, k), np.uint8))
                 self._dil_cache[f] = dil
@@ -1857,9 +1867,7 @@ class TrackingWorker(QThread):
 
     def _display_size(self) -> tuple[float, int, int]:
         """Full frame at working resolution for the display path: (scale, w, h)."""
-        nw, nh = self._frame_wh
-        s = min(1.0, WORKING_MAX_DIM / max(nw, nh))
-        return s, max(2, round(nw * s)), max(2, round(nh * s))
+        return fit_within(*self._frame_wh, WORKING_MAX_DIM)
 
     @staticmethod
     def _display_of(native: np.ndarray, disp: tuple[float, int, int]) -> np.ndarray:
@@ -1884,9 +1892,7 @@ class TrackingWorker(QThread):
             if not buf:
                 return
             w0, L = buf[0], len(buf)
-            out_tr = np.full((L, K, 2), np.nan, np.float32)
-            out_vi = np.zeros((L, K), bool)
-            out_cf = np.zeros((L, K), np.float32)
+            out_tr, out_vi, out_cf = _empty_cols(L, K)
             self._finish_chunk(w0, out_tr, out_vi, out_cf, {}, pending)
             last = w0 + L - 1
             pending, buf = [], []
@@ -1942,8 +1948,7 @@ class TrackingWorker(QThread):
                 self._ball_ended.pop(int(b.pid), None)
             obj = self._ball_obj[b.pid]
             if cs:
-                pts = np.array([[c[0], c[1]] for c in cs], np.float32)
-                labs = np.array([int(c[2]) for c in cs], np.int64)
+                pts, labs = click_arrays(cs)
                 r = b.radius
                 st = trk.active.get(obj)
                 if st is not None and st.r:
@@ -1972,14 +1977,17 @@ class TrackingWorker(QThread):
             first_bad = max(self.start_frame, abs_idx - miss)
             # (the "apart" reason of I58 -- balls too far apart for one crop -- cannot reach
             # here since I143: far-apart balls get a crop per group)
-            # kept with auto-pause OFF too, so the app can say which ball ended where (I127)
-            self._ball_ended[int(pid)] = (int(first_bad), "lost")
-            if self.autopause and self._autopause_hit is None:
-                self._autopause_hit = (int(first_bad), int(pid))
-                self._autopause_reason = "lost"
-                self._detector_stop = True      # the frames read so far still get their tail (I192)
-        for k in [k for k in self._ball_res if k < abs_idx - 4 * MASK_HIST]:
-            del self._ball_res[k]
+            self._detector_end(self._ball_ended, pid, first_bad, "lost", "lost")
+        _drop_before(self._ball_res, abs_idx - 4 * MASK_HIST)
+
+    def _detector_end(self, ended: dict, pid, frame, why: str, reason: str) -> None:
+        """(R42) A ball / spot ended at `frame`: kept with auto-pause OFF too, so the app can say which
+        one ended where (I127); with auto-pause on, the run pauses there (`reason`)."""
+        ended[int(pid)] = (int(frame), why)
+        if self.autopause and self._autopause_hit is None:
+            self._autopause_hit = (int(frame), int(pid))
+            self._autopause_reason = reason
+            self._detector_stop = True      # the frames read so far still get their tail (I192)
 
     def _fill_balls(self, w0: int, out_tr: np.ndarray, out_vi: np.ndarray, out_cf: np.ndarray) -> None:
         """Ball columns of a window from the per-frame circle fits; emits the
@@ -2022,14 +2030,8 @@ class TrackingWorker(QThread):
             frame, why = trk.stopped
             if why == "left":
                 continue
-            # kept with auto-pause OFF too, so the app can say which spot ended where
-            self._spot_ended[int(pid)] = (int(frame), why)
-            if self.autopause and self._autopause_hit is None:
-                self._autopause_hit = (int(frame), int(pid))
-                self._autopause_reason = "spot"
-                self._detector_stop = True      # the frames read so far still get their tail (I192)
-        for k in [k for k in self._spot_res if k < abs_idx - 4 * MASK_HIST]:
-            del self._spot_res[k]
+            self._detector_end(self._spot_ended, pid, frame, why, "spot")
+        _drop_before(self._spot_res, abs_idx - 4 * MASK_HIST)
 
     def _fill_spots(self, w0: int, out_tr: np.ndarray, out_vi: np.ndarray, out_cf: np.ndarray) -> None:
         """Spot columns of a window from the per-frame fixes (they follow the balls')."""
@@ -2259,8 +2261,5 @@ class TrackingWorker(QThread):
                     if snapped is not None:
                         out[i][q] = snapped + self._template_frac.get(sp.pid, 0.0)
             self._refined[f] = out[i].copy()
-        # keep the chain buffer bounded
-        for k in list(self._refined):
-            if k < w0 - 2:
-                del self._refined[k]
+        _drop_before(self._refined, w0 - 2)        # keep the chain buffer bounded
         return out

@@ -31,6 +31,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from kinetrace.pixels import centre_scale
+
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 HF_DIR = MODELS_DIR / "hf"
 os.environ.setdefault("HF_HOME", str(HF_DIR))
@@ -169,6 +171,15 @@ class Prompt:
     mask: np.ndarray | None = None
 
 
+def click_arrays(clicks) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """(R42) [(x, y, label), ...] -> a Prompt's (points float32 (n, 2), labels int64 (n,)); (None, None)
+    for no clicks."""
+    if not clicks:
+        return None, None
+    return (np.array([[c[0], c[1]] for c in clicks], np.float32),
+            np.array([int(c[2]) for c in clicks], np.int64))
+
+
 @dataclass
 class FrameMasks:
     """Masks of all tracked objects on one frame, at the WORKING resolution
@@ -214,9 +225,16 @@ def score_to_confidence(score: float) -> float:
     return float(1.0 / (1.0 + np.exp(-(float(score) - 2.0))))
 
 
+def fit_within(w, h, max_dim) -> tuple[float, int, int]:
+    """(R40) (scale <= 1, w', h'): the picture shrunk so its longer side is at most `max_dim`, each
+    side rounded on its own (I61) and at least 2 px. The segmenter's, the tracker's and the display's
+    working size."""
+    s = min(1.0, max_dim / max(w, h))
+    return s, max(2, int(round(w * s))), max(2, int(round(h * s)))
+
+
 def working_size(native_w: int, native_h: int) -> tuple[int, int]:
-    s = min(1.0, MASK_WORK_MAX_DIM / max(native_w, native_h))
-    return max(2, int(round(native_w * s))), max(2, int(round(native_h * s)))
+    return fit_within(native_w, native_h, MASK_WORK_MAX_DIM)[1:]
 
 
 class Segmenter:
@@ -370,7 +388,7 @@ def outline_polygons(mask_work: np.ndarray, scale, eps: float = CONTOUR_EPS_WORK
     for c in cs:
         c = cv2.approxPolyDP(c, eps, True).reshape(-1, 2).astype(np.float64)
         if len(c) >= 3:
-            polys.append(np.round((c + 0.5) * sxy - 0.5).astype(np.int32))
+            polys.append(np.round(centre_scale(c, sxy)).astype(np.int32))
     return polys
 
 
@@ -391,11 +409,18 @@ def summarize_mask(mask_work: np.ndarray, scale, score: float,
     d["bbox"] = (int(round(xs.min() * sx)), int(round(ys.min() * sy)),
                  int(round((xs.max() + 1) * sx) - 1), int(round((ys.max() + 1) * sy) - 1))
     d["area"] = int(round(area_w * sx * sy))
-    d["centroid"] = ((float(xs.mean()) + 0.5) * sx - 0.5, (float(ys.mean()) + 0.5) * sy - 0.5)
+    d["centroid"] = (centre_scale(float(xs.mean()), sx), centre_scale(float(ys.mean()), sy))
     d["polys"] = outline_polygons(m8, (sx, sy))
     if midline is not None and len(midline):
         d["midline"] = np.asarray(midline, np.float32).reshape(-1, 2)
     return d
+
+
+def bbox_diagonal(bbox) -> float:
+    """(R38) The diagonal of an inclusive pixel bounding box (x0, y0, x1, y1), in its own pixels: a
+    silhouette's size for the identity check and the tracker's on-body bands."""
+    x0, y0, x1, y1 = bbox
+    return float(np.hypot(x1 - x0 + 1, y1 - y0 + 1))
 
 
 IDENTITY_BODY_K = 2.0     # a silhouette back after a gap may lie this many body sizes from where the animal was heading
@@ -427,8 +452,7 @@ class SegmentIdentity:
         if summ["area"] <= 0:
             return None
         cx, cy = (float(v) for v in summ["centroid"])
-        x0, y0, x1, y1 = summ["bbox"]
-        size = float(np.hypot(x1 - x0 + 1, y1 - y0 + 1))
+        size = bbox_diagonal(summ["bbox"])
         if not (np.isfinite(cx) and np.isfinite(cy)):
             return None
         if prompted or not self._hist:
@@ -540,7 +564,7 @@ class MaskTrack:
             sy = height / self.native_h if self.native_h else 1.0
             # the inverse of outline_polygons' pixel-centre mapping; p * s shifted a
             # 4K outline by +0.37 working px
-            scaled = [np.round((p.astype(np.float64) + 0.5) * [sx, sy] - 0.5).astype(np.int32).reshape(-1, 1, 2)
+            scaled = [np.round(centre_scale(p.astype(np.float64), [sx, sy])).astype(np.int32).reshape(-1, 1, 2)
                       for p in polys]
             cv2.fillPoly(out, scaled, 1)
         return out.astype(bool)

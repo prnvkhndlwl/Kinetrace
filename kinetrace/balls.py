@@ -58,6 +58,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from kinetrace.pixels import centred_origin
 from kinetrace.segmenter import Prompt, score_to_confidence
 
 CROP = 960              # native px, the fixed SAM window (working size = native when <= 1024)
@@ -83,6 +84,11 @@ class CircleFit:
     @property
     def confidence(self) -> float:
         return ball_confidence(self.quality, self.score)
+
+
+def _click_box(x: float, y: float, r: float | None):
+    """(R42) A box round a click at a known ball radius (crop px), or None when the radius is not known."""
+    return (x - 1.1 * r, y - 1.1 * r, x + 1.1 * r, y + 1.1 * r) if r is not None and r > 0 else None
 
 
 def ball_confidence(quality: float, score: float) -> float:
@@ -271,8 +277,7 @@ class BallTracker:
         cx = 0.5 * (min(xs) + max(xs))          # bbox centre: one far ball does not drag the others out
         cy = 0.5 * (min(ys) + max(ys))
         w, h = min(self.crop_size, self.W), min(self.crop_size, self.H)
-        x0 = int(np.clip(round(cx - w / 2), 0, self.W - w))
-        y0 = int(np.clip(round(cy - h / 2), 0, self.H - h))
+        x0, y0 = centred_origin(cx, w, self.W), centred_origin(cy, h, self.H)      # (R39) w <= W, h <= H
         return x0, y0, x0 + w, y0 + h
 
     def _crop_for(self, centres) -> tuple[int, int, int, int]:
@@ -310,10 +315,7 @@ class BallTracker:
 
     def _click_prompt(self, obj: int, xy, r: float | None, x0: int, y0: int) -> Prompt:
         bx, by = xy[0] - x0, xy[1] - y0
-        box = None
-        if r is not None and r > 0:
-            box = (bx - 1.1 * r, by - 1.1 * r, bx + 1.1 * r, by + 1.1 * r)
-        return Prompt(obj, points=np.array([[bx, by]]), labels=np.array([1]), box=box)
+        return Prompt(obj, points=np.array([[bx, by]]), labels=np.array([1]), box=_click_box(bx, by, r))
 
     # --------------------------------------------------------------- step
     def step(self, rgb: np.ndarray, frame_idx: int, prompts: list[BallPrompt] | None = None
@@ -541,9 +543,7 @@ class BallTracker:
             pos = pt[lab > 0] if (lab > 0).any() else pt
             xy = (float(pos[:, 0].mean()), float(pos[:, 1].mean()))
             r = p.radius
-            box = None
-            if r is not None and r > 0:
-                box = (xy[0] - x0 - 1.1 * r, xy[1] - y0 - 1.1 * r, xy[0] - x0 + 1.1 * r, xy[1] - y0 + 1.1 * r)
+            box = _click_box(xy[0] - x0, xy[1] - y0, r)
             sel = np.array([self._inside(self.crop, q) for q in pt], bool)
             if self._inside(self.crop, xy) and (sel[lab > 0].any() if (lab > 0).any() else sel.any()):
                 sam_prompts.append(Prompt(p.obj, points=pt[sel] - [x0, y0], labels=lab[sel], box=box))

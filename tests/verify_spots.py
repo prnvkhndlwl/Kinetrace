@@ -541,4 +541,30 @@ pump(0.3)
 if getattr(win, "_dev_probe", None) is not None:
     win._dev_probe.wait(30000)
 forget_recovery(VID, VID2, VIDA, VIDB)
+
+# (R42) the folded small rules give the old expressions' values, bit for bit
+from kinetrace import balls as _balls, segmenter as _seg  # noqa: E402
+_r = np.random.default_rng(42)
+for _ in range(5000):
+    vel = None if _r.random() < 0.2 else _r.normal(0, 9, 2)
+    step = _r.normal(0, 9, 2)
+    old = step if vel is None else spots.VEL_KEEP * vel + (1.0 - spots.VEL_KEEP) * step
+    assert np.array_equal(spots.blend_velocity(vel, step), old)
+    p, c = _r.uniform(0, 4000, 2), _r.uniform(0, 4000, 2)
+    assert spots.click_error(p, c) == float(np.hypot(*(p - c))) == float(np.hypot(p[0] - c[0], p[1] - c[1]))
+    assert spots.click_error((float(p[0]), float(p[1])), c) == float(np.hypot(float(p[0]) - c[0], float(p[1]) - c[1]))
+    cands = [tuple(_r.uniform(0, 50, 3)) for _ in range(int(_r.integers(0, 6)))]
+    x, y, sig = float(_r.uniform(0, 50)), float(_r.uniform(0, 50)), float(_r.uniform(0.5, 4))
+    sep = max(3.0, 2.0 * sig)
+    assert spots._rival(cands, x, y, sig) == next((q for q in cands if np.hypot(q[0] - x, q[1] - y) > sep), None)
+    r = None if _r.random() < 0.2 else float(_r.uniform(-1, 60))
+    bx, by = float(_r.uniform(0, 900)), float(_r.uniform(0, 900))
+    old_box = (bx - 1.1 * r, by - 1.1 * r, bx + 1.1 * r, by + 1.1 * r) if r is not None and r > 0 else None
+    assert _balls._click_box(bx, by, r) == old_box
+clicks = [(float(_r.uniform(0, 900)), float(_r.uniform(0, 900)), int(_r.integers(0, 2))) for _ in range(7)]
+pts, labs = _seg.click_arrays(clicks)
+assert np.array_equal(pts, np.array([[c[0], c[1]] for c in clicks], np.float32)) and pts.dtype == np.float32
+assert np.array_equal(labs, np.array([c[2] for c in clicks], np.int64)) and labs.dtype == np.int64
+assert _seg.click_arrays([]) == (None, None)
+print("(R42) velocity blend, click error, rival candidate, ball click box, click arrays: the old values OK")
 print("verify_spots PASSED")

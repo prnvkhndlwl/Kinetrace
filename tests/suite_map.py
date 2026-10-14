@@ -25,7 +25,15 @@ MAP = [
     # the tracking engine
     ([K + "tracker.py"], ["verify_tracker", "verify_groups", "verify_conf_autopause", "verify_roi", "verify_4k",
                           "verify_track_all", "verify_track_selection", "verify_review_tracking", "verify_review_i185",
-                          "verify_long", "verify_oob"]),
+                          "verify_long", "verify_oob",
+                          # (sweep area 3) they drive TrackingWorker too; verify_fingerprint [6b] its decode probe
+                          "verify_balls", "verify_spots", "verify_segments", "verify_segment_identity",
+                          "verify_fingerprint"]),
+    # (R37, R39) pixel-centre arithmetic: every user's suites
+    ([K + "pixels.py"], ["verify_tracker", "verify_review_tracking", "verify_4k", "verify_roi", "verify_balls",
+                         "verify_segmenter", "verify_animal", "verify_animal_gui", "verify_segments_sam",
+                         "verify_segment_identity", "verify_onbody_rules", "verify_fingerprint",
+                         "verify_decode_identity"]),
     ([K + "alltracker_backend.py"], ["verify_alltracker", "verify_alltracker_mps", "verify_portable", "verify_tracker"]),
     ([K + "spots.py", K + "pointtest.py", K + "pointedit.py"], ["verify_spots", "verify_point_tools"]),
     ([K + "balls.py"], ["verify_balls"]),

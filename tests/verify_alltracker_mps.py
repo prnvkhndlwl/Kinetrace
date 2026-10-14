@@ -25,6 +25,62 @@ import torch.nn.functional as F  # noqa: E402
 
 from kinetrace import alltracker_backend as at  # noqa: E402
 
+
+# (R41) push / flush start every window where the two old branches did (no model needed: _prep and
+# _run_window are stand-ins that record (start frame, frames in the window))
+def _old_push(s, frame):
+    s._buf.append(s._prep(frame))
+    s._n_fed += 1
+    if s._first and len(s._buf) == at.WINDOW:
+        out = s._run_window(torch.cat(s._buf, dim=0), 0)
+        s._buf = s._buf[at.STRIDE:]
+        return out
+    if not s._first and len(s._buf) == at.WINDOW:
+        out = s._run_window(torch.cat(s._buf, dim=0), s._n_fed - at.WINDOW)
+        s._buf = s._buf[at.STRIDE:]
+        return out
+    return None
+
+
+def _old_flush(s):
+    n_real = len(s._buf)
+    if n_real == 0 or (not s._first and n_real <= at.WINDOW // 2):
+        return None
+    if s._first and n_real < 2:
+        return None
+    imgs = torch.cat(s._buf + [s._buf[-1]] * (at.WINDOW - n_real), dim=0)
+    return s._run_window(imgs, 0 if s._first else s._n_fed - n_real)
+
+
+def _starts(push, flush, n, restarts):
+    s = at.AllTrackerStream.__new__(at.AllTrackerStream)
+    s.torch, got = torch, []
+    s._prep = lambda fr: torch.zeros((1, 1))
+
+    def run_window(imgs, start):
+        got.append((int(start), int(imgs.shape[0])))
+        s._first = False
+        return start, np.zeros((0,)), np.zeros((0,)), np.zeros((0,))
+    s._run_window = run_window
+
+    def begin():                                   # what start() leaves: one frame fed, the first window to come
+        s._buf, s._n_fed, s._first = [torch.zeros((1, 1))], 1, True
+    begin()
+    for f in range(1, n):
+        if f in restarts:
+            flush(s)
+            begin()
+        else:
+            push(s, None)
+    flush(s)
+    return got
+
+
+_same = all(_starts(_old_push, _old_flush, n, r) == _starts(at.AllTrackerStream.push, at.AllTrackerStream.flush, n, r)
+            for n in range(0, 61) for r in ((), (5,), (5, 20, 33), (16, 17), (8, 24, 40)))
+assert _same, "AllTracker's push / flush start a window somewhere else than before"
+print("(R41) push / flush: every window starts where the two old branches started it OK")
+
 assert at.available(), "models/alltracker (vendored repo) is missing: run install.py --alltracker-only"
 if str(at.REPO_DIR) not in sys.path:
     sys.path.insert(0, str(at.REPO_DIR))

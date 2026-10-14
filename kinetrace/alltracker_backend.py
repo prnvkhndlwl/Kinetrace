@@ -222,10 +222,10 @@ class AllTrackerStream:
                 self._fmaps2 = self._fmaps(imgs)
                 self._first = False
             else:
-                self._flows8 = torch.cat([self._flows8[:, STRIDE:STRIDE + S // 2],
-                                          self._flows8[:, STRIDE + S // 2 - 1:STRIDE + S // 2].repeat(1, S // 2, 1, 1, 1)], dim=1)
-                self._visconfs8 = torch.cat([self._visconfs8[:, STRIDE:STRIDE + S // 2],
-                                             self._visconfs8[:, STRIDE + S // 2 - 1:STRIDE + S // 2].repeat(1, S // 2, 1, 1, 1)], dim=1)
+                def shift(t):                   # (R42) keep the overlapping half, repeat its last frame
+                    return torch.cat([t[:, STRIDE:STRIDE + S // 2],
+                                      t[:, STRIDE + S // 2 - 1:STRIDE + S // 2].repeat(1, S // 2, 1, 1, 1)], dim=1)
+                self._flows8, self._visconfs8 = shift(self._flows8), shift(self._visconfs8)
                 self._fmaps2 = torch.cat([self._fmaps2[:, STRIDE:STRIDE + S // 2],
                                           self._fmaps(imgs[S // 2:])], dim=1)
             flows8 = self._flows8.reshape(S, 2, H8, W8).detach()
@@ -251,15 +251,10 @@ class AllTrackerStream:
         with torch.no_grad():
             self._buf.append(self._prep(frame_rgb))
         self._n_fed += 1
-        if self._first and len(self._buf) == WINDOW:
-            imgs = torch.cat(self._buf, dim=0)
-            out = self._run_window(imgs, 0)
+        if len(self._buf) == WINDOW:
+            # (R41) the first window starts at 0 = n_fed - WINDOW: until it has run, every frame fed is buffered
+            out = self._run_window(torch.cat(self._buf, dim=0), self._n_fed - WINDOW)
             self._buf = self._buf[STRIDE:]          # keep the overlapping half
-            return out
-        if not self._first and len(self._buf) == WINDOW:
-            imgs = torch.cat(self._buf, dim=0)
-            out = self._run_window(imgs, self._n_fed - WINDOW)
-            self._buf = self._buf[STRIDE:]
             return out
         return None
 
@@ -274,6 +269,5 @@ class AllTrackerStream:
             return None
         pad = WINDOW - n_real
         imgs = torch.cat(self._buf + [self._buf[-1]] * pad, dim=0)
-        start = 0 if self._first else self._n_fed - n_real
-        idx, tr, vis, conf = self._run_window(imgs, start)
+        idx, tr, vis, conf = self._run_window(imgs, self._n_fed - n_real)      # (R41) 0 for a first window
         return idx, tr[:n_real], vis[:n_real], conf[:n_real]

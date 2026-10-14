@@ -158,6 +158,23 @@ class SpotLook:
         return spot_diameter(self.sigma)
 
 
+def blend_velocity(vel, step):
+    """(R42) The spot's velocity after a step: the step itself the first time, else `VEL_KEEP` of the
+    old velocity and the rest of the step."""
+    return step if vel is None else VEL_KEEP * vel + (1.0 - VEL_KEEP) * step
+
+
+def click_error(p, click) -> float:
+    """(R42) How far (px) a tracked position is from the user's click."""
+    return float(np.hypot(p[0] - click[0], p[1] - click[1]))
+
+
+def _rival(cands, x: float, y: float, sigma: float):
+    """(R42) The first candidate in `cands` further than one spot (at least 3 px) from (x, y), or None."""
+    sep = max(3.0, 2.0 * sigma)
+    return next((c for c in cands if np.hypot(c[0] - x, c[1] - y) > sep), None)
+
+
 def spot_diameter(sigma: float) -> float:
     """A spot's diameter in px from its DoG scale (~2.8 sigma)."""
     return 2.0 * math.sqrt(2.0) * sigma
@@ -320,9 +337,13 @@ class ChangeHistory:
         with 4 usable ones and stop at once."""
         for k, g in past:
             self.push(k, g)
-        if len(self.frames_for(first)) < MIN_HIST:
+        if self.short_at(first):
             for k, g in ahead:
                 self.add_ahead(k, g)
+
+    def short_at(self, idx: int) -> bool:
+        """(R42) Fewer than `MIN_HIST` usable frames for frame `idx`: read ahead too."""
+        return len(self.frames_for(idx)) < MIN_HIST
 
     def frames_for(self, idx: int) -> list:
         past = [g for k, g in self.past if idx - HIST_FRAMES <= k <= idx - HIST_GAP]
@@ -361,7 +382,7 @@ def read_background(get_frame, first: int, n_video: int | None = None):
     for k, g in past:
         probe.push(k, g)
     ahead = []
-    if len(probe.frames_for(first)) < MIN_HIST:
+    if probe.short_at(first):
         stop = first + HIST_FRAMES + 1
         if n_video is not None:
             stop = min(stop, int(n_video))
@@ -460,7 +481,7 @@ class SpotTracker:
             return None
         new = np.array([fix.x, fix.y], np.float64)
         step = new - self.pos
-        self.vel = step if self.vel is None else VEL_KEEP * self.vel + (1.0 - VEL_KEEP) * step
+        self.vel = blend_velocity(self.vel, step)
         self.pos = new
         return fix
 
@@ -502,8 +523,7 @@ class SpotTracker:
             d0 = abs(math.log(max(v, 1e-6) / ref0))
             if d0 > math.log(1.0 / WEAK_FRAC) or v < NOISE_K * noise:
                 return None, "missing"
-            sep = max(3.0, 2.0 * self.settings.sigma)
-            rival = next((c for c in sim[1:] if np.hypot(c[0] - x, c[1] - y) > sep), None)
+            rival = _rival(sim[1:], x, y, self.settings.sigma)
             if rival is not None and abs(math.log(max(rival[2], 1e-6) / ref0)) < d0 + FIRST_SIMILAR:
                 return None, "ambiguous"
             self.ref.append(v)
@@ -514,8 +534,7 @@ class SpotTracker:
             return None, "missing"
         if v > MERGE_RATIO * ref:
             return None, "ambiguous"
-        sep = max(3.0, 2.0 * self.settings.sigma)
-        second = next((c for c in cands[1:] if np.hypot(c[0] - x, c[1] - y) > sep), None)
+        second = _rival(cands[1:], x, y, self.settings.sigma)
         if second is not None and second[2] >= AMBIG_RATIO * v:
             return None, "ambiguous"
         self.ref.append(v)
@@ -667,7 +686,7 @@ def click_motion(clicks: dict) -> list[tuple[float, float]]:
             if vel is not None:
                 out.append((float(np.hypot(*(p - (prev[1] + vel)))), float(np.hypot(*vel))))
             step = p - prev[1]
-            vel = step if vel is None else VEL_KEEP * vel + (1.0 - VEL_KEEP) * step
+            vel = blend_velocity(vel, step)
         else:
             vel = None
         prev = (f, p)
@@ -783,7 +802,7 @@ class _Cand:
             return
         if not clicked:
             return
-        e = float(np.hypot(fix.x - self.clicks[f][0], fix.y - self.clicks[f][1]))
+        e = click_error((fix.x, fix.y), self.clicks[f])
         if e > limit:
             r.corrections += 1
             r.drifts += 1
@@ -853,7 +872,7 @@ def corrected_protocol(run_from, clicks: dict, limit: float, label: str, model: 
             if p is None or not np.isfinite(p).all():
                 nxt, kind = g, "stop"
                 break
-            e = float(np.hypot(p[0] - clicks[g][0], p[1] - clicks[g][1]))
+            e = click_error(p, clicks[g])
             if e > limit:
                 nxt, kind = g, "drift"
                 break

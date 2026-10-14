@@ -44,7 +44,9 @@ import cv2
 import numpy as np
 
 from kinetrace.sync import THUMB_W
-from kinetrace.video_source import check_seeks, file_identity, open_capture, seek_capture, seek_plan, set_seek_plan
+from kinetrace.pixels import centre_scale, centred_origin
+from kinetrace.video_source import (check_seeks, file_identity, grey_small, open_capture, seek_capture, seek_plan,
+                                    set_seek_plan)
 
 FORMAT_VERSION = 1
 N_MARKS = 8              # moments kept per video
@@ -204,9 +206,7 @@ def _grey(bgr) -> np.ndarray:
 
 def _analysis(bgr) -> np.ndarray:
     """The picture the change is measured on: grey, `ANALYSIS_W` wide (float)."""
-    w = min(ANALYSIS_W, bgr.shape[1])
-    h = max(2, int(round(bgr.shape[0] * w / max(1, bgr.shape[1]))))
-    return cv2.resize(_grey(bgr), (w, h), interpolation=cv2.INTER_AREA).astype(np.float32)
+    return grey_small(bgr, min(ANALYSIS_W, bgr.shape[1]))
 
 
 def _thumb(a: np.ndarray) -> np.ndarray:
@@ -260,9 +260,8 @@ def _place(t_prev, t, t_next, width: int, height: int, side: int) -> tuple[tuple
     k = max(1, int(round(side / s)))
     acc = cv2.boxFilter(d, -1, (k, k), normalize=False, borderType=cv2.BORDER_CONSTANT)
     yy, xx = np.unravel_index(int(np.argmax(acc)), acc.shape)
-    cx, cy = (xx + 0.5) * s - 0.5, (yy + 0.5) * s - 0.5
-    x0 = int(np.clip(round(cx - side / 2), 0, max(0, width - side)))
-    y0 = int(np.clip(round(cy - side / 2), 0, max(0, height - side)))
+    cx, cy = centre_scale(xx, s), centre_scale(yy, s)
+    x0, y0 = centred_origin(cx, side, width), centred_origin(cy, side, height)
     return (x0, y0, side), float(acc[yy, xx]) / float(k * k)
 
 

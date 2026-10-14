@@ -522,7 +522,7 @@ def _():
 @check("I240 a decode exception still emits the frames already read, then says the I40 sentence")
 def _():
     real = trk._frame_decodes
-    trk._frame_decodes = lambda path, idx: False if idx == 300 else real(path, idx)     # truly damaged there
+    trk._frame_decodes = lambda path, idx, exact=True: False if idx == 300 else real(path, idx, exact)     # truly damaged there
     try:
         with _Damaged(300, "raise"):
             w, rec = point_run(250, 600)
@@ -531,7 +531,7 @@ def _():
     assert rec["err"] and "Traceback" not in rec["err"] and "Frame 300 of the video could not be decoded" in rec["err"], rec["err"]
     assert data_frames(rec, 0)[-1] == 299, data_frames(rec, 0)[-3:]          # the tail of the frames read (300 - 250 = 50 = 6 x 8 + 2)
     # the same for the AllTracker flush
-    trk._frame_decodes = lambda path, idx: False if idx == 300 else real(path, idx)
+    trk._frame_decodes = lambda path, idx, exact=True: False if idx == 300 else real(path, idx, exact)
     try:
         with _Damaged(300, "raise"):
             w, rec = point_run(250, 600, backend="alltracker")

@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, Q
 from kinetrace import APP_NAME, APP_TAGLINE, APP_VERSION, theme
 from kinetrace import alltracker_backend
 from kinetrace import threads as _threads
+from kinetrace.pixels import centre_scale, centre_unscale
 from kinetrace.camerapanel import CameraPanel
 from kinetrace.layers import LayersPanel, ROLE_HAS, ROLE_NAME
 from kinetrace.view3d import CalibrationDialog, Scene3D, View3D
@@ -356,7 +357,7 @@ class _MaskPreviewWorker(QThread):
 
     def run(self):
         try:
-            from kinetrace.segmenter import (MIDLINE_SAMPLES, Prompt, get_segmenter,
+            from kinetrace.segmenter import (MIDLINE_SAMPLES, Prompt, click_arrays, get_segmenter,
                                                  summarize_mask)
             from kinetrace.silhouette import midline as silhouette_midline, resample
             self.loading.emit(self._backend)
@@ -373,25 +374,22 @@ class _MaskPreviewWorker(QThread):
                 if rgb is None:
                     raise RuntimeError(f"Could not decode frame {self._frame}")
             sess = seg.new_session(self._frame, self._size)
-            pts = (np.array([[c[0], c[1]] for c in self._clicks], np.float32)
-                   if self._clicks else None)
-            labs = (np.array([c[2] for c in self._clicks], np.int64)
-                    if self._clicks else None)
+            pts, labs = click_arrays(self._clicks)
             prompt = Prompt(1, pts, labs, self._box)
             fm = sess.step(rgb, self._frame, [prompt])
             mask = fm.mask(1)
             # per axis: working size rounds each side on its own (I61)
-            sx, sy = getattr(fm, "scale_xy", (fm.scale, fm.scale))
+            sx, sy = fm.scale_xy
             summ = summarize_mask(mask, (sx, sy), float(fm.scores[fm.index(1)]))
             summ["frame"] = self._frame
             if summ["area"] > 0:
                 anchor = None
                 if self._head is not None:
-                    anchor = ((self._head[0] + 0.5) / sx - 0.5, (self._head[1] + 0.5) / sy - 0.5)
+                    anchor = (centre_unscale(self._head[0], sx), centre_unscale(self._head[1], sy))
                 ml = silhouette_midline(mask, anchor=anchor)
                 if ml is not None and len(ml.path) >= 2:
-                    summ["midline"] = ((resample(ml.path, MIDLINE_SAMPLES) + 0.5)
-                                       * np.array([sx, sy], np.float32) - 0.5)
+                    summ["midline"] = centre_scale(resample(ml.path, MIDLINE_SAMPLES),
+                                                   np.array([sx, sy], np.float32))
             self.done.emit(summ)
         except Exception as e:  # noqa: BLE001 — reported to the user with guidance
             from kinetrace.downloads import DownloadError
