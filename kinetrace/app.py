@@ -10384,8 +10384,7 @@ class MainWindow(QMainWindow):
         p = Path(path)
         if p.name.lower() == projectfile.META:
             p = p.parent
-        if not p.name.lower().endswith(PROJECT_SUFFIX):
-            p = p.with_name(p.name + PROJECT_SUFFIX)
+        p = p.with_name(projectfile.add_suffix(p.name))
         inside = next((a for a in p.parents if projectfile.is_folder_project(a)), None)
         if inside is not None:
             # a project is a folder, and the save dialog OPENS a folder whose name is chosen
@@ -10457,7 +10456,7 @@ class MainWindow(QMainWindow):
                                               f"Kinetrace project, one file (*{PROJECT_SUFFIX})")
         if not path:
             return
-        out = Path(path if path.lower().endswith(PROJECT_SUFFIX) else path + PROJECT_SUFFIX)
+        out = Path(projectfile.add_suffix(path))
         if out.is_dir():
             QMessageBox.warning(self, "Export project as one file",
                                 f"{out}\n\nis a folder (a project folder, perhaps). Choose another name.")

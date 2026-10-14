@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QDialogBut
 from kinetrace import theme, threads
 from kinetrace.errors import plain_error
 from kinetrace.project import MAX_VIEWS
+from kinetrace.projectfile import SUFFIX, add_suffix
 
 VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv", ".m4v", ".wmv", ".webm", ".mpg", ".mpeg")
 
@@ -48,7 +49,7 @@ def list_videos(folder: str | os.PathLike, recursive: bool = False) -> list[Path
 def default_project_path(folder: str | os.PathLike) -> Path:
     """<folder>/<folder name>.kinetrace"""
     root = Path(folder)
-    return root / f"{root.name or 'project'}.kinetrace"
+    return root / f"{root.name or 'project'}{SUFFIX}"
 
 
 
@@ -341,9 +342,9 @@ class VideoFolderDialog(QDialog):
 
     def _browse(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Save the project as", self.edit_proj.text(),
-                                              "Kinetrace project (*.kinetrace)")
+                                              f"Kinetrace project (*{SUFFIX})")
         if path:
-            self.edit_proj.setText(path if path.endswith(".kinetrace") else path + ".kinetrace")
+            self.edit_proj.setText(add_suffix(path))
 
     def _accept(self) -> None:
         rows = self.ticked()
@@ -351,8 +352,7 @@ class VideoFolderDialog(QDialog):
             return
         self.result_paths = [str(self._paths[k]) for k in rows]          # camera order (G171)
         proj = self.edit_proj.text().strip()
-        self.result_project = (proj if proj.endswith(".kinetrace") else proj + ".kinetrace") \
-            if (self.chk_save.isChecked() and proj) else None
+        self.result_project = add_suffix(proj) if (self.chk_save.isChecked() and proj) else None
         self.accept()
 
     def stop_probe(self) -> None:

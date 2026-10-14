@@ -66,6 +66,12 @@ FORMAT = "kinetrace-project"
 FORMAT_VERSION = 3              # 3 = animal layers (G153: points.csv `animal`, the skeleton per animal); 2 = a
 #                                  folder, one CSV per landmark (I145); 1 = a zip, one tracks.csv per camera
 SUFFIX = ".kinetrace"
+
+
+def add_suffix(name: str) -> str:
+    """(R45, I292) `name` with the project suffix: kept when it already ends in it, in any case
+    ('Trial.KINETRACE' is a project name, not 'Trial.KINETRACE.kinetrace')."""
+    return name if name.lower().endswith(SUFFIX) else name + SUFFIX
 META = "kinetrace.json"
 CACHE_DIR, HISTORY_DIR, SAVING_DIR = ".cache", ".history", ".saving"
 EXPORTS_DIR, VIDEOS_DIR = "exports", "videos"

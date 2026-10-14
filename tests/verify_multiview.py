@@ -528,6 +528,22 @@ assert win.project.n_views == 2, f"the same video was added again as camera {win
 win.statusBar().messageChanged.disconnect(_said.append)
 assert any("already in this project" in m for m in _said), _said
 print("(I291) Add Camera Video with a project's video spelled another way: said, not added again OK")
+# (I292) File -> Open Folder of Videos, Browse... names the project "Trial.KINETRACE" (the suffix in capitals):
+# it is the project's name as given, not a folder "Trial.KINETRACE.kinetrace"
+dlg2 = VideoFolderDialog(win, FOLD)
+for _ in range(100):
+    pump(0.05)
+    if len(dlg2._headers) == 3:
+        break
+_real_save_name = _QFD.getSaveFileName
+_QFD.getSaveFileName = staticmethod(lambda *a, **k: (os.path.join(OUT, "Trial.KINETRACE"), ""))
+try:
+    dlg2._browse()
+finally:
+    _QFD.getSaveFileName = _real_save_name
+QTest.mouseClick(dlg2.buttons.button(QDialogButtonBox.Ok), Qt.LeftButton)
+assert dlg2.result_project == os.path.join(OUT, "Trial.KINETRACE"), dlg2.result_project
+print("(I292) a project named 'Trial.KINETRACE' keeps its name (no '.KINETRACE.kinetrace') OK")
 for x in list_videos(FOLD, recursive=True):
     forget_recovery(str(x))
 
