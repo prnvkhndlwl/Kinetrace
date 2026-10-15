@@ -552,8 +552,8 @@ class OverlayDialog:
                 self.result_path = ""
                 lay = QVBoxLayout(self)
                 intro = QLabel("Writes an MP4 with the tracked result drawn on every frame: markers, "
-                               "names, skeleton, silhouette, trails, the frame counter, events and "
-                               "notes. The original video is never modified.")
+                               "names, skeleton, silhouette, trails, the frame counter, the speed, "
+                               "events and notes. The original video is never modified.")
                 intro.setWordWrap(True)
                 lay.addWidget(intro)
                 form = QFormLayout()

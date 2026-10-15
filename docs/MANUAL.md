@@ -2750,10 +2750,25 @@ window selected on the timeline, or any range, and tick what to draw — the
 says. Half size is plenty for a talk and renders four times faster (it is the
 starting choice for footage wider than 2000 pixels). Rendering runs in the
 background — you can keep working, but edits you make while it renders are not
-in that video — and the original video is never modified. The new video plays
-at the **video file's own frame rate** (a 240 fps camera whose file says 30 fps
-gives a slow-motion overlay that plays like the original file, even if you set
-its real rate in the CAMERAS panel). **Cancel** deletes the
+in that video — and the original video is never modified.
+
+**Speed** sets how fast the new video plays compared with **real time** (the
+rate the camera really recorded at — the fps button in the CAMERAS panel).
+The starting choice plays it like the video file itself; pick **2x, 4x, 5x, 10x
+or 20x slower**, or **Other** and type any factor (e.g. 3.3). The line under it
+says what you will get, for example *"Plays 4x slower than real time: 1 s of
+action lasts 4 s; these 300 frames make a 40.0 s video."* The video says it too:
+**"4x slower"** appears under the frame number (untick **Speed** under *Draw* to
+leave it out; nothing is shown at real time). The time next to the frame number
+always counts real seconds. Every frame appears in order and nothing is blended
+or invented; a very slow video shows each frame several times so players stay
+smooth. A **high-speed camera** (say 240 fps saved as a 30 fps file) already
+plays slower: the starting choice says so (*"As the file plays (8x slower)"*),
+and you can also speed it up, down to **Real time** — then frames are skipped
+evenly (a player shows at most 60 a second) and the line says which are kept.
+If the camera's real rate is not known, only *As the file plays* is offered.
+Hand check: play the new video next to a stopwatch — 1 s of action should take
+as many seconds as the factor says. **Cancel** deletes the
 unfinished file. If the video ends early or a frame is damaged, the message says
 where it stopped and how many frames were written. Points you marked hidden are
 left out, like in the other exports.
