@@ -727,9 +727,14 @@ class ViewsOverlayRenderer(OverlayRenderer):
             # (G196) the title bar above the picture, as the window's: its words clipped to the bar
             bar = np.empty((bh, bw, 3), np.uint8)
             bar[:] = BAR_BGR
-            words = caption_for(v.name, lf if lf >= 0 else None, v.offset, v.session.n_frames, sep="|")
+            # (review) "Frame number and time" unticked: the bar names the camera only
+            words = (caption_for(v.name, lf if lf >= 0 else None, v.offset, v.session.n_frames, sep="|")
+                     if self.opts.frame_number else v.name)
             bfs = _font_scale(bw)
-            (_, th), _ = cv2.getTextSize(words, FONT, bfs, 1)
+            (ww, th), _ = cv2.getTextSize(words, FONT, bfs, 1)
+            if ww > bw - 12:                # (review) a narrow cell: smaller words before any are cut
+                bfs = max(0.3, bfs * (bw - 12) / float(ww))
+                (_, th), _ = cv2.getTextSize(words, FONT, bfs, 1)
             # plain text on the dark bar: `_text`'s halo is drawn thicker and drifts off the letters
             cv2.putText(bar, words, (6, (bh + th) // 2), FONT, bfs, (236, 232, 232), 1, cv2.LINE_AA)
             out[by:by + bh, bx:bx + bw] = bar[:H - by, :W - bx]

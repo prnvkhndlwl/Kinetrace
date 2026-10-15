@@ -2801,15 +2801,16 @@ screen when you export, and each camera fitted in its cell with the same black
 bars beside or above it. Each camera has its own markers, skeleton and
 silhouettes, and a dark title bar above it with the words of the window's title
 bar (its name, its frame and its sync offset), so nothing is written over the
-picture; the time is still drawn in each tile, without a second frame number. A
-wider or taller window gives a wider or taller video. The camera you are working in is the clock: the range is in
-its frames and the Speed is against its real rate. Every other camera shows the
+picture; the time is still drawn in each tile, without a second frame number
+(untick **Frame number and time** and the bar shows only the name). A wider or
+taller window gives a wider or taller video. The camera you are working in is
+the clock: the range is in its frames and the Speed is against its real rate. Every other camera shows the
 frame that matches the same instant through its sync offset and rate: the frame
 the window shows beside it under **Sync all views** (under *Active view only* the
 window leaves the others where they were; the video does not). The Silhouette
 and Skeleton bones ticks are offered when any shown camera has one. A camera
 that was not recording yet (or any more) shows a dark tile that says so, and
-"4x slower" appears once, in your camera's tile. The whole picture fits 4K
+"4x slower" appears once, under the time in your camera's tile. The whole picture fits 4K
 (3840 × 2160) and starts at Full size; *Output size* shrinks it further. To
 leave a camera out, switch its eye off before exporting. Hand check:
 on a clap or flash you synced on, the clap lands on the same frame of the video
