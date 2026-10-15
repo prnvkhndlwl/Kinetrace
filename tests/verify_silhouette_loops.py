@@ -350,14 +350,47 @@ for key, (calm, curl, head) in LOOPS.items():
     print(f"    anchor distrusted on frames {anch} (the anchor-check interplay; not asserted)")
     tip_jump = [float(np.linalg.norm(tr[f, 1] - tr[f - 1, 1])) for f in range(1, len(tr))]
     print(f"    tail-tip step per frame (native px): " + " ".join(f"{v:.0f}" for v in tip_jump))
+    if hasattr(w, "_loop_frames"):
+        check(sorted(w._loop_frames) == list(loop), f"{key}: loop flagged on exactly frames 5-14 "
+                                                    f"(got {sorted(w._loop_frames)})")
+        check(bool((cf[:, 1 + SPECS.index("centroid")] > LOW).all()),
+              f"{key}: the centroid (from the mask, not the midline) is never demoted as a loop")
 
-# the loop-free bar: sequences that never close a harmful loop (saved for the byte-identity proof)
-for key, m in (("base", lizard(STRAIGHT_TAIL)[0]), ("near", near_m),
-               ("foot_flank", CASES["(e) hind foot on its own flank"]["build"]()[0]),
-               ("foot_tail", CASES["(f) hind foot on a straight tail"]["build"]()[0]),
-               ("specks", specks()[0])):
-    tr_k, cf_k, _ = run_sequence(sequence(m, m, m))
+if hasattr(trk, "LOOP_HOLE_FRAC"):
+    # (I293 / I296) every loop the midline really cut short is seen as an enclosed hole where the path
+    # was found -- (k) only after the downscale closed its 2-px gap
+    for name in ("(a) tail over the flank, tip out", "(a') same, no legs", "(b) hind foot on an upturned tail",
+                 "(c) closed C-curl fish", "(k) 2-px gap, x3 size (downscaled)"):
+        hf = golden_a[name].hole_frac
+        check(hf >= trk.LOOP_HOLE_FRAC, f"'{name}': analysed hole {100 * hf:.1f} % >= {100 * trk.LOOP_HOLE_FRAC:.0f} %")
+    # a run that STARTS inside a loop: no length to compare with, so it counts as one (owner, gate)
+    calm, curl, head = LOOPS["loop_a"]
+    tr_s, cf_s, w_s = run_sequence(sequence(curl[0], curl[0], calm[0], head=head))
+    check(sorted(w_s._loop_frames) == list(range(15)) and bool((cf_s[:15, 1] <= LOW + 1e-6).all()),
+          f"a run starting in the loop: frames 0-14 flagged and low (got {sorted(w_s._loop_frames)})")
+
+# the loop-free bar: sequences that never close a harmful loop (saved for the byte-identity proof);
+# foot_flank / foot_tail DO enclose a hole (4.6 % / 15.9 %) but their midline is right: the foot
+# comes down onto the flank / tail at frame 5 and lifts at 15, as in a real run
+base_m = lizard(STRAIGHT_TAIL)[0]
+flank_m = CASES["(e) hind foot on its own flank"]["build"]()[0]
+tailc_m = CASES["(f) hind foot on a straight tail"]["build"]()[0]
+for key, seq in (("base", sequence(base_m, base_m, base_m)), ("near", sequence(near_m, near_m, near_m)),
+                 ("foot_flank", sequence(base_m, flank_m, base_m)),
+                 ("foot_tail", sequence(base_m, tailc_m, base_m)),
+                 ("specks", sequence(specks()[0], specks()[0], specks()[0]))):
+    tr_k, cf_k, w_k = run_sequence(seq)
     golden_b[key] = (tr_k, cf_k)
+    if hasattr(w_k, "_loop_frames"):
+        check(not w_k._loop_frames, f"no loop flagged on the loop-free sequence '{key}' "
+                                    f"(got {sorted(w_k._loop_frames)})")
+if hasattr(trk, "LOOP_HOLE_FRAC"):
+    # the gate's rule has a price, recorded here: a run that STARTS with a harmless contact (no
+    # length yet to compare with) is demoted until the contact ends -- then judged normally
+    _, cf_h, w_h = run_sequence(sequence(flank_m, flank_m, base_m))
+    check(sorted(w_h._loop_frames) == list(range(15)) and bool((cf_h[15:, 1] > LOW).all()),
+          f"a run starting with a foot on the flank: demoted on frames 0-14 only "
+          f"(got {sorted(w_h._loop_frames)})")
 
 try:
     sha = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True,
