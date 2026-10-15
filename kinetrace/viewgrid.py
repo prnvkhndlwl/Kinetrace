@@ -228,6 +228,14 @@ class ViewGrid(QWidget):
     def canvas(self, i: int) -> VideoCanvas | None:
         return self._cells[i].canvas if 0 <= i < len(self._cells) else None
 
+    def cell_size(self) -> tuple[int, int] | None:
+        """(w, h) of a view's picture on screen, its title bar left out: every shown cell has the same
+        stretch, so the working one stands for all. The overlay video of several cameras copies its
+        shape (G196). None before the grid is laid out."""
+        cv = self.active_canvas
+        w, h = int(cv.width()), int(cv.height())
+        return (w, h) if w >= 16 and h >= 16 else None
+
     def set_count(self, n: int) -> list[VideoCanvas]:
         """Grow or shrink to `n` views; returns the canvases that are NEW, so
         the caller can wire their signals exactly once."""
@@ -453,14 +461,15 @@ class ViewGrid(QWidget):
             self._cells[i].set_caption(text)
 
 
-def caption_for(name: str, frame: int | None, offset: float, n_frames: int) -> str:
+def caption_for(name: str, frame: int | None, offset: float, n_frames: int, sep: str = "·") -> str:
     """Caption text for one view: name, where it is, and how it is aligned.
     Whole-frame offsets print as integers; a measured sub-frame offset keeps
-    its decimals so the sync is visible at a glance."""
+    its decimals so the sync is visible at a glance. `sep` joins the parts: the
+    overlay video's title bars (G196) pass an ASCII one (cv2 cannot draw "·")."""
     off = ""
     if offset:
-        off = (f"  ·  offset {int(round(offset)):+d}" if abs(offset - round(offset)) < 1e-9
-               else f"  ·  offset {offset:+.3f}")
+        off = (f"  {sep}  offset {int(round(offset)):+d}" if abs(offset - round(offset)) < 1e-9
+               else f"  {sep}  offset {offset:+.3f}")
     if frame is None:
-        return f"{name}  ·  no frame at this instant{off}"
-    return f"{name}  ·  frame {frame} / {max(n_frames - 1, 0)}{off}"
+        return f"{name}  {sep}  no frame at this instant{off}"
+    return f"{name}  {sep}  frame {frame} / {max(n_frames - 1, 0)}{off}"
