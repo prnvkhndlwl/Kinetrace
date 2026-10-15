@@ -422,4 +422,179 @@ win._dev_probe.wait(30000)
 win.close()
 app.processEvents()
 forget_recovery(VID)
+
+# ---- the cameras together (G195) ---------------------------------------------------------
+from kinetrace.render import tile_layout                 # noqa: E402
+from kinetrace.viewgrid import grid_shape                # noqa: E402
+
+assert [grid_shape(n) for n in (1, 2, 3, 4, 5)] == [(1, 1), (2, 1), (2, 2), (2, 2), (3, 2)], \
+    [grid_shape(n) for n in (1, 2, 3, 4, 5)]
+canvas, rects = tile_layout([(640, 480), (640, 480)], 0, 2, 1, 1.0)
+assert canvas == (1280, 480) and rects == [(0, 0, 640, 480, 1.0), (640, 0, 640, 480, 1.0)], (canvas, rects)
+canvas, rects = tile_layout([(3840, 2160)] * 4, 0, 2, 2, 1.0)
+assert canvas[0] <= 3840 and canvas[1] <= 2160 and canvas[0] % 2 == 0 and canvas[1] % 2 == 0, canvas
+assert canvas == (3840, 2160) and rects[3][:2] == (1920, 1080), (canvas, rects)
+canvas, rects = tile_layout([(640, 480), (320, 240)], 0, 2, 1, 1.0)
+assert rects[1] == (640, 0, 640, 480, 2.0), rects
+canvas, rects = tile_layout([(640, 480), (640, 240)], 0, 2, 1, 1.0)     # wider: black bars above / below
+assert rects[1] == (640, 120, 640, 240, 1.0), rects
+canvas, rects = tile_layout([(640, 480), (640, 480)], 0, 2, 1, 0.5)
+assert canvas == (640, 240) and rects[1] == (320, 0, 320, 240, 0.5), (canvas, rects)
+print("grid_shape + tile_layout OK")
+
+VW, VH, VN = 320, 240, 80
+BLOCK = (VW - 48, VH - 48, 40)                          # x, y, size: a corner the overlay never draws on
+
+
+def frame_clip(name, n=VN, shade=60):
+    """Frame f carries its own index as the brightness 3 * f + 8 of a grey block (read back from the MP4)."""
+    path = os.path.join(SCRATCH, name)
+    vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (VW, VH))
+    x, y, b = BLOCK
+    for f in range(n):
+        im = np.full((VH, VW, 3), shade, np.uint8)
+        im[y:y + b, x:x + b] = 3 * f + 8
+        vw.write(im)
+    vw.release()
+    return path
+
+
+def read_all(path):
+    cap = cv2.VideoCapture(path)
+    out = []
+    while True:
+        ok, fr = cap.read()
+        if not ok:
+            break
+        out.append(fr)
+    fps = float(cap.get(cv2.CAP_PROP_FPS))
+    cap.release()
+    return out, fps
+
+
+def block_frame(img, rect):
+    """The source frame a tile shows: its block's brightness, or None for a dark (not recording) tile."""
+    x0, y0, w, h, sc = rect
+    x, y, b = BLOCK
+    cx, cy = int(x0 + (x + b / 2) * sc), int(y0 + (y + b / 2) * sc)
+    v = float(img[cy - 6:cy + 6, cx - 6:cx + 6].mean())
+    return None if v < 5 else int(round((v - 8) / 3))
+
+
+CLIPS = [frame_clip(f"views_{c}.mp4") for c in "abc"]
+for c in CLIPS:
+    forget_recovery(c)
+win2 = MainWindow()
+win2.show()
+win2._open_video(CLIPS[0])
+pump(lambda: win2.state == READY and win2.project is not None and not win2._loading, 20, "open camera a")
+for c in CLIPS[1:]:
+    assert win2._add_view(c), c
+pump(lambda: win2.project.n_views == 3 and not win2._loading and win2.state == READY, 30, "three cameras")
+p = win2.project
+p.set_offset(1, 10.0)                                   # camera b starts 10 frames earlier
+assert p.set_fps(2, 15.0)                               # camera c really ran at half camera a's rate
+OUT_V = os.path.join(SCRATCH, "overlay_views.mp4")
+
+
+def export_views(together, f1=39, speed=None, check_dialog=None):
+    """File -> Export -> Overlay Video with the real dialog, its Views choice clicked."""
+    seen = {}
+
+    def _dlg(*a, **k):
+        dlg = _real_dlg(*a, **k)
+        dlg.show()
+        app.processEvents()
+        if check_dialog:
+            check_dialog(dlg)
+        QTest.mouseClick(dlg.r_together if together else dlg.r_one, Qt.LeftButton)
+        QTest.mouseClick(dlg.r_custom, Qt.LeftButton)
+        dlg.f0.setValue(0)
+        dlg.f1.setValue(f1)
+        if speed:
+            dlg.speed.setCurrentIndex(dlg.speed.findText(speed))
+        seen["default"] = dlg.path.text()
+        dlg.path.setText(OUT_V)
+        dlg.exec = lambda: (dlg._accept(), QDialog.Accepted)[1]
+        return dlg
+
+    if os.path.exists(OUT_V):
+        os.remove(OUT_V)
+    msgs = []
+    real = win2.toast.show_message
+    win2.toast.show_message = lambda text, *a, **k: (msgs.append(text), real(text, *a, **k))
+    _render.OverlayDialog = _dlg
+    try:
+        win2._export_overlay()
+    finally:
+        _render.OverlayDialog = _real_dlg
+    job = win2._overlay
+    assert job is not None, "the render did not start"
+    pump(lambda: win2._overlay is None, 120, "views render")
+    job.wait(5000)
+    win2.toast.show_message = real
+    return job, msgs, seen
+
+
+def check3(dlg):
+    assert dlg.r_together.isEnabled() and "(3)" in dlg.r_together.text(), dlg.r_together.text()
+    assert dlg.r_one.isChecked(), "This camera stays the starting choice"
+
+
+job, msgs, seen = export_views(True, check_dialog=check3)
+assert seen["default"].endswith("_overlay_cameras.mp4"), seen["default"]
+frames_v, fps_v = read_all(OUT_V)
+assert len(frames_v) == 40 and abs(fps_v - 30.0) < 0.01, (len(frames_v), fps_v)
+assert frames_v[0].shape[:2] == (480, 640), ("three 320x240 cameras in a 2x2 grid", frames_v[0].shape)
+assert [t[0] for t in job.tiles] == [0, 1, 2], job.tiles
+for f, img in enumerate(frames_v):
+    for view, *rect in job.tiles:
+        want = f if view == 0 else p.map_frame(0, view, f)
+        got = block_frame(img, rect)
+        assert got == want, (f"output frame {f}: camera {view} shows frame {got}, map_frame says {want}")
+assert not any("could not" in m for m in msgs), msgs
+print("cameras together OK: 2x2 grid, every tile on map_frame's frame (offset +10, half-rate camera)")
+
+p.set_offset(1, -20.0)                                  # camera b starts 20 frames LATER
+job, msgs, _ = export_views(True)
+frames_v, _ = read_all(OUT_V)
+rect_b = job.tiles[1][1:]
+for f in (0, 10, 19, 20, 30):
+    got = block_frame(frames_v[f], rect_b)
+    assert got == (None if f < 20 else f - 20), (f, got)
+x0, y0, w, h, _ = rect_b
+assert frames_v[5][y0:y0 + h, x0:x0 + w].max() > 150, "a not-recording tile says so in words"
+print("not recording OK: camera b's tile is dark with a sentence until it starts")
+
+job_plain, _, _ = export_views(True, f1=9)
+plain, _ = read_all(OUT_V)
+job_slow, msgs, _ = export_views(True, f1=9, speed="4x slower")
+slow, _ = read_all(OUT_V)
+assert len(slow) == 40 and any("4x slower" in m for m in msgs), (len(slow), msgs)
+diff = (np.abs(slow[0].astype(np.int16) - plain[0].astype(np.int16)).max(axis=2) > 40)
+ys, xs = np.nonzero(diff)
+x0, y0, w, h, _ = job_slow.tiles[0][1:]
+assert len(ys) and xs.max() < x0 + w and ys.max() < y0 + h, "the speed label belongs to the working tile only"
+print("speed label OK: once, in the working camera's tile")
+
+def check2(dlg):
+    assert "(2)" in dlg.r_together.text(), dlg.r_together.text()
+
+
+win2.grid.set_hidden(2, True)                            # camera c's eye off
+job, _, _ = export_views(True, check_dialog=check2)
+frames_v, _ = read_all(OUT_V)
+assert [t[0] for t in job.tiles] == [0, 1] and frames_v[0].shape[:2] == (240, 640), (job.tiles, frames_v[0].shape)
+win2.grid.set_hidden(2, False)
+job, _, seen = export_views(False)
+frames_v, fps_v = read_all(OUT_V)
+assert len(frames_v) == 40 and frames_v[0].shape[:2] == (VH, VW) and abs(fps_v - 30.0) < 0.01, \
+    (len(frames_v), frames_v[0].shape, fps_v)
+assert not seen["default"].endswith("_overlay_cameras.mp4"), seen["default"]
+print("hidden camera left out; 'This camera' writes one camera as before")
+win2._dev_probe.wait(30000)
+win2.close()
+app.processEvents()
+for c in CLIPS:
+    forget_recovery(c)
 print("verify_render PASSED")
