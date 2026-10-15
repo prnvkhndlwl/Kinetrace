@@ -74,6 +74,35 @@ no = draw_overlay(blank.copy(), 5, s, OverlayOptions(0, T - 1, 1.0, markers=Fals
 assert no.sum() == 0, "everything off draws nothing"
 print("draw_overlay OK")
 
+# ---- slow motion (G194): the playback arithmetic and the speed label ------------
+from kinetrace.render import playback_plan, speed_words  # noqa: E402
+
+assert playback_plan(30.0, 30.0, 4.0) == (1, 4, 30.0), playback_plan(30.0, 30.0, 4.0)
+assert playback_plan(30.0, 30.0, 1.0) == (1, 1, 30.0), playback_plan(30.0, 30.0, 1.0)
+assert playback_plan(500.0, 30.0, 2.0) == (5, 1, 50.0), playback_plan(500.0, 30.0, 2.0)
+st, rp, fo = playback_plan(500.0, 30.0, 500.0 / 30.0)
+assert (st, rp) == (1, 1) and abs(fo - 30.0) < 1e-9, (st, rp, fo)
+st, rp, fo = playback_plan(30.0, 30.0, 20.0)             # 1.5 source frames a second: each shown 16 times
+assert (st, rp) == (1, 16) and abs(fo - 24.0) < 1e-9, (st, rp, fo)
+assert speed_words(4.0) == "4x slower", speed_words(4.0)
+assert speed_words(500.0 / 30.0) == "16.7x slower", speed_words(500.0 / 30.0)
+assert speed_words(0.8) == "1.25x faster", speed_words(0.8)
+assert speed_words(1.0) == "" and speed_words(1.002) == "" and speed_words(None) == ""
+lab_opts = OverlayOptions(0, T - 1, 1.0, trails=10)
+plain = draw_overlay(blank.copy(), 20, s, lab_opts, s.bones())
+assert np.array_equal(plain, img), "the default drawing must not change"
+for kw in ({"slowdown": None}, {"slowdown": 1.0}):
+    assert np.array_equal(draw_overlay(blank.copy(), 20, s, lab_opts, s.bones(), **kw), plain), kw
+off = OverlayOptions(0, T - 1, 1.0, trails=10, speed_label=False)
+assert np.array_equal(draw_overlay(blank.copy(), 20, s, off, s.bones(), slowdown=4.0), plain), \
+    "the Speed tick off draws no label"
+lab = draw_overlay(blank.copy(), 20, s, lab_opts, s.bones(), slowdown=4.0)
+ys, xs = np.nonzero((lab != plain).any(axis=2))
+assert len(ys), "the speed label was not drawn"
+assert ys.max() < 120 and xs.max() < W // 2, ("the label belongs in the top-left text block",
+                                               ys.max(), xs.max())
+print("slow-motion arithmetic + label OK")
+
 # ---- writer: codec fallback ---------------------------------------------------
 vw, codec = open_writer(os.path.join(SCRATCH, "codec_probe.mp4"), 30.0, (64, 48))
 vw.release()
@@ -145,6 +174,63 @@ r2.wait(5000)
 assert d2["err"] == "cancelled" and not os.path.exists(out2), (d2, os.path.exists(out2))
 print("cancel OK")
 
+
+# ---- slow motion end to end (G194) --------------------------------------------------
+def render_wait(session, path, o, what):
+    if os.path.exists(path):
+        os.remove(path)
+    d = {"ok": None, "err": None}
+    job = OverlayRenderer(session, VID, path, o, [])
+    job.finished_ok.connect(lambda p, c: d.update(ok=(p, c)))
+    job.error.connect(lambda m: d.update(err=m))
+    job.start()
+    pump(lambda: d["ok"] is not None or d["err"] is not None, 120, what)
+    job.wait(5000)
+    return job, d
+
+
+def probe(path):
+    cap = cv2.VideoCapture(path)
+    n, fps = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), float(cap.get(cv2.CAP_PROP_FPS))
+    frames = []
+    for _ in range(min(n, 8)):
+        ok, fr = cap.read()
+        if ok:
+            frames.append(fr.astype(np.int16))
+    cap.release()
+    return n, fps, frames
+
+
+out_slow = os.path.join(SCRATCH, "overlay_slow4.mp4")
+rs, ds = render_wait(sess, out_slow, OverlayOptions(30, 89, 0.5, trails=20, slowdown=4.0), "4x render")
+assert ds["err"] is None, ds["err"]
+n_s, fps_s, fr_s = probe(out_slow)
+assert n_s == 240 and abs(fps_s - 30.0) < 0.01, ("60 frames 4x slower at 30 fps = 240 frames, 8 s", n_s, fps_s)
+assert rs.frames_written == 60 and rs.note == "" and rs.slowdown == 4.0, (rs.frames_written, rs.note)
+# frames 0-3 repeat source frame 30, frame 4 is source frame 31 (its frame counter changed)
+same = max(np.abs(fr_s[i + 1] - fr_s[i]).mean() for i in range(3))
+step_diff = np.abs(fr_s[4] - fr_s[3]).mean()
+assert step_diff > 4 * same, ("each source frame must be shown 4 times", same, step_diff)
+print(f"4x slower OK: {n_s} frames at {fps_s:g} fps (repeat diff {same:.3f} vs next frame {step_diff:.3f})")
+
+hs = TrackingSession(VID, 600, 300.0, 640, 480)          # a 300 fps camera saved as a 30 fps file
+hs.file_fps = 30.0
+rh, dh = render_wait(hs, os.path.join(SCRATCH, "overlay_hs2.mp4"),
+                     OverlayOptions(30, 89, 0.5, slowdown=2.0), "high-speed 2x render")
+assert dh["err"] is None, dh["err"]
+n_h, fps_h, _ = probe(rh.out_path)
+assert n_h == 20 == rh.frames_written and abs(fps_h - 50.0) < 0.01, ("every 3rd frame at 50 fps", n_h, fps_h)
+rd, dd = render_wait(hs, os.path.join(SCRATCH, "overlay_hs_file.mp4"), OverlayOptions(30, 89, 0.5),
+                     "high-speed default render")
+n_d, fps_d, _ = probe(rd.out_path)
+assert dd["err"] is None and n_d == 60 and abs(fps_d - 30.0) < 0.01, (dd, n_d, fps_d)
+assert abs(rd.slowdown - 10.0) < 1e-9, ("the file itself plays 10x slower than real time", rd.slowdown)
+rn, dn = render_wait(sess, os.path.join(SCRATCH, "overlay_default.mp4"), OverlayOptions(30, 89, 0.5),
+                     "default render")
+n_n, fps_n, _ = probe(rn.out_path)
+assert dn["err"] is None and n_n == 60 and abs(fps_n - 30.0) < 0.01 and rn.slowdown == 1.0, (n_n, fps_n)
+print("high-speed OK: 2x slower keeps every 3rd frame at 50 fps; the default plays as the file (10x slower)")
+
 # ---- edits while it renders (I38): the renderer draws from a frozen copy ----------
 import copy as _copy                                    # noqa: E402
 
@@ -213,6 +299,13 @@ pump(lambda: d5["ok"] is not None or d5["err"] is not None, 60, "phantom render"
 r5.wait(5000)
 assert d5["ok"] is None and "nothing was written" in (d5["err"] or ""), d5
 assert not os.path.exists(out5), "an empty overlay must not be left behind"
+# frames skipped (a 90 fps camera at real time: every 2nd frame) and the video ends at 599
+long_hs = TrackingSession(VID, 650, 90.0, 640, 480)
+long_hs.file_fps = 30.0
+r7, d7 = render_wait(long_hs, os.path.join(SCRATCH, "overlay_tail_step.mp4"),
+                     OverlayOptions(560, 649, 0.5, slowdown=1.0), "tail render with skipped frames")
+assert d7["err"] is None and r7.frames_written == 20, (d7, r7.frames_written)
+assert "20 of 45" in r7.note and "frame 598" in r7.note and "Frame 600" in r7.note, r7.note
 from kinetrace.render import OverlayDialog          # noqa: E402
 
 dlg = OverlayDialog(None, long_s, out4, 300, (590, 640), n_frames=600)
@@ -225,6 +318,46 @@ assert dlg._range() == (0, 599)
 dlg.deleteLater()
 print("short video OK: 40 of 90 frames reported, an all-phantom range refused, the dialog "
       "offers only frames that decode")
+
+# ---- the Speed row, with the keyboard and mouse (G194) -------------------------------
+from PySide6.QtCore import Qt                           # noqa: E402
+from PySide6.QtTest import QTest                        # noqa: E402
+from PySide6.QtWidgets import QDialogButtonBox          # noqa: E402
+
+dlg = OverlayDialog(None, sess, os.path.join(SCRATCH, "overlay_dlg.mp4"), 150)
+dlg.show()
+app.processEvents()
+QTest.mouseClick(dlg.r_custom, Qt.LeftButton)
+dlg.f0.setFocus()
+dlg.f0.selectAll()
+QTest.keyClicks(dlg.f0, "0")
+dlg.f1.setFocus()
+dlg.f1.selectAll()
+QTest.keyClicks(dlg.f1, "299")
+assert dlg._range() == (0, 299), dlg._range()
+assert "Real time" in dlg.speed.currentText() and not dlg.speed_x.isEnabled(), dlg.speed.currentText()
+dlg.speed.setFocus()
+QTest.keyClicks(dlg.speed, "4")                         # the combo's own type-to-select
+assert dlg.speed.currentText() == "4x slower", dlg.speed.currentText()
+assert "40.0 s" in dlg.speed_info.text() and "4x slower" in dlg.speed_info.text(), dlg.speed_info.text()
+QTest.qWait(QApplication.keyboardInputInterval() + 100)     # a new type-to-select search
+QTest.keyClicks(dlg.speed, "O")
+assert dlg.speed.currentText().startswith("Other") and dlg.speed_x.isEnabled(), dlg.speed.currentText()
+dlg.speed_x.setFocus()
+dlg.speed_x.selectAll()
+QTest.keyClicks(dlg.speed_x, "3.3")
+assert "33.0 s" in dlg.speed_info.text() and "3.3x slower" in dlg.speed_info.text(), dlg.speed_info.text()
+QTest.mouseClick(dlg.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok), Qt.LeftButton)
+assert dlg.result_options is not None and abs(dlg.result_options.slowdown - 3.3) < 1e-9, dlg.result_options
+assert dlg.result_options.speed_label, "the Speed tick starts on"
+dlg.deleteLater()
+dlg2 = OverlayDialog(None, hs, os.path.join(SCRATCH, "overlay_dlg2.mp4"), 150)
+assert dlg2.speed.currentText() == "As the file plays (10x slower)", dlg2.speed.currentText()
+assert dlg2.speed.findText("Real time") >= 0, "a high-speed clip can be sped up to real time"
+dlg2._accept()
+assert dlg2.result_options.slowdown is None, "the default plays as the file, untouched"
+dlg2.deleteLater()
+print("Speed row OK: type-to-select 4x, Other 3.3x typed, the line gives the length; high-speed default")
 
 # ---- through the app: the File menu action exists and is gated ---------------
 assert win.act_overlay.isEnabled(), "Export Overlay Video should be enabled with a video open"
@@ -249,10 +382,14 @@ def _auto_dialog(*a, **k):
     dlg.f1.setValue(40)
     dlg.path.setText(out6)
     assert dlg.c_bones.isEnabled() and dlg.c_bones.isChecked()
+    dlg.speed.setCurrentIndex(dlg.speed.findText("4x slower"))
     dlg.exec = lambda: (dlg._accept(), QDialog.Accepted)[1]
     return dlg
 
 
+toasts = []
+_real_toast = win.toast.show_message
+win.toast.show_message = lambda text, *a, **k: (toasts.append(text), _real_toast(text, *a, **k))
 _render.OverlayDialog = _auto_dialog
 try:
     win._export_overlay()
@@ -263,7 +400,11 @@ assert r6 is not None, "the overlay render did not start"
 assert r6.bones == [(0, 1)], f"bones ticked in the dialog but not drawn: {r6.bones}"
 pump(lambda: win._overlay is None, 60, "app render")
 r6.wait(5000)
+win.toast.show_message = _real_toast
 assert os.path.exists(out6)
+n6, _, _ = probe(out6)
+assert n6 == 44, ("frames 30-40 at 4x slower = 44 frames", n6)
+assert any("4x slower" in t for t in toasts), toasts
 win.act_show_bones.setChecked(True)
 print("bones tick OK: honoured with View -> bones off")
 win._dev_probe.wait(30000)
