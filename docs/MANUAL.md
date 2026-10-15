@@ -860,11 +860,14 @@ the body part red rather than quietly exporting a wrong position:
   loop, and its midline can take a short cut through the contact. The tail tip,
   the points along the midline and the feet are then wrong, often by hundreds
   of pixels, for as long as the contact lasts. The program spots it: the outline
-  encloses a gap and the midline is clearly shorter than just before. It then
-  marks those parts 30 % confident on **every** frame of the contact, so they
-  show red on the timeline and **J** stops there. Their positions are left as
-  they are, and the centroid is not affected. A foot simply resting on the flank
-  also encloses a gap, but the midline keeps its length, so nothing is marked.
+  encloses a gap and the midline is clearly shorter than on the last frame
+  without one. It then marks those parts 30 % confident on **every** frame
+  until the outline encloses no gap at all, so they show red on the timeline and
+  **J** stops there. Their positions are left as they are, and the centroid is
+  not affected. A foot simply resting on the flank also encloses a gap, but the
+  midline keeps its length, so nothing is marked (unless the foot is still
+  resting there when a marked loop opens: the marking lasts until the last gap
+  is gone).
   If a run *starts* with the body already touching itself, there is nothing to
   compare with, so those frames are marked until the contact ends. Check the
   red stretch by eye, or place those parts yourself on the frames you need.
