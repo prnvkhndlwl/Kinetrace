@@ -38,6 +38,15 @@ from kinetrace.canvas import VideoCanvas
 from kinetrace.widgets import pop_menu
 
 CAPTION_H = 18
+
+
+def grid_shape(n: int) -> tuple[int, int]:
+    """(cols, rows) for `n` views: a near-square grid, wider than tall (video is landscape). THE rule
+    for the window and the overlay video of several cameras (G195)."""
+    n = max(1, int(n))
+    cols = math.ceil(math.sqrt(n))
+    rows = math.ceil(n / cols)
+    return (rows, cols) if rows > cols else (cols, rows)
 VIEW_MIME = "application/x-kinetrace-view"      # a view dragged by its title bar: its index (G170)
 DRAG_THUMB_W = 180                             # px: the picture that follows the pointer while dragging
 
@@ -398,11 +407,7 @@ class ViewGrid(QWidget):
             self._lay.removeWidget(cell)
             cell.setVisible(False)
         shown = self.visible_indices()
-        # near-square grid, wider than tall (video is landscape)
-        cols = max(1, math.ceil(math.sqrt(len(shown))))
-        rows = max(1, math.ceil(len(shown) / cols))
-        if rows > cols:
-            cols, rows = rows, cols
+        cols, rows = grid_shape(len(shown))
         for k, i in enumerate(shown):
             cell = self._cells[i]
             self._lay.addWidget(cell, k // cols, k % cols)

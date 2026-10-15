@@ -331,7 +331,7 @@ print("short video OK: 40 of 90 frames reported, an all-phantom range refused, t
       "offers only frames that decode")
 
 # ---- the Speed row, with the keyboard and mouse (G194) -------------------------------
-from PySide6.QtCore import Qt                           # noqa: E402
+from PySide6.QtCore import QPoint, Qt                   # noqa: E402
 from PySide6.QtTest import QTest                        # noqa: E402
 from PySide6.QtWidgets import QDialogButtonBox          # noqa: E402
 
@@ -422,4 +422,227 @@ win._dev_probe.wait(30000)
 win.close()
 app.processEvents()
 forget_recovery(VID)
+
+# ---- the cameras together (G195) ---------------------------------------------------------
+from kinetrace.render import tile_layout                 # noqa: E402
+from kinetrace.viewgrid import grid_shape                # noqa: E402
+
+assert [grid_shape(n) for n in (1, 2, 3, 4, 5)] == [(1, 1), (2, 1), (2, 2), (2, 2), (3, 2)], \
+    [grid_shape(n) for n in (1, 2, 3, 4, 5)]
+canvas, rects = tile_layout([(640, 480), (640, 480)], 0, 2, 1, 1.0)
+assert canvas == (1280, 480) and rects == [(0, 0, 640, 480, 1.0), (640, 0, 640, 480, 1.0)], (canvas, rects)
+canvas, rects = tile_layout([(3840, 2160)] * 4, 0, 2, 2, 1.0)
+assert canvas[0] <= 3840 and canvas[1] <= 2160 and canvas[0] % 2 == 0 and canvas[1] % 2 == 0, canvas
+assert canvas == (3840, 2160) and rects[3][:2] == (1920, 1080), (canvas, rects)
+canvas, rects = tile_layout([(640, 480), (320, 240)], 0, 2, 1, 1.0)
+assert rects[1] == (640, 0, 640, 480, 2.0), rects
+canvas, rects = tile_layout([(640, 480), (640, 240)], 0, 2, 1, 1.0)     # wider: black bars above / below
+assert rects[1] == (640, 120, 640, 240, 1.0), rects
+canvas, rects = tile_layout([(640, 480), (640, 480)], 0, 2, 1, 0.5)
+assert canvas == (640, 240) and rects[1] == (320, 0, 320, 240, 0.5), (canvas, rects)
+print("grid_shape + tile_layout OK")
+
+VW, VH, VN = 320, 240, 80
+BITS, SQ = 7, 12                                        # frame index as 7 black / white squares of 12 px
+BX, BY = VW - BITS * SQ - 8, VH - SQ - 8                # a corner the overlay never draws on
+
+
+def frame_clip(name, n=VN, shade=60):
+    """Frame f carries its own index in binary, a row of black / white squares (survives the encoders;
+    a grey level per frame did not: measured errors of 2-4 levels)."""
+    path = os.path.join(SCRATCH, name)
+    vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (VW, VH))
+    for f in range(n):
+        im = np.full((VH, VW, 3), shade, np.uint8)
+        for b in range(BITS):
+            im[BY:BY + SQ, BX + b * SQ:BX + (b + 1) * SQ] = 235 if (f >> b) & 1 else 15
+        vw.write(im)
+    vw.release()
+    return path
+
+
+def read_all(path):
+    cap = cv2.VideoCapture(path)
+    out = []
+    while True:
+        ok, fr = cap.read()
+        if not ok:
+            break
+        out.append(fr)
+    fps = float(cap.get(cv2.CAP_PROP_FPS))
+    cap.release()
+    return out, fps
+
+
+def block_frame(img, rect):
+    """The source frame a tile shows (its squares read back), or None for a dark (not recording) tile:
+    the clip's grey background (60) is gone there."""
+    x0, y0, w, h, sc = rect
+
+    def at(x, y):
+        cx, cy = int(x0 + x * sc), int(y0 + y * sc)
+        return float(img[cy - 2:cy + 3, cx - 2:cx + 3].mean())
+
+    if at(BX - 20, BY + SQ / 2) < 30:
+        return None
+    return sum(1 << b for b in range(BITS) if at(BX + (b + 0.5) * SQ, BY + SQ / 2) > 125)
+
+
+CLIPS = [frame_clip(f"views_{c}.mp4") for c in "abc"]
+for c in CLIPS:
+    forget_recovery(c)
+win2 = MainWindow()
+win2.show()
+win2._open_video(CLIPS[0])
+pump(lambda: win2.state == READY and win2.project is not None and not win2._loading, 20, "open camera a")
+for c in CLIPS[1:]:
+    assert win2._add_view(c), c
+pump(lambda: win2.project.n_views == 3 and not win2._loading and win2.state == READY, 30, "three cameras")
+p = win2.project
+p.set_offset(1, 10.0)                                   # camera b starts 10 frames earlier
+assert p.set_fps(2, 15.0)                               # camera c really ran at half camera a's rate
+OUT_V = os.path.join(SCRATCH, "overlay_views.mp4")
+
+
+def click_radio(rb):
+    """Click a radio button on its label: a short label in a wide row ('This camera') does not
+    reach the row's centre, where QTest clicks by default, and a click there does nothing."""
+    QTest.mouseClick(rb, Qt.LeftButton, Qt.NoModifier, QPoint(12, rb.height() // 2))
+
+
+
+def export_views(together, f1=39, speed=None, check_dialog=None):
+    """File -> Export -> Overlay Video with the real dialog, its Views choice clicked."""
+    seen = {}
+
+    def _dlg(*a, **k):
+        dlg = _real_dlg(*a, **k)
+        dlg.show()
+        app.processEvents()
+        if check_dialog:
+            check_dialog(dlg)
+        click_radio(dlg.r_together if together else dlg.r_one)
+        QTest.mouseClick(dlg.r_custom, Qt.LeftButton)
+        dlg.f0.setValue(0)
+        dlg.f1.setValue(f1)
+        if speed:
+            dlg.speed.setCurrentIndex(dlg.speed.findText(speed))
+        seen["default"] = dlg.path.text()
+        dlg.path.setText(OUT_V)
+        dlg.exec = lambda: (dlg._accept(), QDialog.Accepted)[1]
+        return dlg
+
+    if os.path.exists(OUT_V):
+        os.remove(OUT_V)
+    msgs = []
+    real = win2.toast.show_message
+    win2.toast.show_message = lambda text, *a, **k: (msgs.append(text), real(text, *a, **k))
+    _render.OverlayDialog = _dlg
+    try:
+        win2._export_overlay()
+    finally:
+        _render.OverlayDialog = _real_dlg
+    job = win2._overlay
+    assert job is not None, "the render did not start"
+    pump(lambda: win2._overlay is None, 120, "views render")
+    job.wait(5000)
+    win2.toast.show_message = real
+    return job, msgs, seen
+
+
+def check3(dlg):
+    assert dlg.r_together.isEnabled() and "(3)" in dlg.r_together.text(), dlg.r_together.text()
+    assert dlg.r_one.isChecked(), "This camera stays the starting choice"
+
+
+job, msgs, seen = export_views(True, check_dialog=check3)
+assert seen["default"].endswith("_overlay_cameras.mp4"), seen["default"]
+frames_v, fps_v = read_all(OUT_V)
+assert len(frames_v) == 40 and abs(fps_v - 30.0) < 0.01, (len(frames_v), fps_v)
+assert frames_v[0].shape[:2] == (480, 640), ("three 320x240 cameras in a 2x2 grid", frames_v[0].shape)
+assert [t[0] for t in job.tiles] == [0, 1, 2], job.tiles
+for f, img in enumerate(frames_v):
+    for view, *rect in job.tiles:
+        want = f if view == 0 else p.map_frame(0, view, f)
+        got = block_frame(img, rect)
+        assert got == want, (f"output frame {f}: camera {view} shows frame {got}, map_frame says {want}")
+assert not any("could not" in m for m in msgs), msgs
+print("cameras together OK: 2x2 grid, every tile on map_frame's frame (offset +10, half-rate camera)")
+
+p.set_offset(1, -20.0)                                  # camera b starts 20 frames LATER
+job, msgs, _ = export_views(True)
+frames_v, _ = read_all(OUT_V)
+rect_b = job.tiles[1][1:]
+for f in (0, 10, 19, 20, 30):
+    got = block_frame(frames_v[f], rect_b)
+    assert got == (None if f < 20 else f - 20), (f, got)
+x0, y0, w, h, _ = rect_b
+assert frames_v[5][y0:y0 + h, x0:x0 + w].max() > 150, "a not-recording tile says so in words"
+print("not recording OK: camera b's tile is dark with a sentence until it starts")
+
+job_plain, _, _ = export_views(True, f1=9)
+plain, _ = read_all(OUT_V)
+job_slow, msgs, _ = export_views(True, f1=9, speed="4x slower")
+slow, _ = read_all(OUT_V)
+assert len(slow) == 40 and any("4x slower" in m for m in msgs), (len(slow), msgs)
+diff = (np.abs(slow[0].astype(np.int16) - plain[0].astype(np.int16)).max(axis=2) > 40)
+x0, y0, w, h, _ = job_slow.tiles[0][1:]
+inside = int(diff[y0:y0 + h, x0:x0 + w].sum())
+outside = int(diff.sum()) - inside
+ys, xs = np.nonzero(diff)
+print(f"  label diff: {inside} px in the working tile, {outside} elsewhere "
+      f"(elsewhere at {sorted(set(zip((ys // 40 * 40).tolist(), (xs // 40 * 40).tolist())))[:8]})")
+assert inside > 50 and outside <= inside // 10, ("the speed label belongs to the working tile only", inside, outside)
+print("speed label OK: once, in the working camera's tile")
+
+def check2(dlg):
+    assert "(2)" in dlg.r_together.text(), dlg.r_together.text()
+
+
+QTest.mouseClick(win2.cameras._rows[2].btn_eye, Qt.LeftButton)     # camera c's eye off
+assert 2 not in win2.grid.visible_indices(), win2.grid.visible_indices()
+job, _, _ = export_views(True, check_dialog=check2)
+frames_v, _ = read_all(OUT_V)
+assert [t[0] for t in job.tiles] == [0, 1] and frames_v[0].shape[:2] == (240, 640), (job.tiles, frames_v[0].shape)
+QTest.mouseClick(win2.cameras._rows[2].btn_eye, Qt.LeftButton)
+assert 2 in win2.grid.visible_indices(), win2.grid.visible_indices()
+
+# (review) only camera b has a silhouette: together, the tick is offered and b's tile draws it
+sb = p.sessions[1]
+sb.ensure_animal()
+blob = np.zeros((VH, VW), bool)
+blob[60:140, 60:140] = True
+for lf in range(VN):
+    sb.masks.set(lf, blob, 9.0)
+ticks = {}
+
+
+def check_mask_tick(dlg):
+    ticks["one"] = dlg.c_mask.isEnabled()
+    click_radio(dlg.r_together)
+    ticks["together"] = dlg.c_mask.isEnabled()
+    QTest.qWait(QApplication.doubleClickInterval() + 100)     # two clicks, not a double-click
+    click_radio(dlg.r_one)
+    ticks["back"] = dlg.c_mask.isEnabled()
+    QTest.qWait(QApplication.doubleClickInterval() + 100)
+
+
+job, _, _ = export_views(True, check_dialog=check_mask_tick)
+assert ticks == {"one": False, "together": True, "back": False}, ticks
+frames_v, _ = read_all(OUT_V)
+x0, y0, w, h, sc = job.tiles[1][1:]
+inside_blob = frames_v[30][int(y0 + 100 * sc), int(x0 + 100 * sc)].astype(int)
+assert np.abs(inside_blob - 60).max() > 20, ("camera b's silhouette is drawn in its tile", inside_blob)
+print("silhouette tick OK: offered when a shown camera has one, drawn in that camera's tile")
+job, _, seen = export_views(False)
+frames_v, fps_v = read_all(OUT_V)
+assert len(frames_v) == 40 and frames_v[0].shape[:2] == (VH, VW) and abs(fps_v - 30.0) < 0.01, \
+    (len(frames_v), frames_v[0].shape, fps_v)
+assert not seen["default"].endswith("_overlay_cameras.mp4"), seen["default"]
+print("hidden camera left out; 'This camera' writes one camera as before")
+win2._dev_probe.wait(30000)
+win2.close()
+app.processEvents()
+for c in CLIPS:
+    forget_recovery(c)
 print("verify_render PASSED")

@@ -122,6 +122,12 @@ def _bgr(color) -> tuple[int, int, int]:
     return (b, g, r)
 
 
+def _font_scale(w: int) -> float:
+    """The overlay's text size for a picture `w` pixels wide as written (G123: `w` is already the
+    scaled width -- scaling by the output scale again gave a half-size 4K overlay the minimum font)."""
+    return max(0.4, 0.55 * (w / 1280.0) ** 0.5) if w >= 640 else 0.4
+
+
 def _text(img, text: str, org: tuple[int, int], scale: float, color, thick: int = 1) -> None:
     """Outlined text (dark halo) so it reads on any background."""
     cv2.putText(img, text, org, FONT, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
@@ -142,8 +148,7 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
         bgr = cv2.resize(bgr, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
     out = bgr
     h, w = out.shape[:2]
-    # (G123) `w` is already the scaled width: scaling by `sc` again gave a half-size 4K overlay the minimum font
-    font_scale = max(0.4, 0.55 * (w / 1280.0) ** 0.5) if w >= 640 else 0.4
+    font_scale = _font_scale(w)
     s = session
     T = s.n_frames
     if not (0 <= frame < T):
@@ -510,6 +515,196 @@ class OverlayRenderer(VideoWriteJob):
         return str(e)
 
 
+# ------------------------------------------------------------------ several cameras in one video (G195)
+
+# the grid of cameras fits a 4K frame: many players refuse anything wider than 4096 px
+MAX_GRID_W, MAX_GRID_H = 3840, 2160
+
+
+def tile_layout(sizes: list[tuple[int, int]], active: int, cols: int, rows: int,
+                out_scale: float = 1.0) -> tuple[tuple[int, int], list[tuple[int, int, int, int, float]]]:
+    """Where each camera goes in a multi-view overlay (G195): every cell is the working camera's
+    (`sizes[active]`) size, the grid is scaled to fit MAX_GRID_W x MAX_GRID_H and then by `out_scale`,
+    both sides even (H.264). Each camera is scaled to fit its cell (aspect kept, centred). Returns the
+    canvas (W, H) and per camera (x, y, w, h, scale) in `sizes` order, filling the grid row by row."""
+    cw, ch = (int(v) for v in sizes[active])
+    s0 = min(1.0, MAX_GRID_W / (cols * cw), MAX_GRID_H / (rows * ch)) * float(out_scale)
+    W = max(2, int(cols * cw * s0) // 2 * 2)
+    H = max(2, int(rows * ch * s0) // 2 * 2)
+    cell_w, cell_h = W // cols, H // rows
+    rects = []
+    for k, (w, h) in enumerate(sizes):
+        sc = min(cell_w / float(w), cell_h / float(h))
+        tw, th = min(cell_w, int(round(w * sc))), min(cell_h, int(round(h * sc)))
+        x = (k % cols) * cell_w + (cell_w - tw) // 2
+        y = (k // cols) * cell_h + (cell_h - th) // 2
+        rects.append((x, y, tw, th, sc))
+    return (W, H), rects
+
+
+class _ViewsReader:
+    """The frames of several cameras for each frame of the working camera (G195): the reader protocol
+    `VideoWriteJob.run` uses (`cap`, `reset`, `read`, `failed`, `release`). One `FrameReader` per camera,
+    opened here on the worker at that camera's first matched frame. `read(f)` returns None when the
+    WORKING camera's frame does not decode (the run stops there, I41), else per camera ("ok", image) /
+    ("off", None: not recording at that instant) / ("bad", frame that did not decode). `tables[k]` maps
+    the working camera's frame f to camera k's frame (`table[f - f0]`, -1 = not recording; None for the
+    working camera): `Project.map_frame`, frozen on the GUI thread. A camera's frame asked twice in a
+    row (a slower camera) is the last image again; a frame that fails is reported once in `notes`."""
+
+    def __init__(self, views, active: int, f0: int):
+        from kinetrace.video_source import FrameReader, VideoOpenError
+        self.views, self.active, self.f0 = views, int(active), int(f0)
+        self.readers: list = []
+        self.notes: list[str] = []
+        self._last = [(-1, None)] * len(views)          # (frame, image) last read per camera
+        self._bad: list[int | None] = [None] * len(views)
+        try:
+            for k, v in enumerate(views):
+                if k == self.active:
+                    first = self.f0
+                else:
+                    valid = v.table[v.table >= 0]
+                    first = int(valid[0]) if len(valid) else None
+                try:
+                    self.readers.append(None if first is None else FrameReader(v.path, first))
+                except VideoOpenError:
+                    raise RuntimeError(f"Camera {v.camera + 1} ({v.name}): its video could not be opened "
+                                       f"({v.path}), so nothing was written.") from None
+        except Exception:
+            self.release()
+            raise
+
+    @property
+    def cap(self):
+        return self.readers[self.active].cap
+
+    @property
+    def failed(self):
+        return self.readers[self.active].failed
+
+    def reset(self, first: int) -> None:
+        self.readers[self.active].reset(first)
+
+    def read(self, f: int):
+        main = self.readers[self.active].read(f)
+        if main is None:
+            return None
+        out = []
+        for k, v in enumerate(self.views):
+            if k == self.active:
+                out.append(("ok", main))
+                continue
+            lf = int(v.table[f - self.f0])
+            if lf < 0:
+                out.append(("off", None))
+            elif self._bad[k] is not None:
+                out.append(("bad", self._bad[k]))
+            elif lf == self._last[k][0]:
+                out.append(("ok", self._last[k][1]))
+            else:
+                img = self.readers[k].read(lf)
+                if img is None:
+                    bad = self.readers[k].failed if self.readers[k].failed is not None else lf
+                    self._bad[k] = bad
+                    self.notes.append(f"Camera {v.camera + 1} ({v.name}): frame {bad} could not be decoded "
+                                      "(its video ends there, or the file is damaged), so its tile is dark "
+                                      "from there")
+                    out.append(("bad", bad))
+                else:
+                    self._last[k] = (lf, img)
+                    out.append(("ok", img))
+        return out
+
+    def release(self) -> None:
+        for r in self.readers:
+            if r is not None:
+                r.release()
+        self._last = [(-1, None)] * len(self.views)     # (review) one full frame per camera, not kept
+
+
+class ViewsOverlayRenderer(OverlayRenderer):
+    """The overlay of several cameras in one video (G195): `views` = [(session, video_path, name, bones,
+    table, camera index)] in their order on screen, the working camera's `table` None (it is the clock:
+    the range, the Speed and the frame rate are its). Every camera is drawn with `draw_overlay` in its
+    tile at the frame `table` gives, its name in the tile's corner; "4x slower" only in the working
+    camera's tile. A camera not recording at an instant is a dark tile saying so."""
+
+    def __init__(self, views, out_path: str, opts: OverlayOptions, mask_opacity: float = 0.35):
+        active = next(k for k, v in enumerate(views) if v[4] is None)
+        s, path, _name, bones, _table, _cam = views[active]
+        super().__init__(s, path, out_path, opts, bones, mask_opacity)
+        self.active = active
+        self.views = []
+        for k, (sv, pv, name, bv, table, cam) in enumerate(views):
+            if k == active:
+                frozen, bv = self.session, self.bones
+            else:
+                table = np.asarray(table, np.int64)
+                valid = table[table >= 0]
+                frozen = freeze_session(sv, int(valid.min()) if len(valid) else 0,
+                                        int(valid.max()) if len(valid) else -1)
+                if opts.bones and not bv and hasattr(sv, "bones"):      # I44, as for the working camera
+                    bv = sv.bones()
+            self.views.append(SimpleNamespace(session=frozen, path=str(pv), name=str(name),
+                                              bones=list(bv or []), table=table, camera=int(cam)))
+        self.tiles: list[tuple] = []        # (camera, x, y, w, h, scale) per tile, known once planned
+        self._views_reader: _ViewsReader | None = None
+
+    def _reader(self):
+        self._views_reader = _ViewsReader(self.views, self.active, int(self.opts.start))
+        return self._views_reader
+
+    def _plan(self, reader):
+        from kinetrace.viewgrid import grid_shape        # the window's grid rule (lazy: Qt widgets)
+        frames, first, fps, _size = super()._plan(reader)
+        sizes = []
+        for v, r in zip(self.views, reader.readers):
+            if r is not None:
+                sizes.append((int(r.cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(r.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))))
+            else:
+                sizes.append((int(v.session.width), int(v.session.height)))
+        cols, rows = grid_shape(len(self.views))
+        canvas, rects = tile_layout(sizes, self.active, cols, rows, float(self.opts.scale))
+        self.tiles = [(v.camera,) + tuple(r) for v, r in zip(self.views, rects)]
+        self._canvas = canvas
+        return frames, first, fps, canvas
+
+    def _compose(self, items, f):
+        from dataclasses import replace
+        W, H = self._canvas
+        out = np.zeros((H, W, 3), np.uint8)
+        for k, (v, (_cam, x, y, w, h, sc), (state, img)) in enumerate(zip(self.views, self.tiles, items)):
+            fs = _font_scale(w)
+            if state == "ok":
+                lf = f if k == self.active else int(v.table[f - self.f0])
+                # (ui rule) drawing copies its frame first: a slower camera's image is shown twice
+                tile = draw_overlay(img if k == self.active else img.copy(), lf, v.session,
+                                    replace(self.opts, scale=sc), v.bones, mask_opacity=self.mask_opacity,
+                                    slowdown=self.slowdown if k == self.active else None)
+                th, tw = min(h, tile.shape[0], H - y), min(w, tile.shape[1], W - x)
+                out[y:y + th, x:x + tw] = tile[:th, :tw]
+            # (review) the tile's words are written on a copy of its area and pasted back: clipped to the
+            # tile, never spilling into a neighbour's
+            area = out[y:y + h, x:x + w].copy()
+            if state != "ok":
+                say = ("not recording at this instant" if state == "off"
+                       else f"frame {img} could not be decoded")
+                (tw, _), _ = cv2.getTextSize(say, FONT, fs, 1)
+                _text(area, say, (max(4, (w - tw) // 2), h // 2), fs, (220, 220, 220))
+            (nw, nh), _ = cv2.getTextSize(v.name, FONT, fs, 1)
+            _text(area, v.name, (max(4, w - nw - 8), nh + 8), fs, (255, 255, 255))
+            out[y:y + h, x:x + w] = area
+        if self._views_reader is not None and self._views_reader.notes:
+            self.note = "; ".join(filter(None, [self.note] + self._views_reader.notes))
+            self._views_reader.notes = []
+        return out
+
+    @property
+    def f0(self) -> int:
+        return int(self.opts.start)
+
+
 # ------------------------------------------------------------------ dialog
 
 
@@ -518,7 +713,13 @@ class OverlayDialog:
     the pure-function part of this module imports without QtWidgets."""
 
     def __new__(cls, parent, session, default_path: str, current: int,
-                sel_range: tuple[int, int] | None = None, n_frames: int | None = None):
+                sel_range: tuple[int, int] | None = None, n_frames: int | None = None,
+                views: list[str] | None = None, together_path: str | None = None,
+                together_has: tuple[bool, bool] = (False, False)):
+        """`views`: the names of the cameras shown on screen, in their order (G195); two or more offer
+        "All shown cameras together", whose suggested file is `together_path`. `together_has`: (any
+        shown camera has silhouettes, any has skeleton bones) -- the Draw ticks follow the cameras the
+        video will hold, not only the working one."""
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                        QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -545,6 +746,8 @@ class OverlayDialog:
         if sel_range is not None:
             sel_range = None if sel_range[0] > T - 1 else (sel_range[0], min(sel_range[1], T - 1))
         events = [(e, min(e.end, T - 1)) for e in session.events if e.start <= T - 1]
+        # what the Silhouette / Skeleton bones ticks can draw: this camera's, or (together) any shown one's
+        one_has = (session.masks is not None and session.animal is not None, bool(session.bones()))
 
         class _Dlg(QDialog):
             def __init__(self):
@@ -553,6 +756,7 @@ class OverlayDialog:
                 self.setMinimumWidth(560)
                 self.result_options: OverlayOptions | None = None
                 self.result_path = ""
+                self.result_together = False
                 lay = QVBoxLayout(self)
                 intro = QLabel("Writes an MP4 with the tracked result drawn on every frame: markers, "
                                "names, skeleton, silhouette, trails, the frame counter, the speed, "
@@ -560,6 +764,31 @@ class OverlayDialog:
                 intro.setWordWrap(True)
                 lay.addWidget(intro)
                 form = QFormLayout()
+                # (G195) this camera, or the cameras shown on screen together (their own widget: the
+                # range's radio buttons are another group)
+                shown = list(views or [])
+                vbox = self._views_box = QWidget(self)      # owned: hidden for one camera, not freed
+                vl = QVBoxLayout(vbox)
+                vl.setContentsMargins(0, 0, 0, 0)
+                self.r_one = QRadioButton("This camera")
+                # (review) at most 4 names on the line: a long label sets the dialog's width
+                listed = ", ".join(shown[:4]) + (", …" if len(shown) > 4 else "")
+                self.r_together = QRadioButton(f"All shown cameras together ({len(shown)})"
+                                               + (": " + listed if len(shown) > 1 else ""))
+                self.r_together.setEnabled(len(shown) > 1)
+                self.r_together.setToolTip(
+                    "The cameras shown in the window (" + ", ".join(shown) + "), in the same grid and order, "
+                    "each with its own overlay; this camera's frames are the clock and every other camera "
+                    "shows the frame that matches it (its sync offset and rate)." if len(shown) > 1 else
+                    "Only one camera is shown: show another with its eye in the CAMERAS panel (and Solo off) "
+                    "to put them together.")
+                self.r_one.setChecked(True)
+                vl.addWidget(self.r_one)
+                vl.addWidget(self.r_together)
+                if views is not None:               # a one-camera project has nothing to choose
+                    form.addRow("Views", vbox)
+                else:
+                    vbox.hide()
                 # range
                 rng = QWidget()
                 rl = QVBoxLayout(rng)
@@ -599,7 +828,8 @@ class OverlayDialog:
                 self.scale = QComboBox()
                 for label, v in (("Full size", 1.0), ("Half size", 0.5), ("Quarter size", 0.25)):
                     self.scale.addItem(label, v)
-                self.scale.setCurrentIndex(1 if session.width > 2000 else 0)
+                self._scale_auto = 1 if session.width > 2000 else 0
+                self.scale.setCurrentIndex(self._scale_auto)
                 self.scale.setToolTip("Half size is plenty for a talk and renders 4x faster")
                 form.addRow("Output size", self.scale)
                 # (G194) speed against real time: presets + any number; the line under it says how
@@ -650,8 +880,8 @@ class OverlayDialog:
                           self.c_frame, self.c_speed, self.c_events, self.c_notes):
                     c.setChecked(True)
                     ol.addWidget(c)
-                self.c_mask.setEnabled(session.masks is not None and session.animal is not None)
-                self.c_bones.setEnabled(bool(session.bones()))
+                self.c_mask.setEnabled(one_has[0])
+                self.c_bones.setEnabled(one_has[1])
                 form.addRow("Draw", opts)
                 self.marker = QSpinBox()
                 self.marker.setRange(2, 30)
@@ -687,6 +917,24 @@ class OverlayDialog:
                 self.f0.valueChanged.connect(self._update_speed_info)
                 self.f1.valueChanged.connect(self._update_speed_info)
                 self._update_speed_info()
+                self.r_together.toggled.connect(self._views_changed)
+
+            def _views_changed(self, together: bool):
+                # (review) a silhouette or skeleton in ANOTHER shown camera is drawable together
+                has = (bool(together_has[0]) or one_has[0], bool(together_has[1]) or one_has[1]) \
+                    if together else one_has
+                self.c_mask.setEnabled(bool(has[0]))
+                self.c_bones.setEnabled(bool(has[1]))
+                # (review) Half size is the starting choice for ONE wide camera; the cameras together
+                # are already fitted into 4K, so they start at Full -- unless the user picked a size
+                auto = 0 if together else self._scale_auto
+                if self.scale.currentIndex() == (self._scale_auto if together else 0):
+                    self.scale.setCurrentIndex(auto)
+                # the suggested file follows the choice, unless the user typed their own
+                if together_path:
+                    old, new = (default_path, together_path) if together else (together_path, default_path)
+                    if self.path.text().strip() == old:
+                        self.path.setText(new)
 
             def _slowdown(self) -> float | None:
                 d = self.speed.currentData()
@@ -733,6 +981,7 @@ class OverlayDialog:
                     slowdown=self._slowdown(), speed_label=self.c_speed.isChecked())
                 p = self.path.text().strip()
                 self.result_path = p if p.lower().endswith(".mp4") else p + ".mp4"
+                self.result_together = self.r_together.isChecked() and self.r_together.isEnabled()
                 self.accept()
 
         return _Dlg()
