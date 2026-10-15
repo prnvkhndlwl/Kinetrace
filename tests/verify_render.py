@@ -645,4 +645,92 @@ win2.close()
 app.processEvents()
 for c in CLIPS:
     forget_recovery(c)
+
+# ---- the window's cells, a title bar per camera (G196) -----------------------------------
+# the owner's 10-camera export: a PORTRAIT working camera made every cell portrait, landscape cameras
+# shrank into strips, and the names were written over the pictures' "frame N"
+PW, PH = VH, VW                                         # a portrait clip: 240 x 320
+PBX, PBY = PW - BITS * SQ - 8, PH - SQ - 8
+
+
+def portrait_clip(name, n=VN, shade=60):
+    path = os.path.join(SCRATCH, name)
+    vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (PW, PH))
+    for f in range(n):
+        im = np.full((PH, PW, 3), shade, np.uint8)
+        for b in range(BITS):
+            im[PBY:PBY + SQ, PBX + b * SQ:PBX + (b + 1) * SQ] = 235 if (f >> b) & 1 else 15
+        vw.write(im)
+    vw.release()
+    return path
+
+
+def block_frame_at(img, rect, bx, by):
+    """`block_frame` for a clip whose squares sit at (bx, by)."""
+    x0, y0, w, h, sc = rect
+
+    def at(x, y):
+        cx, cy = int(x0 + x * sc), int(y0 + y * sc)
+        return float(img[cy - 2:cy + 3, cx - 2:cx + 3].mean())
+
+    if at(bx - 20, by + SQ / 2) < 30:
+        return None
+    return sum(1 << b for b in range(BITS) if at(bx + (b + 0.5) * SQ, by + SQ / 2) > 125)
+
+
+CLIPS3 = [portrait_clip("views_p.mp4")] + [frame_clip(f"views_l{c}.mp4") for c in "ab"]
+for c in CLIPS3:
+    forget_recovery(c)
+win3 = MainWindow()
+win3.resize(1400, 800)                                  # a landscape window, as the owner's
+win3.show()
+win3._open_video(CLIPS3[0])
+pump(lambda: win3.state == READY and win3.project is not None and not win3._loading, 20, "open portrait")
+for c in CLIPS3[1:]:
+    assert win3._add_view(c), c
+pump(lambda: win3.project.n_views == 3 and not win3._loading and win3.state == READY, 30, "three cameras")
+app.processEvents()
+assert win3.project.active == 0, "the portrait camera is the working one"
+cv_a = win3.grid.active_canvas
+gw, gh = cv_a.width(), cv_a.height()
+assert gw > gh > 16, ("the window's cells must be landscape for this test", gw, gh)
+win2 = win3                                             # export_views drives win2
+job, msgs, _ = export_views(True)
+frames_v, _ = read_all(OUT_V)
+H_out, W_out = frames_v[0].shape[:2]
+bars = getattr(job, "bars", None) or []
+bar_h = bars[0][3] if bars else 0
+cell_w = W_out // 2                                     # 3 cameras: a 2 x 2 grid, as on screen
+cell_h = H_out // 2 - bar_h
+assert abs(cell_w / cell_h - gw / gh) / (gw / gh) < 0.02, \
+    (f"each cell is {cell_w}x{cell_h} (aspect {cell_w / cell_h:.2f}); the window's are {gw}x{gh} "
+     f"(aspect {gw / gh:.2f})")
+assert win3.grid.cell_size() == (gw, gh), win3.grid.cell_size()
+for view, *rect in job.tiles[1:]:
+    assert rect[2] >= cell_w - 1, ("a landscape camera fills its landscape cell's width", view, rect, cell_w)
+for f, img in enumerate(frames_v):
+    for view, *rect in job.tiles:
+        bx, by = (PBX, PBY) if view == 0 else (BX, BY)
+        assert block_frame_at(img, rect, bx, by) == f, (f, view)
+assert len(bars) == 3, ("a title bar per camera", bars)
+for (view, *rect), (bx0, by0, bw, bh) in zip(job.tiles, bars):
+    strip = frames_v[0][by0:by0 + bh, bx0:bx0 + bw]
+    assert strip.max() > 150, ("the camera's name in its title bar", view)
+    assert by0 + bh <= rect[1], ("the bar is above the picture, not on it", view, (bx0, by0, bw, bh), rect)
+for view, x0, y0, w, h, sc in job.tiles[1:]:
+    corner = frames_v[0][y0 + 2:y0 + int(30 * sc), x0 + w - int(120 * sc):x0 + w - 2].astype(int)
+    assert np.abs(corner - 60).max() < 40, ("nothing is written over the picture's top right", view)
+view, x0, y0, w, h, sc = job.tiles[0]
+band = frames_v[0][y0:y0 + 30, x0:x0 + w].max(axis=2) > 200
+right = int(np.nonzero(band.any(axis=0))[0].max()) if band.any() else 0
+(tw, _), _ = cv2.getTextSize("0.000 s", _render.FONT, _render._font_scale(w), 1)
+assert band.any() and right <= 8 + tw + 6, \
+    ("the working tile shows the time without 'frame N' (the title bar carries it)", right, 8 + tw)
+print(f"window's cells OK: {cell_w}x{cell_h} cells like the window's {gw}x{gh}, a title bar per camera, "
+      "no name over a picture, no repeated frame number")
+win3._dev_probe.wait(30000)
+win3.close()
+app.processEvents()
+for c in CLIPS3:
+    forget_recovery(c)
 print("verify_render PASSED")
