@@ -706,6 +706,20 @@ for f, img in enumerate(frames_v):
 assert not any("could not" in m for m in msgs), msgs
 print("cameras together OK: 2x2 grid, every tile on map_frame's frame (offset +10, half-rate camera)")
 
+# (G198) the window says how far along it is: the theme's 5 px bar cut Qt's own "40%" off (macOS)
+from PySide6.QtWidgets import QProgressBar, QProgressDialog       # noqa: E402
+progs = [d for d in win2.findChildren(QProgressDialog) if d.labelText().startswith("Rendering")]
+assert progs, "the export's progress window"
+pd = progs[-1]
+assert not pd.findChild(QProgressBar).isTextVisible(), \
+    "the thin bar draws no text of its own (it was cut off); the sentence says how far along it is"
+assert pd.labelText().splitlines()[-1] == "40 of 40 frames (100%)", pd.labelText()
+from kinetrace.app import progress_words                 # noqa: E402
+assert progress_words(119, 297) == "119 of 297 frames (40%)", progress_words(119, 297)
+assert progress_words(296, 297).endswith("(99%)") and progress_words(297, 297).endswith("(100%)")
+assert progress_words(0, 0) == "", progress_words(0, 0)
+print("progress window OK: '40 of 40 frames (100%)' under its sentence, no text on the thin bar")
+
 p.set_offset(1, -20.0)                                  # camera b starts 20 frames LATER
 job, msgs, _ = export_views(True)
 frames_v, _ = read_all(OUT_V)
