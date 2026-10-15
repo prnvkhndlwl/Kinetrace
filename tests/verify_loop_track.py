@@ -4,13 +4,13 @@ clip of a lizard whose tail sweeps over its own flank, stays there, and sweeps b
 
     frames  0-14  tail straight          (no contact)
     frames 15-24  tail sweeping round
-    frames 25-39  tail over the flank    (a loop: the midline cuts through the contact)
-    frames 40-49  tail sweeping back
-    frames 50-59  tail straight          (no contact)
+    frames 25-36  tail over the flank    (a loop: the midline cuts through the contact)
+    frames 37-47  tail sweeping back     (the loop opens INSIDE a window's re-sent overlap rows)
+    frames 48-59  tail straight          (no contact)
 
-While the tail lies over the flank the derived tip / midline points must be LOW confidence on
-(nearly) every frame -- before I293 only the first frame of the contact was (the one-frame jump
-rule). Where the tail is straight nothing may be flagged. The tracks and confidences go to
+On EVERY frame whose drawn silhouette encloses a hole the derived tip / midline points must be
+LOW confidence -- before I293 only the first frame of the contact was (the one-frame jump rule).
+Where the tail is straight nothing may be flagged. The tracks and confidences go to
 tests/out/loops/track_<sha>.npz for the byte-identity proof against main. GPU, ~1-2 min.
 """
 import os
@@ -69,11 +69,11 @@ EYE = P(140, 385)
 
 def curl(t: int) -> float:
     """0 = straight, 1 = over the flank."""
-    if t < 15 or t >= 50:
+    if t < 15 or t >= 48:
         return 0.0
-    if 25 <= t < 40:
+    if 25 <= t < 37:
         return 1.0
-    return (t - 14) / 11.0 if t < 25 else (50 - t) / 11.0
+    return (t - 14) / 11.0 if t < 25 else (48 - t) / 11.0
 
 
 def stroke(imgs, pts, t0, t1):
@@ -158,11 +158,13 @@ def check(ok, what):
 for nm, pid in (("tail_tip", tip), ("mid50", mid), ("centre", cen)):
     print(f"  {nm:8s} conf: " + " ".join(f"{v:.2f}" for v in s.confidence[:T, pid]))
 print(f"  loop frames (worker): {sorted(getattr(w, '_loop_frames', []))}")
-over = range(25, 40)
+holed = [f for f in range(T) if truth_hole[f] >= 0.02]
+print(f"  frames whose drawn silhouette encloses a hole: {holed}")
 for nm, pid in (("tail_tip", tip), ("mid50", mid)):
-    low = [f for f in over if s.tracked[f, pid] and s.confidence[f, pid] <= LOW + 1e-6]
-    check(len(low) >= 13, f"{nm}: low (<= {LOW}) on {len(low)}/15 frames with the tail over the flank {low}")
-calm = [f for f in range(T) if f < 15 or f >= 52]
+    missed = [f for f in holed if not (s.tracked[f, pid] and s.confidence[f, pid] <= LOW + 1e-6)]
+    check(len(holed) >= 12 and not missed,
+          f"{nm}: low (<= {LOW}) on every one of the {len(holed)} frames with a loop (missed: {missed})")
+calm = [f for f in range(T) if f < 15 or f >= 50]
 for nm, pid in (("tail_tip", tip), ("mid50", mid), ("centre", cen)):
     bad = [f for f in calm if s.tracked[f, pid] and s.confidence[f, pid] <= LOW + 1e-6]
     check(not bad, f"{nm}: never low where the tail is straight (got {bad})")
