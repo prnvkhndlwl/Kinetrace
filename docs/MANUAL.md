@@ -2780,11 +2780,14 @@ show in the window (their eyes on in the CAMERAS panel), in the same order and
 grid as on screen, each with its own markers, skeleton and silhouettes and its
 name in the corner. The camera you are working in is the clock: the range is in
 its frames and the Speed is against its real rate. Every other camera shows the
-frame that matches the same instant through its sync offset and rate, exactly
-the frame the window shows beside it. A camera that was not recording yet (or
-any more) shows a dark tile that says so, and "4x slower" appears once, in your
-camera's tile. The whole picture fits 4K (3840 × 2160); *Output size* shrinks it
-further. To leave a camera out, switch its eye off before exporting. Hand check:
+frame that matches the same instant through its sync offset and rate: the frame
+the window shows beside it under **Sync all views** (under *Active view only* the
+window leaves the others where they were; the video does not). The Silhouette
+and Skeleton bones ticks are offered when any shown camera has one. A camera
+that was not recording yet (or any more) shows a dark tile that says so, and
+"4x slower" appears once, in your camera's tile. The whole picture fits 4K
+(3840 × 2160) and starts at Full size; *Output size* shrinks it further. To
+leave a camera out, switch its eye off before exporting. Hand check:
 on a clap or flash you synced on, the clap lands on the same frame of the video
 in every tile.
 

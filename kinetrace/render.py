@@ -569,7 +569,7 @@ class _ViewsReader:
                 try:
                     self.readers.append(None if first is None else FrameReader(v.path, first))
                 except VideoOpenError:
-                    raise RuntimeError(f"camera {v.camera + 1} ({v.name}): its video could not be opened "
+                    raise RuntimeError(f"Camera {v.camera + 1} ({v.name}): its video could not be opened "
                                        f"({v.path}), so nothing was written.") from None
         except Exception:
             self.release()
@@ -607,7 +607,7 @@ class _ViewsReader:
                 if img is None:
                     bad = self.readers[k].failed if self.readers[k].failed is not None else lf
                     self._bad[k] = bad
-                    self.notes.append(f"camera {v.camera + 1} ({v.name}): frame {bad} could not be decoded "
+                    self.notes.append(f"Camera {v.camera + 1} ({v.name}): frame {bad} could not be decoded "
                                       "(its video ends there, or the file is damaged), so its tile is dark "
                                       "from there")
                     out.append(("bad", bad))
@@ -620,6 +620,7 @@ class _ViewsReader:
         for r in self.readers:
             if r is not None:
                 r.release()
+        self._last = [(-1, None)] * len(self.views)     # (review) one full frame per camera, not kept
 
 
 class ViewsOverlayRenderer(OverlayRenderer):
@@ -683,13 +684,17 @@ class ViewsOverlayRenderer(OverlayRenderer):
                                     slowdown=self.slowdown if k == self.active else None)
                 th, tw = min(h, tile.shape[0], H - y), min(w, tile.shape[1], W - x)
                 out[y:y + th, x:x + tw] = tile[:th, :tw]
-            else:
+            # (review) the tile's words are written on a copy of its area and pasted back: clipped to the
+            # tile, never spilling into a neighbour's
+            area = out[y:y + h, x:x + w].copy()
+            if state != "ok":
                 say = ("not recording at this instant" if state == "off"
                        else f"frame {img} could not be decoded")
                 (tw, _), _ = cv2.getTextSize(say, FONT, fs, 1)
-                _text(out, say, (x + max(4, (w - tw) // 2), y + h // 2), fs, (220, 220, 220))
+                _text(area, say, (max(4, (w - tw) // 2), h // 2), fs, (220, 220, 220))
             (nw, nh), _ = cv2.getTextSize(v.name, FONT, fs, 1)
-            _text(out, v.name, (x + w - nw - 8, y + nh + 8), fs, (255, 255, 255))
+            _text(area, v.name, (max(4, w - nw - 8), nh + 8), fs, (255, 255, 255))
+            out[y:y + h, x:x + w] = area
         if self._views_reader is not None and self._views_reader.notes:
             self.note = "; ".join(filter(None, [self.note] + self._views_reader.notes))
             self._views_reader.notes = []
@@ -766,13 +771,15 @@ class OverlayDialog:
                 vl = QVBoxLayout(vbox)
                 vl.setContentsMargins(0, 0, 0, 0)
                 self.r_one = QRadioButton("This camera")
+                # (review) at most 4 names on the line: a long label sets the dialog's width
+                listed = ", ".join(shown[:4]) + (", …" if len(shown) > 4 else "")
                 self.r_together = QRadioButton(f"All shown cameras together ({len(shown)})"
-                                               + (": " + ", ".join(shown) if len(shown) > 1 else ""))
+                                               + (": " + listed if len(shown) > 1 else ""))
                 self.r_together.setEnabled(len(shown) > 1)
                 self.r_together.setToolTip(
-                    "The cameras shown in the window, in the same grid and order, each with its own overlay; "
-                    "this camera's frames are the clock and every other camera shows the frame that matches "
-                    "it (its sync offset and rate)." if len(shown) > 1 else
+                    "The cameras shown in the window (" + ", ".join(shown) + "), in the same grid and order, "
+                    "each with its own overlay; this camera's frames are the clock and every other camera "
+                    "shows the frame that matches it (its sync offset and rate)." if len(shown) > 1 else
                     "Only one camera is shown: show another with its eye in the CAMERAS panel (and Solo off) "
                     "to put them together.")
                 self.r_one.setChecked(True)
@@ -821,7 +828,8 @@ class OverlayDialog:
                 self.scale = QComboBox()
                 for label, v in (("Full size", 1.0), ("Half size", 0.5), ("Quarter size", 0.25)):
                     self.scale.addItem(label, v)
-                self.scale.setCurrentIndex(1 if session.width > 2000 else 0)
+                self._scale_auto = 1 if session.width > 2000 else 0
+                self.scale.setCurrentIndex(self._scale_auto)
                 self.scale.setToolTip("Half size is plenty for a talk and renders 4x faster")
                 form.addRow("Output size", self.scale)
                 # (G194) speed against real time: presets + any number; the line under it says how
@@ -917,6 +925,11 @@ class OverlayDialog:
                     if together else one_has
                 self.c_mask.setEnabled(bool(has[0]))
                 self.c_bones.setEnabled(bool(has[1]))
+                # (review) Half size is the starting choice for ONE wide camera; the cameras together
+                # are already fitted into 4K, so they start at Full -- unless the user picked a size
+                auto = 0 if together else self._scale_auto
+                if self.scale.currentIndex() == (self._scale_auto if together else 0):
+                    self.scale.setCurrentIndex(auto)
                 # the suggested file follows the choice, unless the user typed their own
                 if together_path:
                     old, new = (default_path, together_path) if together else (together_path, default_path)
