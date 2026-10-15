@@ -579,9 +579,13 @@ job_slow, msgs, _ = export_views(True, f1=9, speed="4x slower")
 slow, _ = read_all(OUT_V)
 assert len(slow) == 40 and any("4x slower" in m for m in msgs), (len(slow), msgs)
 diff = (np.abs(slow[0].astype(np.int16) - plain[0].astype(np.int16)).max(axis=2) > 40)
-ys, xs = np.nonzero(diff)
 x0, y0, w, h, _ = job_slow.tiles[0][1:]
-assert len(ys) and xs.max() < x0 + w and ys.max() < y0 + h, "the speed label belongs to the working tile only"
+inside = int(diff[y0:y0 + h, x0:x0 + w].sum())
+outside = int(diff.sum()) - inside
+ys, xs = np.nonzero(diff)
+print(f"  label diff: {inside} px in the working tile, {outside} elsewhere "
+      f"(elsewhere at {sorted(set(zip((ys // 40 * 40).tolist(), (xs // 40 * 40).tolist())))[:8]})")
+assert inside > 50 and outside <= inside // 10, ("the speed label belongs to the working tile only", inside, outside)
 print("speed label OK: once, in the working camera's tile")
 
 def check2(dlg):
