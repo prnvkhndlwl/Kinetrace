@@ -207,11 +207,18 @@ assert ds["err"] is None, ds["err"]
 n_s, fps_s, fr_s = probe(out_slow)
 assert n_s == 240 and abs(fps_s - 30.0) < 0.01, ("60 frames 4x slower at 30 fps = 240 frames, 8 s", n_s, fps_s)
 assert rs.frames_written == 60 and rs.note == "" and rs.slowdown == 4.0, (rs.frames_written, rs.note)
-# frames 0-3 repeat source frame 30, frame 4 is source frame 31 (its frame counter changed)
-same = max(np.abs(fr_s[i + 1] - fr_s[i]).mean() for i in range(3))
-step_diff = np.abs(fr_s[4] - fr_s[3]).mean()
-assert step_diff > 4 * same, ("each source frame must be shown 4 times", same, step_diff)
-print(f"4x slower OK: {n_s} frames at {fps_s:g} fps (repeat diff {same:.3f} vs next frame {step_diff:.3f})")
+# frames 0-3 repeat source frame 30, frame 4 is source frame 31 (its frame counter changed); the
+# encoder's noise between repeats stays far below 40 grey levels (measured: max 21), a new frame
+# changes hundreds of pixels by more than that
+
+
+def changed(i):
+    return int((np.abs(fr_s[i + 1] - fr_s[i]).max(axis=2) > 40).sum())
+
+
+assert [changed(i) for i in range(7)][:3] == [0, 0, 0] and changed(3) > 50 and changed(4) == 0, \
+    ("each source frame must be shown 4 times", [changed(i) for i in range(7)])
+print(f"4x slower OK: {n_s} frames at {fps_s:g} fps, each source frame 4 times")
 
 hs = TrackingSession(VID, 600, 300.0, 640, 480)          # a 300 fps camera saved as a 30 fps file
 hs.file_fps = 30.0
