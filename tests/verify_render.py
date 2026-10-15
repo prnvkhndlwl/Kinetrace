@@ -331,7 +331,7 @@ print("short video OK: 40 of 90 frames reported, an all-phantom range refused, t
       "offers only frames that decode")
 
 # ---- the Speed row, with the keyboard and mouse (G194) -------------------------------
-from PySide6.QtCore import Qt                           # noqa: E402
+from PySide6.QtCore import QPoint, Qt                   # noqa: E402
 from PySide6.QtTest import QTest                        # noqa: E402
 from PySide6.QtWidgets import QDialogButtonBox          # noqa: E402
 
@@ -504,6 +504,13 @@ assert p.set_fps(2, 15.0)                               # camera c really ran at
 OUT_V = os.path.join(SCRATCH, "overlay_views.mp4")
 
 
+def click_radio(rb):
+    """Click a radio button on its label: a short label in a wide row ('This camera') does not
+    reach the row's centre, where QTest clicks by default, and a click there does nothing."""
+    QTest.mouseClick(rb, Qt.LeftButton, Qt.NoModifier, QPoint(12, rb.height() // 2))
+
+
+
 def export_views(together, f1=39, speed=None, check_dialog=None):
     """File -> Export -> Overlay Video with the real dialog, its Views choice clicked."""
     seen = {}
@@ -514,7 +521,7 @@ def export_views(together, f1=39, speed=None, check_dialog=None):
         app.processEvents()
         if check_dialog:
             check_dialog(dlg)
-        QTest.mouseClick(dlg.r_together if together else dlg.r_one, Qt.LeftButton)
+        click_radio(dlg.r_together if together else dlg.r_one)
         QTest.mouseClick(dlg.r_custom, Qt.LeftButton)
         dlg.f0.setValue(0)
         dlg.f1.setValue(f1)
@@ -592,11 +599,41 @@ def check2(dlg):
     assert "(2)" in dlg.r_together.text(), dlg.r_together.text()
 
 
-win2.grid.set_hidden(2, True)                            # camera c's eye off
+QTest.mouseClick(win2.cameras._rows[2].btn_eye, Qt.LeftButton)     # camera c's eye off
+assert 2 not in win2.grid.visible_indices(), win2.grid.visible_indices()
 job, _, _ = export_views(True, check_dialog=check2)
 frames_v, _ = read_all(OUT_V)
 assert [t[0] for t in job.tiles] == [0, 1] and frames_v[0].shape[:2] == (240, 640), (job.tiles, frames_v[0].shape)
-win2.grid.set_hidden(2, False)
+QTest.mouseClick(win2.cameras._rows[2].btn_eye, Qt.LeftButton)
+assert 2 in win2.grid.visible_indices(), win2.grid.visible_indices()
+
+# (review) only camera b has a silhouette: together, the tick is offered and b's tile draws it
+sb = p.sessions[1]
+sb.ensure_animal()
+blob = np.zeros((VH, VW), bool)
+blob[60:140, 60:140] = True
+for lf in range(VN):
+    sb.masks.set(lf, blob, 9.0)
+ticks = {}
+
+
+def check_mask_tick(dlg):
+    ticks["one"] = dlg.c_mask.isEnabled()
+    click_radio(dlg.r_together)
+    ticks["together"] = dlg.c_mask.isEnabled()
+    QTest.qWait(QApplication.doubleClickInterval() + 100)     # two clicks, not a double-click
+    click_radio(dlg.r_one)
+    ticks["back"] = dlg.c_mask.isEnabled()
+    QTest.qWait(QApplication.doubleClickInterval() + 100)
+
+
+job, _, _ = export_views(True, check_dialog=check_mask_tick)
+assert ticks == {"one": False, "together": True, "back": False}, ticks
+frames_v, _ = read_all(OUT_V)
+x0, y0, w, h, sc = job.tiles[1][1:]
+inside_blob = frames_v[30][int(y0 + 100 * sc), int(x0 + 100 * sc)].astype(int)
+assert np.abs(inside_blob - 60).max() > 20, ("camera b's silhouette is drawn in its tile", inside_blob)
+print("silhouette tick OK: offered when a shown camera has one, drawn in that camera's tile")
 job, _, seen = export_views(False)
 frames_v, fps_v = read_all(OUT_V)
 assert len(frames_v) == 40 and frames_v[0].shape[:2] == (VH, VW) and abs(fps_v - 30.0) < 0.01, \

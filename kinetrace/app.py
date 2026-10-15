@@ -12749,9 +12749,12 @@ class MainWindow(QMainWindow):
         default = self._default_output("_overlay.mp4")           # + the camera's name (G119)
         # (G195) the cameras shown on screen, in their order, can go into one video
         shown = self.grid.visible_indices() if p is not None and p.n_views > 1 else None
+        shown_s = [p.sessions[i] for i in shown] if shown else []
         dlg = OverlayDialog(self, s, default, self.current, self.timeline.sel_range, n_frames=self.n_frames,
                             views=None if shown is None else [p.name(i) for i in shown],
-                            together_path=self._default_output("_overlay_cameras.mp4", camera=False))
+                            together_path=self._default_output("_overlay_cameras.mp4", camera=False),
+                            together_has=(any(v.masks is not None and v.animal is not None for v in shown_s),
+                                          any(bool(v.bones()) for v in shown_s)))
         if dlg.exec() != QDialog.Accepted or dlg.result_options is None:
             return
         opts, out = dlg.result_options, dlg.result_path

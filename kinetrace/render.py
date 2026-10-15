@@ -709,9 +709,12 @@ class OverlayDialog:
 
     def __new__(cls, parent, session, default_path: str, current: int,
                 sel_range: tuple[int, int] | None = None, n_frames: int | None = None,
-                views: list[str] | None = None, together_path: str | None = None):
+                views: list[str] | None = None, together_path: str | None = None,
+                together_has: tuple[bool, bool] = (False, False)):
         """`views`: the names of the cameras shown on screen, in their order (G195); two or more offer
-        "All shown cameras together", whose suggested file is `together_path`."""
+        "All shown cameras together", whose suggested file is `together_path`. `together_has`: (any
+        shown camera has silhouettes, any has skeleton bones) -- the Draw ticks follow the cameras the
+        video will hold, not only the working one."""
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                        QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -738,6 +741,8 @@ class OverlayDialog:
         if sel_range is not None:
             sel_range = None if sel_range[0] > T - 1 else (sel_range[0], min(sel_range[1], T - 1))
         events = [(e, min(e.end, T - 1)) for e in session.events if e.start <= T - 1]
+        # what the Silhouette / Skeleton bones ticks can draw: this camera's, or (together) any shown one's
+        one_has = (session.masks is not None and session.animal is not None, bool(session.bones()))
 
         class _Dlg(QDialog):
             def __init__(self):
@@ -867,8 +872,8 @@ class OverlayDialog:
                           self.c_frame, self.c_speed, self.c_events, self.c_notes):
                     c.setChecked(True)
                     ol.addWidget(c)
-                self.c_mask.setEnabled(session.masks is not None and session.animal is not None)
-                self.c_bones.setEnabled(bool(session.bones()))
+                self.c_mask.setEnabled(one_has[0])
+                self.c_bones.setEnabled(one_has[1])
                 form.addRow("Draw", opts)
                 self.marker = QSpinBox()
                 self.marker.setRange(2, 30)
@@ -907,6 +912,11 @@ class OverlayDialog:
                 self.r_together.toggled.connect(self._views_changed)
 
             def _views_changed(self, together: bool):
+                # (review) a silhouette or skeleton in ANOTHER shown camera is drawable together
+                has = (bool(together_has[0]) or one_has[0], bool(together_has[1]) or one_has[1]) \
+                    if together else one_has
+                self.c_mask.setEnabled(bool(has[0]))
+                self.c_bones.setEnabled(bool(has[1]))
                 # the suggested file follows the choice, unless the user typed their own
                 if together_path:
                     old, new = (default_path, together_path) if together else (together_path, default_path)
