@@ -30,7 +30,7 @@ MAP = [
                           "verify_balls", "verify_spots", "verify_segments", "verify_segment_identity",
                           "verify_fingerprint",
                           # (I293) the derived-landmark rules on a bare worker
-                          "verify_silhouette_loops"]),
+                          "verify_silhouette_loops", "verify_loop_track"]),
     # (R37, R39) pixel-centre arithmetic: every user's suites
     ([K + "pixels.py"], ["verify_tracker", "verify_review_tracking", "verify_4k", "verify_roi", "verify_balls",
                          "verify_segmenter", "verify_animal", "verify_animal_gui", "verify_segments_sam",
@@ -41,7 +41,8 @@ MAP = [
     ([K + "balls.py"], ["verify_balls"]),
     ([K + "segmenter.py", K + "silhouette.py"], ["verify_segmenter", "verify_animal", "verify_animal_gui",
                                                  "verify_segments_sam", "verify_segment_identity",
-                                                 "verify_onbody_rules", "verify_silhouette_loops"]),
+                                                 "verify_onbody_rules", "verify_silhouette_loops",
+                                                 "verify_loop_track"]),
     ([K + "skeletons.py"], ["verify_animal", "verify_layers", "verify_shared_landmarks"]),
     # (I287) the one Hugging Face token rule: the suites that check which token reaches a model load
     ([K + "segmenter.py", K + "downloads.py", K + "bodypose.py"], ["verify_review_tracking", "verify_review_leftovers",

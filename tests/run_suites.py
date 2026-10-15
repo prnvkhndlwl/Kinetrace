@@ -37,7 +37,9 @@ GPU = ["audit_sweep", "verify_balls", "verify_animal", "verify_tracker", "verify
        # the 2026-10-02 code review's regression checks that need the GPU
        "verify_review_tracking", "verify_review_app2", "verify_review_i185",
        # two segments with the real segmentation model in one pass (G149)
-       "verify_segments_sam"]
+       "verify_segments_sam",
+       # (I293) a real Track run over a self-contact loop
+       "verify_loop_track"]
 # verify_pythonw is in no group on purpose: it must be launched DETACHED (Start-Process,
 # no output redirect) or the stderr guard it checks cannot fail; see CLAUDE.md
 CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery", "verify_interop", "verify_shared_landmarks", "verify_multiview", "verify_loading", "verify_stress", "verify_3d", "verify_wand", "verify_lens", "verify_body",
