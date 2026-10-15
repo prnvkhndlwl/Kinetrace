@@ -2768,7 +2768,8 @@ window selected on the timeline, or any range, and tick what to draw — the
 **Skeleton bones** tick there decides, whatever *View → Show skeleton bones*
 says. Half size is plenty for a talk and renders four times faster (it is the
 starting choice for footage wider than 2000 pixels). Every word in the video has
-a thin dark edge that follows its letters (2 pixels wide in a 4K video, 1 below),
+a thin dark edge that follows its letters (about 2 pixels in a picture 2880 or
+more pixels wide, such as full-size 4K; 1 in smaller ones, half size included),
 so it reads on bright and dark footage alike. Rendering runs in the
 background — you can keep working, but edits you make while it renders are not
 in that video — and the original video is never modified.

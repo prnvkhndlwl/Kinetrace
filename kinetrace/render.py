@@ -134,19 +134,21 @@ def _outline_px(scale: float) -> int:
 
 
 def _text(img, text: str, org: tuple[int, int], scale: float, color, thick: int = 1, halo=(0, 0, 0)) -> None:
-    """Outlined text (dark halo) so it reads on any background. (G197) The halo is the letters' own mask grown
-    by `_outline_px`: drawn as thicker text it slid right of the letters (OpenCV advances thick glyphs
-    further), leaving a dark copy after the last character."""
+    """Outlined text (dark halo) so it reads on any background; `img` is a 3-channel uint8 (BGR) picture.
+    (G197) The halo is the letters' own mask grown by `_outline_px`: drawn as thicker text it slid right of
+    the letters (OpenCV advances thick glyphs further), leaving a dark copy after the last character."""
     r = _outline_px(scale)
     (tw, th), base = cv2.getTextSize(text, FONT, scale, thick)
     pad = r + thick + 2
-    x0, y0 = max(0, org[0] - pad), max(0, org[1] - th - pad)
-    x1, y1 = min(img.shape[1], org[0] + tw + pad), min(img.shape[0], org[1] + base + pad)
+    bx0, by0, bx1, by1 = org[0] - pad, org[1] - th - pad, org[0] + tw + pad, org[1] + base + pad
+    x0, y0 = max(0, bx0), max(0, by0)
+    x1, y1 = min(img.shape[1], bx1), min(img.shape[0], by1)
     if x0 < x1 and y0 < y1:
-        m = np.zeros((y1 - y0, x1 - x0), np.uint8)
-        cv2.putText(m, text, (org[0] - x0, org[1] - y0), FONT, scale, 255, thick, cv2.LINE_AA)
+        # the mask covers the whole label, so letters just past the picture's edge still edge those inside it
+        m = np.zeros((by1 - by0, bx1 - bx0), np.uint8)
+        cv2.putText(m, text, (org[0] - bx0, org[1] - by0), FONT, scale, 255, thick, cv2.LINE_AA)
         a = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1)))
-        a = a[..., None].astype(np.uint16)
+        a = a[y0 - by0:y1 - by0, x0 - bx0:x1 - bx0, None].astype(np.uint16)
         roi = img[y0:y1, x0:x1]
         roi[:] = ((roi * (255 - a) + np.array(halo, np.uint16) * a + 127) // 255).astype(np.uint8)
     cv2.putText(img, text, org, FONT, scale, color, thick, cv2.LINE_AA)

@@ -108,8 +108,9 @@ for LW, LH in ((1920, 1080), (3840, 2160)):
     ink_r = int(np.where(ink.any(0))[0].max())
     print(f"  {LW} wide (font {fs:.3f}, outline {rw} px): darkest pixel {far:.1f} px from a letter; "
           f"dark edge {dark_r - ink_r:+d} px past the letters")
-    assert far <= rw + 2.0, f"{LW} wide: a dark copy {far:.1f} px from any letter (outline {rw} px)"
-    assert dark_r - ink_r <= rw + 2, f"{LW} wide: the outline ends {dark_r - ink_r} px past the last letter"
+    # margin: letter cores miss the anti-aliased rim (~1 px); the old halo was 36 px off
+    assert far <= rw + 3.0, f"{LW} wide: a dark copy {far:.1f} px from any letter (outline {rw} px)"
+    assert dark_r - ink_r <= rw + 3, f"{LW} wide: the outline ends {dark_r - ink_r} px past the last letter"
 
 # the width grows with the font: the ring 2 px out from the letters is dark at 4K, not at 1280
 for LW, want2 in ((1280, False), (3840, True)):
@@ -155,6 +156,13 @@ for org in ((5, 4), (150, 58), (-40, 30), (190, 80), (-500, -500)):
         assert (edge[:20, :100] == before[:20, :100]).all(), "a label cut by the bottom edge wrote at the top"
     if org == (-40, 30):
         assert (edge[:, 120:] == before[:, 120:]).all(), "a label cut by the left edge wrote at the right"
+# a label cut by an edge keeps the dark edge its hidden letters give: as if drawn on a bigger picture, cropped
+for org in ((10, 6), (-12, 30), (120, 58)):
+    cut = np.full((60, 200, 3), 200, np.uint8)
+    big = np.full((100, 260, 3), 200, np.uint8)
+    _text(cut, "Tlj[gy]", org, 0.953, (255, 255, 255))
+    _text(big, "Tlj[gy]", (org[0] + 30, org[1] + 20), 0.953, (255, 255, 255))
+    assert (cut == big[20:80, 30:230]).all(), f"label cut by the edge at {org}: outline differs from uncut"
 
 # a zoomed before / after picture for the owner (left: the old two-pass halo, right: today's _text)
 
