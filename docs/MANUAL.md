@@ -325,9 +325,12 @@ you have outlined the animal. The rest you place yourself with a click.
 > seen from **above**, with its back towards the camera. Filmed from **below**,
 > left and right come out swapped: right-click each of those landmarks →
 > **Data source** and pick the other side's rule (for `foot_FL`, *From
-> silhouette: fore-right extremity (foot)*), so each name stays true. Tables
-> exported before 22 September 2026 from footage filmed from above had them
-> the wrong way round.
+> silhouette: fore-right extremity (foot)*), so each name stays true. The same
+> swap happens **during** a clip filmed from above when the animal rolls onto
+> its back: on those frames its left and right come out the wrong way round,
+> and the program cannot tell a roll from a turn, so check such stretches by
+> eye. Tables exported before 22 September 2026 from footage filmed from above
+> had them the wrong way round.
 
 You can also build your own list: **Skeleton ▾ → Custom skeleton…** asks for a
 name, the head landmark, the landmarks (one per line) and, if you like, the
@@ -852,6 +855,22 @@ the body part red rather than quietly exporting a wrong position:
   are never shown more than 70 % confident, and any outline-derived part that
   jumps more than 15 % of the body length between two frames drops to 30 %:
   that is what a swapped leg or a flipped tail looks like.
+- **The body touches itself.** When the tail lies over the flank, a foot rests
+  on an upturned tail or a fish curls into a closed C, the outline closes a
+  loop, and its midline can take a short cut through the contact. The tail tip,
+  the points along the midline and the feet are then wrong, often by hundreds
+  of pixels, for as long as the contact lasts. The program spots it: the outline
+  encloses a gap and the midline is clearly shorter than on the last frame
+  without one. It then marks those parts 30 % confident on **every** frame
+  until the outline encloses no gap at all, so they show red on the timeline and
+  **J** stops there. Their positions are left as they are, and the centroid is
+  not affected. A foot simply resting on the flank also encloses a gap, but the
+  midline keeps its length, so nothing is marked (unless the foot is still
+  resting there when a marked loop opens: the marking lasts until the last gap
+  is gone).
+  If a run *starts* with the body already touching itself, there is nothing to
+  compare with, so those frames are marked until the contact ends. Check the
+  red stretch by eye, or place those parts yourself on the frames you need.
 
 ### What right-clicking a body part offers
 
@@ -3550,7 +3569,9 @@ points instead (wing tip, wrist, shoulder), which is what the skeletons are for.
 
 **Left and right feet (or wing tips) are the wrong way round.** Feet and wing
 tips found from the outline are named as seen **from above**, looking down on
-the animal's back. Filmed from below, left and right swap: rename the two
+the animal's back. An animal that rolls onto its back partway through a clip
+has them swapped on those frames only; check that stretch by eye. Filmed from
+below, left and right swap: rename the two
 landmarks to swap their names (right-click → *Rename point*), or give each the
 other side's rule (right-click → *Data source* → *From silhouette: …*; it asks
 first, because that erases the point's track, and **Ctrl+Z** brings it back),
