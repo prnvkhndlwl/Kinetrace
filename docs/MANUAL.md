@@ -2795,9 +2795,14 @@ left out, like in the other exports.
 
 **Several cameras in one video.** In a project with more than one camera, the
 dialog's **Views** row offers **All shown cameras together**: the cameras you
-show in the window (their eyes on in the CAMERAS panel), in the same order and
-grid as on screen, each with its own markers, skeleton and silhouettes and its
-name in the corner. The camera you are working in is the clock: the range is in
+show in the window (their eyes on in the CAMERAS panel), laid out as the window
+shows them: the same order and grid, every cell the shape the views have on
+screen when you export, and each camera fitted in its cell with the same black
+bars beside or above it. Each camera has its own markers, skeleton and
+silhouettes, and a dark title bar above it with the words of the window's title
+bar (its name, its frame and its sync offset), so nothing is written over the
+picture; the time is still drawn in each tile, without a second frame number. A
+wider or taller window gives a wider or taller video. The camera you are working in is the clock: the range is in
 its frames and the Speed is against its real rate. Every other camera shows the
 frame that matches the same instant through its sync offset and rate: the frame
 the window shows beside it under **Sync all views** (under *Active view only* the

@@ -815,9 +815,10 @@ class OverlayDialog:
                                                + (": " + listed if len(shown) > 1 else ""))
                 self.r_together.setEnabled(len(shown) > 1)
                 self.r_together.setToolTip(
-                    "The cameras shown in the window (" + ", ".join(shown) + "), in the same grid and order, "
-                    "each with its own overlay; this camera's frames are the clock and every other camera "
-                    "shows the frame that matches it (its sync offset and rate)." if len(shown) > 1 else
+                    "The cameras shown in the window (" + ", ".join(shown) + "), laid out as the window shows "
+                    "them (grid, order, cell shape), each under its title bar with its own overlay; this "
+                    "camera's frames are the clock and every other camera shows the frame that matches it "
+                    "(its sync offset and rate)." if len(shown) > 1 else
                     "Only one camera is shown: show another with its eye in the CAMERAS panel (and Solo off) "
                     "to put them together.")
                 self.r_one.setChecked(True)
