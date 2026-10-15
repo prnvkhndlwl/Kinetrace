@@ -25,7 +25,7 @@ from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QP
 from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, QApplication, QDialog, QDialogButtonBox,
                                QDockWidget, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
-                               QMenu, QMessageBox, QPlainTextEdit, QProgressDialog,
+                               QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QProgressDialog,
                                QSpinBox, QSplitter, QTextBrowser,
                                QToolButton, QVBoxLayout, QWidget)
 
@@ -432,6 +432,15 @@ def _download_status(clock: dict, label: str, done: float, total: float) -> tupl
         line, mx, val = f"{done / 1e6:.0f} MB so far", 0, 0
     return mx, val, (f"{label} (first use only)\n{line}\n\nThe file is kept inside the Kinetrace folder "
                      "(models/). Cancel stops it; the next try goes on from where it stopped.")
+
+
+def progress_words(done: int, total: int, unit: str = "frames") -> str:
+    """How far along a progress window is, in words (G198): '119 of 297 frames (40%)'. The percent is
+    floored (100% only when all are done); '' when nothing is counted (a busy bar)."""
+    if total <= 0:
+        return ""
+    done = max(0, min(int(done), int(total)))
+    return f"{done} of {int(total)} {unit} ({100 * done // int(total)}%)"
 
 
 def _crash_text(tb: str, hint: str, fallback: str) -> str:
@@ -12476,8 +12485,12 @@ class MainWindow(QMainWindow):
                          modal: bool = False, delay_ms: int = 0) -> QProgressDialog:
         """A progress window that stays open, full, until its owner closes it (R26: five copies; the
         side-by-side video's dropped back to empty at the end). Not modal unless `modal`: X / Space stop a
-        run meanwhile."""
+        run meanwhile. Its bar is the theme's thin line with no text of its own (G198: Qt's "40%" was cut
+        off): `_show_progress` says how far along it is in the sentence."""
         dlg = QProgressDialog(text, cancel, 0, maximum, self)
+        bar = QProgressBar(dlg)
+        bar.setTextVisible(False)
+        dlg.setBar(bar)                     # the dialog owns it
         dlg.setWindowTitle(title)
         dlg.setWindowModality(Qt.WindowModal if modal else Qt.NonModal)
         dlg.setMinimumDuration(delay_ms)
@@ -12485,6 +12498,14 @@ class MainWindow(QMainWindow):
         dlg.setAutoReset(False)
         dlg.canceled.connect(on_cancel)
         return dlg
+
+    @staticmethod
+    def _show_progress(dlg: QProgressDialog, text: str, done: int, total: int, unit: str = "frames") -> None:
+        """A progress window's bar and its words (G198): `text`, then '119 of 297 frames (40%)'."""
+        dlg.setMaximum(max(1, int(total)))
+        dlg.setValue(int(done))
+        words = progress_words(done, total, unit)
+        dlg.setLabelText(f"{text}\n{words}" if words else text)
 
     def _read_failed(self, title: str, e: BaseException, what: str, known=()) -> None:
         """A file that could not be read, said in a box (R26: eight copies): a `known` format error is
@@ -12779,10 +12800,12 @@ class MainWindow(QMainWindow):
         else:
             r = OverlayRenderer(s, self.info.path, out, opts, bones, self._mask_opacity)
         total = opts.end - opts.start + 1
-        prog = self._progress_dialog(f"Rendering {total} frames to {Path(out).name}…", "Cancel", total,
+        name = Path(out).name
+        prog = self._progress_dialog(f"Rendering {total} frames to {name}…", "Cancel", total,
                                      "Overlay video", r.request_cancel)
-        # the job's own total: a high-speed clip sped up skips frames (G194)
-        r.progress.connect(lambda d, t: (prog.setMaximum(t), prog.setValue(d)))
+        self._show_progress(prog, f"Rendering {total} frames to {name}…", 0, total)
+        # the job's own total: a high-speed clip sped up skips frames (G194), so the sentence follows it
+        r.progress.connect(lambda d, t: self._show_progress(prog, f"Rendering {t} frames to {name}…", d, t))
 
         def _done(path, codec):
             prog.close()
