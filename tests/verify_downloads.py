@@ -320,6 +320,13 @@ try:
 finally:
     sys.modules["kinetrace.app"].seg_is_cached = real_seg
 win._model_worker = _W("alltracker")
+# (G198 review) a model loading from models/ has no count: its window is a moving (busy) bar, maximum 0 --
+# giving the dialog its own bar reset it to 0..100, a bar frozen at empty that looked hung
+win._open_model_dialog("Loading the AllTracker point model", 0)
+md = win._model_dialog
+check(md is not None and md.maximum() == 0 and md.minimum() == 0,
+      "loading a model: 'Preparing the models' is a busy bar (maximum 0): "
+      + (f"range {md.minimum()}..{md.maximum()}" if md is not None else "no window"))
 win._on_model_progress("Downloading the AllTracker point model", 20e6, 66e6)
 app.processEvents()
 dlg = win._model_dialog

@@ -12173,7 +12173,8 @@ class MainWindow(QMainWindow):
         if self._body_progress is not None:
             loading = note.startswith(("Loading", "Downloading", "the "))
             if not loading:                 # (G198) the frames looked at, in words under the sentence
-                self._show_progress(self._body_progress, f"Looking for people…  {note}", done, total)
+                # (review) "now on frame 120": a position, apart from the count under it
+                self._show_progress(self._body_progress, f"Looking for people…  now on {note}", done, total)
                 return
             self._body_progress.setMaximum(max(1, total))
             self._body_progress.setValue(done)
@@ -12364,8 +12365,9 @@ class MainWindow(QMainWindow):
                                w.chk_shape.isChecked() if w is not None else True)
         self._body_video = r
         say = "Rendering the side-by-side video…"
-        dl = self._progress_dialog(say, "Cancel", max(1, f1 - f0 + 1), "Export", r.request_cancel)
-        self._show_progress(dl, say, 0, f1 - f0 + 1)
+        n_out = len(r.frames)               # (review) a sampled run writes only its posed frames
+        dl = self._progress_dialog(say, "Cancel", max(1, n_out), "Export", r.request_cancel)
+        self._show_progress(dl, say, 0, n_out)
         r.progress.connect(lambda d, tt: self._show_progress(dl, say, d, tt))        # (G198)
         r.finished_ok.connect(lambda p, c: self.toast.show_message(
             f"Side-by-side video written to {Path(p).name} ({c})."
@@ -12495,6 +12497,7 @@ class MainWindow(QMainWindow):
         bar = QProgressBar(dlg)
         bar.setTextVisible(False)
         dlg.setBar(bar)                     # the dialog owns it
+        dlg.setRange(0, maximum)            # (review) a new bar is 0..100: 0 = a busy bar (a model loading)
         dlg.setWindowTitle(title)
         dlg.setWindowModality(Qt.WindowModal if modal else Qt.NonModal)
         dlg.setMinimumDuration(delay_ms)
