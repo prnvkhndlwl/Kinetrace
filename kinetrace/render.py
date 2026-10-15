@@ -46,6 +46,75 @@ class OverlayOptions:
     notes: bool = True
     marker_px: int = 7           # marker radius in OUTPUT pixels
     fps: float | None = None     # None = the video file's own rate (the session's `file_fps`)
+    slowdown: float | None = None    # k = "k x slower than real time" (G194); None = as the file plays
+    speed_label: bool = True     # draw "4x slower" under the frame number (nothing at real time)
+
+
+# (G194) a player shows smooth motion from about 24 pictures a second (film's 23.976 counts as 24, so
+# it is not doubled for nothing); above 60 most screens drop them
+MIN_PLAY_FPS = 23.5
+MAX_PLAY_FPS = 60.0
+
+
+def playback_plan(real_fps: float, file_fps: float, slowdown: float) -> tuple[int, int, float]:
+    """How to write a video `slowdown` times slower than real time (G194) from a camera that recorded
+    `real_fps` frames a second, into a file that would play at `file_fps`: (step, repeat, out_fps).
+    Source frames must play at r = real_fps / slowdown a second. Above max(file_fps, 60) (a high-speed
+    clip sped up) every `step`-th frame is kept; below 24 each frame is written `repeat` times so
+    players stay smooth. Either way 1 s of action lasts exactly `slowdown` s, and no frame is blended
+    or invented."""
+    r = float(real_fps) / float(slowdown)
+    top = max(float(file_fps), MAX_PLAY_FPS)
+    if r > top:
+        step = int(np.ceil(r / top - 1e-9))
+        return step, 1, r / step
+    if r < MIN_PLAY_FPS:
+        repeat = int(np.ceil(MIN_PLAY_FPS / r - 1e-9))
+        return 1, repeat, r * repeat
+    return 1, 1, r
+
+
+def _times(k: float) -> str:
+    return f"{k:.0f}" if k >= 100 else f"{k:.3g}"
+
+
+def speed_words(slowdown: float | None) -> str:
+    """'4x slower' / '16.7x slower' / '1.25x faster' against real time; '' at real time or unknown."""
+    if slowdown is None or not is_rate(slowdown) or abs(float(slowdown) - 1.0) < 0.005:
+        return ""
+    k = float(slowdown)
+    return f"{_times(k)}x slower" if k > 1.0 else f"{_times(1.0 / k)}x faster"
+
+
+def _nth(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def slowdown_sentence(real_fps: float | None, file_fps: float, slowdown: float | None, n: int) -> str:
+    """The overlay dialog's line under Speed (G194): how fast the video plays against real time and how
+    long `n` source frames last. `slowdown` None = as the file plays; `real_fps` None = not known."""
+    if real_fps is None or not is_rate(real_fps):
+        return (f"Plays as the file does: these {n} frames make a {n / file_fps:.1f} s video. The camera's "
+                "real frame rate is not known: set it with the fps button in the CAMERAS panel to slow "
+                "the video against real time.")
+    k = real_fps / file_fps if slowdown is None else float(slowdown)
+    words = speed_words(k)
+    secs = n / real_fps * k
+    if not words:
+        text = f"Plays at real time: these {n} frames make a {secs:.1f} s video."
+    elif slowdown is None:
+        text = (f"The file already plays {words} than real time: these {n} frames make a {secs:.1f} s "
+                "video.")
+    else:
+        text = (f"Plays {words} than real time: 1 s of action lasts {_times(k)} s; these {n} frames make a "
+                f"{secs:.1f} s video.")
+    if slowdown is not None:
+        step = playback_plan(real_fps, file_fps, k)[0]
+        if step > 1:
+            text += (f" It keeps every {_nth(step)} frame: a player shows at most "
+                     f"{max(file_fps, MAX_PLAY_FPS):g} pictures a second.")
+    return text
 
 
 def _bgr(color) -> tuple[int, int, int]:
@@ -61,10 +130,13 @@ def _text(img, text: str, org: tuple[int, int], scale: float, color, thick: int 
 
 def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
                  bones: list[tuple[int, int]] | None = None,
-                 mask_color=(77, 227, 176), mask_opacity: float = 0.35) -> np.ndarray:
+                 mask_color=(77, 227, 176), mask_opacity: float = 0.35,
+                 slowdown: float | None = None) -> np.ndarray:
     """Draw the session's state at `frame` on a BGR image (native size or a
     scaled copy — `opts.scale` says which). Returns the image (drawn in place
-    when it is already the output size, else the scaled copy)."""
+    when it is already the output size, else the scaled copy). `slowdown` = how
+    many times slower than real time the video plays (G194): labelled under the
+    frame number when `opts.speed_label`, nothing at real time."""
     sc = float(opts.scale)
     if sc != 1.0:
         bgr = cv2.resize(bgr, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
@@ -173,6 +245,10 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
             t += f"   {frame / s.fps:8.3f} s"
         _text(out, t, (8, y), font_scale, (255, 255, 255))
         y += line_h
+    speed = speed_words(slowdown) if opts.speed_label else ""
+    if speed:
+        _text(out, speed, (8, y), font_scale, (255, 255, 255))
+        y += line_h
     if opts.events:
         for e in s.events:
             if e.start <= frame <= e.end:
@@ -242,8 +318,8 @@ class VideoWriteJob(QThread):
     """Writes frames of a video, each drawn by the subclass, into `out_path` (R28: the overlay and the
     side-by-side video had one loop in two copies). Emits progress (done, total), then
     finished_ok(path, codec) or error(message); `request_cancel` stops after the current frame and
-    deletes the partial file. After `finished_ok`, `frames_written` is how many frames are really in the
-    file and `note` says why it is short of what was asked ("" when it is not) -- a video can end before
+    deletes the partial file. After `finished_ok`, `frames_written` is how many SOURCE frames are really in the
+    file (each written `_repeat` times in a slow-motion overlay, G194) and `note` says why it is short of what was asked ("" when it is not) -- a video can end before
     the range the session believed it had (I41, I232). A truncated file is never a result.
 
     A subclass gives `_reader()` (it may refuse in words first), `_plan(reader)` -> (frames, first,
@@ -259,6 +335,7 @@ class VideoWriteJob(QThread):
         self.frames_written = 0
         self.note = ""
         self._cancel = False
+        self._repeat = 1            # times each composed frame is written (a slow-motion overlay, G194)
 
     def request_cancel(self) -> None:
         self._cancel = True
@@ -289,7 +366,10 @@ class VideoWriteJob(QThread):
                 img = self._compose(bgr, f)
                 if img.shape[1] != size[0] or img.shape[0] != size[1]:
                     img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
-                vw.write(img)
+                for _ in range(self._repeat):
+                    if self._cancel:        # a 1000x slower frame is hundreds of writes
+                        break
+                    vw.write(img)
                 done += 1
                 if done % 5 == 0 or done == total:
                     self.progress.emit(done, total)
@@ -334,7 +414,7 @@ class OverlayRenderer(VideoWriteJob):
     Built on the GUI thread: it draws from a FROZEN copy of the session
     (`freeze_session`, I38), so edits made while it renders are not in the
     video and cannot crash it. After `finished_ok`, `frames_written` is the
-    number of frames really in the file and `note` a sentence saying why it is
+    number of source frames really in the file and `note` a sentence saying why it is
     short of the range ("" when it is not) — a video can end before the range
     the session believed it had (I41)."""
 
@@ -350,6 +430,7 @@ class OverlayRenderer(VideoWriteJob):
             bones = session.bones()
         self.bones = list(bones or [])
         self.mask_opacity = float(mask_opacity)
+        self.slowdown: float | None = None      # times slower than real time, known once planned (G194)
 
     def _output_fps(self, header_fps: float) -> float:
         """The rate the overlay plays at (I226): the caller's `opts.fps`, else the
@@ -380,6 +461,14 @@ class OverlayRenderer(VideoWriteJob):
         from kinetrace.video_source import FrameReader      # the one shared frame reader (R17)
         return FrameReader(self.video_path, int(self.opts.start))
 
+    def _real_fps(self) -> float | None:
+        """The rate the camera really recorded at (the fps button, G38), or None when it is not a rate."""
+        try:
+            v = float(getattr(self.session, "fps", None))
+        except (TypeError, ValueError):
+            return None
+        return v if is_rate(v) else None
+
     def _plan(self, reader):
         f0, f1 = int(self.opts.start), int(self.opts.end)
         cap = reader.cap
@@ -388,19 +477,34 @@ class OverlayRenderer(VideoWriteJob):
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         sc = float(self.opts.scale)
         size = (max(2, int(round(w * sc))), max(2, int(round(h * sc))))
-        return range(f0, f1 + 1), f0, fps, size
+        real = self._real_fps()
+        k = self.opts.slowdown
+        if k is None:                       # as the file plays: today's rate, every frame once
+            self.slowdown = real / fps if real is not None else None
+            return range(f0, f1 + 1), f0, fps, size
+        if real is None:
+            raise RuntimeError("the camera's real frame rate is not known, so the video cannot be slowed "
+                               "against real time. Set it with the fps button in the CAMERAS panel, or "
+                               "choose 'As the file plays'.")
+        if not is_rate(k):
+            raise RuntimeError(f"the speed {k:g} is not a number above 0")
+        step, self._repeat, out_fps = playback_plan(real, fps, float(k))
+        self.slowdown = float(k)
+        return range(f0, f1 + 1, step), f0, out_fps, size
 
     def _compose(self, bgr, f):
-        return draw_overlay(bgr, f, self.session, self.opts, self.bones, mask_opacity=self.mask_opacity)
+        return draw_overlay(bgr, f, self.session, self.opts, self.bones, mask_opacity=self.mask_opacity,
+                            slowdown=self.slowdown)
 
     def _none_written(self, first: int) -> str:
         return (f"frame {first} could not be decoded (the video ends before it, or the file is damaged "
                 "there), so nothing was written. Choose a range inside the video.")
 
     def _short_sentence(self, reader, frames, done: int) -> str:
-        f0 = frames[0]
-        return (f"Frame {f0 + done} could not be decoded (the video ends there, or the file is damaged), so "
-                f"this overlay stops at frame {f0 + done - 1}: {done} of {len(frames)} frames were written.")
+        # `frames` may skip (a high-speed clip sped up, G194): name the frames, not f0 + done
+        bad = reader.failed if reader.failed is not None else frames[done]
+        return (f"Frame {bad} could not be decoded (the video ends there, or the file is damaged), so "
+                f"this overlay stops at frame {frames[done - 1]}: {done} of {len(frames)} frames were written.")
 
     def _error_text(self, e: BaseException) -> str:
         return str(e)
@@ -416,10 +520,23 @@ class OverlayDialog:
     def __new__(cls, parent, session, default_path: str, current: int,
                 sel_range: tuple[int, int] | None = None, n_frames: int | None = None):
         from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-                                       QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                                       QRadioButton, QSpinBox, QVBoxLayout, QWidget)
+        from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+                                       QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+                                       QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget)
         from kinetrace import theme
+
+        def _rate(v):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            return v if is_rate(v) else None
+
+        # (G194) speeds are against REAL time: the camera's rate (the fps button) vs the file's
+        real = _rate(session.fps)
+        file_rate = _rate(getattr(session, "file_fps", None)) or real
+        k0 = real / file_rate if real is not None and file_rate is not None else None
+        OTHER = "other"
 
         # (I41) the frames that DECODE (the view's verified count) bound every
         # range: a project saved with a header's over-count keeps the longer
@@ -438,8 +555,8 @@ class OverlayDialog:
                 self.result_path = ""
                 lay = QVBoxLayout(self)
                 intro = QLabel("Writes an MP4 with the tracked result drawn on every frame: markers, "
-                               "names, skeleton, silhouette, trails, the frame counter, events and "
-                               "notes. The original video is never modified.")
+                               "names, skeleton, silhouette, trails, the frame counter, the speed, "
+                               "events and notes. The original video is never modified.")
                 intro.setWordWrap(True)
                 lay.addWidget(intro)
                 form = QFormLayout()
@@ -485,6 +602,38 @@ class OverlayDialog:
                 self.scale.setCurrentIndex(1 if session.width > 2000 else 0)
                 self.scale.setToolTip("Half size is plenty for a talk and renders 4x faster")
                 form.addRow("Output size", self.scale)
+                # (G194) speed against real time: presets + any number; the line under it says how
+                # long the video will be
+                srow = QWidget()
+                sl = QHBoxLayout(srow)
+                sl.setContentsMargins(0, 0, 0, 0)
+                self.speed = QComboBox()
+                if k0 is None or not speed_words(k0):
+                    self.speed.addItem("Real time (as the file plays)" if k0 is not None else
+                                       "As the file plays", None)
+                else:
+                    self.speed.addItem(f"As the file plays ({speed_words(k0)})", None)
+                    self.speed.addItem("Real time", 1.0)
+                if real is not None:
+                    for k in (2.0, 4.0, 5.0, 10.0, 20.0):
+                        if k0 is None or abs(k - k0) > 0.005 * k:      # not the file's own speed twice
+                            self.speed.addItem(f"{speed_words(k)}", k)
+                    self.speed.addItem("Other:", OTHER)
+                self.speed_x = QDoubleSpinBox()
+                self.speed_x.setRange(1.0, 1000.0)
+                self.speed_x.setDecimals(2)
+                self.speed_x.setValue(3.0)
+                self.speed_x.setSuffix("x slower")
+                self.speed_x.setEnabled(False)
+                sl.addWidget(self.speed, 1)
+                sl.addWidget(self.speed_x)
+                self.speed.setToolTip("How much slower than real time (the camera's own rate) the video "
+                                      "plays. A high-speed camera's file may already play slower.")
+                form.addRow("Speed", srow)
+                self.speed_info = QLabel()
+                self.speed_info.setWordWrap(True)
+                self.speed_info.setStyleSheet(f"color: {theme.TEXT_DIM};")
+                form.addRow("", self.speed_info)
                 opts = QWidget()
                 ol = QVBoxLayout(opts)
                 ol.setContentsMargins(0, 0, 0, 0)
@@ -496,8 +645,9 @@ class OverlayDialog:
                 self.c_frame = QCheckBox("Frame number and time")
                 self.c_events = QCheckBox("Event names while active")
                 self.c_notes = QCheckBox("Frame notes")
+                self.c_speed = QCheckBox("Speed (e.g. '4x slower'; nothing at real time)")
                 for c in (self.c_markers, self.c_names, self.c_bones, self.c_mask, self.c_trails,
-                          self.c_frame, self.c_events, self.c_notes):
+                          self.c_frame, self.c_speed, self.c_events, self.c_notes):
                     c.setChecked(True)
                     ol.addWidget(c)
                 self.c_mask.setEnabled(session.masks is not None and session.animal is not None)
@@ -529,6 +679,29 @@ class OverlayDialog:
                 btns.accepted.connect(self._accept)
                 btns.rejected.connect(self.reject)
                 lay.addWidget(btns)
+                self.speed.currentIndexChanged.connect(self._speed_changed)
+                self.speed_x.valueChanged.connect(self._update_speed_info)
+                for rb in (self.r_all, self.r_sel, self.r_ev, self.r_custom):
+                    rb.toggled.connect(self._update_speed_info)
+                self.ev_box.currentIndexChanged.connect(self._update_speed_info)
+                self.f0.valueChanged.connect(self._update_speed_info)
+                self.f1.valueChanged.connect(self._update_speed_info)
+                self._update_speed_info()
+
+            def _slowdown(self) -> float | None:
+                d = self.speed.currentData()
+                return float(self.speed_x.value()) if d == OTHER else d
+
+            def _speed_changed(self):
+                self.speed_x.setEnabled(self.speed.currentData() == OTHER)
+                self._update_speed_info()
+
+            def _update_speed_info(self):
+                if file_rate is None:
+                    self.speed_info.setText("")
+                    return
+                a, b = self._range()
+                self.speed_info.setText(slowdown_sentence(real, file_rate, self._slowdown(), b - a + 1))
 
             def _pick(self):
                 p, _ = QFileDialog.getSaveFileName(self, "Overlay video", self.path.text(),
@@ -556,7 +729,8 @@ class OverlayDialog:
                     mask=self.c_mask.isChecked() and self.c_mask.isEnabled(),
                     trails=30 if self.c_trails.isChecked() else 0,
                     frame_number=self.c_frame.isChecked(), events=self.c_events.isChecked(),
-                    notes=self.c_notes.isChecked(), marker_px=self.marker.value())
+                    notes=self.c_notes.isChecked(), marker_px=self.marker.value(),
+                    slowdown=self._slowdown(), speed_label=self.c_speed.isChecked())
                 p = self.path.text().strip()
                 self.result_path = p if p.lower().endswith(".mp4") else p + ".mp4"
                 self.accept()
