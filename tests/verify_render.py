@@ -443,17 +443,19 @@ assert canvas == (640, 240) and rects[1] == (320, 0, 320, 240, 0.5), (canvas, re
 print("grid_shape + tile_layout OK")
 
 VW, VH, VN = 320, 240, 80
-BLOCK = (VW - 48, VH - 48, 40)                          # x, y, size: a corner the overlay never draws on
+BITS, SQ = 7, 12                                        # frame index as 7 black / white squares of 12 px
+BX, BY = VW - BITS * SQ - 8, VH - SQ - 8                # a corner the overlay never draws on
 
 
 def frame_clip(name, n=VN, shade=60):
-    """Frame f carries its own index as the brightness 3 * f + 8 of a grey block (read back from the MP4)."""
+    """Frame f carries its own index in binary, a row of black / white squares (survives the encoders;
+    a grey level per frame did not: measured errors of 2-4 levels)."""
     path = os.path.join(SCRATCH, name)
     vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (VW, VH))
-    x, y, b = BLOCK
     for f in range(n):
         im = np.full((VH, VW, 3), shade, np.uint8)
-        im[y:y + b, x:x + b] = 3 * f + 8
+        for b in range(BITS):
+            im[BY:BY + SQ, BX + b * SQ:BX + (b + 1) * SQ] = 235 if (f >> b) & 1 else 15
         vw.write(im)
     vw.release()
     return path
@@ -473,12 +475,17 @@ def read_all(path):
 
 
 def block_frame(img, rect):
-    """The source frame a tile shows: its block's brightness, or None for a dark (not recording) tile."""
+    """The source frame a tile shows (its squares read back), or None for a dark (not recording) tile:
+    the clip's grey background (60) is gone there."""
     x0, y0, w, h, sc = rect
-    x, y, b = BLOCK
-    cx, cy = int(x0 + (x + b / 2) * sc), int(y0 + (y + b / 2) * sc)
-    v = float(img[cy - 6:cy + 6, cx - 6:cx + 6].mean())
-    return None if v < 5 else int(round((v - 8) / 3))
+
+    def at(x, y):
+        cx, cy = int(x0 + x * sc), int(y0 + y * sc)
+        return float(img[cy - 2:cy + 3, cx - 2:cx + 3].mean())
+
+    if at(BX - 20, BY + SQ / 2) < 30:
+        return None
+    return sum(1 << b for b in range(BITS) if at(BX + (b + 0.5) * SQ, BY + SQ / 2) > 125)
 
 
 CLIPS = [frame_clip(f"views_{c}.mp4") for c in "abc"]

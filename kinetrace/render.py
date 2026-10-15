@@ -708,7 +708,10 @@ class OverlayDialog:
     the pure-function part of this module imports without QtWidgets."""
 
     def __new__(cls, parent, session, default_path: str, current: int,
-                sel_range: tuple[int, int] | None = None, n_frames: int | None = None):
+                sel_range: tuple[int, int] | None = None, n_frames: int | None = None,
+                views: list[str] | None = None, together_path: str | None = None):
+        """`views`: the names of the cameras shown on screen, in their order (G195); two or more offer
+        "All shown cameras together", whose suggested file is `together_path`."""
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                        QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -743,6 +746,7 @@ class OverlayDialog:
                 self.setMinimumWidth(560)
                 self.result_options: OverlayOptions | None = None
                 self.result_path = ""
+                self.result_together = False
                 lay = QVBoxLayout(self)
                 intro = QLabel("Writes an MP4 with the tracked result drawn on every frame: markers, "
                                "names, skeleton, silhouette, trails, the frame counter, the speed, "
@@ -750,6 +754,29 @@ class OverlayDialog:
                 intro.setWordWrap(True)
                 lay.addWidget(intro)
                 form = QFormLayout()
+                # (G195) this camera, or the cameras shown on screen together (their own widget: the
+                # range's radio buttons are another group)
+                shown = list(views or [])
+                vbox = self._views_box = QWidget(self)      # owned: hidden for one camera, not freed
+                vl = QVBoxLayout(vbox)
+                vl.setContentsMargins(0, 0, 0, 0)
+                self.r_one = QRadioButton("This camera")
+                self.r_together = QRadioButton(f"All shown cameras together ({len(shown)})"
+                                               + (": " + ", ".join(shown) if len(shown) > 1 else ""))
+                self.r_together.setEnabled(len(shown) > 1)
+                self.r_together.setToolTip(
+                    "The cameras shown in the window, in the same grid and order, each with its own overlay; "
+                    "this camera's frames are the clock and every other camera shows the frame that matches "
+                    "it (its sync offset and rate)." if len(shown) > 1 else
+                    "Only one camera is shown: show another with its eye in the CAMERAS panel (and Solo off) "
+                    "to put them together.")
+                self.r_one.setChecked(True)
+                vl.addWidget(self.r_one)
+                vl.addWidget(self.r_together)
+                if views is not None:               # a one-camera project has nothing to choose
+                    form.addRow("Views", vbox)
+                else:
+                    vbox.hide()
                 # range
                 rng = QWidget()
                 rl = QVBoxLayout(rng)
@@ -877,6 +904,14 @@ class OverlayDialog:
                 self.f0.valueChanged.connect(self._update_speed_info)
                 self.f1.valueChanged.connect(self._update_speed_info)
                 self._update_speed_info()
+                self.r_together.toggled.connect(self._views_changed)
+
+            def _views_changed(self, together: bool):
+                # the suggested file follows the choice, unless the user typed their own
+                if together_path:
+                    old, new = (default_path, together_path) if together else (together_path, default_path)
+                    if self.path.text().strip() == old:
+                        self.path.setText(new)
 
             def _slowdown(self) -> float | None:
                 d = self.speed.currentData()
@@ -923,6 +958,7 @@ class OverlayDialog:
                     slowdown=self._slowdown(), speed_label=self.c_speed.isChecked())
                 p = self.path.text().strip()
                 self.result_path = p if p.lower().endswith(".mp4") else p + ".mp4"
+                self.result_together = self.r_together.isChecked() and self.r_together.isEnabled()
                 self.accept()
 
         return _Dlg()

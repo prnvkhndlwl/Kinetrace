@@ -12742,17 +12742,38 @@ class MainWindow(QMainWindow):
         """File → Export → Overlay Video: render the tracked result into an MP4
         in a background thread (its own VideoCapture), with a cancellable
         progress dialog. The app stays usable meanwhile."""
-        from kinetrace.render import OverlayDialog, OverlayRenderer, speed_words
-        s = self.session
+        from kinetrace.render import OverlayDialog, OverlayRenderer, ViewsOverlayRenderer, speed_words
+        s, p = self.session, self.project
         if s is None or self.state != READY or self._overlay is not None:
             return
         default = self._default_output("_overlay.mp4")           # + the camera's name (G119)
-        dlg = OverlayDialog(self, s, default, self.current, self.timeline.sel_range, n_frames=self.n_frames)
+        # (G195) the cameras shown on screen, in their order, can go into one video
+        shown = self.grid.visible_indices() if p is not None and p.n_views > 1 else None
+        dlg = OverlayDialog(self, s, default, self.current, self.timeline.sel_range, n_frames=self.n_frames,
+                            views=None if shown is None else [p.name(i) for i in shown],
+                            together_path=self._default_output("_overlay_cameras.mp4", camera=False))
         if dlg.exec() != QDialog.Accepted or dlg.result_options is None:
             return
         opts, out = dlg.result_options, dlg.result_path
         bones = s.bones()            # the dialog's "Skeleton bones" tick decides, not the View toggle (I44)
-        r = OverlayRenderer(s, self.info.path, out, opts, bones, self._mask_opacity)
+        if dlg.result_together and shown:
+            a = p.active
+            views = []
+            for i in shown:
+                si = p.sessions[i]
+                if i == a:
+                    views.append((s, self.info.path, p.name(i), bones, None, i))
+                    continue
+                # the frame of camera i at each working-camera frame: THE sync rule, frozen here (I19)
+                table = np.full(opts.end - opts.start + 1, -1, np.int64)
+                for k, f in enumerate(range(opts.start, opts.end + 1)):
+                    lf = p.map_frame(a, i, f)
+                    if lf is not None:
+                        table[k] = lf
+                views.append((si, si.video_path, p.name(i), si.bones(), table, i))
+            r = ViewsOverlayRenderer(views, out, opts, self._mask_opacity)
+        else:
+            r = OverlayRenderer(s, self.info.path, out, opts, bones, self._mask_opacity)
         total = opts.end - opts.start + 1
         prog = self._progress_dialog(f"Rendering {total} frames to {Path(out).name}…", "Cancel", total,
                                      "Overlay video", r.request_cancel)
