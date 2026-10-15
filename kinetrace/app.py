@@ -12171,12 +12171,15 @@ class MainWindow(QMainWindow):
 
     def _on_body_progress(self, done: int, total: int, note: str):
         if self._body_progress is not None:
+            loading = note.startswith(("Loading", "Downloading", "the "))
+            if not loading:                 # (G198) the frames looked at, in words under the sentence
+                self._show_progress(self._body_progress, f"Looking for people…  {note}", done, total)
+                return
             self._body_progress.setMaximum(max(1, total))
             self._body_progress.setValue(done)
-            loading = note.startswith(("Loading", "Downloading", "the "))
-            if loading and total <= 1:
+            if total <= 1:
                 self._body_progress.setMaximum(0)           # moving: how long is not known
-            self._body_progress.setLabelText(note if loading else f"Looking for people…  {note}")
+            self._body_progress.setLabelText(note)          # a model loading: its own words ("of ... MB")
 
     def _on_body_done(self, track):
         from kinetrace.body import merge_run
@@ -12360,9 +12363,10 @@ class MainWindow(QMainWindow):
                                w.chk_upright.isChecked() if w is not None else True,
                                w.chk_shape.isChecked() if w is not None else True)
         self._body_video = r
-        dl = self._progress_dialog("Rendering the side-by-side video…", "Cancel", max(1, f1 - f0 + 1), "Export",
-                                   r.request_cancel)
-        r.progress.connect(lambda d, tt: (dl.setMaximum(max(1, tt)), dl.setValue(d)))
+        say = "Rendering the side-by-side video…"
+        dl = self._progress_dialog(say, "Cancel", max(1, f1 - f0 + 1), "Export", r.request_cancel)
+        self._show_progress(dl, say, 0, f1 - f0 + 1)
+        r.progress.connect(lambda d, tt: self._show_progress(dl, say, d, tt))        # (G198)
         r.finished_ok.connect(lambda p, c: self.toast.show_message(
             f"Side-by-side video written to {Path(p).name} ({c})."
             + (f" {r.note}" if getattr(r, "note", "") else ""), "info", 8000))

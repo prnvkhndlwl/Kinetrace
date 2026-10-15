@@ -409,6 +409,12 @@ pump(lambda: win._body_video is None, 300, "side-by-side video")
 mp4 = OUT / "body_gui_sbs.mp4"
 check(mp4.exists() and mp4.stat().st_size > 5000, "the side-by-side video is written",
       f"{0 if not mp4.exists() else mp4.stat().st_size // 1024} KB")
+from PySide6.QtWidgets import QProgressBar, QProgressDialog       # noqa: E402
+sbs = [d for d in win.findChildren(QProgressDialog) if d.labelText().startswith("Rendering the side-by-side")]
+sbs_last = sbs[-1].labelText().splitlines()[-1] if sbs else ""
+check(bool(sbs) and sbs_last.endswith("(100%)") and sbs_last.split(" of ")[0] == sbs_last.split(" of ")[1].split()[0]
+      and not sbs[-1].findChild(QProgressBar).isTextVisible(),
+      "(G198) the side-by-side window ends 'N of N frames (100%)', no text on its bar", sbs_last or "no window")
 import cv2                                                        # noqa: E402
 cap = cv2.VideoCapture(str(mp4))
 nfr = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -522,6 +528,13 @@ win.session.clear_body()
 fake_run(0, 0, 23)
 check(win.session.body is not None and win.session.body.n_posed() == 24,
       "the stand-in run poses frames 0-23")
+# (G198) its window says how far along it is, under its sentence; the thin bar draws no text
+from PySide6.QtWidgets import QProgressBar, QProgressDialog       # noqa: E402
+looks = [d for d in win.findChildren(QProgressDialog) if d.labelText().startswith("Looking for people")]
+check(bool(looks) and looks[-1].labelText().splitlines()[-1] == "24 of 24 frames (100%)"
+      and not looks[-1].findChild(QProgressBar).isTextVisible(),
+      "the pose run's window ends '24 of 24 frames (100%)', no text on its bar",
+      looks[-1].labelText().replace("\n", " | ") if looks else "no window")
 fake_run(100, 5, 5)                           # 'this frame only'
 b = win.session.body
 check_lead(b is not None and b.n_posed() == 24 and base_at(b, 5) == 100 and base_at(b, 6) == 0,
