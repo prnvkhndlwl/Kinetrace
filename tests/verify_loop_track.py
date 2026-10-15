@@ -110,18 +110,16 @@ def holes(m) -> float:
     return max(inner) / max(int(m.sum()), 1) if inner else 0.0
 
 
+# ALWAYS rewritten (a second): a clip left by an earlier version of this schedule has the same frame
+# count, and was once graded against the new truth
 VID = os.path.join(OUT, "loop_track.mp4")
 truth_hole = []
-vw = None
-if not os.path.exists(VID) or int(cv2.VideoCapture(VID).get(cv2.CAP_PROP_FRAME_COUNT)) != T:
-    vw = cv2.VideoWriter(VID, cv2.VideoWriter_fourcc(*"mp4v"), 25, (W, H))
+vw = cv2.VideoWriter(VID, cv2.VideoWriter_fourcc(*"mp4v"), 25, (W, H))
 for t in range(T):
     img, m = frame(t)
     truth_hole.append(holes(m))
-    if vw is not None:
-        vw.write(img)
-if vw is not None:
-    vw.release()
+    vw.write(img)
+vw.release()
 print("drawn hole share per frame (%): " + " ".join(f"{100 * h:.0f}" for h in truth_hole))
 
 s = TrackingSession(VID, T, 25.0, W, H)
