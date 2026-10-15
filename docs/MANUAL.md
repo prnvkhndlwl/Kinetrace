@@ -2765,7 +2765,8 @@ or invented; a very slow video shows each frame several times so players stay
 smooth. A **high-speed camera** (say 240 fps saved as a 30 fps file) already
 plays slower: the starting choice says so (*"As the file plays (8x slower)"*),
 and you can also speed it up, down to **Real time** — then frames are skipped
-evenly (a player shows at most 60 a second) and the line says which are kept.
+evenly (a player shows at most 60 a second, or the file's own rate when that is
+higher) and the line says which are kept.
 If the camera's real rate is not known, only *As the file plays* is offered.
 Hand check: play the new video next to a stopwatch — 1 s of action should take
 as many seconds as the factor says. **Cancel** deletes the

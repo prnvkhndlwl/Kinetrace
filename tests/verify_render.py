@@ -84,6 +84,10 @@ st, rp, fo = playback_plan(500.0, 30.0, 500.0 / 30.0)
 assert (st, rp) == (1, 1) and abs(fo - 30.0) < 1e-9, (st, rp, fo)
 st, rp, fo = playback_plan(30.0, 30.0, 20.0)             # 1.5 source frames a second: each shown 16 times
 assert (st, rp) == (1, 16) and abs(fo - 24.0) < 1e-9, (st, rp, fo)
+st, rp, fo = playback_plan(23.976, 23.976, 2.0)        # film at 2x: doubled, not tripled (review nit)
+assert (st, rp) == (1, 2) and abs(fo - 23.976) < 1e-9, (st, rp, fo)
+from kinetrace.render import slowdown_sentence  # noqa: E402
+assert "lasts 1000 s" in slowdown_sentence(30.0, 30.0, 1000.0, 30), slowdown_sentence(30.0, 30.0, 1000.0, 30)
 assert speed_words(4.0) == "4x slower", speed_words(4.0)
 assert speed_words(500.0 / 30.0) == "16.7x slower", speed_words(500.0 / 30.0)
 assert speed_words(0.8) == "1.25x faster", speed_words(0.8)

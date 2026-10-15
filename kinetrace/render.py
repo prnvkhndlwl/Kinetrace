@@ -50,8 +50,9 @@ class OverlayOptions:
     speed_label: bool = True     # draw "4x slower" under the frame number (nothing at real time)
 
 
-# (G194) a player shows smooth motion from about 24 pictures a second; above 60 most screens drop them
-MIN_PLAY_FPS = 24.0
+# (G194) a player shows smooth motion from about 24 pictures a second (film's 23.976 counts as 24, so
+# it is not doubled for nothing); above 60 most screens drop them
+MIN_PLAY_FPS = 23.5
 MAX_PLAY_FPS = 60.0
 
 
@@ -106,7 +107,7 @@ def slowdown_sentence(real_fps: float | None, file_fps: float, slowdown: float |
         text = (f"The file already plays {words} than real time: these {n} frames make a {secs:.1f} s "
                 "video.")
     else:
-        text = (f"Plays {words} than real time: 1 s of action lasts {k:.3g} s; these {n} frames make a "
+        text = (f"Plays {words} than real time: 1 s of action lasts {_times(k)} s; these {n} frames make a "
                 f"{secs:.1f} s video.")
     if slowdown is not None:
         step = playback_plan(real_fps, file_fps, k)[0]
@@ -317,8 +318,8 @@ class VideoWriteJob(QThread):
     """Writes frames of a video, each drawn by the subclass, into `out_path` (R28: the overlay and the
     side-by-side video had one loop in two copies). Emits progress (done, total), then
     finished_ok(path, codec) or error(message); `request_cancel` stops after the current frame and
-    deletes the partial file. After `finished_ok`, `frames_written` is how many frames are really in the
-    file and `note` says why it is short of what was asked ("" when it is not) -- a video can end before
+    deletes the partial file. After `finished_ok`, `frames_written` is how many SOURCE frames are really in the
+    file (each written `_repeat` times in a slow-motion overlay, G194) and `note` says why it is short of what was asked ("" when it is not) -- a video can end before
     the range the session believed it had (I41, I232). A truncated file is never a result.
 
     A subclass gives `_reader()` (it may refuse in words first), `_plan(reader)` -> (frames, first,
@@ -366,6 +367,8 @@ class VideoWriteJob(QThread):
                 if img.shape[1] != size[0] or img.shape[0] != size[1]:
                     img = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
                 for _ in range(self._repeat):
+                    if self._cancel:        # a 1000x slower frame is hundreds of writes
+                        break
                     vw.write(img)
                 done += 1
                 if done % 5 == 0 or done == total:
@@ -411,7 +414,7 @@ class OverlayRenderer(VideoWriteJob):
     Built on the GUI thread: it draws from a FROZEN copy of the session
     (`freeze_session`, I38), so edits made while it renders are not in the
     video and cannot crash it. After `finished_ok`, `frames_written` is the
-    number of frames really in the file and `note` a sentence saying why it is
+    number of source frames really in the file and `note` a sentence saying why it is
     short of the range ("" when it is not) — a video can end before the range
     the session believed it had (I41)."""
 
