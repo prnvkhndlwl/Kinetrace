@@ -12765,7 +12765,7 @@ class MainWindow(QMainWindow):
             for i in shown:
                 si = p.sessions[i]
                 if i == a:
-                    views.append((s, self.info.path, p.name(i), bones, None, i))
+                    views.append((s, self.info.path, p.name(i), bones, None, i, p.offsets[i]))
                     continue
                 # the frame of camera i at each working-camera frame: THE sync rule, frozen here (I19)
                 table = np.full(opts.end - opts.start + 1, -1, np.int64)
@@ -12773,8 +12773,9 @@ class MainWindow(QMainWindow):
                     lf = p.map_frame(a, i, f)
                     if lf is not None:
                         table[k] = lf
-                views.append((si, si.video_path, p.name(i), si.bones(), table, i))
-            r = ViewsOverlayRenderer(views, out, opts, self._mask_opacity)
+                views.append((si, si.video_path, p.name(i), si.bones(), table, i, p.offsets[i]))
+            # (G196) the video's cells take the shape the window's views have now
+            r = ViewsOverlayRenderer(views, out, opts, self._mask_opacity, cell=self.grid.cell_size())
         else:
             r = OverlayRenderer(s, self.info.path, out, opts, bones, self._mask_opacity)
         total = opts.end - opts.start + 1

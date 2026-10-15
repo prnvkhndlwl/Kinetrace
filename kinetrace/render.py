@@ -137,12 +137,14 @@ def _text(img, text: str, org: tuple[int, int], scale: float, color, thick: int 
 def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
                  bones: list[tuple[int, int]] | None = None,
                  mask_color=(77, 227, 176), mask_opacity: float = 0.35,
-                 slowdown: float | None = None) -> np.ndarray:
+                 slowdown: float | None = None, frame_word: bool = True) -> np.ndarray:
     """Draw the session's state at `frame` on a BGR image (native size or a
     scaled copy — `opts.scale` says which). Returns the image (drawn in place
     when it is already the output size, else the scaled copy). `slowdown` = how
     many times slower than real time the video plays (G194): labelled under the
-    frame number when `opts.speed_label`, nothing at real time."""
+    frame number when `opts.speed_label`, nothing at real time. `frame_word`
+    False leaves "frame N" out of the counter line and keeps the time: a tile
+    of several cameras has its frame in its title bar (G196)."""
     sc = float(opts.scale)
     if sc != 1.0:
         bgr = cv2.resize(bgr, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
@@ -245,11 +247,15 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
     y = int(22 * max(font_scale / 0.55, 0.8)) + 4
     line_h = int(24 * max(font_scale / 0.55, 0.8))
     if opts.frame_number:
-        t = f"frame {frame}"
-        if s.fps:
-            t += f"   {frame / s.fps:8.3f} s"
-        _text(out, t, (8, y), font_scale, (255, 255, 255))
-        y += line_h
+        if frame_word:
+            t = f"frame {frame}"
+            if s.fps:
+                t += f"   {frame / s.fps:8.3f} s"
+        else:
+            t = f"{frame / s.fps:.3f} s" if s.fps else ""
+        if t:
+            _text(out, t, (8, y), font_scale, (255, 255, 255))
+            y += line_h
     speed = speed_words(slowdown) if opts.speed_label else ""
     if speed:
         _text(out, speed, (8, y), font_scale, (255, 255, 255))
@@ -519,27 +525,42 @@ class OverlayRenderer(VideoWriteJob):
 
 # the grid of cameras fits a 4K frame: many players refuse anything wider than 4096 px
 MAX_GRID_W, MAX_GRID_H = 3840, 2160
+BAR_BGR = (0x23, 0x1E, 0x1E)        # a title bar: the window's chrome (theme.BG_WINDOW #1E1E23, as BGR)
 
 
-def tile_layout(sizes: list[tuple[int, int]], active: int, cols: int, rows: int,
-                out_scale: float = 1.0) -> tuple[tuple[int, int], list[tuple[int, int, int, int, float]]]:
-    """Where each camera goes in a multi-view overlay (G195): every cell is the working camera's
-    (`sizes[active]`) size, the grid is scaled to fit MAX_GRID_W x MAX_GRID_H and then by `out_scale`,
-    both sides even (H.264). Each camera is scaled to fit its cell (aspect kept, centred). Returns the
-    canvas (W, H) and per camera (x, y, w, h, scale) in `sizes` order, filling the grid row by row."""
-    cw, ch = (int(v) for v in sizes[active])
-    s0 = min(1.0, MAX_GRID_W / (cols * cw), MAX_GRID_H / (rows * ch)) * float(out_scale)
-    W = max(2, int(cols * cw * s0) // 2 * 2)
-    H = max(2, int(rows * ch * s0) // 2 * 2)
-    cell_w, cell_h = W // cols, H // rows
-    rects = []
+def bar_height(cell_w: int) -> int:
+    """A title bar's height over a cell `cell_w` px wide (G196): its words' height + 8 px, even."""
+    (_, th), base = cv2.getTextSize("Ag", FONT, _font_scale(cell_w), 1)
+    return (th + base + 8 + 1) // 2 * 2
+
+
+def tile_layout(sizes: list[tuple[int, int]], cols: int, rows: int, cell_aspect: float,
+                out_scale: float = 1.0):
+    """Where each camera goes in a multi-view overlay (G195, G196): every cell has the window's cell
+    shape (`cell_aspect` = w / h) with a title bar above it. A cell is the smallest of that shape that
+    holds every camera at its own size (nothing is enlarged past native), the grid with its bars is
+    scaled to fit MAX_GRID_W x MAX_GRID_H and then by `out_scale`, both sides padded up to even
+    (H.264). Each camera is fit in its cell (aspect kept, centred), as the window shows it. Returns
+    the canvas (W, H), per camera (x, y, w, h, scale) and per camera its bar (x, y, w, h), in `sizes`
+    order, filling the grid row by row."""
+    a = float(cell_aspect)
+    wc = max(max(float(w), float(h) * a) for w, h in sizes)
+    hc = wc / a
+    # fitted with the native cell's bar: the bar only shrinks with the cell, so the grid stays inside
+    bar0 = bar_height(int(wc))
+    s = min(1.0, MAX_GRID_W / (cols * wc), max(1.0, MAX_GRID_H - rows * bar0) / (rows * hc)) * float(out_scale)
+    cell_w, cell_h = max(2, int(wc * s)), max(2, int(hc * s))
+    bar = bar_height(cell_w)
+    W, H = cols * cell_w, rows * (bar + cell_h)
+    rects, bars = [], []
     for k, (w, h) in enumerate(sizes):
+        c, r = k % cols, k // cols
         sc = min(cell_w / float(w), cell_h / float(h))
         tw, th = min(cell_w, int(round(w * sc))), min(cell_h, int(round(h * sc)))
-        x = (k % cols) * cell_w + (cell_w - tw) // 2
-        y = (k // cols) * cell_h + (cell_h - th) // 2
-        rects.append((x, y, tw, th, sc))
-    return (W, H), rects
+        y0 = r * (bar + cell_h)
+        rects.append((c * cell_w + (cell_w - tw) // 2, y0 + bar + (cell_h - th) // 2, tw, th, sc))
+        bars.append((c * cell_w, y0, cell_w, bar))
+    return (W + W % 2, H + H % 2), rects, bars
 
 
 class _ViewsReader:
@@ -625,18 +646,23 @@ class _ViewsReader:
 
 class ViewsOverlayRenderer(OverlayRenderer):
     """The overlay of several cameras in one video (G195): `views` = [(session, video_path, name, bones,
-    table, camera index)] in their order on screen, the working camera's `table` None (it is the clock:
-    the range, the Speed and the frame rate are its). Every camera is drawn with `draw_overlay` in its
-    tile at the frame `table` gives, its name in the tile's corner; "4x slower" only in the working
-    camera's tile. A camera not recording at an instant is a dark tile saying so."""
+    table, camera index, offset)] in their order on screen, the working camera's `table` None (it is the
+    clock: the range, the Speed and the frame rate are its). `cell` = (w, h) of a view on screen
+    (`ViewGrid.cell_size`): the video's cells take its shape, as the window shows them (G196; None =
+    the working camera's shape). Every camera is drawn with `draw_overlay` in its cell at the frame
+    `table` gives, under a title bar with the window's caption words (name, frame, offset); the tiles
+    leave out "frame N" (the bar has it) and keep the time; "4x slower" only in the working camera's
+    tile. A camera not recording at an instant is a dark tile saying so."""
 
-    def __init__(self, views, out_path: str, opts: OverlayOptions, mask_opacity: float = 0.35):
+    def __init__(self, views, out_path: str, opts: OverlayOptions, mask_opacity: float = 0.35,
+                 cell: tuple[int, int] | None = None):
         active = next(k for k, v in enumerate(views) if v[4] is None)
-        s, path, _name, bones, _table, _cam = views[active]
+        s, path, _name, bones, _table, _cam, _off = views[active]
         super().__init__(s, path, out_path, opts, bones, mask_opacity)
         self.active = active
+        self.cell = None if cell is None else (int(cell[0]), int(cell[1]))
         self.views = []
-        for k, (sv, pv, name, bv, table, cam) in enumerate(views):
+        for k, (sv, pv, name, bv, table, cam, off) in enumerate(views):
             if k == active:
                 frozen, bv = self.session, self.bones
             else:
@@ -647,8 +673,10 @@ class ViewsOverlayRenderer(OverlayRenderer):
                 if opts.bones and not bv and hasattr(sv, "bones"):      # I44, as for the working camera
                     bv = sv.bones()
             self.views.append(SimpleNamespace(session=frozen, path=str(pv), name=str(name),
-                                              bones=list(bv or []), table=table, camera=int(cam)))
+                                              bones=list(bv or []), table=table, camera=int(cam),
+                                              offset=float(off or 0.0)))
         self.tiles: list[tuple] = []        # (camera, x, y, w, h, scale) per tile, known once planned
+        self.bars: list[tuple] = []         # (x, y, w, h) of each tile's title bar (G196)
         self._views_reader: _ViewsReader | None = None
 
     def _reader(self):
@@ -665,36 +693,51 @@ class ViewsOverlayRenderer(OverlayRenderer):
             else:
                 sizes.append((int(v.session.width), int(v.session.height)))
         cols, rows = grid_shape(len(self.views))
-        canvas, rects = tile_layout(sizes, self.active, cols, rows, float(self.opts.scale))
+        cw, ch = self.cell if self.cell is not None else sizes[self.active]
+        canvas, rects, self.bars = tile_layout(sizes, cols, rows, cw / float(ch), float(self.opts.scale))
         self.tiles = [(v.camera,) + tuple(r) for v, r in zip(self.views, rects)]
         self._canvas = canvas
         return frames, first, fps, canvas
 
     def _compose(self, items, f):
         from dataclasses import replace
+        from kinetrace.viewgrid import caption_for       # the window's caption words (lazy: Qt widgets)
         W, H = self._canvas
         out = np.zeros((H, W, 3), np.uint8)
-        for k, (v, (_cam, x, y, w, h, sc), (state, img)) in enumerate(zip(self.views, self.tiles, items)):
+        for k, (v, (_cam, x, y, w, h, sc), (bx, by, bw, bh), (state, img)) in enumerate(
+                zip(self.views, self.tiles, self.bars, items)):
             fs = _font_scale(w)
+            lf = f if k == self.active else int(v.table[f - self.f0])
             if state == "ok":
-                lf = f if k == self.active else int(v.table[f - self.f0])
                 # (ui rule) drawing copies its frame first: a slower camera's image is shown twice
                 tile = draw_overlay(img if k == self.active else img.copy(), lf, v.session,
                                     replace(self.opts, scale=sc), v.bones, mask_opacity=self.mask_opacity,
-                                    slowdown=self.slowdown if k == self.active else None)
+                                    slowdown=self.slowdown if k == self.active else None, frame_word=False)
                 th, tw = min(h, tile.shape[0], H - y), min(w, tile.shape[1], W - x)
                 out[y:y + th, x:x + tw] = tile[:th, :tw]
-            # (review) the tile's words are written on a copy of its area and pasted back: clipped to the
-            # tile, never spilling into a neighbour's
-            area = out[y:y + h, x:x + w].copy()
-            if state != "ok":
+            else:
+                # (review) the tile's words are written on a copy of its area and pasted back: clipped to
+                # the tile, never spilling into a neighbour's
+                area = out[y:y + h, x:x + w].copy()
                 say = ("not recording at this instant" if state == "off"
                        else f"frame {img} could not be decoded")
                 (tw, _), _ = cv2.getTextSize(say, FONT, fs, 1)
                 _text(area, say, (max(4, (w - tw) // 2), h // 2), fs, (220, 220, 220))
-            (nw, nh), _ = cv2.getTextSize(v.name, FONT, fs, 1)
-            _text(area, v.name, (max(4, w - nw - 8), nh + 8), fs, (255, 255, 255))
-            out[y:y + h, x:x + w] = area
+                out[y:y + h, x:x + w] = area
+            # (G196) the title bar above the picture, as the window's: its words clipped to the bar
+            bar = np.empty((bh, bw, 3), np.uint8)
+            bar[:] = BAR_BGR
+            # (review) "Frame number and time" unticked: the bar names the camera only
+            words = (caption_for(v.name, lf if lf >= 0 else None, v.offset, v.session.n_frames, sep="|")
+                     if self.opts.frame_number else v.name)
+            bfs = _font_scale(bw)
+            (ww, th), _ = cv2.getTextSize(words, FONT, bfs, 1)
+            if ww > bw - 12:                # (review) a narrow cell: smaller words before any are cut
+                bfs = max(0.3, bfs * (bw - 12) / float(ww))
+                (_, th), _ = cv2.getTextSize(words, FONT, bfs, 1)
+            # plain text on the dark bar: `_text`'s halo is drawn thicker and drifts off the letters
+            cv2.putText(bar, words, (6, (bh + th) // 2), FONT, bfs, (236, 232, 232), 1, cv2.LINE_AA)
+            out[by:by + bh, bx:bx + bw] = bar[:H - by, :W - bx]
         if self._views_reader is not None and self._views_reader.notes:
             self.note = "; ".join(filter(None, [self.note] + self._views_reader.notes))
             self._views_reader.notes = []
@@ -777,9 +820,10 @@ class OverlayDialog:
                                                + (": " + listed if len(shown) > 1 else ""))
                 self.r_together.setEnabled(len(shown) > 1)
                 self.r_together.setToolTip(
-                    "The cameras shown in the window (" + ", ".join(shown) + "), in the same grid and order, "
-                    "each with its own overlay; this camera's frames are the clock and every other camera "
-                    "shows the frame that matches it (its sync offset and rate)." if len(shown) > 1 else
+                    "The cameras shown in the window (" + ", ".join(shown) + "), laid out as the window shows "
+                    "them (grid, order, cell shape), each under its title bar with its own overlay; this "
+                    "camera's frames are the clock and every other camera shows the frame that matches it "
+                    "(its sync offset and rate)." if len(shown) > 1 else
                     "Only one camera is shown: show another with its eye in the CAMERAS panel (and Solo off) "
                     "to put them together.")
                 self.r_one.setChecked(True)
