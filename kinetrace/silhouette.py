@@ -43,6 +43,11 @@ class Midline:
     width: np.ndarray               # (M,) local full width (2 x distance transform)
     extremities: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), np.float32))
     scale: float = 1.0              # analysis scale used (for diagnostics)
+    # (I293) largest background region the analysed component encloses / its area: a silhouette
+    # that touches itself (tail over the flank, a closed C-curl) encloses one, and the midline
+    # may then cut through the contact. Measured where the path was found (after the downscale,
+    # whose repair can close a 1-2 px gap, I296).
+    hole_frac: float = 0.0
 
     @property
     def length(self) -> float:
@@ -91,7 +96,7 @@ def oriented(ml: "Midline", prev_head: np.ndarray | None) -> "Midline":
         path = ml.path[::-1].copy()
         seg = np.linalg.norm(np.diff(path, axis=0), axis=1)
         arc = np.concatenate([[0.0], np.cumsum(seg)]).astype(np.float32)
-        return Midline(path, arc, ml.width[::-1].copy(), ml.extremities, ml.scale)
+        return Midline(path, arc, ml.width[::-1].copy(), ml.extremities, ml.scale, ml.hole_frac)
     return ml
 
 
@@ -176,6 +181,19 @@ def largest_component(mask_u8: np.ndarray, anchor: tuple[float, float] | None = 
             pick = at
     comp = (lab == pick).astype(np.uint8)
     return comp if int(areas[pick - 1]) >= MIN_COMPONENT_PX else None
+
+
+def _hole_frac(comp: np.ndarray) -> float:
+    """Largest background region enclosed by the component, as a share of its area (0 = none).
+    Background is 4-connected, the complement of the 8-connected foreground."""
+    ys, xs = np.nonzero(comp)
+    if not len(xs):
+        return 0.0
+    sub = np.pad(comp[ys.min():ys.max() + 1, xs.min():xs.max() + 1], 1)
+    n, lab, st, _ = cv2.connectedComponentsWithStats((sub == 0).astype(np.uint8), connectivity=4)
+    outside = int(lab[0, 0])                       # the padding ring touches only the outside
+    inner = [int(st[i, cv2.CC_STAT_AREA]) for i in range(1, n) if i != outside]
+    return float(max(inner)) / float(len(xs)) if inner else 0.0
 
 
 def _pixel_graph(comp: np.ndarray):
@@ -347,4 +365,4 @@ def midline(mask: np.ndarray, anchor: tuple[float, float] | None = None,
     seg = np.linalg.norm(np.diff(path, axis=0), axis=1) if len(path) > 1 else np.zeros(0)
     arc = np.concatenate([[0.0], np.cumsum(seg)]).astype(np.float32)
     return Midline(path.astype(np.float32), arc, width.astype(np.float32),
-                   ext.astype(np.float32), s)
+                   ext.astype(np.float32), s, _hole_frac(comp))

@@ -223,7 +223,7 @@ def gap_big():
 CASES["(k) 2-px gap, x3 size (downscaled)"] = dict(build=gap_big, big=True)
 
 print("Part A: geometry on synthetic masks (real silhouette.midline / extremity_roles)")
-print(f"  {'case':40s} {'hole %':>7s} {'len/true':>8s} {'tip px':>7s} {'m50 px':>7s} {'m75 px':>7s} {'ms':>5s}  roles")
+print(f"  {'case':40s} {'hole %':>7s} {'analysed':>8s} {'len/true':>8s} {'tip px':>7s} {'m50 px':>7s} {'m75 px':>7s} {'ms':>5s}  roles")
 golden_a = {}
 results = {}
 for name, cfg in CASES.items():
@@ -250,7 +250,8 @@ for name, cfg in CASES.items():
     got = {r: label_of(p, feet, tail_xy if cfg.get("loop") else np.zeros((0, 2)), cfg.get("blobs", ()))
            for r, p in sorted(roles.items()) if r in ("FL", "FR", "HL", "HR")}
     role_txt = " ".join(f"{r}={'ok' if g == r else g}" for r, g in got.items()) or "-"
-    print(f"  {name:40s} {100 * hole_frac:7.2f} {ml.length / true_len:8.2f} {tip_err:7.0f} {m50:7.0f} {m75:7.0f} "
+    analysed = 100 * getattr(ml, "hole_frac", float("nan"))      # (I293) the hole the midline saw
+    print(f"  {name:40s} {100 * hole_frac:7.2f} {analysed:8.2f} {ml.length / true_len:8.2f} {tip_err:7.0f} {m50:7.0f} {m75:7.0f} "
           f"{ms:5.0f}  {role_txt}")
     results[name] = dict(hole_frac=hole_frac, ratio=ml.length / true_len, tip=tip_err, m50=m50, m75=m75,
                          roles=got, scale=ml.scale)
@@ -361,6 +362,9 @@ for key, m in (("base", lizard(STRAIGHT_TAIL)[0]), ("near", near_m),
 try:
     sha = subprocess.run(["git", "-C", ROOT, "rev-parse", "--short", "HEAD"], capture_output=True,
                          text=True, timeout=10).stdout.strip() or "nogit"
+    if subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--", "kinetrace"], capture_output=True,
+                      text=True, timeout=10).stdout.strip():
+        sha += "_dirty"                     # uncommitted engine code: not that commit's output
 except Exception:
     sha = "nogit"
 dump = {}
