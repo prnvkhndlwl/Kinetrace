@@ -12742,7 +12742,7 @@ class MainWindow(QMainWindow):
         """File → Export → Overlay Video: render the tracked result into an MP4
         in a background thread (its own VideoCapture), with a cancellable
         progress dialog. The app stays usable meanwhile."""
-        from kinetrace.render import OverlayDialog, OverlayRenderer
+        from kinetrace.render import OverlayDialog, OverlayRenderer, speed_words
         s = self.session
         if s is None or self.state != READY or self._overlay is not None:
             return
@@ -12756,7 +12756,8 @@ class MainWindow(QMainWindow):
         total = opts.end - opts.start + 1
         prog = self._progress_dialog(f"Rendering {total} frames to {Path(out).name}…", "Cancel", total,
                                      "Overlay video", r.request_cancel)
-        r.progress.connect(lambda d, t: prog.setValue(d))
+        # the job's own total: a high-speed clip sped up skips frames (G194)
+        r.progress.connect(lambda d, t: (prog.setMaximum(t), prog.setValue(d)))
 
         def _done(path, codec):
             prog.close()
@@ -12764,12 +12765,14 @@ class MainWindow(QMainWindow):
             self._apply_state()
             note = getattr(r, "note", "")
             written = getattr(r, "frames_written", None) or total
+            speed = speed_words(r.slowdown)
+            speed = f", {speed}" if speed else ""
             if note:                      # it stopped early: say why, not the requested count (I41)
-                self.toast.show_message(f"Overlay video written: {Path(path).name} ({codec}). {note}",
+                self.toast.show_message(f"Overlay video written: {Path(path).name} ({codec}{speed}). {note}",
                                         "warn", 12000)
             else:
-                self.toast.show_message(f"Overlay video written: {Path(path).name} ({codec}, {written} frames)",
-                                        "success", 8000)
+                self.toast.show_message(f"Overlay video written: {Path(path).name} ({codec}, {written} frames"
+                                        f"{speed})", "success", 8000)
             self.statusBar().showMessage(f"Overlay video: {path}", 10000)
 
         def _fail(msg):

@@ -85,6 +85,37 @@ def speed_words(slowdown: float | None) -> str:
     return f"{_times(k)}x slower" if k > 1.0 else f"{_times(1.0 / k)}x faster"
 
 
+def _nth(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def slowdown_sentence(real_fps: float | None, file_fps: float, slowdown: float | None, n: int) -> str:
+    """The overlay dialog's line under Speed (G194): how fast the video plays against real time and how
+    long `n` source frames last. `slowdown` None = as the file plays; `real_fps` None = not known."""
+    if real_fps is None or not is_rate(real_fps):
+        return (f"Plays as the file does: these {n} frames make a {n / file_fps:.1f} s video. The camera's "
+                "real frame rate is not known: set it with the fps button in the CAMERAS panel to slow "
+                "the video against real time.")
+    k = real_fps / file_fps if slowdown is None else float(slowdown)
+    words = speed_words(k)
+    secs = n / real_fps * k
+    if not words:
+        text = f"Plays at real time: these {n} frames make a {secs:.1f} s video."
+    elif slowdown is None:
+        text = (f"The file already plays {words} than real time: these {n} frames make a {secs:.1f} s "
+                "video.")
+    else:
+        text = (f"Plays {words} than real time: 1 s of action lasts {k:.3g} s; these {n} frames make a "
+                f"{secs:.1f} s video.")
+    if slowdown is not None:
+        step = playback_plan(real_fps, file_fps, k)[0]
+        if step > 1:
+            text += (f" It keeps every {_nth(step)} frame: a player shows at most "
+                     f"{max(file_fps, MAX_PLAY_FPS):g} pictures a second.")
+    return text
+
+
 def _bgr(color) -> tuple[int, int, int]:
     r, g, b = (int(c) for c in color)
     return (b, g, r)
@@ -486,10 +517,23 @@ class OverlayDialog:
     def __new__(cls, parent, session, default_path: str, current: int,
                 sel_range: tuple[int, int] | None = None, n_frames: int | None = None):
         from PySide6.QtCore import Qt
-        from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-                                       QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                                       QRadioButton, QSpinBox, QVBoxLayout, QWidget)
+        from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
+                                       QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+                                       QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget)
         from kinetrace import theme
+
+        def _rate(v):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            return v if is_rate(v) else None
+
+        # (G194) speeds are against REAL time: the camera's rate (the fps button) vs the file's
+        real = _rate(session.fps)
+        file_rate = _rate(getattr(session, "file_fps", None)) or real
+        k0 = real / file_rate if real is not None and file_rate is not None else None
+        OTHER = "other"
 
         # (I41) the frames that DECODE (the view's verified count) bound every
         # range: a project saved with a header's over-count keeps the longer
@@ -555,6 +599,38 @@ class OverlayDialog:
                 self.scale.setCurrentIndex(1 if session.width > 2000 else 0)
                 self.scale.setToolTip("Half size is plenty for a talk and renders 4x faster")
                 form.addRow("Output size", self.scale)
+                # (G194) speed against real time: presets + any number; the line under it says how
+                # long the video will be
+                srow = QWidget()
+                sl = QHBoxLayout(srow)
+                sl.setContentsMargins(0, 0, 0, 0)
+                self.speed = QComboBox()
+                if k0 is None or not speed_words(k0):
+                    self.speed.addItem("Real time (as the file plays)" if k0 is not None else
+                                       "As the file plays", None)
+                else:
+                    self.speed.addItem(f"As the file plays ({speed_words(k0)})", None)
+                    self.speed.addItem("Real time", 1.0)
+                if real is not None:
+                    for k in (2.0, 4.0, 5.0, 10.0, 20.0):
+                        if k0 is None or abs(k - k0) > 0.005 * k:      # not the file's own speed twice
+                            self.speed.addItem(f"{speed_words(k)}", k)
+                    self.speed.addItem("Other:", OTHER)
+                self.speed_x = QDoubleSpinBox()
+                self.speed_x.setRange(1.0, 1000.0)
+                self.speed_x.setDecimals(2)
+                self.speed_x.setValue(3.0)
+                self.speed_x.setSuffix("x slower")
+                self.speed_x.setEnabled(False)
+                sl.addWidget(self.speed, 1)
+                sl.addWidget(self.speed_x)
+                self.speed.setToolTip("How much slower than real time (the camera's own rate) the video "
+                                      "plays. A high-speed camera's file may already play slower.")
+                form.addRow("Speed", srow)
+                self.speed_info = QLabel()
+                self.speed_info.setWordWrap(True)
+                self.speed_info.setStyleSheet(f"color: {theme.TEXT_DIM};")
+                form.addRow("", self.speed_info)
                 opts = QWidget()
                 ol = QVBoxLayout(opts)
                 ol.setContentsMargins(0, 0, 0, 0)
@@ -566,8 +642,9 @@ class OverlayDialog:
                 self.c_frame = QCheckBox("Frame number and time")
                 self.c_events = QCheckBox("Event names while active")
                 self.c_notes = QCheckBox("Frame notes")
+                self.c_speed = QCheckBox("Speed (e.g. '4x slower'; nothing at real time)")
                 for c in (self.c_markers, self.c_names, self.c_bones, self.c_mask, self.c_trails,
-                          self.c_frame, self.c_events, self.c_notes):
+                          self.c_frame, self.c_speed, self.c_events, self.c_notes):
                     c.setChecked(True)
                     ol.addWidget(c)
                 self.c_mask.setEnabled(session.masks is not None and session.animal is not None)
@@ -599,6 +676,29 @@ class OverlayDialog:
                 btns.accepted.connect(self._accept)
                 btns.rejected.connect(self.reject)
                 lay.addWidget(btns)
+                self.speed.currentIndexChanged.connect(self._speed_changed)
+                self.speed_x.valueChanged.connect(self._update_speed_info)
+                for rb in (self.r_all, self.r_sel, self.r_ev, self.r_custom):
+                    rb.toggled.connect(self._update_speed_info)
+                self.ev_box.currentIndexChanged.connect(self._update_speed_info)
+                self.f0.valueChanged.connect(self._update_speed_info)
+                self.f1.valueChanged.connect(self._update_speed_info)
+                self._update_speed_info()
+
+            def _slowdown(self) -> float | None:
+                d = self.speed.currentData()
+                return float(self.speed_x.value()) if d == OTHER else d
+
+            def _speed_changed(self):
+                self.speed_x.setEnabled(self.speed.currentData() == OTHER)
+                self._update_speed_info()
+
+            def _update_speed_info(self):
+                if file_rate is None:
+                    self.speed_info.setText("")
+                    return
+                a, b = self._range()
+                self.speed_info.setText(slowdown_sentence(real, file_rate, self._slowdown(), b - a + 1))
 
             def _pick(self):
                 p, _ = QFileDialog.getSaveFileName(self, "Overlay video", self.path.text(),
@@ -626,7 +726,8 @@ class OverlayDialog:
                     mask=self.c_mask.isChecked() and self.c_mask.isEnabled(),
                     trails=30 if self.c_trails.isChecked() else 0,
                     frame_number=self.c_frame.isChecked(), events=self.c_events.isChecked(),
-                    notes=self.c_notes.isChecked(), marker_px=self.marker.value())
+                    notes=self.c_notes.isChecked(), marker_px=self.marker.value(),
+                    slowdown=self._slowdown(), speed_label=self.c_speed.isChecked())
                 p = self.path.text().strip()
                 self.result_path = p if p.lower().endswith(".mp4") else p + ".mp4"
                 self.accept()
