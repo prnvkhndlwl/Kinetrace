@@ -74,6 +74,127 @@ no = draw_overlay(blank.copy(), 5, s, OverlayOptions(0, T - 1, 1.0, markers=Fals
 assert no.sum() == 0, "everything off draws nothing"
 print("draw_overlay OK")
 
+# ---- label outline (G197): the dark edge hugs its letters, wider at 4K ------------------------
+# Drawn twice at one origin (black at thickness 3, colour at 1), the halo slid right of its letters: OpenCV
+# advances thicker glyphs further (+11 px on "frame 12 / 79" at 4K, +43 px on a 48-character note).
+from kinetrace.render import FONT, _font_scale, _text  # noqa: E402
+
+
+def _outline_rule(fs):
+    """The owner's width (2026-10-15): 1 px up to 2560 wide, about 2 px at 4K."""
+    return max(1, round(fs / 0.55))
+
+
+def _ink_and_dark(im):
+    """Letter cores (bright or saturated: every label colour has a channel near 255) and dark halo pixels on
+    a mid-grey (150) frame."""
+    return im.max(2) > 205, im.max(2) < 90
+
+
+NOTE48 = "left hind foot slips on the rock edge right here"
+for LW, LH in ((1920, 1080), (3840, 2160)):
+    ls = TrackingSession("labels.mp4", 30, 30.0, LW, LH)
+    ls.add_event("stance L", 5, 20)
+    ls.events[0].color = (0, 255, 0)
+    ls.set_note(12, NOTE48, "PK")
+    lim = draw_overlay(np.full((LH, LW, 3), 150, np.uint8), 12, ls, OverlayOptions(0, 29, 1.0), [])
+    fs = _font_scale(LW)
+    rw = _outline_rule(fs)
+    ink, dark = _ink_and_dark(lim)
+    assert ink.sum() > 500 and dark.sum() > 500, (LW, ink.sum(), dark.sum())
+    dist = cv2.distanceTransform((~ink).astype(np.uint8), cv2.DIST_L2, 5)
+    far = float(dist[dark].max())
+    dark_r = int(np.where(dark.any(0))[0].max())
+    ink_r = int(np.where(ink.any(0))[0].max())
+    print(f"  {LW} wide (font {fs:.3f}, outline {rw} px): darkest pixel {far:.1f} px from a letter; "
+          f"dark edge {dark_r - ink_r:+d} px past the letters")
+    # margin: letter cores miss the anti-aliased rim (~1 px); the old halo was 36 px off
+    assert far <= rw + 3.0, f"{LW} wide: a dark copy {far:.1f} px from any letter (outline {rw} px)"
+    assert dark_r - ink_r <= rw + 3, f"{LW} wide: the outline ends {dark_r - ink_r} px past the last letter"
+
+# the width grows with the font: the ring 2 px out from the letters is dark at 4K, not at 1280
+for LW, want2 in ((1280, False), (3840, True)):
+    fs = _font_scale(LW)
+    can = np.full((120, 900, 3), 200, np.uint8)
+    _text(can, "frame 1234     41.133 s", (10, 70), fs, (255, 255, 255))
+    core = np.zeros(can.shape[:2], np.uint8)
+    cv2.putText(core, "frame 1234     41.133 s", (10, 70), FONT, fs, 255, 1, cv2.LINE_AA)
+    d = cv2.distanceTransform((core < 200).astype(np.uint8), cv2.DIST_L2, 5)
+    ring1 = float(can.max(2)[(d > 0.5) & (d <= 1.5)].mean())
+    ring2 = float(can.max(2)[(d > 1.5) & (d <= 2.5)].mean())
+    print(f"  {LW} wide: 1 px ring {ring1:.0f}, 2 px ring {ring2:.0f} (background 200)")
+    assert ring1 < 110, f"{LW} wide: the outline next to the letters is too light ({ring1:.0f})"
+    assert (ring2 < 120) == want2, f"{LW} wide: 2 px ring {ring2:.0f}, outline {'2' if want2 else '1'} px wanted"
+
+# only label pixels change; labels at the picture's edges draw inside it, never wrapping to the other side
+rng = np.random.default_rng(7)
+TW, TH = 1280, 720
+tex = cv2.GaussianBlur(rng.integers(0, 256, (TH, TW, 3), dtype=np.uint8), (0, 0), 2)
+es = TrackingSession("edges.mp4", 30, 30.0, TW, TH)
+for k, (x, y) in enumerate(((1.0, 1.0), (TW - 2.0, 1.0), (1.0, TH - 2.0), (TW - 2.0, TH - 2.0))):
+    es.add_point(0, x, y, name=f"corner {k}")
+es.write_segment(0, np.tile(np.array([[1, 1], [TW - 2, 1], [1, TH - 2], [TW - 2, TH - 2]], np.float32),
+                            (30, 1, 1)), np.ones((30, 4), bool), [0, 1, 2, 3], np.full((30, 4), 0.9, np.float32))
+es.add_event("run", 0, 29)
+es.set_note(3, NOTE48, "PK")
+words = dict(names=False, frame_number=False, events=False, notes=False, speed_label=False)
+on = draw_overlay(tex.copy(), 3, es, OverlayOptions(0, 29, 1.0, trails=0), [])
+off = draw_overlay(tex.copy(), 3, es, OverlayOptions(0, 29, 1.0, trails=0, **words), [])
+flat_on = draw_overlay(np.full((TH, TW, 3), 128, np.uint8), 3, es, OverlayOptions(0, 29, 1.0, trails=0), [])
+flat_off = draw_overlay(np.full((TH, TW, 3), 128, np.uint8), 3, es, OverlayOptions(0, 29, 1.0, trails=0, **words), [])
+footprint = cv2.dilate((flat_on != flat_off).any(2).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+changed = (on != off).any(2)
+assert changed.sum() > 0 and not (changed & ~footprint).any(), \
+    f"{int((changed & ~footprint).sum())} pixels changed outside the labels"
+edge = np.full((60, 200, 3), 100, np.uint8)
+for org in ((5, 4), (150, 58), (-40, 30), (190, 80), (-500, -500)):
+    before = edge.copy()
+    _text(edge, "frame 12 / 79", org, 0.55, (255, 255, 255))
+    if org == (5, 4):
+        assert (edge[30:] == before[30:]).all(), "a label cut by the top edge wrote at the bottom"
+    if org == (150, 58):
+        assert (edge[:20, :100] == before[:20, :100]).all(), "a label cut by the bottom edge wrote at the top"
+    if org == (-40, 30):
+        assert (edge[:, 120:] == before[:, 120:]).all(), "a label cut by the left edge wrote at the right"
+# a label cut by an edge keeps the dark edge its hidden letters give: as if drawn on a bigger picture, cropped
+for org in ((10, 6), (-12, 30), (120, 58)):
+    cut = np.full((60, 200, 3), 200, np.uint8)
+    big = np.full((100, 260, 3), 200, np.uint8)
+    _text(cut, "Tlj[gy]", org, 0.953, (255, 255, 255))
+    _text(big, "Tlj[gy]", (org[0] + 30, org[1] + 20), 0.953, (255, 255, 255))
+    assert (cut == big[20:80, 30:230]).all(), f"label cut by the edge at {org}: outline differs from uncut"
+
+# a zoomed before / after picture for the owner (left: the old two-pass halo, right: today's _text)
+
+
+def _old_text(im, t, org, fs, col):
+    cv2.putText(im, t, org, FONT, fs, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(im, t, org, FONT, fs, col, 1, cv2.LINE_AA)
+
+
+rows = []
+for LW, zoom in ((1920, 4), (3840, 3)):
+    fs = _font_scale(LW)
+    for t, col in (("frame 12 / 79", (255, 255, 255)), ("stance L  [120-188]", (60, 200, 255))):
+        (tw_, th_), _ = cv2.getTextSize(t, FONT, fs, 3)
+        bh, bw = th_ + 18, 640
+        bgs = [np.full((bh, bw, 3), v, np.uint8) for v in (15, 235, 128)] + [tex[:bh, :bw].copy()]
+        for bg in bgs:
+            pair = []
+            for fn in (_old_text, _text):
+                im = bg.copy()
+                fn(im, t, (10, th_ + 7), fs, col)
+                pair.append(cv2.resize(im[:, :tw_ + 30], None, fx=zoom, fy=zoom, interpolation=cv2.INTER_NEAREST))
+            row = np.hstack([pair[0], np.full((pair[0].shape[0], 6, 3), (0, 0, 200), np.uint8), pair[1]])
+            rows.append(row)
+WIDE = max(r.shape[1] for r in rows)
+pic = np.vstack([np.pad(r, ((0, 4), (0, WIDE - r.shape[1]), (0, 0))) for r in rows])
+os.makedirs(os.path.join(SCRATCH, "halo-drift"), exist_ok=True)
+pic_path = os.path.join(SCRATCH, "halo-drift", "verify_render_g197.png")
+cv2.imwrite(pic_path, pic)
+print(f"label outline OK: on its letters at 1920 and 3840 wide, 2 px at 4K, only label pixels change "
+      f"(before / after: {pic_path})")
+
 # ---- slow motion (G194): the playback arithmetic and the speed label ------------
 from kinetrace.render import playback_plan, speed_words  # noqa: E402
 

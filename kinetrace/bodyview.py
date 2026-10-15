@@ -30,7 +30,7 @@ from kinetrace import theme
 from kinetrace.canvas import bgr_pixmap
 from kinetrace.body import MIN_JOINT_CONF, BodyTrack, canon, is_finger, median_axis
 from kinetrace.hull import _view_rotation
-from kinetrace.render import VideoWriteJob, is_rate
+from kinetrace.render import VideoWriteJob, _text, is_rate
 
 # Left / right / centre, BGR. Colour-coding the sides is the single most
 # useful thing a skeleton drawing can do -- it is how you spot the classic
@@ -261,10 +261,8 @@ def _label_angles(img, track, frame, person, opts, scale) -> None:
             continue
         txt = f"{vals[frame, k]:+.0f}"
         org = (_pt(uv[a])[0] + dx, _pt(uv[a])[1] + dy)
-        cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 0.44 * max(1.0, scale),
-                    (20, 20, 24), 3, cv2.LINE_AA)
-        cv2.putText(img, txt, org, cv2.FONT_HERSHEY_SIMPLEX, 0.44 * max(1.0, scale),
-                    (235, 235, 240), 1, cv2.LINE_AA)
+        # (G197) the overlay's outline: the letters' own mask grown, so it cannot slide right of them
+        _text(img, txt, org, 0.44 * max(1.0, scale), (235, 235, 240), halo=(20, 20, 24))
 
 
 # --------------------------------------------------------------- pose panel

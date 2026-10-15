@@ -128,9 +128,29 @@ def _font_scale(w: int) -> float:
     return max(0.4, 0.55 * (w / 1280.0) ** 0.5) if w >= 640 else 0.4
 
 
-def _text(img, text: str, org: tuple[int, int], scale: float, color, thick: int = 1) -> None:
-    """Outlined text (dark halo) so it reads on any background."""
-    cv2.putText(img, text, org, FONT, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
+def _outline_px(scale: float) -> int:
+    """The dark edge's width round each letter (G197, owner): 1 px up to 2560 wide, 2 px at 4K."""
+    return max(1, round(scale / 0.55))
+
+
+def _text(img, text: str, org: tuple[int, int], scale: float, color, thick: int = 1, halo=(0, 0, 0)) -> None:
+    """Outlined text (dark halo) so it reads on any background; `img` is a 3-channel uint8 (BGR) picture.
+    (G197) The halo is the letters' own mask grown by `_outline_px`: drawn as thicker text it slid right of
+    the letters (OpenCV advances thick glyphs further), leaving a dark copy after the last character."""
+    r = _outline_px(scale)
+    (tw, th), base = cv2.getTextSize(text, FONT, scale, thick)
+    pad = r + thick + 2
+    bx0, by0, bx1, by1 = org[0] - pad, org[1] - th - pad, org[0] + tw + pad, org[1] + base + pad
+    x0, y0 = max(0, bx0), max(0, by0)
+    x1, y1 = min(img.shape[1], bx1), min(img.shape[0], by1)
+    if x0 < x1 and y0 < y1:
+        # the mask covers the whole label, so letters just past the picture's edge still edge those inside it
+        m = np.zeros((by1 - by0, bx1 - bx0), np.uint8)
+        cv2.putText(m, text, (org[0] - bx0, org[1] - by0), FONT, scale, 255, thick, cv2.LINE_AA)
+        a = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1)))
+        a = a[y0 - by0:y1 - by0, x0 - bx0:x1 - bx0, None].astype(np.uint16)
+        roi = img[y0:y1, x0:x1]
+        roi[:] = ((roi * (255 - a) + np.array(halo, np.uint16) * a + 127) // 255).astype(np.uint8)
     cv2.putText(img, text, org, FONT, scale, color, thick, cv2.LINE_AA)
 
 
