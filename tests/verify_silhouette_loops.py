@@ -369,6 +369,60 @@ if hasattr(trk, "LOOP_HOLE_FRAC"):
     check(sorted(w_s._loop_frames) == list(range(15)) and bool((cf_s[:15, 1] <= LOW + 1e-6).all()),
           f"a run starting in the loop: frames 0-14 flagged and low (got {sorted(w_s._loop_frames)})")
 
+
+
+def run_windowed(frames, win=16, step=8, nudge=0.3):
+    """As run_sequence, but the way the worker emits: windows of `win` rows every `step`, so each
+    window's overlap rows are sent AGAIN, with the head point moved by `nudge` native px (a new cache
+    key: the midline is recomputed). The last write of a row wins, as in the session."""
+    derived = [DerivedSpec(1 + j, s) for j, s in enumerate(SPECS)]
+    w = TrackingWorker("none.mp4", 0, None, None, FrameCache(1 << 20), 100,
+                       specs=[PointSpec(0, native(frames[0][1]))], animal=AnimalSpec({0: []}, {}, None),
+                       derived=derived, head_pid=0)
+    L = len(frames)
+    for f, (mw, _) in enumerate(frames):
+        w._mask_hist[f] = (mw.astype(bool), SCALE)
+        w._summ[f] = summarize_mask(mw.astype(np.uint8), SCALE, 8.0)
+    final_cf = np.zeros((L, w.n_cols), np.float32)
+    for k, s0 in enumerate(range(0, L, step)):
+        if s0 and s0 >= L - step:
+            break
+        rows = range(s0, min(s0 + win, L))
+        tr = np.full((len(rows), w.n_cols, 2), np.nan, np.float32)
+        vi = np.zeros((len(rows), w.n_cols), bool)
+        cf = np.zeros((len(rows), w.n_cols), np.float32)
+        for i, f in enumerate(rows):
+            tr[i, 0] = native(frames[f][1]) + np.float32(nudge * k)
+            cf[i, 0] = 1.0
+        w._fill_derived(s0, tr, vi, cf)
+        final_cf[s0:s0 + len(rows)] = cf
+    return final_cf, w
+
+
+if hasattr(trk, "LOOP_HOLE_FRAC"):
+    # (I293, review) the worker re-sends every window's 8 overlap rows: the verdict of a re-sent row
+    # must not depend on the window's LAST frame (a running state flagged frame 8 of loop (b) off,
+    # and carried a loop back onto harmless foot-on-flank frames before a loop)
+    def phases(*parts, head=HEAD):
+        out = []
+        for m, n in parts:
+            for _ in range(n):
+                f = len(out)
+                out.append((shifted(m, f), (head[0] + f, head[1])))
+        return out
+
+    cases = {k: sequence(c[0], l[0], c[0], head=h) for k, (c, l, h) in LOOPS.items()}
+    cases["flank_then_loop"] = phases((base_m := lizard(STRAIGHT_TAIL)[0], 5),
+                                      (CASES["(e) hind foot on its own flank"]["build"]()[0], 5),
+                                      (lizard(OVER)[0], 14), (base_m, 4))
+    for key, frames in cases.items():
+        _, cf1, w1 = run_sequence(frames)
+        cfw, ww = run_windowed(frames)
+        one, win = sorted(w1._loop_frames), sorted(ww._loop_frames)
+        saved_low = all(cfw[f, 1] <= LOW + 1e-6 for f in one)        # what the session keeps (last write)
+        check(win == one and saved_low, f"{key}: re-sent overlap rows give the one-pass loop frames {one} "
+                                        f"(windowed: {win}; saved tip low on all of them: {saved_low})")
+
 # the loop-free bar: sequences that never close a harmful loop (saved for the byte-identity proof);
 # foot_flank / foot_tail DO enclose a hole (4.6 % / 15.9 %) but their midline is right: the foot
 # comes down onto the flank / tail at frame 5 and lifts at 15, as in a real run

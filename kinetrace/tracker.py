@@ -185,9 +185,10 @@ class _SegState:
         self.prev_path = None
         self.anchor_lost: set = set()
         self.anchor_verdict = None
-        self.loop_ref_len: float | None = None         # (I293) native midline length, last frame without a loop hole
-        self.loop_frames: set = set()                  # frames whose midline a self-contact loop cut short
-        self.loop_on = False                           # a loop was seen and its hole has not opened since
+        # (I293) frame -> (native midline length of the last frame without a loop hole, a loop is on)
+        # after judging it; frames inside a self-contact loop (from its first short midline until the hole opens)
+        self.loop_state: dict = {}
+        self.loop_frames: set = set()
         self.derived_hist: dict = {}
         self.snapped: dict = {}
         self.collapsed: dict = {}
@@ -267,7 +268,7 @@ DERIVED_JUMP_CONF = 0.3    # ... gets this confidence (a flip, a lost anchor, a 
 # (I293) a silhouette that touches itself (tail over the flank, a foot on an upturned tail, a closed
 # C-curl) encloses a hole, and its midline may cut through the contact: tip / midline points / feet
 # hundreds of px off for as long as the loop lasts, which the one-frame jump rule cannot see.
-# Owner's values at the gate (2026-10-15), from verify_silhouette_loops + the iguana C2 audit.
+# Owner's values at the gate (2026-10-15), from verify_silhouette_loops + a real 4K clip (200 frames).
 LOOP_HOLE_FRAC = 0.02      # an enclosed hole of at least this share of the silhouette's area ...
 LOOP_SHORT_FRAC = 0.8      # ... AND a midline shorter than this x the last one without such a hole ...
 LOOP_CONF = 0.3            # ... cap every midline-derived landmark (not the centroid) at this
@@ -498,9 +499,8 @@ class TrackingWorker(QThread):
     _prev_path = _seg_attr("prev_path")
     _anchor_lost = _seg_attr("anchor_lost")
     _anchor_verdict = _seg_attr("anchor_verdict")
-    _loop_ref_len = _seg_attr("loop_ref_len")
+    _loop_state = _seg_attr("loop_state")
     _loop_frames = _seg_attr("loop_frames")
-    _loop_on = _seg_attr("loop_on")
     _derived_hist = _seg_attr("derived_hist")
     _snapped = _seg_attr("snapped")
     _collapsed = _seg_attr("collapsed")
@@ -1332,6 +1332,8 @@ class TrackingWorker(QThread):
             self._collapsed.pop(k, None)
             self._anchor_lost.discard(k)
             self._loop_frames.discard(k)
+            if len(self._loop_state) > 1 and k != max(self._loop_state):
+                self._loop_state.pop(k, None)       # the newest stays: a long absence must not reset it
             for hist in self._derived_hist.values():
                 hist.pop(k, None)
 
@@ -1396,18 +1398,25 @@ class TrackingWorker(QThread):
         on a synthetic loop that one was 0.88 of the true length, no longer short. No reference yet
         (the run starts inside a loop) = a loop: the length cannot be judged (owner, gate 2026-10-15).
         Once seen, the loop lasts until a frame without the hole: inside one the path can switch
-        between two routes (0.66 / 0.89 of the length, frame to frame) while the tip stays wrong."""
+        between two routes (0.66 / 0.89 of the length, frame to frame) while the tip stays wrong.
+
+        The state frame f starts from is the one left by the nearest frame JUDGED before f, kept per
+        frame (`_loop_state`: frame -> (reference length, loop on)): a window re-emits its overlap
+        rows, and a running state would judge a re-sent row against the window's last frame (the
+        I193 lesson). An empty frame is never judged, so the state carries across it."""
         self._loop_frames.discard(f)
+        self._loop_state.pop(f, None)
         if ml is None:
-            return                                      # an empty frame neither opens nor closes it
+            return
+        before = [k for k in self._loop_state if k < f]
+        ref, on = self._loop_state[max(before)] if before else (None, False)
         length = float(ml.length) * float(scale)        # native px, like body_len_native
         if ml.hole_frac < LOOP_HOLE_FRAC:
-            self._loop_ref_len = length
-            self._loop_on = False
-        elif (self._loop_on or self._loop_ref_len is None
-              or length < LOOP_SHORT_FRAC * self._loop_ref_len):
-            self._loop_on = True
+            ref, on = length, False
+        elif on or ref is None or length < LOOP_SHORT_FRAC * ref:
+            on = True
             self._loop_frames.add(f)
+        self._loop_state[f] = (ref, on)
 
     def _midline_for(self, f: int, head_native: np.ndarray | None):
         """Cached silhouette midline of frame f in working-res coordinates."""
@@ -1555,7 +1564,7 @@ class TrackingWorker(QThread):
             touches = bool(mask[0, :].any() or mask[-1, :].any() or mask[:, 0].any() or mask[:, -1].any())
             hw, ww = mask.shape[:2]
             anchor_lost = f in self._anchor_lost
-            looped = f in self._loop_frames             # (I293) a self-contact loop cut the midline short
+            looped = f in self._loop_frames             # (I293) inside a self-contact loop
             # `scale` is NATIVE / WORKING (3.75 at 4K): working lengths are
             # multiplied to reach native pixels. Dividing here made the body
             # 14x too short at 4K and demoted a real lizard's tail tip on 90 %
