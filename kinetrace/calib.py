@@ -904,6 +904,20 @@ class Calibration:
         return cal
 
 
+def spread_calibration(cal, views: list[int], n_views: int):
+    """(I272) A calibration of the cameras `views` (in that order) as one of an `n_views` project:
+    camera views[k] gets cal.cameras[k], every other camera None (not calibrated). Every camera
+    calibrated = `cal` itself. (Here since I271: the wand timing checks spread a run's calibration
+    without the wizard's Qt.)"""
+    views = list(views)
+    if views == list(range(n_views)):
+        return cal
+    cams = [None] * n_views
+    for k, v in enumerate(views):
+        cams[v] = cal.cameras[k]
+    return cal.with_cameras(cams)
+
+
 # -------------------------------------------------------- sub-frame timing
 
 
@@ -1699,6 +1713,8 @@ def reconstruct(sessions: list, calib: Calibration, rates: list[float], offsets:
 
 MAX_SCAN_INSTANTS = 6000     # estimate_offsets looks at no more than this many instants at all ...
 MAX_SCORE_INSTANTS = 500     # ... and scores the search on at most this many MOVING ones (G76)
+ROBUST_CAP_K = 4.0           # estimate_offsets(robust=True): a cell counts at most this x the starting median (I271)
+MIN_OWN_CELLS = 30           # (I302) a camera judged on fewer of its own scored cells reads at most "weak"
 
 
 class _SearchCancelled(Exception):
@@ -1743,7 +1759,7 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
                      t_range: tuple[int, int], names: list[str] | None = None,
                      search: float = 1.0, step: float = 0.05, refine: float = 0.005,
                      passes: int = 2, report: dict | None = None,
-                     progress=None, cancelled=None) -> tuple[list[float], float, float]:
+                     progress=None, cancelled=None, robust: bool = False) -> tuple[list[float], float, float]:
     """Sub-frame sync from the tracks themselves: for each non-reference view,
     the fractional offset that minimises the mean triangulation residual, by
     coordinate descent (coarse grid of `step` over ±`search` local frames,
@@ -1763,7 +1779,22 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
     means the tracks carry no timing information, and a real stereo test
     showed the estimator returning -1.26 then -0.32 frames on exactly such a
     surface), the number of cells scored, the improvement, and a verdict
-    "reliable" / "weak" / "flat" with a sentence."""
+    "reliable" / "weak" / "flat" with a sentence.
+
+    (I302) Each camera's sharpness is measured on its OWN scored cells (those it shares with another
+    camera): the mean over every cell diluted a camera that sees the landmarks in a few % of the
+    instants into "flat" however clear its own minimum. A camera with fewer than `MIN_OWN_CELLS` of
+    its own reads at most "weak". `report["own_cells"]` / `["n_scored_cells"]` say how many. The
+    verdict is computed after the search and never changes it.
+
+    `robust` (I271): a minority of bad cells (a wand whose two ends are swapped in one camera on a few
+    frames: pixels to tens of pixels each) must not drag the minimum. A first search on a CAPPED mean
+    (each cell counts at most `ROBUST_CAP_K` x the median residual) gets near; the observations behind
+    the cells whose residual THERE exceeds that are removed (`_drop_bad_observations`;
+    `report["n_set_aside"]` = how many cells) and the ordinary search runs again from the given offsets
+    on the rest, so the answer, its before / after and its sharpness are the plain estimator's on clean
+    data. (A plain median cost was tried first: not moved by bad cells either, but its surface is grainy,
+    0.08 frame off on the synthetic rig.) `robust=False` is exactly the estimator it always was."""
     offs = [float(o) for o in offsets]
     reference = 0                       # stable_cells holds view 0 still, as does the project (REFERENCE_VIEW)
     prep = _Prepared(sessions, calib, names)
@@ -1772,33 +1803,114 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
     n_free = max(len(sessions) - 1, 0)
     n_grid = int(np.floor(2 * search / step + 1e-9)) + 1
     n_fine = int(np.floor(2 * step / refine + 1e-9)) + 1
-    total = 1 + passes * n_free * (n_grid + n_fine) + 400 + 2 * n_free + 1
+    total = 1 + passes * n_free * (n_grid + n_fine) + 400 + 3 * n_free + 1
+    if robust:
+        total *= 2                      # two searches (below)
     done = [0]
+    cap = [float("inf")]
+    use = [keep]                        # the view / cell pairs scored (the robust search sets some aside)
 
-    def cost(o):
+    def residuals(o):
+        _, r, _, _ = prep.triangulate(prep.samples(rates, o, t, use[0]), 2)
+        return r
+
+    def set_cap(o):
+        r0 = residuals(o)
+        r0 = r0[np.isfinite(r0)]
+        cap[0] = ROBUST_CAP_K * float(np.median(r0)) if len(r0) and np.median(r0) > 0 else float("inf")
+
+    def cost(o, mask=None):
+        """The mean residual over the scored cells (only those of `mask`, (T, N), when given: I302)."""
         if cancelled is not None and cancelled():
             raise _SearchCancelled()
-        uv = prep.samples(rates, o, t, keep)
-        _, r, _, _ = prep.triangulate(uv, 2)
-        r = r[np.isfinite(r)]
+        r = residuals(o)
+        r = r[np.isfinite(r) if mask is None else (mask & np.isfinite(r))]
         done[0] += 1
         if progress is not None:
             progress(min(done[0], total - 1), total)
-        return float(r.mean()) if len(r) else float("inf")
+        if not len(r):
+            return float("inf")
+        return float(np.minimum(r, cap[0]).mean()) if np.isfinite(cap[0]) else float(r.mean())
 
     try:
+        if robust:
+            # 1) a capped search gets NEAR; 2) the OBSERVATIONS behind the cells whose residual there is
+            # more than ROBUST_CAP_K x the median are removed (`_drop_bad_observations`) and the ordinary
+            # search runs again from the given offsets on what is left. Neither a capped search alone nor
+            # setting the bad CELLS aside is enough: a bad observation, interpolated at a fractional
+            # offset, spoils the two instants around it, so offsets that put its camera on whole frames
+            # halve the spoiled cells -- on the synthetic rig with swapped ends both stopped 0.3 frame
+            # off, every camera moved together.
+            set_cap(offs)
+            near, _, _ = _search_offsets(sessions, list(offs), cost, keep, n_cells, search, step, refine, passes,
+                                         reference, None)
+            n_bad = _drop_bad_observations(prep, rates, near, t_all)
+            t, keep, n_cells = _scoring_instants(prep, rates, offs, t_all, search)
+            use[0] = keep
+            cap[0] = float("inf")
+            out = _search_offsets(sessions, list(offs), cost, keep, n_cells, search, step, refine, passes,
+                                  reference, report)
+            if report is not None:
+                report["n_set_aside"] = n_bad
+            return out
         return _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, passes, reference,
                                report)
     except _SearchCancelled:
         if report is not None:
             report.update({"verdict": "cancelled", "why": "Cancelled: the offsets were not changed.",
                            "sharpness": {}, "per_view": {}, "min_sharpness": float("nan"),
-                           "improvement": float("nan"), "n_cells": n_cells,
-                           "before_px": float("nan"), "after_px": float("nan")})
+                           "improvement": float("nan"), "n_cells": n_cells, "own_cells": {},
+                           "n_scored_cells": 0, "before_px": float("nan"), "after_px": float("nan")})
         return [float(o) for o in offsets], float("nan"), float("nan")
     finally:
         if progress is not None:
             progress(total, total)
+
+
+def _drop_bad_observations(prep: "_Prepared", rates, offs, t_all: np.ndarray, chunk: int = 2000) -> int:
+    """(I271) The raw observations behind the outlying cells at `offs` -- residual over
+    ROBUST_CAP_K x the median: a wand end swapped in one camera, a click on the wrong ball -- set to
+    NaN in `prep` (its own copy of the tracks; both frames each one is interpolated from). EVERY
+    instant of `t_all` is looked at, not only the scored ones: a bad frame next to a scored instant
+    spoils it at other offsets. The camera to blame is the one whose removal lowers the cell's
+    residual most (leave-one-camera-out; a cell seen by two cameras loses both). A camera that is
+    not calibrated never sees a cell (I273). Returns how many cells were outliers."""
+    C = len(prep.ct)
+    rs = []
+    for k in range(0, len(t_all), chunk):
+        _, r, _, _ = prep.triangulate(prep.samples(rates, offs, t_all[k:k + chunk]), 2)
+        rs.append(r)
+    if not rs:
+        return 0
+    r = np.concatenate(rs, axis=0)                                              # (T, N)
+    fin = np.isfinite(r)
+    if not fin.any():
+        return 0
+    bad = fin & (r > ROBUST_CAP_K * float(np.median(r[fin])))
+    ti, ni = np.nonzero(bad)
+    if not len(ti):
+        return 0
+    cells = prep.samples(rates, offs, t_all[ti])[np.arange(len(ti)), ni]       # (M, C, 2)
+    seen = np.isfinite(cells).all(axis=2)
+    loo = np.full((len(ti), C), np.inf)
+    for c in range(C):
+        if not seen[:, c].any():
+            continue
+        u = cells.copy()
+        u[:, c] = np.nan
+        _, rc, _, _ = prep.triangulate(u, 2)
+        loo[:, c] = np.where(seen[:, c] & np.isfinite(rc), rc, np.inf)
+    for m in range(len(ti)):
+        if seen[m].sum() >= 3 and np.isfinite(loo[m]).any():
+            blame = [int(np.argmin(loo[m]))]
+        else:
+            blame = [int(c) for c in np.nonzero(seen[m])[0]]
+        for c in blame:
+            f0 = int(np.floor(float(local_frame(t_all[ti[m]], rates[c], offs[c]))))
+            for f in (f0, f0 + 1):
+                if 0 <= f < prep.ct[c].shape[0]:
+                    prep.ct[c][f, ni[m]] = np.nan
+    return int(len(ti))
 
 
 def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, passes, reference, report):
@@ -1855,16 +1967,21 @@ def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, p
             pass
     after = cost(offs)
     if report is not None:
-        sharp = {}
+        # (I302) each camera judged on its OWN scored cells: the cells it shares with another camera
+        shared = keep.sum(axis=2) >= 2
+        sharp, own_cells = {}, {}
         for c in range(len(sessions)):
             if c == reference:
                 continue
+            own = shared & keep[:, :, c]
+            own_cells[c] = int(own.sum())
+            base = cost(offs, own) if own_cells[c] else float("nan")
             rise = []
             for d in (-0.5, 0.5):
                 o = list(offs)
                 o[c] = offs[c] + d
-                cd = cost(o)
-                rise.append((cd - after) / max(after, 1e-9) if np.isfinite(cd) and np.isfinite(after) else np.nan)
+                cd = cost(o, own) if own_cells[c] else float("nan")
+                rise.append((cd - base) / max(base, 1e-9) if np.isfinite(cd) and np.isfinite(base) else np.nan)
             sharp[c] = float(np.nanmin(rise)) if np.isfinite(rise).any() else float("nan")
         improvement = ((before - after) / before) if (np.isfinite(before) and before > 0
                                                     and np.isfinite(after)) else float("nan")
@@ -1876,15 +1993,15 @@ def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, p
         # (G75) "none" is a camera with NO cell shared with another one; a camera
         # that shares cells but whose landmarks hardly move reads "flat" (the
         # surface is flat because there is nothing to time, which is not the
-        # same as having no shared tracks)
-        shared = keep.sum(axis=2) >= 2
+        # same as having no shared tracks); (I302) a clear minimum on fewer than
+        # MIN_OWN_CELLS cells of its own is only "weak"
         per_view = {}
         for c, v in sharp.items():
-            if not (shared & keep[:, :, c]).any():
+            if not own_cells[c]:
                 per_view[c] = "none"          # unconstrained: offset kept
             elif not np.isfinite(v) or v < 0.03:
                 per_view[c] = "flat"
-            elif v >= 0.10:
+            elif v >= 0.10 and own_cells[c] >= MIN_OWN_CELLS:
                 per_view[c] = "sharp"
             else:
                 per_view[c] = "weak"
@@ -1933,5 +2050,6 @@ def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, p
                     "their offsets are left exactly as they were.")
         report.update({"verdict": verdict, "why": why, "sharpness": sharp, "per_view": per_view,
                        "min_sharpness": min_sharp, "improvement": improvement, "n_cells": n_cells,
+                       "own_cells": own_cells, "n_scored_cells": int(np.count_nonzero(shared)),
                        "before_px": before, "after_px": after})
     return offs, before, after

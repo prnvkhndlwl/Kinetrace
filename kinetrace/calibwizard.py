@@ -21,15 +21,18 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
                                QGridLayout, QGroupBox, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QRadioButton, QSpinBox,
-                               QTextBrowser, QVBoxLayout, QWidget, QWizard, QWizardPage)
+                               QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget, QWizard,
+                               QWizardPage)
 
 from kinetrace import lens as _lens
 from kinetrace import theme
 from kinetrace import wand as _wand
 from kinetrace import wanddata as wd
+from kinetrace.calib import spread_calibration  # noqa: F401 -- (I271) moved to calib, still offered here
 from kinetrace.video_source import display_rotation
 from kinetrace.errors import cap_first, plain_error
 from kinetrace.lenswizard import VERDICT_COLORS, _dim, stop_page_threads
@@ -120,6 +123,145 @@ class _Cancelled(Exception):
     WandError on purpose: the focal-length search swallows those."""
 
 
+def solve(kwargs: dict, frame_mode: str, drop, axes, lens_models, lens_summaries, note):
+    """One wand calibration as the wizard makes it (I271: shared by Calibrate now and the refine loop,
+    so the calibration the refine offers IS the one Calibrate now makes at those offsets):
+    `wand.calibrate_wand`, then the vertical / axes step (one that cannot be applied keeps the first
+    camera's axes and says why, I29), then the lens profiles put back on the cameras solved on
+    straightened points. -> (WandResult, gravity dict | None). WandError and whatever `note` raises
+    (a cancel) propagate."""
+    wand = _wand
+    res = wand.calibrate_wand(progress=note, **kwargs)
+    grav = None
+    # (I29) the wand solve stands on its own: a vertical / axes step that cannot be applied keeps
+    # camera 1's axes and says why, instead of throwing a good calibration away as "Calibration failed"
+    try:
+        if frame_mode == "drop" and drop is not None:
+            note(0.95, "Aligning the vertical to the dropped object")
+            res, grav = wand.align_gravity(res, drop["uv"], drop["fps"], frame0=drop.get("t0"))
+        elif frame_mode == "axes" and axes is not None:
+            note(0.95, "Aligning the axes to your reference points")
+            res = wand.align_axes(res, axes["origin"], axes["x"], axes["xy"])
+    except wand.WandError as e:
+        cam1 = (res.report.get("camera_names") or ["camera 1"])[0]
+        if frame_mode == "drop":
+            what = "the vertical from the dropped object"
+            fix = "pick the frames where it falls (at least 4, seen by two or more cameras)"
+        else:
+            a = axes or {}
+            what = "the axes from the three reference points"
+            fix = (f"pick a frame where {a.get('names', 'all three')} are tracked in two or more "
+                   f"cameras (the page suggests one)")
+            e = f"{e} on reference frame {a.get('t', '?')}"
+        res = wand.keep_camera_frame(
+            res, f"{cap_first(what)} could NOT be set: {e}. The calibration itself is fine "
+                 f"and keeps {cam1}'s axes. Go Back to 'Which way is up' and {fix}, or choose "
+                 f"'Neither'.", what)
+    # cameras with a lens profile were solved on UNDISTORTED points: the
+    # calibration must undistort the tracks the same way at 3D time
+    for c, m in enumerate(lens_models or []):
+        if m is not None and c < len(res.cameras):
+            res.cameras[c].undistort = m
+    if lens_summaries:
+        res.report["lens_profiles"] = list(lens_summaries)
+    return res, grav
+
+
+def build_inputs(project, st: dict, offsets=None):
+    """What a run hands `solve`, sampled at `offsets` (one per project camera; None = the project's
+    own; I271 / I303: the refine loop and pending offsets calibrate at offsets the project does not
+    have): (kwargs for wand.calibrate_wand, drop, axes, wand frames, wand end names). `st` =
+    `RunPage.settings()`, read from the pages on the GUI thread; this part reads only the project and
+    runs on any thread. With the project's offsets the kwargs are exactly what the wizard always
+    passed (verify_wand_subset C)."""
+    p = wd.retimed(project, offsets)
+    views = list(st["views"])
+    sel = None if views == list(range(project.n_views)) else views
+    uv, frames = wd.collect_wand(p, st["a"], st["b"], max_frames=400, views=sel)
+    extras = st["extras"]
+    bg = wd.collect_extra_points(p, extras, views=sel) if extras else None
+    if bg is not None and bg.shape[0] == 0:
+        bg = None
+    models = st["models"]
+    any_lens = any(m is not None for m in models)
+
+    def _und(arr):
+        """Undistort every camera's pixels with its profile. Arrays are (F, C, 2, 2) wand ends,
+        (B, C, 2) points or (N, C, 2) drops: the camera is always axis 1, the last axis is xy (the
+        ticked cameras)."""
+        if arr is None or not any_lens:
+            return arr
+        out = np.array(arr, np.float64, copy=True)
+        for c, m in enumerate(models):
+            if m is None:
+                continue
+            sl = out[:, c]
+            out[:, c] = m.undistort(sl.reshape(-1, 2)).reshape(sl.shape)
+        return out
+
+    raw_uv, raw_bg = uv, bg                    # the clicks as digitized: coverage is measured on these
+    kwargs = dict(wand_uv=_und(uv), wand_length=st["length"], sizes=st["sizes"],
+                  # (I247) coverage on the RAW points (a straightened box over the raw picture area read
+                  # 33-52 % for a 25 % box); (I248) the report names the REFERENCE frame of an outlier
+                  coverage_uv=raw_uv, coverage_bg_uv=raw_bg, frame_ids=frames,
+                  focal=st["focal"], principal=st["principal"], bg_uv=_und(bg),
+                  estimate_focal=st["estimate_focal"],          # (I144) shared lenses refine
+                  estimate_distortion=st["estimate_distortion"],
+                  unit=st["unit"], names=st["names"])          # (I34) messages say cam1, not 0
+    drop = axes = None
+    if st["mode"] == "drop":
+        duv = wd.collect_drop(p, st["drop_name"], st["drop_t0"], st["drop_t1"])[:, views]
+        drop = {"uv": _und(duv), "fps": st["fps0"], "t0": int(min(st["drop_t0"], st["drop_t1"]))}
+    elif st["mode"] == "axes":
+        t = st["ax_t"]
+        o, x, y = st["ax_names"]
+        # (I304) floor marks are clicked once: the nearest clicked frame, also at a fractional offset
+        axes = {"origin": _und(wd.collect_static_at(p, o, t)[views][None])[0],
+                "x": _und(wd.collect_static_at(p, x, t)[views][None])[0],
+                "xy": _und(wd.collect_static_at(p, y, t)[views][None])[0],
+                "names": f"{o}, {x} and {y}", "t": int(t)}
+    return kwargs, drop, axes, np.asarray(frames, np.int64), (st["a"], st["b"])
+
+
+def _hinted(kwargs: dict, hint) -> dict:
+    """`kwargs` starting from `hint`'s focal lengths for the cameras whose focal length the user left
+    to be found (the refine's joint check, I271): the grid search is skipped, the value is still
+    refined. Known focal lengths and lens profiles are untouched."""
+    k = dict(kwargs)
+    C = len(k["sizes"])
+    f0 = k.get("focal")
+    f = np.full(C, np.nan) if f0 is None else np.asarray(f0, np.float64).reshape(-1).copy()
+    if f.size == 1 and C > 1:
+        f = np.full(C, float(f[0]))
+    unknown = ~np.isfinite(f)
+    if not unknown.any():
+        return k
+    f[unknown] = np.asarray(hint.K)[unknown, 0, 0]
+    est = k.get("estimate_focal", True)
+    est = np.full(C, bool(est)) if np.ndim(est) == 0 else np.asarray(est, bool).copy()
+    est[unknown] = True
+    k["focal"] = [float(v) for v in f]
+    k["estimate_focal"] = [bool(v) for v in est]
+    return k
+
+
+def timing_checks(project, cal, a: str, b: str, views, offsets, progress=None, cancelled=None) -> dict:
+    """The camera-timing checks of one calibration (`wandsync.diagnose`: the other cameras' prediction,
+    the speed screen, one fixed estimate, start / middle / end), never fatal: a fault is a sentence in
+    {"error": ...}. A cancel raises `_Cancelled`."""
+    from kinetrace import wandsync
+    try:
+        out = wandsync.diagnose(project, cal, a, b, offsets=offsets, views=views, progress=progress,
+                                cancelled=cancelled)
+    except _Cancelled:
+        raise
+    except Exception as e:      # noqa: BLE001 -- the calibration stands without its timing checks
+        return {"error": plain_error(e, "The timing checks could not be made", short=True)}
+    if out.get("cancelled"):
+        raise _Cancelled()
+    return out
+
+
 class _CalibThread(QThread):
     # every signal carries the run's generation number (I28): a run started
     # with settings the user has since changed must not become the result
@@ -127,14 +269,16 @@ class _CalibThread(QThread):
     finished_ok = Signal(object, object, int)     # WandResult, gravity dict | None, generation
     error = Signal(str, int)
     timing_found = Signal(object, int)            # (I274) wanddata.TimingCheck with suggestions, generation
+    solved = Signal(object, int)                  # (G200) the WandResult as soon as it is solved, generation
 
     def __init__(self, kwargs: dict, frame_mode: str, drop: dict | None, axes: dict | None,
                  lens_models: list | None = None, lens_summaries: list | None = None, gen: int = 0,
-                 timing: dict | None = None):
+                 timing: dict | None = None, checks: dict | None = None):
         super().__init__()
         self.kwargs = kwargs
         self.timing = timing            # (I274) {"project", "a", "b", "views", "models"}: check the offsets first
         self.timing_result = None
+        self.checks = checks            # (I271) {"project", "a", "b", "views", "offsets"}: the timing checks after
         self.frame_mode = frame_mode
         self.drop = drop
         self.axes = axes
@@ -168,44 +312,22 @@ class _CalibThread(QThread):
                     if not self._cancel:
                         self.timing_found.emit(tc, self.gen)
                     return
-            res = wand.calibrate_wand(progress=self._note, **self.kwargs)
+            solve_note = self._note if self.checks is None else (lambda f, m: self._note(0.6 * f, m))
+            res, grav = solve(self.kwargs, self.frame_mode, self.drop, self.axes, self.lens_models,
+                              self.lens_summaries, solve_note)
             if self.timing_result is not None:
                 res.report["timing_check"] = {"verdict": self.timing_result.verdict,
                                               "lines": list(self.timing_result.lines)}
-            grav = None
-            # (I29) the wand solve stands on its own: a vertical / axes step that
-            # cannot be applied keeps camera 1's axes and says why, instead of
-            # throwing a good calibration away as "Calibration failed"
-            try:
-                if self.frame_mode == "drop" and self.drop is not None:
-                    self._note(0.95, "Aligning the vertical to the dropped object")
-                    res, grav = wand.align_gravity(res, self.drop["uv"], self.drop["fps"],
-                                                   frame0=self.drop.get("t0"))
-                elif self.frame_mode == "axes" and self.axes is not None:
-                    self._note(0.95, "Aligning the axes to your reference points")
-                    res = wand.align_axes(res, self.axes["origin"], self.axes["x"], self.axes["xy"])
-            except wand.WandError as e:
-                cam1 = (res.report.get("camera_names") or ["camera 1"])[0]
-                if self.frame_mode == "drop":
-                    what = "the vertical from the dropped object"
-                    fix = ("pick the frames where it falls (at least 4, seen by two or more cameras)")
-                else:
-                    a = self.axes or {}
-                    what = "the axes from the three reference points"
-                    fix = (f"pick a frame where {a.get('names', 'all three')} are tracked in two or more "
-                           f"cameras (the page suggests one)")
-                    e = f"{e} on reference frame {a.get('t', '?')}"
-                res = wand.keep_camera_frame(
-                    res, f"{cap_first(what)} could NOT be set: {e}. The calibration itself is fine "
-                         f"and keeps {cam1}'s axes. Go Back to 'Which way is up' and {fix}, or choose "
-                         f"'Neither'.", what)
-            # cameras with a lens profile were solved on UNDISTORTED points: the
-            # calibration must undistort the tracks the same way at 3D time
-            for c, m in enumerate(self.lens_models):
-                if m is not None and c < len(res.cameras):
-                    res.cameras[c].undistort = m
-            if self.lens_summaries:
-                res.report["lens_profiles"] = list(self.lens_summaries)
+            if self._cancel:
+                return
+            if self.checks is not None:
+                # (G200) the picture can open now; (I271) then the full timing checks (the owner: every time)
+                self.solved.emit(res, self.gen)
+                ck = self.checks
+                res.report["timing"] = timing_checks(
+                    ck["project"], res.to_calibration(), ck["a"], ck["b"], ck["views"], ck["offsets"],
+                    progress=lambda f: self._note(0.6 + 0.4 * f, "Checking the cameras' timing with the wand"),
+                    cancelled=lambda: self._cancel)
             if self._cancel:
                 return
             self.finished_ok.emit(res, grav, self.gen)
@@ -217,6 +339,69 @@ class _CalibThread(QThread):
             # (G112) anything else ("index 3 is out of bounds") is a program fault, not a message
             # for the user: a sentence, and the traceback in the error log
             self.error.emit(plain_error(e, "The calibration could not be completed"), self.gen)
+
+
+class _RefineThread(QThread):
+    """Refine offsets with the wand (I271): `wandsync.refine` with the wizard's own settings at the
+    page's offsets, every calibration made exactly as Calibrate now makes it (`build_inputs` +
+    `solve`), then the whole-frame check at the refined offsets. Never changes the project."""
+    progress = Signal(float, str, int)
+    finished_ok = Signal(object, int)             # the refine result (+ grav_after, timing_check), generation
+    error = Signal(str, int)
+
+    def __init__(self, project, settings: dict, offsets: list, gen: int = 0):
+        super().__init__()
+        self.project = project
+        self.settings = settings
+        self.offsets = [float(o) for o in offsets]
+        self.gen = int(gen)
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def _emit(self, f, m):
+        if self._cancel:
+            raise _Cancelled()
+        self.progress.emit(float(f), str(m), self.gen)
+
+    def _check(self, *_):
+        if self._cancel:
+            raise _Cancelled()
+
+    def run(self):
+        from kinetrace import wandsync
+        st = self.settings
+        gravs = {}
+
+        def calibrate(offsets, hint=None):
+            kwargs, drop, axes, frames, ends = build_inputs(self.project, st, offsets)
+            if hint is not None:
+                kwargs = _hinted(kwargs, hint)
+            res, grav = solve(kwargs, st["mode"], drop, axes, st["models"], st["summaries"], self._check)
+            res.frame_ids, res.wand_names = frames, ends          # (G185) its own wand rows for the picture
+            gravs[id(res)] = grav
+            return res
+
+        try:
+            out = wandsync.refine(self.project, st["a"], st["b"], calibrate, offsets=self.offsets,
+                                  views=st["views"], progress=lambda f, m: self._emit(0.85 * f, m),
+                                  cancelled=lambda: self._cancel)
+            if out.get("cancelled") or self._cancel:
+                return
+            out["grav_after"] = gravs.get(id(out["res_after"]))
+            tc = wd.timing_check(wd.retimed(self.project, out["after"]), st["a"], st["b"], st["views"],
+                                 st["all_models"], progress=lambda f, m: self._emit(0.85 + 0.15 * f, m))
+            out["timing_check"] = {"verdict": tc.verdict, "lines": list(tc.lines)}
+            if self._cancel:
+                return
+            self.finished_ok.emit(out, self.gen)
+        except _Cancelled:
+            return
+        except _wand.WandError as e:
+            self.error.emit(f"A calibration in the refinement failed: {e}", self.gen)
+        except Exception as e:      # noqa: BLE001
+            self.error.emit(plain_error(e, "The offsets could not be refined"), self.gen)
 
 
 class IntroPage(QWizardPage):
@@ -351,8 +536,8 @@ class WandPage(QWizardPage):
         """One tick per camera, the defaults from `wanddata.camera_ticks`; kept as the user set them
         while the wand ends and the cameras stay the same."""
         p = self.wiz.project
-        key = (a, b, tuple(p.names))
-        self._both = wd.wand_visibility(p, a, b)
+        key = (a, b, tuple(p.names))                      # (I303) not the offsets: the user's ticks stay
+        self._both = wd.wand_visibility(wd.retimed(p, self.wiz.offsets()), a, b)
         if key == self._tick_key and len(self.ticks) == p.n_views:
             return
         self._tick_key = key
@@ -877,6 +1062,10 @@ class FramePage(QWizardPage):
         for sp in (self.drop_t0, self.drop_t1):
             sp.valueChanged.connect(lambda _v: self.completeChanged.emit())
 
+    def _rp(self):
+        """(I303) The project at the offsets the wizard calibrates at (pending ones included)."""
+        return wd.retimed(self.wiz.project, self.wiz.offsets())
+
     def initializePage(self):
         p = self.wiz.project
         views = self.wiz.views()
@@ -894,7 +1083,7 @@ class FramePage(QWizardPage):
         self._visited = True
         # (I30) any instant two cameras share, not only those EVERY camera recorded;
         # negative when a camera started before the reference one
-        t0, t1 = wd.sampling_window(p)
+        t0, t1 = wd.sampling_window(self._rp())
         if t1 < t0:
             t0 = t1 = 0
         for sp in (self.drop_t0, self.drop_t1, self.ax_t):
@@ -961,11 +1150,12 @@ class FramePage(QWizardPage):
             self.drop_note.setText(rate)
             self.completeChanged.emit()
             return None
-        t0, t1 = wd.sampling_window(p)
+        rp = self._rp()
+        t0, t1 = wd.sampling_window(rp)
         if t1 < t0:
             self.completeChanged.emit()
             return None
-        fall = wd.find_fall(p, nm, t0, t1)
+        fall = wd.find_fall(rp, nm, t0, t1)
         if fall is not None:
             a, b, why = fall
             self.drop_t0.setValue(a)
@@ -974,7 +1164,7 @@ class FramePage(QWizardPage):
                                    "Only the frames between its release and the moment it lands, bounces or is "
                                    "caught belong here; correct them if they are wrong.")
         else:
-            uv = wd.collect_drop(p, nm, t0, t1)
+            uv = wd.collect_drop(rp, nm, t0, t1)
             hits = np.nonzero(np.isfinite(uv).all(axis=2).sum(axis=1) >= 2)[0]
             if len(hits):
                 self.drop_t0.setValue(int(t0 + hits[0]))
@@ -995,7 +1185,7 @@ class FramePage(QWizardPage):
         all tracked in two or more cameras (when there is one)."""
         names = self._axes_names()
         if all(names) and len(set(names)) == 3:
-            t = wd.best_common_frame(self.wiz.project, names)
+            t = wd.best_common_frame(self._rp(), names, static=True)      # (I304) marks clicked once
             if t is not None:
                 self.ax_t.blockSignals(True)
                 self.ax_t.setValue(int(t))
@@ -1003,12 +1193,13 @@ class FramePage(QWizardPage):
         self._check_axes()
 
     def _axes_missing(self) -> list[str]:
-        """The chosen reference points NOT seen by two cameras at the frame."""
-        p = self.wiz.project
+        """The chosen reference points NOT seen by two cameras at the frame (I304: a mark clicked once is
+        found on its nearest clicked frame, also at a fractional offset)."""
+        rp = self._rp()
         t = self.ax_t.value()
         views = self.wiz.views()              # (I272) seen by two cameras of this run
         return [nm for nm in self._axes_names()
-                if not nm or int((np.isfinite(wd.collect_at(p, nm, t)[views]).all(axis=1)).sum()) < 2]
+                if not nm or int((np.isfinite(wd.collect_static_at(rp, nm, t)[views]).all(axis=1)).sum()) < 2]
 
     def _check_axes(self):
         names = self._axes_names()
@@ -1022,7 +1213,7 @@ class FramePage(QWizardPage):
             if not missing:
                 self.ax_note.setText(f"All three are tracked in two or more cameras on frame {t}.")
             else:
-                best = wd.best_common_frame(self.wiz.project, names)
+                best = wd.best_common_frame(self._rp(), names, static=True)
                 hint = (f"frame {best} has all three." if best is not None else
                         "they are never tracked together in two cameras: track all three on one common "
                         "frame, or choose another way.")
@@ -1042,8 +1233,7 @@ class FramePage(QWizardPage):
         points all seen by two cameras on the reference frame."""
         m = self.mode()
         if m == "drop":
-            p = self.wiz.project
-            uv = wd.collect_drop(p, self.drop_name.currentText(), self.drop_t0.value(),
+            uv = wd.collect_drop(self._rp(), self.drop_name.currentText(), self.drop_t0.value(),
                                  self.drop_t1.value())[:, self.wiz.views()]
             return bool(self.drop_name.currentText()) and int(
                 (np.isfinite(uv).all(axis=2).sum(axis=1) >= 2).sum()) >= 4
@@ -1054,6 +1244,135 @@ class FramePage(QWizardPage):
 
     def mode(self) -> str:
         return "drop" if self.r_drop.isChecked() else ("axes" if self.r_axes.isChecked() else "none")
+
+
+TIMING_WORDS = {"good": "GOOD — no sign of a timing error",
+                "ok": "CHECK — read the notes below",
+                "poor": "SYNC SUSPECT — press Refine offsets with the wand (the button above the report)"}
+REFINE_WORDS = {"good": "GOOD — the wand times every camera",
+                "ok": "USABLE — apply only the rows marked good",
+                "poor": "NOT ALL CAMERAS ARE TIMED — read each row before applying anything"}
+REFINE_LABEL = "Refine offsets with the wand"
+STOP_LABEL = "Stop refining"
+
+
+def _verdict_span(v: str, words: dict) -> str:
+    col = VERDICT_COLORS.get(v, theme.RED)
+    return f"<span style='color:{col}'><b>{words.get(v, v)}</b></span>"
+
+
+def _off(x) -> str:
+    """An offset written as the CAMERAS panel writes it (3 decimals, trailing zeros dropped)."""
+    return f"{float(x):+.3f}".rstrip("0").rstrip(".")
+
+
+def timing_html(timing: dict | None, project, title: str = "Camera timing (checked with the wand)") -> str:
+    """(I271, G199) The camera-timing section of a calibration's report: the other cameras' prediction of
+    each camera's wand ends, the speed screen, what one estimate with the calibration fixed says about
+    the offsets, start / middle / end, the hand check and the continuous-recording note. "" without
+    checks."""
+    if not timing:
+        return ""
+    names = [project.name(c) for c in range(project.n_views)]
+    dim = theme.TEXT_DIM
+    parts = [f"<h3>{title}</h3>"]
+    if timing.get("error"):
+        return parts[0] + f"<p style='color:{dim}'>{timing['error']}.</p>"
+    pred = timing.get("prediction") or {}
+    rows = {int(c): r for c, r in (pred.get("per_camera") or {}).items()}
+    if timing.get("speed") is not None:
+        parts.append(f"<p>{_verdict_span(timing.get('verdict', 'ok'), TIMING_WORDS)}</p>")
+    if any(r.get("verdict") not in (None, "none") for r in rows.values()):
+        parts.append("<table cellpadding='3'><tr><th align='left'>camera</th><th>the other cameras' prediction "
+                     "of its wand ends: median (90 %) px</th><th align='left'>verdict</th></tr>")
+        for c, r in sorted(rows.items()):
+            if r.get("verdict") in (None, "none"):
+                txt, word, col = "—", "not predicted (fewer than 3 cameras on its wand ends)", dim
+            else:
+                txt = f"{r['median_px']:.1f} ({r['p90_px']:.1f})"
+                word, col = r["verdict"], VERDICT_COLORS.get(r["verdict"], theme.RED)
+            parts.append(f"<tr><td>{names[c]}</td><td align='center'>{txt}</td>"
+                         f"<td style='color:{col}'>{word}</td></tr>")
+        parts.append("</table>")
+        parts.append(f"<p style='color:{dim}'>Each camera's wand ends as the OTHER cameras put them (what the ◇ "
+                     "does), in that camera's own pixels. A camera clearly worse than the others is usually one "
+                     "whose offset is off: <b>Refine offsets with the wand</b> measures it.</p>")
+    elif pred.get("why"):
+        parts.append(f"<p style='color:{dim}'>{pred['why']}</p>")
+    if timing.get("speed") is None:
+        parts.append(f"<p style='color:{dim}'>{timing.get('why', '')}.</p>")
+        return "".join(parts)
+    parts.append("<ul>")
+    sp = timing["speed"]
+    parts.append(f"<li><b>Wand length against wand speed:</b> {sp.get('why', '')}</li>")
+    off = {int(c): v for c, v in (timing.get("off_by") or {}).items() if v is not None}
+    if off:
+        big = {c: v for c, v in off.items() if abs(v) >= 0.05}
+        if big:
+            parts.append("<li><b>What the wand says about the offsets</b> (the calibration held fixed): "
+                         + "; ".join(f"{names[c]} {v:+.2f} frame" for c, v in sorted(big.items()))
+                         + ". An UNDER-estimate: a calibration made with wrong offsets has already bent a "
+                           "little towards them. <b>Refine offsets with the wand</b> measures them properly.</li>")
+        else:
+            parts.append("<li><b>What the wand says about the offsets:</b> every timed camera agrees with its "
+                         "offset to within 0.05 frame.</li>")
+    win = timing.get("windows")
+    if win:
+        wr = "".join(f"<br>{names[int(c)]}: {r['why']}" for c, r in sorted(win["per_camera"].items(),
+                                                                          key=lambda kv: int(kv[0])))
+        parts.append("<li><b>Start / middle / end of the wand frames</b> (a drift = a frame-rate mismatch, a "
+                     f"jump = a dropped frame; said, never corrected): {wr}"
+                     + (f"<br><i>{win['caveat']}</i>" if win.get("caveat") else "") + "</li>")
+    parts.append("</ul>")
+    ff = sp.get("fastest_frame")
+    if ff is not None:
+        parts.append(f"<p><b>Check it by hand</b> after <i>Use this calibration</i>: go to frame {ff} of "
+                     f"{names[0]} (the wand moves fastest there), select a wand end in the LAYERS panel and look "
+                     "at the dashed lines of <i>View → Epipolar guides from the other cameras</i>: in every camera "
+                     "they must run through that ball. A line that misses ALONG the wand's direction of travel "
+                     "means that camera's timing is off (a miss across it is the calibration).</p>")
+    from kinetrace.wandsync import CONTINUOUS_NOTE
+    parts.append(f"<p style='color:{dim}'>{CONTINUOUS_NOTE}</p>")
+    return "".join(parts)
+
+
+def refine_html(out: dict, project) -> str:
+    """(I271, G199) The refinement's own section: verdict, why, the rounds and every camera's row."""
+    names = [project.name(c) for c in range(project.n_views)]
+    rounds = out.get("rounds", [])
+    moves = ", ".join(f"{r['moved']:.3f}" for r in rounds)
+    settled = ("settled" if out.get("converged") else
+               "stopped after the last round (its moves are the estimator's own jitter; the last offsets found "
+               "were calibrated once more)" if out.get("settled") else
+               "had NOT settled (the last offsets found were calibrated once more)")
+    parts = [f"<h2 style='margin-bottom:2px'>Refined camera timing: {_verdict_span(out['verdict'], REFINE_WORDS)}"
+             "</h2>", f"<p>{out['why']}</p>",
+             f"<p style='color:{theme.TEXT_DIM}'>{len(rounds)} round(s) of calibrate → estimate the offsets with that "
+             f"calibration fixed; the largest change per round: {moves} frame — {settled}. "
+             f"{names[out['clock']]} is this run's clock: the other cameras are timed against it. Every row is "
+             "judged with the calibration fixed and by moving that camera half a frame and calibrating again (a "
+             "timing the calibration can absorb is not measured by the wand).</p><ul>"]
+    for c, r in sorted(out.get("rows", {}).items()):
+        col = VERDICT_COLORS.get(r["verdict"], theme.RED)
+        pb, pa = r.get("pred_before"), r.get("pred_after")
+        pred = (f" The other cameras' prediction: {pb:.1f} → {pa:.1f} px." if pb is not None and pa is not None
+                and np.isfinite(pb) and np.isfinite(pa) else "")
+        parts.append(f"<li>{names[c]}: {_off(r['old'])} → <b>{_off(r['new'])}</b> "
+                     f"<span style='color:{col}'>{r['verdict'].upper()}</span> — {r['why']}.{pred}</li>")
+    parts.append("</ul>")
+    parts.append(timing_html(out.get("timing_after"), project, "Camera timing at the refined offsets"))
+    return "".join(parts)
+
+
+def _refine_summary(out: dict) -> dict:
+    """What the report keeps of a refinement (strict JSON: it goes into the .kcal.json)."""
+    from kinetrace.wandsync import json_safe
+    keep = ("old", "new", "verdict", "why", "sharpness", "joint", "joint_rise", "split", "window",
+            "pred_before", "pred_after")
+    return json_safe({"before": out["before"], "after": out["after"], "clock": out["clock"],
+                      "verdict": out["verdict"], "why": out["why"], "converged": out["converged"],
+                      "rounds": out["rounds"],
+                      "rows": {c: {k: r.get(k) for k in keep} for c, r in out["rows"].items()}})
 
 
 class RunPage(QWizardPage):
@@ -1068,17 +1387,28 @@ class RunPage(QWizardPage):
         row = QHBoxLayout()
         self.btn_run = QPushButton("Calibrate now")
         self.btn_run.setObjectName("primary")
+        # (I271, G199) the user's option: refine the offsets AND calibrate at them
+        self.btn_refine = QPushButton(REFINE_LABEL)
+        self.btn_refine.setEnabled(False)
+        self.btn_refine.setToolTip(
+            "Measure every camera's offset with the wand, to a fraction of a frame (whole frames too): calibrate, "
+            "estimate the offsets with that calibration fixed, calibrate again at them, ... until nothing moves "
+            "(at most 4 rounds). A table then shows each camera's refined offset and a verdict; nothing changes "
+            "until you apply, and the project gets the offsets only with the calibration made at them, when you "
+            "press Use this calibration.")
         self.btn_save = QPushButton("Save calibration files…")
         self.btn_save.setEnabled(False)
         self.btn_save.setToolTip("A Kinetrace calibration file (.kcal.json) for other projects, a "
                                  "dltCoefs.csv for DLTdv, and the report as text")
-        # (G185) the calibration as a 3D picture, before it is used
+        # (G185) the calibration as a 3D picture, before it is used; (G200) it opens by itself after a solve
         self.btn_3d = QPushButton("Show in 3D")
         self.btn_3d.setEnabled(False)
         self.btn_3d.setToolTip("The cameras where the calibration put them, their fields of view, every wand "
                                "position used (coloured by error) and the space the cameras cover - judge it by "
-                               "eye before 'Use this calibration'")
+                               "eye before 'Use this calibration'. It opens by itself after each calibration; "
+                               "this brings it back")
         row.addWidget(self.btn_run)
+        row.addWidget(self.btn_refine)
         row.addWidget(self.btn_save)
         row.addWidget(self.btn_3d)
         row.addStretch(1)
@@ -1088,7 +1418,21 @@ class RunPage(QWizardPage):
         self.bar.setTextVisible(False)
         lay.addWidget(self.bar)
         self.status = _dim(QLabel(""))
+        self.status.setWordWrap(True)
         lay.addWidget(self.status)
+        # (I303) the offsets this calibration is made at, while they are not yet the project's
+        self.offsets_row = QWidget()
+        orl = QHBoxLayout(self.offsets_row)
+        orl.setContentsMargins(0, 0, 0, 0)
+        self.offsets_note = QLabel("")
+        self.offsets_note.setWordWrap(True)
+        self.btn_project_offsets = QPushButton("Use the project's offsets again")
+        self.btn_project_offsets.setToolTip("Forget the offsets applied in this wizard and calibrate again at the "
+                                            "offsets the project has")
+        orl.addWidget(self.offsets_note, 1)
+        orl.addWidget(self.btn_project_offsets)
+        self.offsets_row.setVisible(False)
+        lay.addWidget(self.offsets_row)
         # (I274, G182) the timing check's suggestion: shown when the wand clicks say an offset is wrong
         self.timing_box = QGroupBox("The cameras' timing")
         tl = QVBoxLayout(self.timing_box)
@@ -1098,8 +1442,9 @@ class RunPage(QWizardPage):
         trow = QHBoxLayout()
         self.btn_apply_offsets = QPushButton("Apply these offsets and calibrate")
         self.btn_apply_offsets.setObjectName("primary")
-        self.btn_apply_offsets.setToolTip("Change the offsets as suggested (one Ctrl+Z step takes them back), "
-                                          "then calibrate")
+        self.btn_apply_offsets.setToolTip("Calibrate at the suggested offsets; they go into the project with that "
+                                          "calibration when you press Use this calibration (one Ctrl+Z then takes "
+                                          "both back)")
         self.btn_keep_offsets = QPushButton("Calibrate with the offsets as they are")
         trow.addWidget(self.btn_apply_offsets)
         trow.addWidget(self.btn_keep_offsets)
@@ -1107,24 +1452,92 @@ class RunPage(QWizardPage):
         tl.addLayout(trow)
         self.timing_box.setVisible(False)
         lay.addWidget(self.timing_box)
+        # (I271, G199) the refinement's suggestion: one row per camera, ticks, Apply
+        self.refine_box = QGroupBox("Refined offsets (frames of each camera)")
+        rl = QVBoxLayout(self.refine_box)
+        self.refine_note = QLabel("")
+        self.refine_note.setWordWrap(True)
+        rl.addWidget(self.refine_note)
+        self.refine_table = QTableWidget(0, 7)
+        self.refine_table.setHorizontalHeaderLabels(["apply", "camera", "offset now", "refined", "change",
+                                                     "other cameras' prediction (px): now → refined", "verdict"])
+        self.refine_table.verticalHeader().setVisible(False)
+        self.refine_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.refine_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.refine_table.horizontalHeader().setStretchLastSection(True)
+        rl.addWidget(self.refine_table)
+        rrow = QHBoxLayout()
+        self.btn_apply_refined = QPushButton("Apply the ticked offsets")
+        self.btn_apply_refined.setObjectName("primary")
+        self.btn_apply_refined.setToolTip(
+            "The page's calibration becomes the one made at the ticked offsets (the refinement's own when every "
+            "suggestion is ticked, else the cameras are calibrated again). The project gets the offsets with that "
+            "calibration when you press Use this calibration; Cancel leaves it as it is.")
+        rrow.addWidget(self.btn_apply_refined)
+        rrow.addStretch(1)
+        rl.addLayout(rrow)
+        self.refine_box.setVisible(False)
+        lay.addWidget(self.refine_box)
         self.report = QTextBrowser()
         lay.addWidget(self.report, 1)
         self.btn_run.clicked.connect(lambda: self._run())
+        self.btn_refine.clicked.connect(lambda: self._refine())
         self.btn_save.clicked.connect(self._save)
-        self.btn_3d.clicked.connect(self._show_3d)
-        self.view3d = None              # (G185) the 3D window of this run
-        self.btn_apply_offsets.clicked.connect(self._apply_offsets)
+        self.btn_3d.clicked.connect(lambda: self._show_3d())
+        self.btn_apply_offsets.clicked.connect(lambda: self._apply_offsets())
         self.btn_keep_offsets.clicked.connect(lambda: self._run(check_timing=False))
-        self._timing = None            # the last TimingCheck that suggested something
-        self._thread: _CalibThread | None = None
-        self._gen = 0                  # bumped by every run and every change of settings (I28)
-        self._run_key = None           # the settings the current result / run was made with
+        self.btn_apply_refined.clicked.connect(lambda: self._apply_refined())
+        self.btn_project_offsets.clicked.connect(lambda: self._project_offsets())
+        self.view3d = None              # (G185) the 3D window of this run
+        self._timing = None             # the last TimingCheck that suggested something (I274)
+        self._thread = None             # the page's LAST worker (a calibration or a refinement; `_busy`)
+        self._threads: list = []        # every worker started, kept until it has finished (a dropped running
+                                        # QThread aborts the app)
+        self._gen = 0                   # bumped by every run and every change of settings (I28)
+        self._run_key = None            # the settings the current result / run was made with
+        self.refined = None             # (I271) the last refinement's result
+        self._refine_key = None         # ... and the settings (offsets included) it started from
+        self._ticks: list = []          # [(project camera, QCheckBox)] of the refine table
+        self._run_views: list = []
+        self._run_frames = None
+        self._run_ends = ("end 1", "end 2")
+        self._run_offsets: list = []
+
+    # ------------------------------------------------------------------ settings, the run's inputs
+    def settings(self) -> dict:
+        """Every page's input for a run, read on the GUI thread (`build_inputs` uses it on any thread)."""
+        w = self.wiz
+        p = w.project
+        views = w.views()
+        everyone = views == list(range(p.n_views))
+
+        def pick(x):
+            """A per-camera setting for the ticked cameras (a single value applies to all)."""
+            return x if (everyone or x is None or isinstance(x, (bool, np.bool_))) else [x[c] for c in views]
+
+        f = w.page_frame
+        cams = w.page_cams
+        models = cams.lens_models()
+        summ = cams.lens_summaries()
+        return {"a": w.page_wand.end_a.currentText(), "b": w.page_wand.end_b.currentText(),
+                "length": float(w.page_wand.length.value()), "unit": str(w.page_wand.unit.currentData()),
+                "views": list(views), "extras": cams.extra_names(),
+                "models": [models[c] for c in views], "summaries": [summ[c] for c in views],
+                "all_models": models,
+                "focal": pick(cams.focal()), "principal": pick(cams.principal()),
+                "estimate_focal": pick(cams.focal_free_per_camera()),      # (I144) shared lenses refine
+                "estimate_distortion": pick(cams.distortion_per_camera()),
+                "sizes": [(p.sessions[c].width, p.sessions[c].height) for c in views],
+                "names": [p.name(c) for c in views],                    # (I34) messages say cam1, not 0
+                "mode": f.mode(), "drop_name": f.drop_name.currentText(), "drop_t0": f.drop_t0.value(),
+                "drop_t1": f.drop_t1.value(), "ax_names": f._axes_names(), "ax_t": f.ax_t.value(),
+                "fps0": float(p.sessions[0].fps)}
 
     def _settings_key(self) -> tuple:
         """Everything the result depends on: a result made with other settings
-        than the pages show now is not the result of these settings (I28)."""
+        than the pages show now is not the result of these settings (I28) - the
+        offsets it is made at included (I303)."""
         w = self.wiz
-        p = w.project
         f = w.page_frame
         mode = f.mode()
         frame = ((mode, f.drop_name.currentText(), f.drop_t0.value(), f.drop_t1.value()) if mode == "drop" else
@@ -1136,7 +1549,8 @@ class RunPage(QWizardPage):
                 None if foc is None else tuple(float(v) if np.isfinite(v) else None for v in foc),
                 tuple(_lens.profile_key(l) for l in w.page_cams.usable_lenses()),      # by content, R20
                 bool(w.page_cams.distort.isChecked()), tuple(w.page_cams.extra_names()), frame,
-                tuple(w.views()))                                                       # (I272) the ticks
+                tuple(w.views()),                                                       # (I272) the ticks
+                tuple(float(o) for o in w.offsets()))                                   # (I303) pending
 
     def initializePage(self):
         w = self.wiz
@@ -1169,117 +1583,115 @@ class RunPage(QWizardPage):
         # (I28) the pages may have changed since the last run (Back, edit, Next):
         # a result - or a run still going - made with other settings is dropped,
         # or Finish would hand over a calibration scaled by the OLD wand length
-        running = self._thread is not None and self._thread.isRunning()
-        if self._settings_key() != self._run_key or (self.wiz.result_calibration is None and not running):
+        running = self._busy()
+        if self._settings_key() != self._run_key or (w.result_calibration is None and not running):
             self._gen += 1
             self._run_key = None
             if running:
                 self._thread.cancel()
-            self.wiz.result = self.wiz.result_calibration = self.wiz.gravity = None
-            self.btn_3d.setEnabled(False)
+            w.result = w.result_calibration = w.gravity = None
             self._close_3d()
             self._timing = None                       # a suggestion for other settings (ticks, ends) is stale
             self.timing_box.setVisible(False)
-            self.btn_save.setEnabled(False)
-            self.btn_run.setEnabled(not running)
             self.bar.setValue(0)
             self.status.setText("The earlier run, made with other settings, is stopping; 'Calibrate now' "
                                 "comes back in a moment." if running else "")
             self.report.setHtml("<p style='color:%s'>Press <b>Calibrate now</b>. It takes a few seconds to a "
-                                "minute.</p>" % theme.TEXT_DIM)
+                                "minute, and the cameras' timing is checked after it.</p>" % theme.TEXT_DIM)
             self.completeChanged.emit()
+        self._update_offsets_note()
+        self._show_refine_box()
+
+    # ------------------------------------------------------------------ workers
+    def _busy(self) -> bool:
+        """A worker of this page is running: nothing else may start (one worker at a time - a running
+        QThread is never replaced, and every one is kept in `_threads` until it has finished)."""
+        th = self._thread
+        return th is not None and th.isRunning()
+
+    def _start(self, th) -> None:
+        """Start a worker as THE page's worker; it is kept (`_threads`) until it has finished."""
+        self._thread = th
+        self._threads.append(th)
+        th.finished.connect(lambda th=th: self._thread_ended(th))
+        th.start()
+        self._set_buttons()
+
+    def _thread_ended(self, th) -> None:
+        """A worker is over (finished, failed or cancelled): the buttons come back now, never earlier
+        (`finished` may arrive a moment before the thread has stopped: wait for it first)."""
+        th.wait(5000)
+        if not th.isRunning() and th in self._threads:
+            self._threads.remove(th)
+        if th is self._thread and th.gen != self._gen and self.wiz.result_calibration is None:
+            self.status.setText("")
+        if th is self._thread and isinstance(th, _RefineThread) and th._cancel and th.gen == self._gen:
+            # (review) Stop refining: say it stopped, not "Stopping…" for ever
+            self.bar.setValue(0)
+            self.status.setText("Refinement stopped. The calibration below is unchanged.")
+        self.btn_refine.setText(REFINE_LABEL)
+        self._set_buttons()
+
+    def _set_buttons(self) -> None:
+        busy = self._busy()
+        refining = busy and isinstance(self._thread, _RefineThread)
+        has = self.wiz.result is not None
+        self.btn_run.setEnabled(not busy)
+        self.btn_refine.setEnabled(bool(refining or (not busy and has and len(self.wiz.views()) >= 2)))
+        self.btn_apply_refined.setEnabled(bool(not busy and self._refine_valid()))
+        self.btn_project_offsets.setEnabled(not busy)
+        self.btn_apply_offsets.setEnabled(not busy)
+        self.btn_keep_offsets.setEnabled(not busy)
+        self.btn_save.setEnabled(bool(not busy and has))
+        self.btn_3d.setEnabled(bool(has))
 
     def _run(self, check_timing: bool = True):
+        if self._busy():                        # one worker at a time: never replace a running one
+            return
         w = self.wiz
         p = w.project
         self.timing_box.setVisible(False)
-        a, b = w.page_wand.end_a.currentText(), w.page_wand.end_b.currentText()
-        # (I272) only the ticked cameras are solved: every per-camera input is taken for them, in
-        # camera order (all ticked = exactly the arguments of a run on every camera)
-        views = w.views()
-        everyone = views == list(range(p.n_views))
-        sel = None if everyone else views
-        uv, frames = wd.collect_wand(p, a, b, max_frames=400, views=sel)
-        self._run_frames = np.asarray(frames, np.int64)            # (G185) each wand row's reference frame
-        self._run_ends = (a, b)
-        extras = w.page_cams.extra_names()
-        bg = wd.collect_extra_points(p, extras, views=sel) if extras else None
-        if bg is not None and bg.shape[0] == 0:
-            bg = None
-        models = [w.page_cams.lens_models()[c] for c in views]
-        any_lens = any(m is not None for m in models)
-
-        def pick(x):
-            """A per-camera setting for the ticked cameras (a single value applies to all)."""
-            return x if (everyone or x is None or isinstance(x, (bool, np.bool_))) else [x[c] for c in views]
-
-        def _und(arr):
-            """Undistort every camera's pixels with its profile. Arrays are
-            (F, C, 2, 2) wand ends, (B, C, 2) points or (N, C, 2) drops: the
-            camera is always axis 1, the last axis is xy (the ticked cameras)."""
-            if arr is None or not any_lens:
-                return arr
-            out = np.array(arr, np.float64, copy=True)
-            for c, m in enumerate(models):
-                if m is None:
-                    continue
-                sl = out[:, c]
-                out[:, c] = m.undistort(sl.reshape(-1, 2)).reshape(sl.shape)
-            return out
-
-        raw_uv, raw_bg = uv, bg                    # the clicks as digitized: coverage is measured on these
-        uv = _und(uv)
-        bg = _und(bg)
-        kwargs = dict(wand_uv=uv, wand_length=float(w.page_wand.length.value()),
-                      sizes=[(p.sessions[c].width, p.sessions[c].height) for c in views],
-                      # (I247) coverage on the RAW points (a straightened box over the raw picture area read
-                      # 33-52 % for a 25 % box); (I248) the report names the REFERENCE frame of an outlier
-                      coverage_uv=raw_uv, coverage_bg_uv=raw_bg, frame_ids=frames,
-                      focal=pick(w.page_cams.focal()), principal=pick(w.page_cams.principal()), bg_uv=bg,
-                      estimate_focal=pick(w.page_cams.focal_free_per_camera()),     # (I144) shared lenses refine
-                      estimate_distortion=pick(w.page_cams.distortion_per_camera()),
-                      unit=str(w.page_wand.unit.currentData()),
-                      names=[p.name(c) for c in views])                   # (I34) messages say cam1, not 0
-        mode = w.page_frame.mode()
-        drop = axes = None
-        if mode == "drop":
-            f = w.page_frame
-            duv = wd.collect_drop(p, f.drop_name.currentText(), f.drop_t0.value(), f.drop_t1.value())[:, views]
-            drop = {"uv": _und(duv), "fps": float(p.sessions[0].fps),
-                    "t0": int(min(f.drop_t0.value(), f.drop_t1.value()))}
-        elif mode == "axes":
-            f = w.page_frame
-            t = f.ax_t.value()
-            o, x, y = f._axes_names()
-            axes = {"origin": _und(wd.collect_at(p, o, t)[views][None])[0],
-                    "x": _und(wd.collect_at(p, x, t)[views][None])[0],
-                    "xy": _und(wd.collect_at(p, y, t)[views][None])[0],
-                    "names": f"{o}, {x} and {y}", "t": int(t)}
+        st = self.settings()
+        offsets = w.offsets()
+        kwargs, drop, axes, frames, ends = build_inputs(p, st, offsets)
+        views = st["views"]
+        self._run_frames, self._run_ends = frames, ends      # (G185) each wand row's reference frame
+        self._run_views, self._run_offsets = list(views), list(offsets)
         self._gen += 1
         self._run_key = self._settings_key()
-        self.btn_run.setEnabled(False)
-        self.btn_save.setEnabled(False)
         self.bar.setValue(0)
         self.status.setText("Working…")
-        self.wiz.result = None
-        self.wiz.result_calibration = None
-        self.wiz.gravity = None
-        self.btn_3d.setEnabled(False)
+        w.result = None
+        w.result_calibration = None
+        w.gravity = None
         self._close_3d()
+        self.refine_box.setVisible(False)
         self.completeChanged.emit()
-        summ = w.page_cams.lens_summaries()
-        timing = ({"project": p, "a": a, "b": b, "views": list(views), "models": w.page_cams.lens_models()}
-                  if check_timing and len(views) >= 2 else None)
-        th = _CalibThread(kwargs, mode, drop, axes, models, [summ[c] for c in views], gen=self._gen,
-                          timing=timing)
+        timing = ({"project": wd.retimed(p, offsets), "a": st["a"], "b": st["b"], "views": list(views),
+                   "models": st["all_models"]} if check_timing and len(views) >= 2 else None)
+        checks = ({"project": p, "a": st["a"], "b": st["b"], "views": list(views), "offsets": list(offsets)}
+                  if len(views) >= 2 else None)
+        th = _CalibThread(kwargs, st["mode"], drop, axes, st["models"], st["summaries"], gen=self._gen,
+                          timing=timing, checks=checks)
         th.timing_found.connect(self._timing_found)
-        self._run_views = list(views)
         th.progress.connect(self._progress)
+        th.solved.connect(self._on_solved)
         th.finished_ok.connect(self._done)
         th.error.connect(self._fail)
-        th.finished.connect(self._thread_ended)
-        self._thread = th
-        th.start()
+        self._start(th)
+
+    def _progress(self, f: float, m: str, gen: int):
+        if gen == self._gen:
+            self.bar.setValue(int(1000 * f))
+            self.status.setText(m)
+
+    def _on_solved(self, res, gen: int):
+        """(G200) The wand calibration is solved: its 3D picture opens now, while the timing checks run."""
+        if gen != self._gen:
+            return
+        res.frame_ids = self._run_frames
+        res.wand_names = self._run_ends
+        self._show_3d(res)
 
     def _timing_found(self, tc, gen: int):
         """(I274) The wand clicks say some offsets are whole frames off: show what, and let the user
@@ -1300,38 +1712,19 @@ class RunPage(QWizardPage):
         self.report.setHtml("")
 
     def _apply_offsets(self):
-        """Apply the suggested offsets (one undo step in the app), then calibrate."""
+        """(I274) The suggested whole-frame offsets for this calibration (pending until Finish, I303),
+        then calibrate at them."""
         tc = self._timing
-        p = self.wiz.project
-        if tc is None:
+        if tc is None or self._busy():
             return
-        new = [float(p.offsets[c]) + float(tc.suggestions.get(c, 0)) for c in range(p.n_views)]
-        if self.wiz.apply_offsets is not None:
-            self.wiz.apply_offsets(new)
-        else:
-            for c, o in enumerate(new):
-                p.set_offset(c, o)
+        base = self.wiz.offsets()
+        new = [float(base[c]) + float(tc.suggestions.get(c, 0)) for c in range(len(base))]
         self._timing = None
         self.timing_box.setVisible(False)
+        self._set_pending(new)
         self._run()
 
-    def _progress(self, f: float, m: str, gen: int):
-        if gen == self._gen:
-            self.bar.setValue(int(1000 * f))
-            self.status.setText(m)
-
-    def _thread_ended(self):
-        """A run is over (finished, failed or cancelled): Calibrate can run again."""
-        th = self._thread
-        if th is not None:
-            th.wait(5000)
-        if th is None or not th.isRunning():
-            self.btn_run.setEnabled(True)
-            if th is not None and th.gen != self._gen and self.wiz.result_calibration is None:
-                self.status.setText("")
-
     def _fail(self, msg: str, gen: int = -1):
-        self.btn_run.setEnabled(True)
         if gen != self._gen:                  # a run for settings that have changed since (I28)
             return
         self.status.setText("")
@@ -1345,28 +1738,202 @@ class RunPage(QWizardPage):
             self.timing_box.setVisible(True)
 
     def _done(self, res, grav, gen: int = -1):
-        self.btn_run.setEnabled(True)
         if gen != self._gen:                  # a run for settings that have changed since (I28)
             return
-        self.btn_save.setEnabled(True)
         self.bar.setValue(1000)
         self.status.setText("Done.")
-        self.wiz.result = res
-        self.wiz.gravity = grav
+        self._adopt(res, grav, self._run_views, self._run_frames, self._run_ends, self._run_offsets)
+        self._show_refine_box()
+
+    def _adopt(self, res, grav, views, frames, ends, offsets) -> None:
+        """(I271) `res` becomes the page's result - after Calibrate now, and when the refinement's own
+        calibration is applied: spread over the ticked cameras (I272), the report's camera fields, the
+        offsets it is made at (I303), its wand rows for the picture (G185), the picture itself (G200)."""
+        w = self.wiz
+        p = w.project
+        w.result = res
+        w.gravity = grav
         # the unit the run was MADE with (res.unit), never the combo's value now (I28)
-        p = self.wiz.project
-        views = getattr(self, "_run_views", list(range(p.n_views)))
         cal = spread_calibration(res.to_calibration(), views, p.n_views)      # (I272) None = left out
         res.report["project_views"] = list(views)
         res.report["project_names"] = [p.name(c) for c in range(p.n_views)]
+        res.report["offsets"] = {p.name(c): float(o) for c, o in enumerate(offsets)}
         # (G185) what the 3D picture needs of this run beside the result (not part of the saved report)
-        res.frame_ids = getattr(self, "_run_frames", None)
-        res.wand_names = getattr(self, "_run_ends", ("end 1", "end 2"))
-        self.btn_3d.setEnabled(True)
-        self.wiz.result_calibration = cal
-        self.report.setHtml(report_html(res.report, grav, self.wiz.project, cal.unit))
+        res.frame_ids = None if frames is None else np.asarray(frames, np.int64)
+        res.wand_names = tuple(ends)
+        w.result_calibration = cal
+        self._run_key = self._settings_key()
+        self.report.setHtml(report_html(res.report, grav, p, cal.unit))
+        self._show_3d(res)
+        self._update_offsets_note()
+        self._set_buttons()
         self.completeChanged.emit()
 
+    # ------------------------------------------------------------------ the refinement (I271)
+    def _refine(self):
+        """Refine offsets with the wand - or, while it runs, stop it."""
+        if self._busy():
+            if isinstance(self._thread, _RefineThread):
+                self._thread.cancel()
+                self.status.setText("Stopping the refinement…")
+            return
+        w = self.wiz
+        if w.result is None or len(w.views()) < 2:
+            return
+        st = self.settings()
+        offsets = w.offsets()
+        self._gen += 1
+        self._refine_key = self._settings_key()
+        self.refined = None
+        self.refine_box.setVisible(False)
+        self.bar.setValue(0)
+        self.status.setText("Refining the offsets with the wand: calibrate, estimate the offsets, calibrate again… "
+                            "(Stop refining ends it; the calibration below stays as it is)")
+        th = _RefineThread(w.project, st, offsets, gen=self._gen)
+        th.progress.connect(self._progress)
+        th.finished_ok.connect(self._refined_ok)
+        th.error.connect(self._refine_failed)
+        self.btn_refine.setText(STOP_LABEL)
+        self._start(th)
+
+    def _refine_valid(self) -> bool:
+        """The refinement's table still fits the page (same settings, same offsets it started from)."""
+        return self.refined is not None and self._refine_key == self._settings_key()
+
+    def _show_refine_box(self) -> None:
+        self.refine_box.setVisible(self._refine_valid())
+        self._set_buttons()
+
+    def _refined_ok(self, out: dict, gen: int):
+        if gen != self._gen:
+            return
+        self.refined = out
+        self.bar.setValue(1000)
+        self._fill_refine_table(out)
+        self._show_refine_box()
+        self.status.setText("Refined offsets below: tick the cameras to apply. Nothing changes until you do.")
+        w = self.wiz
+        cur = (report_html(w.result.report, w.gravity, w.project, w.result_calibration.unit)
+               if w.result is not None and w.result_calibration is not None else "")
+        self.report.setHtml(refine_html(out, w.project)
+                            + "<hr><h3>The calibration at the offsets the page has now</h3>" + cur)
+
+    def _refine_failed(self, msg: str, gen: int):
+        if gen != self._gen:
+            return
+        self.status.setText("")
+        w = self.wiz
+        cur = (report_html(w.result.report, w.gravity, w.project, w.result_calibration.unit)
+               if w.result is not None and w.result_calibration is not None else "")
+        self.report.setHtml(f"<p style='color:{theme.RED}'><b>The offsets could not be refined.</b> {msg}</p>"
+                            "<p>The calibration below is unchanged.</p><hr>" + cur)
+
+    def _fill_refine_table(self, out: dict) -> None:
+        p = self.wiz.project
+        t = self.refine_table
+        t.setRowCount(0)
+        self._ticks = []
+        for i, (c, r) in enumerate(sorted(out["rows"].items())):
+            t.insertRow(i)
+            cb = QCheckBox()
+            cb.setChecked(bool(r["tick"]))
+            cb.setToolTip(r["why"])
+            cell = QWidget()
+            hl = QHBoxLayout(cell)
+            hl.setContentsMargins(6, 0, 0, 0)
+            hl.addWidget(cb)
+            hl.addStretch(1)
+            t.setCellWidget(i, 0, cell)
+            self._ticks.append((int(c), cb))
+            pb, pa = r.get("pred_before"), r.get("pred_after")
+            pred = (f"{pb:.1f} → {pa:.1f}" if pb is not None and pa is not None and np.isfinite(pb)
+                    and np.isfinite(pa) else "—")
+            vals = [p.name(c), _off(r["old"]), _off(r["new"]), f"{r['new'] - r['old']:+.3f}", pred,
+                    r["verdict"].upper()]
+            for j, txt in enumerate(vals, start=1):
+                it = QTableWidgetItem(txt)
+                it.setToolTip(r["why"])
+                if j == 6:
+                    it.setForeground(QColor(VERDICT_COLORS.get(r["verdict"], theme.RED)))
+                t.setItem(i, j, it)
+        t.resizeColumnsToContents()
+        t.setFixedHeight(min(260, 34 + 28 * t.rowCount()))
+        self.refine_note.setText(f"{_verdict_span(out['verdict'], REFINE_WORDS)}<br>{out['why']} "
+                                 f"{p.name(out['clock'])} is this run's clock: the other cameras are timed "
+                                 "against it. Hover a row for its reason.")
+
+    def ticked_offsets(self) -> list[float]:
+        """The offsets the refinement started from, with every TICKED camera's refined value."""
+        out = self.refined
+        new = [float(o) for o in out["before"]]
+        for c, cb in self._ticks:
+            if cb.isChecked():
+                new[c] = float(out["after"][c])
+        return new
+
+    def _apply_refined(self):
+        """Apply the ticked offsets FOR THIS CALIBRATION (pending until Finish, I303): the refinement's own
+        calibration when every suggestion is taken EXACTLY - it is made at precisely those offsets - else
+        the cameras are calibrated again at the offsets as ticked."""
+        out = self.refined
+        if out is None or self._busy() or not self._refine_valid():
+            return
+        w = self.wiz
+        p = w.project
+        new = self.ticked_offsets()
+        old = [float(o) for o in w.offsets()]
+        if new == old:
+            self.status.setText("Nothing is ticked that would change an offset.")
+            return
+        moved = ", ".join(p.name(c) for c in range(len(new)) if new[c] != old[c])
+        self._set_pending(new)
+        if new == [float(o) for o in out["after"]]:
+            res = out["res_after"]
+            res.report["timing"] = out["timing_after"]
+            res.report["timing_check"] = out["timing_check"]
+            res.report["refine"] = _refine_summary(out)
+            self._gen += 1
+            self.bar.setValue(1000)
+            self._adopt(res, out.get("grav_after"), out["views"], res.frame_ids, res.wand_names, new)
+            self.status.setText(f"Offsets applied to {moved} for this calibration: they go into the project with it "
+                                "when you press Use this calibration (one Ctrl+Z then takes both back). The "
+                                "calibration below was made at these offsets.")
+            self._show_refine_box()
+        else:
+            self.status.setText(f"Offsets applied to {moved}. Not every suggestion was taken, so the cameras are "
+                                "calibrated again at the offsets as ticked.")
+            self.report.setHtml("<p>Calibrating again at the ticked offsets…</p>")
+            self._run()
+
+    def _project_offsets(self):
+        """Forget the offsets applied in this wizard: calibrate again at the project's own."""
+        if self._busy():
+            return
+        self._set_pending(self.wiz.project.offsets)
+        self.status.setText("Back to the project's own offsets: calibrating again at them.")
+        self._run()
+
+    # ------------------------------------------------------------------ pending offsets (I303)
+    def _set_pending(self, offsets) -> None:
+        self.wiz.set_offsets(offsets)
+        self._update_offsets_note()
+
+    def _update_offsets_note(self) -> None:
+        w = self.wiz
+        p = w.project
+        pend = w.result_offsets
+        if pend is None:
+            self.offsets_note.setText("")
+            self.offsets_row.setVisible(False)
+            return
+        ch = [f"{p.name(c)} {_off(p.offsets[c])} → {_off(pend[c])}" for c in range(p.n_views)
+              if float(pend[c]) != float(p.offsets[c])]
+        self.offsets_note.setText("This calibration is made at these offsets - they go into the project with it when "
+                                  "you press <b>Use this calibration</b> (Cancel leaves the project as it is): "
+                                  + "; ".join(ch) + ".")
+        self.offsets_row.setVisible(True)
+
+    # ------------------------------------------------------------------ files, the picture
     def _save(self):
         if self.wiz.result is None:
             return
@@ -1393,10 +1960,11 @@ class RunPage(QWizardPage):
             msg += ". " + note
         self.status.setText(msg)
 
-    def _show_3d(self) -> None:
-        """(G185) This run's calibration as a 3D picture: the wand points, the camera pyramids and their
-        fields of view drawn; the covered space one tick away."""
-        res = self.wiz.result
+    def _show_3d(self, res=None) -> None:
+        """(G185) A calibration as a 3D picture: the wand points, the camera pyramids and their fields of
+        view drawn; the covered space one tick away. `res` None = the page's result (Show in 3D); after a
+        solve the picture opens by itself (G200)."""
+        res = res if res is not None else self.wiz.result
         if res is None:
             return
         from kinetrace import calibview
@@ -1567,10 +2135,34 @@ def report_text(report: dict, grav: dict | None, csv_note: str | None = None) ->
     keys = ("n_cameras", "camera_names", "n_frames_in", "n_frames_used", "n_bg_points", "outliers_removed",
             "wand_length", "wand_mean", "wand_sd", "wand_score_pct", "reproj_rmse_all", "reproj_rmse_px",
             "focal_px", "focal_estimated", "principal_px", "distortion_estimated", "distortion",
-            "lens_profiles", "coverage_pct", "camera_distances", "frame")
+            "lens_profiles", "coverage_pct", "camera_distances", "frame", "offsets")
     for k in keys:
         if k in report:
             lines.append(f"{k}: {json.dumps(report[k])}")
+    # (I271) the cameras' timing, in words
+    tc = report.get("timing_check")
+    if tc and tc.get("lines"):
+        lines += ["", "timing check (whole frames): " + " ".join(tc["lines"])]
+    tm = report.get("timing")
+    if isinstance(tm, dict) and not tm.get("error"):
+        names = report.get("project_names") or []
+
+        def nm(c):
+            return names[int(c)] if int(c) < len(names) else f"camera {int(c) + 1}"
+        lines += ["", f"camera timing: {str(tm.get('verdict', '?')).upper()}"]
+        pred = (tm.get("prediction") or {}).get("per_camera") or {}
+        for c, r in sorted(pred.items(), key=lambda kv: int(kv[0])):
+            if r.get("verdict") not in (None, "none"):
+                lines.append(f"- {nm(c)}: the other cameras put its wand ends {r['median_px']:.1f} px away "
+                             f"(median): {r['verdict']}")
+        if isinstance(tm.get("speed"), dict) and tm["speed"].get("why"):
+            lines.append(f"- {tm['speed']['why']}")
+        win = tm.get("windows") or {}
+        for c, r in sorted((win.get("per_camera") or {}).items(), key=lambda kv: int(kv[0])):
+            lines.append(f"- {nm(c)}: {r.get('why', '')}")
+    if isinstance(report.get("refine"), dict):
+        lines += ["", f"refined offsets: {json.dumps(report['refine'].get('after'))} "
+                      f"({str(report['refine'].get('verdict', '?')).upper()})"]
     if grav:
         lines.append(f"gravity_check: {json.dumps(grav)}")
     return "\n".join(lines) + "\n"
@@ -1619,6 +2211,12 @@ def report_html(report: dict, grav: dict | None, project, unit: str) -> str:
                          "1.000 means the wand length you typed and the frame rate agree. A ratio far "
                          "from 1 usually means a wrong wand length, a wrong frame rate, or the object was "
                          "not in free fall on those frames.</p>")
+    # (I303) the offsets this calibration was made at; (I271) the cameras' timing, right under the verdict
+    offs = report.get("offsets")
+    if offs:
+        parts.append("<p><b>Offsets:</b> this calibration was made at these camera offsets (frames): "
+                     + ", ".join(f"{nm} {_off(v)}" for nm, v in offs.items()) + ".</p>")
+    parts.append(timing_html(report.get("timing"), project))
     # (I272) the per-camera numbers are those of the cameras this run solved, in their order
     names = list(report.get("camera_names") or [project.name(c) for c in range(project.n_views)])
     rm = report.get("reproj_rmse_px", [])
@@ -1687,24 +2285,13 @@ wand went — keep it above a quarter of the picture and wave it through the who
     return "".join(parts)
 
 
-def spread_calibration(cal, views: list[int], n_views: int):
-    """(I272) A calibration of the cameras `views` (in that order) as one of an `n_views` project:
-    camera views[k] gets cal.cameras[k], every other camera None (not calibrated). Every camera
-    calibrated = `cal` itself."""
-    views = list(views)
-    if views == list(range(n_views)):
-        return cal
-    cams = [None] * n_views
-    for k, v in enumerate(views):
-        cams[v] = cal.cameras[k]
-    return cal.with_cameras(cams)
-
-
 class WandWizard(QWizard):
-    def __init__(self, parent, project, start_dir: str = "", apply_offsets=None):
+    def __init__(self, parent, project, start_dir: str = ""):
         super().__init__(parent)
-        # (I274) the app's undoable "set every camera's offset" (None: set them on the project)
-        self.apply_offsets = apply_offsets
+        # (I303) the offsets this calibration is made at, while they are not the project's: PENDING until
+        # "Use this calibration", when the app applies them together with the calibration (one Ctrl+Z);
+        # Cancel leaves the project's offsets and calibration as they were. None = the project's own.
+        self.result_offsets: list[float] | None = None
         self.setWindowTitle("Calibrate cameras with a wand")
         self.setWizardStyle(QWizard.ModernStyle)
         self.setOption(QWizard.NoBackButtonOnStartPage, True)
@@ -1728,6 +2315,20 @@ class WandWizard(QWizard):
     def views(self) -> list[int]:
         """(I272) The cameras this run calibrates (the wand page's ticks)."""
         return self.page_wand.views()
+
+    def offsets(self) -> list[float]:
+        """(I303) The offsets the wizard calibrates at: the pending ones, else the project's."""
+        if self.result_offsets is not None:
+            return [float(o) for o in self.result_offsets]
+        return [float(o) for o in self.project.offsets]
+
+    def set_offsets(self, offsets) -> None:
+        """(I303) Offsets for this calibration, pending until Finish (the project's own = none pending);
+        the Finish button says when it applies them too."""
+        new = [float(o) for o in offsets]
+        self.result_offsets = None if new == [float(o) for o in self.project.offsets] else new
+        self.setButtonText(QWizard.FinishButton, "Use this calibration and the new offsets"
+                           if self.result_offsets is not None else "Use this calibration")
 
     def done(self, r):
         # a running solve is CANCELLED first and waited for (I36, I200): `stop_page_threads`

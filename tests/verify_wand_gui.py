@@ -508,18 +508,25 @@ fp.ax_y.setCurrentText("floor_y")
 pump(0.05)
 assert fp.ax_t.value() == 40, ("the reference frame must follow the chosen points", fp.ax_t.value())
 assert fp.isComplete() and "frame 40" in fp.ax_note.text(), fp.ax_note.text()
+# (I304) a floor mark is STATIC and clicked once: a frame next to the click finds it (the nearest clicked
+# frame within STATIC_WINDOW - what keeps the axes at a refined, fractional offset); farther away it is not
+from kinetrace.wanddata import STATIC_WINDOW  # noqa: E402
 fp.ax_t.setValue(41)
+assert fp.isComplete() and "frame 41" in fp.ax_note.text(), fp.ax_note.text()
+far = 40 + STATIC_WINDOW + 1
+fp.ax_t.setValue(far)
 assert not fp.isComplete() and not wz.button(QWizard.NextButton).isEnabled(), "Next blocked on a frame without them"
 assert "frame 40 has all three" in fp.ax_note.text(), fp.ax_note.text()
 fp.ax_t.setValue(40)
 goto(wz, wz.page_run)
-fp.ax_t.setValue(41)                                  # behind the page's back: the run itself must cope
+fp.ax_t.setValue(far)                                 # behind the page's back: the run itself must cope
 run_and_wait(wz)
 assert wz.result_calibration is not None, "the wand calibration must survive a failed axes step"
 rr = wz.result.report
 assert "NOT applied" in rr["frame"] and rr["verdict"] != "good", rr["frame"]
-assert any("could NOT be set" in x and "reference frame 41" in x for x in rr["verdict_reasons"]), rr["verdict_reasons"][-1]
-print("axes: frame follows the picked points, Next blocked on a bad frame, a failed alignment keeps the solve OK")
+assert any("could NOT be set" in x and f"reference frame {far}" in x for x in rr["verdict_reasons"]), rr["verdict_reasons"][-1]
+print("axes: frame follows the picked points, a frame next to the click finds it (I304), Next blocked farther "
+      "away, a failed alignment keeps the solve OK")
 
 # ---- (I28) Back / Next: an unchanged setup keeps the result, a changed one drops it --------
 fp.ax_t.setValue(40)

@@ -9889,26 +9889,24 @@ class MainWindow(QMainWindow):
         self._refresh_companions()
         return n
 
-    def _apply_offsets_undoable(self, offsets) -> None:
-        """(I274; from I271's parked branch) Every camera's offset at once as ONE Ctrl+Z step: the wand
-        wizard's "Apply these offsets and calibrate". The step also keeps the calibration (and wand
-        run) of that moment: the wizard's result is then made AT the new offsets, so taking the
-        offsets back takes back the calibration fitted to them too. The 3D result made with the old
-        timing is dropped."""
+    def _apply_offsets_undoable(self, offsets) -> dict | None:
+        """(I274, I303) Every camera's offset at once as ONE Ctrl+Z step: the wand wizard's offsets,
+        applied when the user presses "Use this calibration" (never before: the wizard keeps them
+        pending). The step also keeps the calibration (and wand run) of that moment: the caller then
+        sets the calibration made AT the new offsets and records it as the step's `cal_after`, so
+        taking the offsets back takes back the calibration fitted to them too. A fresh step every time
+        (one Finish = one Ctrl+Z). The 3D result made with the old timing is dropped. Returns the
+        step's record, or None when no offset moved."""
         p = self.project
         if p is None or self.session is None:
-            return
+            return None
         before, had_3d = list(p.offsets), p.reconstruction is not None
         for i, o in enumerate(offsets):
             p.set_offset(i, float(o))
         if all(abs(a - b) <= 1e-12 for a, b in zip(before, p.offsets)):
-            return
-        # a second Apply in the same wizard (nothing else edited since: any edit resets the record)
-        # extends the step, so the one Ctrl+Z goes back to before the first
-        prev = self.__dict__.get("_undo_timing")
-        self._set_undo_point(self.session.snapshot())
-        rec = prev if prev is not None else {
-            "offsets": before, "calibration": p.calibration, "wand_result": self._wand_result}
+            return None
+        self._set_undo_point(self.session.snapshot())          # (this also forgets any earlier step)
+        rec = {"offsets": before, "calibration": p.calibration, "wand_result": self._wand_result}
         # what the step left behind: Ctrl+Z takes it back only while it is still so (a hand edit of an
         # offset, or another calibration, since then is the user's and stays - review of I274)
         rec["after"] = list(p.offsets)
@@ -9916,6 +9914,7 @@ class MainWindow(QMainWindow):
         self.__dict__["_undo_timing"] = rec
         p.dirty = True
         self._retimed(had_3d)
+        return rec
 
     def _undo_timing_step(self, timing: dict) -> bool | None:
         """Put back the offsets (and calibration) an `_apply_offsets_undoable` step changed. None (and
@@ -9951,11 +9950,11 @@ class MainWindow(QMainWindow):
         self._undo_snap = None
         undone = self._undo_timing_step(timing) if timing is not None else False
         if undone is None:
-            said = ("The offsets or the calibration were changed again after 'Apply these offsets': Undo leaves "
-                    "them as they are now", 8000)
+            said = ("The offsets or the calibration were changed again after the wand calibration set them: Undo "
+                    "leaves them as they are now", 8000)
         elif undone:
-            said = ("Restored the camera offsets, and the calibration made from them, from before "
-                    "'Apply these offsets'", 8000)
+            said = ("Restored the camera offsets, and the calibration made from them, from before the wand "
+                    "calibration", 8000)
         else:
             said = ("Restored tracks from before the last tracking run / edit", 5000)
         self._refresh_companions()       # one epilogue for the three outcomes (R25)
@@ -11425,32 +11424,40 @@ class MainWindow(QMainWindow):
         if self.state != READY:
             return
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
-        wiz = WandWizard(self, p, start, apply_offsets=self._apply_offsets_undoable)      # (I274)
+        wiz = WandWizard(self, p, start)
         accepted = wiz.exec() == QDialog.Accepted
         self._refresh_cameras()          # its lens rows may have changed the lenses, accepted or not (G177)
         if not accepted or wiz.result_calibration is None:
-            return
+            return                       # (I303) Cancel: the offsets and the calibration stay as they were
+        # (I303) the offsets the wizard calibrated at (pending until now) go in WITH the calibration made at
+        # them: one Ctrl+Z step for both, a fresh one for this Finish
+        before = list(p.offsets)
+        rec = self._apply_offsets_undoable(wiz.result_offsets) if wiz.result_offsets is not None else None
         p.calibration = wiz.result_calibration
         self._wand_result = (wiz.result, wiz.gravity)
         self._wand_cal = p.calibration                          # (G185) its picture comes from the run
-        self.__dict__["_wand_key"] = self._calib_key()          # ... while the timing is the run's
+        self.__dict__["_wand_key"] = self._calib_key()          # ... at the offsets just applied
         ends = getattr(wiz.result, "wand_names", None)
         if ends:
             for sv in p.sessions:                               # display state (view.json), not dirty
                 sv.ui_state["wand_ends"] = list(ends)
-        rec = self.__dict__.get("_undo_timing")
-        if rec is not None and rec.get("after") is not None and all(
-                abs(a - b) <= 1e-9 for a, b in zip(rec["after"], p.offsets)):
-            rec["cal_after"] = p.calibration     # (I274) made AT the applied offsets: part of the same step
+        if rec is not None:
+            rec["cal_after"] = p.calibration     # made AT the applied offsets: part of THIS step only
         self._drop_reconstruction("a new calibration was made")          # (I242)
         p.dirty = True
         self._apply_state()
         v = str(wiz.result.report.get("verdict", "?")).upper() if wiz.result is not None else "?"
         self._guides_on()
+
+        def off(x):
+            return f"{float(x):+.3f}".rstrip("0").rstrip(".")
+        moved = [f"{p.name(c)} {off(before[c])} → {off(p.offsets[c])}" for c in range(p.n_views)
+                 if abs(p.offsets[c] - before[c]) > 1e-12]
+        offs = (f" New offsets, made with it: {'; '.join(moved)} (one Ctrl+Z takes back both)." if moved else "")
         self.toast.show_message(
-            f"Wand calibration ({v}) is now this project's calibration. Save the project (Ctrl+S); "
+            f"Wand calibration ({v}) is now this project's calibration.{offs} Save the project (Ctrl+S); "
             "<b>File → Export → Calibration</b> writes it for your animal projects. " + self.GUIDES_HINT,
-            "success", 14000)
+            "success", 16000)
 
     def _export_calibration(self):
         """File -> Export -> Calibration: the cameras for other programs, in the
