@@ -30,6 +30,7 @@ from kinetrace import lens as _lens
 from kinetrace import theme
 from kinetrace import wand as _wand
 from kinetrace import wanddata as wd
+from kinetrace.calib import spread_calibration  # noqa: F401 -- (I271) moved to calib, still offered here
 from kinetrace.video_source import display_rotation
 from kinetrace.errors import cap_first, plain_error
 from kinetrace.lenswizard import VERDICT_COLORS, _dim, stop_page_threads
@@ -1685,19 +1686,6 @@ camera point at that camera (its tracking, its offset, or its lens).
 wand went — keep it above a quarter of the picture and wave it through the whole animal volume.
 </p>""")
     return "".join(parts)
-
-
-def spread_calibration(cal, views: list[int], n_views: int):
-    """(I272) A calibration of the cameras `views` (in that order) as one of an `n_views` project:
-    camera views[k] gets cal.cameras[k], every other camera None (not calibrated). Every camera
-    calibrated = `cal` itself."""
-    views = list(views)
-    if views == list(range(n_views)):
-        return cal
-    cams = [None] * n_views
-    for k, v in enumerate(views):
-        cams[v] = cal.cameras[k]
-    return cal.with_cameras(cams)
 
 
 class WandWizard(QWizard):
