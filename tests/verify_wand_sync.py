@@ -425,6 +425,19 @@ def _():
     assert np.isnan(wd.collect_static_at(far, "origin", t)[1]).all(), "more than 3 frames away: not this click"
     for nm in ("X", "Y"):
         assert np.isfinite(wd.collect_static_at(rv, nm, t)).all(), nm
+    # a mark placed on BOTH neighbouring frames (tracked, held or clicked twice): interpolated exactly as
+    # main's collect_at did, so Calibrate now at a fractional project offset is bit-identical (review)
+    s1 = proj.sessions[1]
+    jm = s1.pid_by_name("origin")
+    fm = int(np.nonzero(s1.tracked[:, jm])[0][0])
+    s1.tracks[fm + 1, jm] = s1.tracks[fm, jm] + (3.0, -2.0)
+    s1.tracked[fm + 1, jm] = True
+    s1.manual[fm + 1, jm] = True
+    s1._touch()
+    rv2 = wd.retimed(proj, [o[0], o[1] + 0.4, o[2], o[3]])
+    a3 = wd.collect_at(rv2, "origin", t)
+    assert np.isfinite(a3[1]).all(), a3
+    assert np.array_equal(wd.collect_static_at(rv2, "origin", t), a3), (wd.collect_static_at(rv2, "origin", t), a3)
 
 
 @check("S. what the checks put in a report is strict JSON")

@@ -207,15 +207,15 @@ STATIC_WINDOW = 3               # frames: a mark clicked once is looked for this
 
 def collect_static_at(project, name: str, t, window: int = STATIC_WINDOW) -> np.ndarray:
     """(I304) A STATIC mark - the axes' floor marks, clicked once on one frame per camera - at reference
-    instant `t`: (C, 2). Per camera its position on the PLACED frame nearest to the local frame of `t`
-    (a tie goes to the later frame: `Project.local_index`'s half-up rule), within `window` frames; NaN
-    when there is none. `collect_at` interpolates, and at a fractional offset that needs two clicked
-    frames, so a refined (fractional) offset lost the axes. With the click on the exact frame this IS
-    `collect_at`."""
-    out = np.full((project.n_views, 2), np.nan)
+    instant `t`: (C, 2). Per camera `collect_at` (interpolated) where it finds the mark - so wherever
+    the old code found the axes they are bit-identical (review) - else its position on the PLACED frame
+    nearest to the local frame of `t` (a tie goes to the later frame: `Project.local_index`'s half-up
+    rule), within `window` frames; NaN when there is none. `collect_at` interpolates, and at a
+    fractional offset that needs two placed frames, so a refined (fractional) offset lost the axes."""
+    out = collect_at(project, name, t)
     for c, s in enumerate(project.sessions):
         j = s.pid_by_name(name)
-        if j is None:
+        if j is None or np.isfinite(out[c]).all():
             continue
         tr = raw_track(s, j)
         local = float(project.rates[c]) * float(t) + float(project.offsets[c])
