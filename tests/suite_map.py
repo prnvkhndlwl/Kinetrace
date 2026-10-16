@@ -53,6 +53,8 @@ MAP = [
                           "verify_shared_landmarks", "verify_interop"]),
     ([K + f for f in ("app.py", "canvas.py", "timeline.py", "widgets.py", "viewgrid.py", "camerapanel.py", "theme.py",
                       "icons.py")], GUI),
+    # (I303) the wand wizard's accept path and its one Ctrl+Z live in app.py
+    ([K + "app.py"], ["verify_wand_subset", "verify_wand_sync_gui"]),
     ([K + "threads.py"], ["verify_sweep_fixes", "verify_review_infra", "verify_review_tracking", "verify_review_ui",
                            "verify_review_app3", "verify_downloads"]),
     ([K + "tour.py", K + "demo.py"], ["verify_tour", "verify_ui_focus", "verify_keys_follow"]),
@@ -71,11 +73,15 @@ MAP = [
     ([K + f for f in ("calib.py", "hull.py", "view3d.py", "retrack.py", "kinematics.py", "calibview.py")],
      ["verify_3d", "verify_3d_gui", "verify_retrack", "verify_review_3d", "verify_multicam",
       "verify_wand_subset", "verify_calib3d"]),
+    # (I302) estimate_offsets' verdict and its robust search; (G200) the picture the wand wizard opens
+    ([K + "calib.py"], ["verify_wand_sync", "verify_review_app3"]),
+    ([K + f for f in ("view3d.py", "calibview.py")], ["verify_wand_sync_gui"]),
     ([K + f for f in ("calibio.py", "trackio.py", "convert.py")], ["verify_interop", "verify_review_data",
                                                                   "verify_wand_subset"]),
-    ([K + f for f in ("wand.py", "wanddata.py", "calibwizard.py")], ["verify_wand", "verify_wand_gui",
-                                                                     "verify_review_calib", "verify_wand_subset",
-                                                                     "verify_calib3d"]),
+    ([K + f for f in ("wand.py", "wanddata.py", "calibwizard.py", "wandsync.py")],
+     ["verify_wand", "verify_wand_gui", "verify_review_calib", "verify_wand_subset", "verify_calib3d",
+      # (I271, I300-I304, G199, G200) camera timing from the wand
+      "verify_wand_sync", "verify_wand_sync_gui"]),
     ([K + f for f in ("lens.py", "lenswizard.py", "lensattach.py", "boardreview.py")],
      ["verify_lens", "verify_lens_gui", "verify_lens_export", "verify_lens_turn", "verify_lens_attach",
       "verify_review_calib", "verify_camera_overview"]),
