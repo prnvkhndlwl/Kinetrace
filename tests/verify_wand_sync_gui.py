@@ -174,11 +174,24 @@ def idle(page):
     return page._thread is None or not page._thread.isRunning()
 
 
-def calibrate(page):
-    click(page.btn_run)
-    wait_for(lambda: page.wiz.result_calibration is not None and idle(page) and page.btn_run.isEnabled(),
-             "calibration")
+def wait_result(page, timing="keep"):
+    """Wait for the run to end. The whole-frame check (I274) may stop it first with a suggestion (this rig's
+    cam3 is 0.7 frame off: every camera pair peaks a whole frame away); the user then clicks "Calibrate with
+    the offsets as they are" (timing="keep") or "Apply these offsets and calibrate" ("apply")."""
+    wait_for(lambda: idle(page) and page.btn_run.isEnabled()
+             and (page.wiz.result_calibration is not None or page.timing_box.isVisible()), "calibration")
     pump(0.1)
+    if page.wiz.result_calibration is None and page.timing_box.isVisible():
+        click(page.btn_keep_offsets if timing == "keep" else page.btn_apply_offsets)
+        wait_for(lambda: page.wiz.result_calibration is not None and idle(page) and page.btn_run.isEnabled(),
+                 "calibration after the timing box")
+        pump(0.1)
+    assert page.wiz.result_calibration is not None, page.report.toPlainText()[:400]
+
+
+def calibrate(page, timing="keep"):
+    click(page.btn_run)
+    wait_result(page, timing)
 
 
 def refine(page):
@@ -237,7 +250,9 @@ def drive_all(wiz):
           f"prediction {({c: r['verdict'] for c, r in tm['prediction']['per_camera'].items()})}")
     assert tm["verdict"] in ("ok", "poor"), tm["verdict"]
     assert tm["off_by"][1] < -0.2 and tm["off_by"][2] > 0.4, tm["off_by"]    # told too late / too early
-    for words in ("Camera timing (checked with the wand)", "Check it by hand", "Timing check",
+    # (the whole-frame "Timing check" lines are absent here: the user chose "Calibrate with the offsets as
+    # they are" in its box, which skips that check - verify_wand_subset H pins its heading)
+    for words in ("Camera timing (checked with the wand)", "Check it by hand",
                   "Epipolar guides from the other cameras", "one continuous", "UNDER-estimate", "made at"):
         assert words in html, words
     assert p.offsets == WRONG, "a check changed the offsets"
@@ -309,7 +324,7 @@ def drive_partial(wiz):
     click(page.btn_apply_refined)
     assert "Calibrating again" in page.report.toPlainText(), page.report.toPlainText()[:300]
     assert page.wiz.result_calibration is None and not page.isComplete()
-    wait_for(lambda: page.wiz.result_calibration is not None and idle(page) and page.btn_run.isEnabled(), "re-run")
+    wait_result(page)
     assert page.wiz.result is not out["res_after"]
     assert wiz.result_offsets[1] == WRONG[1] and wiz.result_offsets[2] == out["after"][2]
     state["partial"] = (list(wiz.result_offsets), list(out["after"]))
@@ -333,24 +348,28 @@ def drive_cancel(wiz):
     first = coefs(page.wiz.result_calibration)
     refine(page)
     click(page.btn_apply_refined)
-    assert wiz.result_offsets is not None
+    assert wiz.result_offsets is not None and p.offsets == WRONG
     # (12) back to the project's own offsets: nothing pending, a calibration made at them again
     click(page.btn_project_offsets)
     assert wiz.result_offsets is None and "made at" not in page.offsets_note.text()
-    wait_for(lambda: page.wiz.result_calibration is not None and idle(page) and page.btn_run.isEnabled(), "re-run")
+    wait_result(page)
     assert all(np.array_equal(a, b) for a, b in zip(first, coefs(page.wiz.result_calibration)))
     assert wiz.button(QWizard.FinishButton).text() == "Use this calibration"
-    # (9) apply again, then Cancel
-    click(page.btn_apply_refined)
-    assert wiz.result_offsets is not None
+    assert page.refine_box.isVisible(), "back at the offsets it started from: the refinement fits again"
+    # (9) the whole-frame suggestion's Apply (I274) is pending too; then Cancel
+    calibrate(page, timing="apply")
+    assert wiz.result_offsets is not None and wiz.result_offsets[2] == WRONG[2] + 1, wiz.result_offsets
+    assert p.offsets == WRONG, "the whole-frame Apply must not touch the project either"
     return cancel(wiz)
 
 
 cw.WandWizard.exec = drive_cancel
+before_cancel = (list(p.offsets), p.calibration, p.reconstruction)
 win._wand_wizard()
 pump(0.3)
-assert p.offsets == WRONG and p.calibration is TRUE_CAL and p.reconstruction is not None, \
-    "Cancel must leave the offsets and the calibration as they were"
+assert p.offsets == WRONG and p.calibration is TRUE_CAL, "Cancel must leave the offsets and the calibration as they were"
+assert (list(p.offsets), p.calibration, p.reconstruction) == before_cancel or (
+    p.offsets == before_cancel[0] and p.calibration is before_cancel[1] and p.reconstruction is before_cancel[2])
 print("Apply then Cancel: nothing changed; 'Use the project's offsets again' dropped the pending ones OK")
 
 
@@ -361,7 +380,7 @@ def drive_axes(wiz):
     assert "axes" in str(rep.get("frame", "")) and rep.get("frame_applied", True) is not False, rep.get("frame")
     refine(page)
     click(page.btn_apply_refined)
-    wait_for(lambda: page.wiz.result_calibration is not None and idle(page) and page.btn_run.isEnabled(), "apply")
+    wait_result(page)
     rep = page.wiz.result.report
     print(f"axes after the refine: {rep.get('frame')} (applied: {rep.get('frame_applied', True)})")
     assert any(abs(o - round(o)) > 0.05 for o in wiz.result_offsets), "the refine made the offsets fractional"
@@ -383,7 +402,7 @@ def drive_subset(wiz):
     refine(page)
     assert sorted(c for c, _ in page._ticks) == [1, 3], page._ticks
     click(page.btn_apply_refined)
-    wait_for(lambda: page.wiz.result_calibration is not None and idle(page) and page.btn_run.isEnabled(), "apply")
+    wait_result(page)
     res = page.wiz.result
     state["subset"] = [np.asarray(c.coefs) for c in res.cameras]
     state["subset_offsets"] = list(wiz.result_offsets)
