@@ -404,7 +404,8 @@ def _():
 
 @check("R. (I304) a mark clicked on one frame is found at a fractional offset")
 def _():
-    proj, truth = sw.build(marks_at=400)
+    proj, truth = sw.build(marks_at=400, error=(0, 0, 0, 0), true_offsets=[0.0, 3.0, -2.0, 1.0])  # whole frames
+    assert all(o == round(o) for o in proj.offsets), proj.offsets
     t = 400
     a = wd.collect_at(proj, "origin", t)
     s = wd.collect_static_at(proj, "origin", t)
