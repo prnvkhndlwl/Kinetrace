@@ -297,6 +297,12 @@ def _():
     #    fits is "none" (the most common ROUNDED shift made the reference read +1 here)
     sug, frac, shift = wd._classify_shifts({1: 0.0, 2: -0.6, 3: -0.55, 4: -0.51}, clock_ticked=False)
     assert not sug and 1 in frac, (sug, frac, shift)
+    #    two cameras ticked, neither camera 1: a clear whole-frame pair moves ONE camera, never half each
+    #    (review: the plain median split +1 into -0.5 / +0.5 and +3 into -1 / +2)
+    for best in (1, -1, 3):
+        pair = [{"cams": (1, 2), "rows": 200, "best": best, "used": True}]
+        f = wd._fit_shifts(pair, [1, 2], [1.0] * 4)
+        assert f.suggestions == {2: best} and not f.fraction, (best, f.fitted, f.suggestions, f.fraction)
     # 3) whole frames are still suggested as before
     sug, frac, _ = wd._classify_shifts({0: 0.0, 1: -3.02, 2: 0.08}, clock_ticked=True)
     assert sug == {1: -3} and not frac, (sug, frac)

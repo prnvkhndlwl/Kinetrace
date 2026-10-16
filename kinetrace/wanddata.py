@@ -474,13 +474,16 @@ class ShiftFit:
 
 
 def _centered(fitted: dict, clock_ticked: bool) -> dict:
-    """With the project's clock (camera 1) not the fit's reference, the MEDIAN of the unrounded fits is
+    """With the project's clock (camera 1) not the fit's reference, the MIDDLE camera's unrounded fit is
     "none" (I300: the most common ROUNDED shift flipped with half-frame fits, and made the run's
-    reference read a whole frame off)."""
+    reference read a whole frame off). With an even count the one of the two middle fits nearer 0 (the
+    run's reference): an actual camera's fit, never the mean of two, so a whole-frame error is never
+    split half onto the right camera (review: two ticked cameras, +1 read -0.5 / +0.5)."""
     f = {c: float(v) for c, v in fitted.items()}
     if not clock_ticked and f:
-        med = float(np.median(list(f.values())))
-        f = {c: v - med for c, v in f.items()}
+        v = sorted(f.values())
+        mid = v[len(v) // 2] if len(v) % 2 else min(v[len(v) // 2 - 1], v[len(v) // 2], key=abs)
+        f = {c: x - mid for c, x in f.items()}
     return f
 
 
