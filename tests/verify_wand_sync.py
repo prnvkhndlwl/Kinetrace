@@ -453,6 +453,42 @@ def _():
     json.dumps(W.json_safe({k: v for k, v in out.items() if not k.startswith("res_")}), allow_nan=False)
 
 
+@check("T. (I304, review) the axes' frame search: main's answer when it has one, and fast on long tracked marks")
+def _():
+    import time
+    names = list(sw.MARKS)
+    # whole-frame offsets: the same frame as the interpolating search (main) finds
+    whole, _ = sw.build(marks_at=400, error=(0, 0, 0, 0), true_offsets=[0.0, 3.0, -2.0, 1.0])
+    assert wd.best_common_frame(whole, names, static=True) == wd.best_common_frame(whole, names) == 400
+    # fractional offsets: interpolation finds no clicked mark, the static search finds the clicks' instant
+    proj, truth = sw.build(marks_at=400, n_ref=20000)
+    t0, t1 = wd.sampling_window(proj)
+    assert wd.best_common_frame(proj, names) is None
+    assert wd.best_common_frame(proj, names, static=True) == 400
+    # tracked axes landmarks (a mark on every frame), one of them in only ONE camera: nothing to find,
+    # and no per-candidate re-read of every camera's track (the review measured 57 s here; the GUI waits)
+    for c, s in enumerate(proj.sessions):
+        for nm in names:
+            j = s.pid_by_name(nm)
+            fm = int(np.nonzero(s.tracked[:, j])[0][0])
+            if nm == names[-1] and c > 0:
+                s.tracks[:, j] = np.nan
+                s.tracked[:, j] = False
+                s.manual[:, j] = False
+                continue
+            s.tracks[:, j] = s.tracks[fm, j]
+            s.tracked[:, j] = True
+        s._touch()
+    tic = time.perf_counter()
+    assert wd.best_common_frame(proj, names, static=True) is None
+    dt = time.perf_counter() - tic
+    print(f"      {proj.sessions[0].n_frames} frames x {proj.n_views} cameras, tracked marks: {dt:.2f} s")
+    assert dt < 5.0, dt
+    # a mark clicked only beyond the sampled instants is never offered (the spin box would clamp it)
+    t = wd.best_common_frame(proj, names[:-1], static=True)
+    assert t is not None and t0 <= t <= t1, (t, t0, t1)
+
+
 if failures:
     print(f"verify_wand_sync FAILED: {failures}")
     sys.exit(1)

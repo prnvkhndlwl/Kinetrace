@@ -235,25 +235,11 @@ def collect_static_at(project, name: str, t, window: int = STATIC_WINDOW) -> np.
 def best_common_frame(project, names: list[str], min_views: int = 2, static: bool = False) -> int | None:
     """A reference instant where EVERY name in `names` is seen by >= min_views
     cameras (the earliest), or None. `static` (I304): the names are marks clicked
-    once (the axes): seen = `collect_static_at`, and the candidates are the instants
-    each camera's clicks stand for."""
+    once (the axes): the interpolating answer when there is one (the same frame as
+    before), else the earliest instant a camera's placed mark stands for, inside the
+    sampled instants, where `collect_static_at` sees every name."""
     t0, t1 = sampling_window(project)
     if t1 < t0 or not names:
-        return None
-    if static:
-        cand = set()
-        for c, s in enumerate(project.sessions):
-            for nm in names:
-                j = s.pid_by_name(nm)
-                if j is None:
-                    continue
-                f = np.nonzero(np.isfinite(raw_track(s, j)).all(axis=1))[0]
-                tt = np.floor(np.asarray(project.reference_time(c, f), np.float64) + 0.5).astype(np.int64)
-                cand.update(int(x) for x in tt)
-        for t in sorted(cand):
-            if all(int(np.isfinite(collect_static_at(project, nm, t)).all(axis=1).sum()) >= min_views
-                   for nm in names):
-                return int(t)
         return None
     t = np.arange(t0, t1 + 1)
     ok = np.ones(len(t), bool)
@@ -261,7 +247,42 @@ def best_common_frame(project, names: list[str], min_views: int = 2, static: boo
         p = _sample_name(project, nm, t)
         ok &= np.isfinite(p).all(axis=2).sum(axis=1) >= min_views
     hits = np.nonzero(ok)[0]
-    return int(t[hits[0]]) if len(hits) else None
+    if len(hits) or not static:
+        return int(t[hits[0]]) if len(hits) else None
+    # (review) each track read ONCE per camera and name; every candidate judged by one searchsorted -
+    # the per-candidate collect_static_at re-read every track (57 s at 20k frames x 4 cameras)
+    placed = {}                                                      # (camera, name) -> sorted frames
+    for c, s in enumerate(project.sessions):
+        for nm in names:
+            j = s.pid_by_name(nm)
+            if j is not None:
+                placed[c, nm] = np.nonzero(np.isfinite(raw_track(s, j)).all(axis=1))[0]
+    rate = [float(r) for r in project.rates]
+    off = [float(o) for o in project.offsets]
+    cand = set()
+    for (c, nm), f in placed.items():
+        tt = np.floor((f - off[c]) / rate[c] + 0.5).astype(np.int64)  # the instant each placed frame shows
+        cand.update(int(x) for x in tt[(tt >= t0) & (tt <= t1)])
+    if not cand:
+        return None
+    tc = np.asarray(sorted(cand), np.int64)
+    ok = np.ones(len(tc), bool)
+    for nm in names:
+        seen = np.zeros(len(tc), np.int64)
+        for c, s in enumerate(project.sessions):
+            f = placed.get((c, nm))
+            if f is None or not len(f):
+                continue
+            # collect_static_at's rule: a placed frame within STATIC_WINDOW of the local frame (interpolation
+            # needs one within a frame, so this also covers every camera collect_at finds)
+            local = rate[c] * tc.astype(np.float64) + off[c]
+            lo = np.maximum(np.ceil(local - STATIC_WINDOW - 1e-9), 0)
+            hi = np.minimum(np.floor(local + STATIC_WINDOW + 1e-9), s.n_frames - 1)
+            n = np.searchsorted(f, hi, side="right") - np.searchsorted(f, lo, side="left")
+            seen += (hi >= lo) & (n > 0)
+        ok &= seen >= min_views
+    hits = np.nonzero(ok)[0]
+    return int(tc[hits[0]]) if len(hits) else None
 
 
 def _fall_in_run(uv: np.ndarray, seen: np.ndarray, still: np.ndarray, min_frames: int):
