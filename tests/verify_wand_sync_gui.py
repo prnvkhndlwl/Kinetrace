@@ -256,6 +256,15 @@ def drive_all(wiz):
                   "Epipolar guides from the other cameras", "one continuous", "UNDER-estimate", "made at"):
         assert words in html, words
     assert p.offsets == WRONG, "a check changed the offsets"
+    # Stop refining: the page says it stopped (review: it kept "Stopping the refinement…"), nothing changed
+    shown = page.wiz.result
+    click(page.btn_refine)
+    pump(0.3)
+    click(page.btn_refine)
+    wait_for(lambda: idle(page) and page.btn_refine.isEnabled(), "the stopped refinement")
+    pump(0.2)
+    assert "stopped" in page.status.text() and "Stopping" not in page.status.text(), page.status.text()
+    assert page.refined is None and page.wiz.result is shown and p.offsets == WRONG
     refine(page)
     out = page.refined
     rows = page.refine_table.rowCount()

@@ -1625,6 +1625,10 @@ class RunPage(QWizardPage):
             self._threads.remove(th)
         if th is self._thread and th.gen != self._gen and self.wiz.result_calibration is None:
             self.status.setText("")
+        if th is self._thread and isinstance(th, _RefineThread) and th._cancel and th.gen == self._gen:
+            # (review) Stop refining: say it stopped, not "Stopping…" for ever
+            self.bar.setValue(0)
+            self.status.setText("Refinement stopped. The calibration below is unchanged.")
         self.btn_refine.setText(REFINE_LABEL)
         self._set_buttons()
 

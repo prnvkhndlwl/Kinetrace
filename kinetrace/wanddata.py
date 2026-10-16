@@ -742,6 +742,12 @@ def timing_check(project, name_a: str, name_b: str, views: list[int], lens_model
         rows = max((int(r["rows"]) for r in mine), default=0)
         if rows < TIMING_MIN_ROWS:
             why = (f"too few wand frames shared with another camera: at most {rows}, {TIMING_MIN_ROWS} needed")
+        elif any(r["used"] for r in mine):
+            # (review) its pairs DID give a clear shift, only within a group of cameras that never reaches the
+            # first ticked one - "not a clear peak" would be false
+            why = ("its wand clicks agree with "
+                   + ", ".join(sorted({names[x] for r in mine if r["used"] for x in r["cams"] if x != c}))
+                   + ", but no clear shift links that group to the other ticked cameras")
         else:
             best = max((r for r in mine if np.isfinite(r["share_best"])), key=lambda r: r["share_best"],
                        default=None)
