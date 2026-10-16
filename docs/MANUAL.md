@@ -2058,24 +2058,33 @@ five pages and explains each one:
    seen by two cameras on at least 4 frames, or all three marks by two cameras
    on that frame. *Neither* keeps the axes of the first calibrated camera
    (camera 1 when it is ticked), which is fine for shapes and distances.
-5. *Calibrate* — press **Calibrate now**; it takes a few seconds to a minute.
-   First the program checks the **cameras' timing** against the wand: if a
-   camera's offset is a few frames off (a common slip of a sync by sound or
-   by eye), the wand clicks of that camera fit the others clearly better at
-   another offset. Then the page stops and says so, camera by camera — for
-   example *"cam4: its wand clicks agree with the other cameras when its
-   offset is 120 instead of 123 (3 frames less): 81 % of its clicks agree with
-   one camera layout then (good), 30 % now (poor)"* — with two buttons: **Apply these offsets and
-   calibrate** (one Ctrl+Z after the wizard takes the offsets back, together
-   with the calibration made at them) or **Calibrate with the offsets as they
-   are**. Hand check: step through a sharp event (the wand stopping, a flash)
-   in two of those cameras — with the new offsets they show the same instant.
-   The check only suggests whole frames, only when every pair of cameras
-   agrees, and says when the wand cannot time a camera (too few frames shared
-   with the others). Then read the report. (*Save calibration files…* on this
-   page writes the same files as File → Export → Calibration.)
-   **Show in 3D** opens this calibration as a picture you can turn, before you
-   use it: each camera as a small pyramid where it stands, pointing where it
+5. *Calibrate* — press **Calibrate now**; it takes a few seconds to a minute,
+   and the cameras' timing is checked after it (*Is the timing right?* below).
+   First the program checks the **cameras' timing** against the wand to the
+   whole frame: if a camera's offset is a few frames off (a common slip of a
+   sync by sound or by eye), the wand clicks of that camera fit the others
+   clearly better at another offset. Then the page stops and says so, camera
+   by camera — for example *"cam4: its wand clicks agree with the other
+   cameras when its offset is 120 instead of 123 (3 frames less): 81 % of its
+   clicks agree with one camera layout then (good), 30 % now (poor)"* — with
+   two buttons: **Apply these offsets and calibrate** or **Calibrate with the
+   offsets as they are**. Applied offsets belong to this calibration only:
+   they go into the project together with the calibration made at them when
+   you press **Use this calibration** (one Ctrl+Z then takes both back), and
+   **Cancel** leaves the project as it was. Hand check: step through a sharp
+   event (the wand stopping, a flash) in two of those cameras — with the new
+   offsets they show the same instant. This check suggests whole frames only
+   (a camera at least three quarters of a frame off), and only when every pair
+   of cameras agrees. A camera off by a **fraction** of a frame is named,
+   never rounded into a whole one (*"about +0.29"*): **Refine offsets with the
+   wand** measures it. When the wand cannot time a camera, the check says why:
+   too few wand frames shared with the others, or no clear agreement at any
+   shift. Then read the report. (*Save calibration files…* on this page writes
+   the same files as File → Export → Calibration.)
+   **The 3D picture of this calibration opens by itself** as soon as the
+   cameras are solved (the timing checks go on meanwhile); **Show in 3D**
+   brings it back if you close it. It is a picture you can turn before you
+   use the calibration: each camera as a small pyramid where it stands, pointing where it
    looks, its whole **field of view** (as Blender draws a camera: the picture's
    edges, the lens bend included, out to a flat plane past the wand; its four
    sides are filled in the camera's colour, faintly, so where several cameras'
@@ -2137,6 +2146,79 @@ not taken from it and the check reads **not used**, with the reason. With the
 unit *wand lengths* there is nothing to compare with, so the check tells you
 how long your wand is in metres (if the frame rate is right): measure it, then
 calibrate again in metres.
+
+**Is the timing right? (Camera timing.)** Cameras started by hand are lined
+up to the nearest whole frame (3D → Sync → Sync Cameras), but what is left is a
+*fraction* of a frame, and with a fast animal a fraction matters: a third of a
+frame at 240 fps is 1.4 ms, in which a running squirrel's foot moves several
+millimetres. So after every calibration the report has a section **Camera
+timing (checked with the wand)**, with its own verdict — **GOOD** (no sign of a
+timing error), **CHECK** (read the notes) or **SYNC SUSPECT** — and a line with
+the offsets the calibration was made at. None of it changes anything:
+
+- **The other cameras' prediction.** For each camera, its wand ends are put
+  where the OTHER cameras say they are (what the ◇ does when you digitize) and
+  compared with where the camera itself saw them: the median distance in its
+  own pixels, with good / ok / poor. A camera clearly worse than the others is
+  usually one whose offset is off. It needs three cameras on a wand end.
+- **Wand length against wand speed.** The wand never changes length, so its
+  error should be the same whether it moves slowly or fast. The check compares
+  the fastest quarter of the wand frames with the slowest quarter: "1.2 times
+  as much" is normal; twice or more is what a camera whose timing is off does,
+  and it reads SYNC SUSPECT and names the camera whose removal takes the effect
+  away. It needs slow and fast moments.
+- **What the wand says about the offsets.** How far each offset would move if
+  the cameras were timed from this calibration. It always UNDER-states the
+  error: a calibration made with wrong offsets has already bent a little
+  towards them. **Refine offsets with the wand** measures them properly.
+- **Start / middle / end.** The offsets measured on the first, middle and last
+  third of the wand frames. *Steady* is what you want. A **drift** (each third
+  later than the one before) means a camera's real frame rate differs from the
+  clock camera's; a **jump** of about a frame means a camera dropped (or
+  repeated) a frame. Either way no single offset fits the whole recording. The
+  program says so; it does not correct frame rates.
+
+**Refine offsets with the wand** (the button next to *Calibrate now*) measures
+the offsets properly — to a fraction of a frame, and a camera a frame or two
+off too. It calibrates, finds every camera's offset with that calibration held
+fixed, calibrates again at the new offsets, and so on, until no offset moves by
+more than a hundredth of a frame (at most 4 rounds); the calibration it offers
+is the one made at exactly the offsets it suggests. A few wand frames whose two
+ends are swapped in one camera do not throw it off. Then it judges every
+camera: with the calibration held fixed, by moving the camera half a frame and
+calibrating again (if the fit is just as good, the wand's motion cannot tell
+that camera's timing apart from where it stands — a wand always carried the
+same way at the same speed does that), and on the two halves and the start /
+middle / end of the recording. It takes a minute or a few: the bar shows the
+round, and **Stop refining** ends it. The first ticked camera is the run's
+*clock*: the others are timed against it. A table then shows, per camera,
+**offset now**, **refined**, the **change**, **the other cameras' prediction**
+now → refined, and a verdict: **GOOD** rows are ticked; **OK** and **POOR**
+rows are not, and say why (hover the row). If the refined offsets fit the wand
+worse, nothing is ticked.
+
+**Apply the ticked offsets** makes the page's calibration the one made at the
+ticked offsets — the refinement's own when every suggestion is ticked,
+otherwise the cameras are calibrated again — and the 3D picture shows it. The
+project does not change yet: a line above the report says *"This calibration is
+made at these offsets"* with each change (old → new), and the finish button
+reads **Use this calibration and the new offsets**. Pressing it puts the offsets
+and the calibration into the project together (the CAMERAS panel and a message
+show old → new; **one Ctrl+Z** takes both back). **Cancel** leaves the project
+as it was, and **Use the project's offsets again** forgets the applied offsets
+and calibrates at the project's own.
+
+**Check it by hand.** After *Use this calibration*, go to the frame the report
+names (where the wand moves fastest), select a wand end in the LAYERS panel and
+turn on *View → Epipolar guides from the other cameras*: in every camera the
+dashed lines must run through that ball. A line that misses ALONG the wand's
+direction of travel means that camera's timing is off; a miss across it is the
+calibration.
+
+**One caution.** Offsets found with the wand describe the wand recording. They
+carry over to your trials only if every camera kept recording from the wand to
+the trials (one continuous recording per camera); a camera stopped and started
+again needs its own sync (a clap or a flash, then 3D → Sync → Sync Cameras).
 
 **Keep it.** Press **Use this calibration** and it becomes this project's
 calibration. Then **File → Export → Calibration…** asks where to save (next to the
@@ -2251,12 +2333,19 @@ Four steps, in this order:
    looks the same at every offset), it says **flat: the landmarks do not move
    enough to time it** and advises you not to apply: pick a stretch where
    the animal moves. Each camera is
-   labelled the same way, and a camera that shares no tracked landmark with
-   the others in the window is left exactly as it was and says so. The
-   question defaults to *No* unless the verdict is reliable. Offsets that are
-   already right (a re-check after applying, or cameras synced by a flash)
-   read RELIABLE with "Nothing needs to change". Applying them reconstructs
-   the 3D again straight away.
+   labelled the same way, judged on the landmarks it shares with the other
+   cameras (a camera that sees them in only a few moments is not drowned out
+   by the others; with fewer than 30 such points it reads at most WEAK), and a
+   camera that shares no tracked landmark with the others in the window is
+   left exactly as it was and says so. The question defaults to *No* unless
+   the verdict is reliable. Offsets that are already right (a re-check after
+   applying, or cameras synced by a flash) read RELIABLE with "Nothing needs
+   to change". Applying them reconstructs the 3D again straight away. On the
+   wand recording itself, use **Refine offsets with the wand** in the wand
+   wizard instead: an estimate made against a calibration fitted at the old
+   offsets stops short of the right answer (that calibration has already
+   absorbed part of the error), while the refinement calibrates again at every
+   step.
 3. **3D → Reconstruct 3D Landmarks** (**Ctrl+3**). Every landmark seen by at
    least two cameras at the same instant becomes an X, Y, Z position in the
    calibration's units (metres if the wand was measured in metres). The **3D
