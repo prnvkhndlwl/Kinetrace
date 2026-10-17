@@ -51,7 +51,8 @@ from kinetrace.viewgrid import ViewGrid, caption_for
 from kinetrace.skeletons import all_templates, save_user_template
 from kinetrace.theme import apply_theme
 from kinetrace.timeline import TIME_ZOOM_STEP, TimelinePanel
-from kinetrace.video_source import DEFAULT_CACHE_BYTES, FrameCache, SeekService, VideoInfo, probe_video
+from kinetrace.video_source import (DEFAULT_CACHE_BYTES, SCRUB_WINDOW, FrameCache, SeekService, VideoInfo,
+                                    probe_video, scrub_budget)
 from kinetrace import icons
 from kinetrace.widgets import LoadingOverlay, ManualDialog, OnboardingStrip, SettingsDialog, Toast, native_keys, pop_menu, wrap_caption
 
@@ -90,9 +91,6 @@ def _alltracker_available() -> bool:
 IDLE, READY, TRACKING = range(3)
 VIDEO_FILTER = "Videos (*.mp4 *.avi *.mov *.mkv *.m4v *.wmv *.webm *.mpg *.mpeg);;All files (*)"
 TRACKS_FILTER = ("Tracks - DeepLabCut, SLEAP, DLTdv / Argus, Kinetrace (*.csv);;All files (*)")
-# a companion camera only ever displays ONE frame, so it needs room for a couple
-# of 4K frames and nothing more (see MainWindow._rebudget_caches)
-COMPANION_CACHE_BYTES = 96 * 1024 ** 2
 # the other cameras (G24): playhead moves closer together than STEP_GAP_S are one
 # continuous motion (playing, scrubbing, a held key); a lone move is a STEP, and on
 # a step Sync all views shows every camera's new picture at once (waiting at most
@@ -588,6 +586,7 @@ class _ViewRuntime:
         self.info = info
         self.n_frames = info.n_frames        # may shrink if the file ends early
         self.cache = FrameCache(cache_bytes)
+        self.window = SCRUB_WINDOW           # (I306) frames kept around the playhead; `_rebudget_caches` sets it
         self.seek: SeekService | None = None
         self.want_frame: int | None = None   # frame last requested (stale-reply guard)
         self.bad_frames: set = set()         # frames already reported as undecodable (I40)
@@ -752,6 +751,7 @@ class MainWindow(QMainWindow):
         self._manual_dlg = None
         self._hotkeys_dlg = None
         self._else_cache = None
+        self._budget_key = None              # (I306) who decoded at the last frame-budget split
         self._point_list_project = None
         self._hidden_warned = None
         self._user_paused = False
@@ -3627,7 +3627,7 @@ class MainWindow(QMainWindow):
         i = self.project.active if index is None else index
         rt = self._views[i]
         rt.stop()
-        rt.seek = SeekService(rt.info.path, rt.cache, n_frames=rt.info.n_frames)
+        rt.seek = SeekService(rt.info.path, rt.cache, n_frames=rt.info.n_frames, window=rt.window)
         # The view's index is looked up when a frame ARRIVES, not bound here:
         # reopening a project saved in camera 2+ moves the first runtime to
         # another index, and removing a camera renumbers the ones after it; a
@@ -3650,20 +3650,35 @@ class MainWindow(QMainWindow):
         return -1
 
     def _rebudget_caches(self):
-        """The WORKING camera keeps the whole frame-cache budget; companions get
-        a small fixed allowance each.
+        """One frame budget split between the cameras that DECODE (I306, `scrub_budget`).
 
-        An even split would be wrong: the working view is the one being scrubbed,
-        played and prefetched, while a companion only ever displays a single
-        frame. At 15 cameras an even split would leave the working view with a
-        fifteenth of the cache and make scrubbing crawl, while the companions
-        sat on memory they never re-read."""
-        active = self.project.active if self.project is not None else 0
-        for i, rt in enumerate(self._views):
-            rt.cache.max_bytes = (DEFAULT_CACHE_BYTES if i == active
-                                  else COMPANION_CACHE_BYTES)
-            if i != active:
-                rt.cache.trim()   # hand the memory back now, not on its next decode
+        The working camera keeps at least half; every other camera shown in Sync all
+        steps with the playhead (G24), so it shares the other half, each up to a window
+        of `SCRUB_WINDOW` frames around its playhead; a camera that does not decode (its
+        eye closed, solo, Active view only) keeps room for its picture only. (Before
+        I306 a companion got 96 MB, four 4K frames, on the belief that it only ever
+        shows one frame: its prefetch pushed out the next step's frame, so every step
+        re-decoded.) It re-splits only when who decodes changes; `_refresh_companions`
+        calls it on every move, so a new eye, mode or camera is always seen."""
+        p = self.project
+        if not self._views:
+            return
+        active = p.active if p is not None else 0
+        n = len(self._views)
+        decoding = {active}
+        if p is not None and n > 1 and self._sync_mode == "all":
+            decoding |= {i for i in self.grid.visible_indices() if i < n}
+        key = (tuple(id(rt) for rt in self._views), active, frozenset(decoding))
+        if key == self._budget_key:
+            return
+        self._budget_key = key
+        fb = {i: max(1, rt.info.width * rt.info.height * 3) for i, rt in enumerate(self._views)}
+        for i, (nbytes, window) in scrub_budget(DEFAULT_CACHE_BYTES, fb, decoding, active).items():
+            rt = self._views[i]
+            rt.cache.max_bytes, rt.window = nbytes, window
+            if rt.seek is not None:
+                rt.seek.set_window(window)
+            rt.cache.trim()       # hand the memory back now, not on its next decode
 
     def _reset_frame_cache(self):
         """Shift+C failsafe: drop every cached frame and re-decode this one
@@ -4902,6 +4917,7 @@ class MainWindow(QMainWindow):
         needs the decode bandwidth, and the companion views would only show
         frames nobody is looking at."""
         p = self.project
+        self._rebudget_caches()             # (I306) who decodes may have changed: an eye, the mode, a camera
         if p is None or p.n_views < 2 or self.state == TRACKING:
             return
         visible = set(self.grid.visible_indices())
