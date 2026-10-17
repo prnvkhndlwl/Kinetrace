@@ -25,6 +25,7 @@ from pathlib import Path
 from kinetrace import paths as _paths
 
 ENV = "KINETRACE_RECOVERY_DIR"
+SETTINGS_ENV = "KINETRACE_SETTINGS"
 _INSTALL = _paths.ROOT / "recovery"
 _cached: tuple[Path, bool] | None = None
 
@@ -54,7 +55,11 @@ def settings_path() -> Path:
     """The app's own settings file (an INI the app reads with QSettings): inside the Kinetrace
     folder, never the registry or a macOS plist, so that deleting the folder removes it (Mac
     install audit P1); the per-user data folder when the folder cannot be written; a temporary
-    one for the offscreen test suites (they must not change the user's settings)."""
+    one for the offscreen test suites (they must not change the user's settings). `SETTINGS_ENV`
+    names another file: a test on the real screen (audit_gui_real) or a suite that needs its own
+    (G205: the recent projects in it are clicked)."""
+    if os.environ.get(SETTINGS_ENV):
+        return Path(os.environ[SETTINGS_ENV])
     if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
         import tempfile
         return Path(tempfile.gettempdir()) / "kinetrace-test-settings.ini"

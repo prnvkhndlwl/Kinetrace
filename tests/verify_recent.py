@@ -23,6 +23,9 @@ OUT = os.path.join(HERE, "out", "recent")
 shutil.rmtree(OUT, ignore_errors=True)
 os.makedirs(OUT, exist_ok=True)
 os.environ["KINETRACE_RECOVERY_DIR"] = os.path.join(OUT, "recovery")
+# its own settings file: the shared offscreen one gets other suites' projects (run at the same time elsewhere)
+SETTINGS = os.path.join(OUT, "settings.ini")
+os.environ["KINETRACE_SETTINGS"] = SETTINGS
 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
@@ -328,10 +331,26 @@ def gui_start_screen():
     close(w)
 
 
+def settings_kept_apart():
+    print("[5] no test touches the user's own settings.ini (it holds the user's real recent projects)")
+    from kinetrace import recovery
+    check(os.path.normcase(str(recovery.settings_path())) == os.path.normcase(SETTINGS),
+          "KINETRACE_SETTINGS names the settings file", f"{recovery.settings_path()}")
+    check(os.path.isfile(SETTINGS) and "recent" in open(SETTINGS, encoding="utf-8", errors="replace").read(),
+          "this suite's projects went into its own file")
+    src = open(os.path.join(HERE, "audit_gui_real.py"), encoding="utf-8").read()
+    first_import = src.index("from kinetrace")
+    check(0 <= src.find('os.environ["KINETRACE_SETTINGS"]') < first_import,
+          "audit_gui_real (run on the real screen) sets its own settings file before the app is imported")
+    check("start_buttons" in src[src.index("def walk_toolbar"):src.index("def setattr_policy")],
+          "audit_gui_real's button walk leaves the recent projects alone")
+
+
 unit()
 gui_menu()
 gui_moved()
 gui_start_screen()
+settings_kept_apart()
 
 if FAILS:
     print(f"verify_recent FAILED ({len(FAILS)}): " + "; ".join(FAILS))
