@@ -215,7 +215,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>eye / title bar</td><td>the <b>eye</b> on a camera's line in CAMERAS shows / hides its view (hidden = not decoded; the others get the room); <b>drag a view's title bar</b> onto another view to move it there (only the screen changes, the cameras keep their numbers); right-click a title bar: hide it, show every camera, views back in camera order. <b>▶</b> on a camera's line opens its controls (Align here, offset, frame rate). With Track ▾ → Every camera, a <b>hidden camera is tracked too</b>, without being drawn: Track says "(n hidden)" and a warning names them</td></tr>
 <tr><td class=k>Ctrl+E</td><td><b>ALL CAMERAS — DLTdv8 xypts</b> writes one file for 3D reconstruction: row k = frame k of the reference camera (from 0), every camera sampled through its offset, landmarks matched across cameras <i>by name</i>, NaN where a camera has no data; top-left origin, first pixel = 1</td></tr>
 <tr><td class=k>3D menu</td><td><b>Cameras Overview</b> · <b>Sync ▸</b> <b>Sync Cameras (Sound / Motion)</b> (whole-frame offsets from the sound tracks or the pictures, with a noise filter), <b>Estimate Sub-frame Offsets</b> (fractional sync from the tracks) · <b>Calibrate ▸</b> <b>Calibrate a Lens (checkerboard)</b> (how a wide-angle lens bends the picture; opens with or without a video — with nothing open, save the lens file and attach it later), <b>Load a Lens Profile for Cameras</b>, <b>Calibrate Cameras with a Wand</b> · <b>Reconstruct 3D Landmarks</b> · <b>Re-track Disagreeing Stretches</b> (a camera's landmark put back on the other cameras' rays and re-tracked, before / after verdict) · <b>Carve Volume</b> · <b>Show 3D View</b>. A calibration comes in through File → Import → Calibration (a Kinetrace .kcal.json, DLT coefficients from DLTdv / easyWand / Argus, K + R/t, or a DLTdv8 project with its lens undistortion); calibrations, lens profiles and meshes go out through File → Export. Entries that need more (a video, a second camera, a calibration) open anyway and say what is missing</td></tr>
-<tr><td class=k>Ctrl+3</td><td>reconstruct the 3D landmarks (matched by name across cameras) and open the 3D view</td></tr>
+<tr><td class=k>Ctrl+3</td><td>reconstruct all the 3D landmarks (matched by name across cameras) with the verdict and open the 3D view; the result also keeps itself up to date</td></tr>
 <tr><td class=k>Ctrl+4</td><td>carve the volume hull at this frame from every camera's silhouette</td></tr>
 <tr><td class=k>Ctrl+5</td><td>show / hide the 3D view (drag to orbit, wheel to zoom, middle-drag to pan, double-click to reset; with a calibration: the wand calibration layers - wand points, camera pyramids, fields of view, covered space - and a click on a wand end goes to its frame)</td></tr>
 <tr><td class=k>Ctrl+6</td><td>show / hide the body side-by-side view (footage + skeleton | the pose on its own | joint angles over time)</td></tr>
@@ -10661,7 +10661,12 @@ class MainWindow(QMainWindow):
         self._refresh_guides()
         self._apply_state()
         dropped = had and replacement is None
-        if reason and (dropped or had_hull):
+        if reason and dropped and self._sync3d_ready():       # (I305) the automatic update makes it again
+            self.statusBar().showMessage(
+                f"{cap_first(reason)}: the 3D result is being recomputed"
+                + ("; the carved volume made earlier was cleared — carve with Ctrl+4 again" if had_hull else ""),
+                8000)
+        elif reason and (dropped or had_hull):
             gone = " and ".join(x for x, on in (("the 3D result", dropped), ("the carved volume", had_hull)) if on)
             self.statusBar().showMessage(
                 f"{cap_first(reason)}: {gone} made earlier {'were' if ' and ' in gone else 'was'} "
@@ -11193,7 +11198,9 @@ class MainWindow(QMainWindow):
         self.toast.show_message(
             f"Calibration loaded for {p.calibration.n_calibrated} of {p.n_views} cameras "      # (I273)
             f"({p.calibration.source}). " + self.GUIDES_HINT
-            + " Next: <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3).", "info", 14000)
+            + (" The 3D landmarks now follow by themselves; <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3) "
+               "gives their verdict." if p.calibration.n_usable(p.n_views) >= 2      # (I305)
+               else " Next: <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3)."), "info", 14000)
 
     GUIDES_HINT = ("Press <b>N</b> (＋ Add) and click a point in one camera: the other cameras show a dashed line "
                    "where that point must be. Click the next camera to work there (the point stays selected) and "
