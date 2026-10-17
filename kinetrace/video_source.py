@@ -98,9 +98,10 @@ def describe_scrub(budget: int, cams: list, target: int = SCRUB_WINDOW) -> str:
     """The System Check lines about stepping through frames (I306), ASCII only.
 
     `cams` = one (window, keyframe interval or 0, bytes of one frame) per camera that DECODES
-    (shown, in Sync all; the working one always). Verdict: good = every one keeps the full window;
-    ok = every one keeps at least one keyframe interval below the playhead (a step back never
-    decodes a whole interval while it stays inside); poor = less."""
+    (shown, in Sync all; the working one always). Verdict: good = every one keeps the full window
+    and a keyframe interval fits in half of it; ok = the full window with keyframes farther apart,
+    or at least one keyframe interval below the playhead (a step back never decodes a whole
+    interval while it stays inside); poor = less."""
     if not cams:
         return "Scrubbing:  no video open."
     w = min(c[0] for c in cams)
@@ -110,8 +111,11 @@ def describe_scrub(budget: int, cams: list, target: int = SCRUB_WINDOW) -> str:
     where = "the camera" if len(cams) == 1 else f"each of the {len(cams)} cameras shown"
     head = (f"Scrubbing:  about +-{w // 2} frames kept around the playhead in {where} "
             f"({held:.1f} GB of the {budget / 1024 ** 3:.1f} GB frame budget{own})")
-    if w >= target:
+    if w >= target and gop <= w // 2:
         verdict = "good: steps forward and back show every camera at once"
+    elif w >= target:
+        verdict = (f"ok: steps within about +-{w // 2} frames are instant, but a video here has a keyframe only "
+                   f"every {gop} frames, so a step back past the window waits for up to {gop} frames to decode")
     elif w >= gop:
         verdict = (f"ok: steps within about +-{w // 2} frames are instant; farther ones wait for the video to "
                    "decode. Hiding cameras you do not need gives the others more")
@@ -937,32 +941,40 @@ class SeekService(QThread):
         self._window = max(0, int(window))
         self._last: int | None = None    # the frame asked for last (the direction of a move)
         self._dir = 1                    # +1 forward, -1 back: where the window leans
+        self._quiet = False              # the pending target was shown from the cache already
 
-    def request(self, idx: int) -> None:
+    def request(self, idx: int, quiet: bool = False) -> None:
+        """Serve frame `idx` (latest wins). `quiet`: the window already put it on screen from the cache,
+        so only the window moves to it -- no reply unless the frame has left the cache meanwhile. A
+        camera's window follows the playhead only through these calls, cache hits included."""
         with self._cond:
             if self._last is not None and idx != self._last:
                 self._dir = 1 if idx > self._last else -1
             self._last = idx
             self._target = idx
+            self._quiet = bool(quiet)
             self._cond.notify()
 
     def set_window(self, frames: int) -> None:
-        """Frames to keep around the playhead besides its own (0 = none); `scrub_budget` sizes it."""
+        """Frames to keep around the playhead besides its own (0 = none, which also ends a fill under
+        way: the camera stopped decoding, or a run started); `scrub_budget` sizes it."""
         with self._cond:
             self._window = max(0, int(frames))
 
     def _busy(self) -> bool:
-        """A new request or a stop arrived: the fill gives way at once."""
+        """A new request, a stop or a window of none: the fill gives way at once."""
         with self._cond:
-            return self._target is not None or self._stop
+            return self._target is not None or self._stop or self._window == 0
 
     def _plan_fill(self, idx: int, frame_bytes: int) -> list:
         """The (first, last) frame ranges to fill around `idx`, the most useful first.
 
-        Below the playhead it keeps at least one keyframe interval (a backward miss decodes a whole
-        one, a forward miss reads one frame): moving forward, below = max(gop, W/3); moving back,
-        below = max(gop, 2W/3) (the way it is going); above = the rest. Below is read in chunks of
-        one keyframe interval, nearest first, so the next back-step is ready soonest."""
+        Two thirds of the window lie the way the user moves, one third behind (owner, 2026-10-16).
+        Behind grows to one keyframe interval when that fits in half the window (a backward miss
+        decodes a whole interval, a forward miss reads one frame); below the playhead it is read in
+        chunks of one interval, nearest first. A file whose keyframes are farther apart than half the
+        window (x264's default is 250) fills the way the user moves first and behind last, so the
+        frames the next steps want never wait behind a long backward seek."""
         with self._cond:
             w, d = self._window, self._dir
         cap = int(self._cache.max_bytes) // max(1, int(frame_bytes))
@@ -971,27 +983,33 @@ class SeekService(QThread):
             return []
         plan = seek_plan(self._path)
         gop = plan.gop if plan is not None and plan.gop > 0 else SEEK_BACK_PREFETCH
-        below = min(w, max(gop, (w if d > 0 else 2 * w) // 3))
-        above = w - below
+        long_gop = gop > w // 2
+        trail = w - (2 * w) // 3
+        if not long_gop and trail < gop:
+            trail = gop
+        below, above = (trail, w - trail) if d > 0 else (w - trail, trail)
         last = (self._n_frames - 1) if self._n_frames else idx + above
+        step = below if long_gop else gop
         chunks, hi = [], idx - 1
         while hi >= max(0, idx - below):
-            lo = max(0, idx - below, hi - gop + 1)
+            lo = max(0, idx - below, hi - step + 1)
             chunks.append((lo, hi))
             hi = lo - 1
         near_up = (idx + 1, min(last, idx + min(3, above)))
         rest_up = (idx + 4, min(last, idx + above))
         if d > 0:
-            order = [near_up] + chunks + [rest_up]
+            order = [near_up, rest_up] + chunks if long_gop else [near_up] + chunks + [rest_up]
         else:
             order = chunks[:1] + [(idx + 1, min(last, idx + above))] + chunks[1:]
         return [(a, b) for a, b in order if a <= b]
 
-    def _fill(self, src: "VideoSource", idx: int, frame_bytes: int) -> None:
-        """Decode the window around `idx` into the cache, giving way to any request."""
+    def _fill(self, src: "VideoSource", idx: int, frame_bytes: int) -> bool:
+        """Decode the window around `idx` into the cache, giving way to any request. False when a
+        read failed: the capture may stand anywhere now, so the caller reopens it (as `_fetch` does,
+        I40) rather than read on and file a picture under the wrong frame number."""
         ranges = self._plan_fill(idx, frame_bytes)
         if not ranges:
-            return
+            return True
         # the window's cached frames are touched farthest first, the playhead's last, so a frame
         # outside the window is the one the cache lets go of when the fill adds a new one
         want = sorted({f for a, b in ranges for f in range(a, b + 1)} | {idx}, key=lambda f: -abs(f - idx))
@@ -1006,9 +1024,10 @@ class SeekService(QThread):
                 src.seek(lo)
             while src._pos <= hi:
                 if self._busy():
-                    return
+                    return True
                 if src.read_next() is None:
-                    break                        # the end of the file: not an error here
+                    return False                 # within the verified count: a failed read
+        return True
 
     def stop(self) -> None:
         with self._cond:
@@ -1053,11 +1072,14 @@ class SeekService(QThread):
                     if self._stop:
                         return
                     idx = self._target
+                    quiet = self._quiet
                     self._target = None
 
-                if self._cache.get(idx) is None:
+                cached = self._cache.get(idx)
+                if cached is None:
+                    quiet = False                # it left the cache: the window needs the reply after all
                     self.seek_slow.emit(idx)
-                frame, err, src = self._fetch(src, idx)
+                frame, err, src = (cached, None, src) if quiet else self._fetch(src, idx)
 
                 # a newer request may have arrived while decoding; serve it next loop
                 with self._cond:
@@ -1066,14 +1088,17 @@ class SeekService(QThread):
                     self.decode_failed.emit(
                         idx, err or "the decoder returned no picture (tried twice)")
                 elif not superseded:
-                    self.frame_ready.emit(idx, frame)
+                    if not quiet:
+                        self.frame_ready.emit(idx, frame)
                     # idle time fills the scrub window (I306); it gives way the
-                    # moment a new request lands
+                    # moment a new request lands. A failed read reopens the capture.
                     try:
-                        if src is not None:
-                            self._fill(src, idx, frame.nbytes)
+                        ok = src is not None and self._fill(src, idx, frame.nbytes)
                     except Exception:   # noqa: BLE001 — opportunistic; a request retries
-                        pass
+                        ok = False
+                    if not ok and src is not None:
+                        src.close()
+                        src = None
         finally:
             if src is not None:
                 src.close()
