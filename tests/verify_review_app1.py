@@ -748,6 +748,25 @@ def g133_shift_c_other_cameras():
     close(w)
 
 
+# ================================================================== I308
+@section
+def i308_closed_window_never_autosaves():
+    # A closed window lives on until the garbage collector frees it; its 30 s autosave tick wrote back the work
+    # the user had just discarded, and the next open of that video offered it (the G133 flake above).
+    w = window(A)
+    QTest.keyClick(w, Qt.Key_N)
+    click(w, 160, 120)
+    check("I308 a point placed with N + click makes unsaved work", w.session.n_points == 1 and w.project.dirty,
+          (w.session.n_points, w.project.dirty))
+    w._autosave_timer.setInterval(100)             # the 30 s tick, sooner
+    close(w)                                       # Discard
+    pump(1.0)
+    check("I308 the closed window's autosave timer is stopped", not w._autosave_timer.isActive())
+    check("I308 no recovery copy of the discarded work appears after the close", recovery.for_video(A) is None,
+          recovery.for_video(A))
+    forget(A)
+
+
 # ================================================================== G134
 @section
 def g134_veil_does_not_carry():
