@@ -329,9 +329,8 @@ assert win.grid.visible_indices() == [0, 1]
 print("solo / show-all OK")
 
 # ---- 15 cameras: the supported maximum ---------------------------------------
-from kinetrace.app import COMPANION_CACHE_BYTES
 from kinetrace.project import MAX_VIEWS
-from kinetrace.video_source import DEFAULT_CACHE_BYTES
+from kinetrace.video_source import DEFAULT_CACHE_BYTES, scrub_floor
 
 assert MAX_VIEWS == 15
 extra = []
@@ -355,19 +354,20 @@ _pick["files"] = [PATH_A]
 win._add_video_dialog()
 assert win.project.n_views == MAX_VIEWS, "the 16th camera must be refused"
 
-# memory: the WORKING view keeps the budget, companions get the small allowance
+# memory (I306): ONE budget split between the decoding cameras, the working one keeps the most
 win._goto(60, force=True)
 settle(1.5)
 budgets = [rt.cache.max_bytes for rt in win._views]
-assert budgets[p.active] == DEFAULT_CACHE_BYTES, "the working camera keeps the full cache"
-assert all(b == COMPANION_CACHE_BYTES for i, b in enumerate(budgets) if i != p.active), \
-    f"companions must share the small allowance, got {budgets}"
+floors = sum(scrub_floor(rt.info.width * rt.info.height * 3) for rt in win._views)
+assert budgets[p.active] == max(budgets), \
+    f"the working camera keeps the largest share, got {budgets}"
+assert sum(budgets) <= DEFAULT_CACHE_BYTES + floors, f"15 cameras over the frame budget: {budgets}"
+assert all(rt.window > 0 for rt in win._views), "every shown camera in Sync all keeps a window"
 for i, rt in enumerate(win._views):
-    if i != p.active:
-        assert rt.cache.stats()[1] <= COMPANION_CACHE_BYTES, \
-            f"companion {i} holds {rt.cache.stats()[1] / 1024**2:.0f} MB over its allowance"
+    assert rt.cache.stats()[1] <= rt.cache.max_bytes, \
+        f"camera {i} holds {rt.cache.stats()[1] / 1024**2:.0f} MB over its share"
 held = sum(rt.cache.stats()[1] for rt in win._views)
-print(f"15-camera caches hold {held / 1024**2:.0f} MB, every companion within its allowance")
+print(f"15-camera caches hold {held / 1024**2:.0f} MB, every camera within its share")
 
 # solo must hand back every companion decoder thread
 win.act_solo.setChecked(True)
@@ -393,9 +393,9 @@ print("solo releases all 14 companion decoders, show-all restores them on demand
 win._set_active_view(MAX_VIEWS - 1)
 settle(0.6)
 assert win.project.active == MAX_VIEWS - 1
-assert win._views[MAX_VIEWS - 1].cache.max_bytes == DEFAULT_CACHE_BYTES, \
+assert win._views[MAX_VIEWS - 1].cache.max_bytes == max(rt.cache.max_bytes for rt in win._views), \
     "the cache budget must follow the working camera"
-assert win._views[0].cache.max_bytes == COMPANION_CACHE_BYTES
+assert win._views[0].cache.max_bytes < win._views[MAX_VIEWS - 1].cache.max_bytes
 win._set_active_view(0)
 settle(0.4)
 while win.project.n_views > 2:                 # back to two for the removal check
