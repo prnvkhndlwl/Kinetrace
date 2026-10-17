@@ -3670,9 +3670,9 @@ class MainWindow(QMainWindow):
     def _rebudget_caches(self):
         """One frame budget split between the cameras that DECODE (I306, `scrub_budget`).
 
-        The working camera keeps at least half; every other camera shown in Sync all
-        steps with the playhead (G24), so it shares the other half, each up to a window
-        of `SCRUB_WINDOW` frames around its playhead; a camera that does not decode (its
+        Every camera shown in Sync all steps with the playhead (G24), so each decoding
+        camera gets an equal share, the others each up to a window of `SCRUB_WINDOW`
+        frames around their playhead, the working camera what they leave; a camera that does not decode (its
         eye closed, solo, Active view only) keeps room for its picture only. (Before
         I306 a companion got 96 MB, four 4K frames, on the belief that it only ever
         shows one frame: its prefetch pushed out the next step's frame, so every step
@@ -3704,9 +3704,11 @@ class MainWindow(QMainWindow):
             return
         n_frames, n_bytes = self.cache.stats()
         for i, rt in enumerate(self._views):
+            restart = i == self.project.active or rt.seek is not None
+            rt.stop()                         # FIRST: a read under way would file its picture after the clear
             rt.cache.clear()
             rt.want_frame = None              # the other cameras ask for their picture again (G133)
-            if i == self.project.active or rt.seek is not None:
+            if restart:
                 self._start_seek_service(i)   # fresh VideoCapture: fixes decoder desync too
         self._goto(self.current, force=True)
         self.statusBar().showMessage(
@@ -3791,9 +3793,11 @@ class MainWindow(QMainWindow):
         i = self._view_index(rt)
         if i < 0 or plan.exact:
             return
-        rt.cache.clear()
+        restart = i == self.project.active or rt.seek is not None
+        rt.stop()                            # FIRST: a read under way would file a picture reached the old
+        rt.cache.clear()                     # way after the clear (the window keeps the decoder busy)
         rt.want_frame = None
-        if i == self.project.active or rt.seek is not None:
+        if restart:
             self._start_seek_service(i)      # a fresh decoder: no frame reached the old way arrives late
         if i == self.project.active:
             self._goto(self.current, force=True)
@@ -4561,6 +4565,7 @@ class MainWindow(QMainWindow):
         for rt in self._views:
             rt.stop()
         self._views = []
+        self._budget_key = None              # (I306) the next video's cameras are split afresh
         self._hull_cache.clear()
         if self.view3d is not None:
             self.view3d.hide()
@@ -4890,15 +4895,17 @@ class MainWindow(QMainWindow):
                 self._lock["frames"][p.active] = hit      # shown with the other cameras (G24)
         elif hit is not None:
             self._show_active_frame(hit, body=False)      # `_refresh_body_view` follows below
-        elif self.cache is not None:
-            # instant preview from cache while the real frame decodes, veiled: it is
-            # another frame under this frame's markers (G204)
+        elif self.cache is not None and not continuous:
+            # a lone jump: the nearest cached frame stands in while the real one decodes,
+            # veiled -- it is another frame under this frame's markers (G204). Not while
+            # playing or holding a key: there the next frame is a decode away, and a veil
+            # would flash on and off at the playback rate
             near = self.cache.nearest(idx)
-            if near is not None:
+            if near is not None and not self.canvas.shows(near[1]):
                 self.canvas.set_frame(near[1])
-                self.canvas.set_preview(True)
+            self.canvas.set_preview(True)                 # whatever is up is not frame idx
         if self.seek is not None and self.state != TRACKING:
-            self.seek.request(idx)
+            self.seek.request(idx, quiet=hit is not None)   # (I306) a hit only moves the window
         self._refresh_overlay()
         self._refresh_companions()
         self.timeline.set_current(idx)
@@ -4942,7 +4949,7 @@ class MainWindow(QMainWindow):
                 self._try_lockstep()
                 return
             cv = self.grid.canvas(view)
-            if cv is not None:
+            if cv is not None and not cv.shows(rgb):
                 cv.set_frame(rgb)
 
     def _refresh_companions(self):
@@ -4994,8 +5001,14 @@ class MainWindow(QMainWindow):
                 if cached is not None:
                     if self._lock is not None:
                         self._lock["frames"][i] = cached
-                    else:
+                    elif not cv.shows(cached):
                         cv.set_frame(cached)
+                    # (I306) the camera's window follows the playhead only through its requests:
+                    # a cache hit tells it too (quietly: no reply, the picture is up already)
+                    if rt.seek is None and rt.window > 0:
+                        self._start_seek_service(i)
+                    if rt.seek is not None:
+                        rt.seek.request(f, quiet=True)
                 else:
                     # decoder threads are started on FIRST NEED, not up front: at
                     # 15 cameras that is 15 idle threads each holding a 4K
@@ -9451,6 +9464,9 @@ class MainWindow(QMainWindow):
         the end-of-run handling."""
         self.worker = driver if driver is not None else w
         self._model_worker = w
+        for rt in self._views:                  # (I306) the run gets the decode bandwidth: no window fills
+            if rt.seek is not None:             # (a fill under way ends; `_end_run` gives the windows back)
+                rt.seek.set_window(0)
         w.balls_ready.connect(self._on_ball_radii)
         w.model_loading.connect(self._on_model_loading)
         w.model_progress.connect(self._on_model_progress)
@@ -9598,6 +9614,7 @@ class MainWindow(QMainWindow):
         self.current = idx
         self.session.current_frame = idx
         self.canvas.set_frame(wrgb)
+        self.canvas.set_preview(False)          # (G204) the run's own frame: a stand-in veil from before goes
         self._refresh_overlay()
         overlay = self._member_frames.get(idx)
         if overlay is not None:
@@ -9632,6 +9649,8 @@ class MainWindow(QMainWindow):
         _quiet_close(self._model_dialog)
         self._model_dialog = None
         self._end_run_cleanup()
+        self._budget_key = None                 # (I306) the windows `_launch_run` set to none come back
+        self._rebudget_caches()
         self.act_undo.setEnabled(self._undo_snap is not None)
         self._autosave()  # before the guidance message — 'Saved ✓' must not clobber it
         return step_run

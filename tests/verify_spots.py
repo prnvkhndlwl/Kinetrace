@@ -536,6 +536,67 @@ for v, gt in ((0, GTA), (1, GTB)):
 win.act_track_all.setChecked(False)
 print("  semi-automatic F steps one frame; Track > Every camera follows the spot in both cameras OK")
 
+# [4b] (I306) after an every-camera run, stepping back comes from each camera's cache: at 1920x1080 the
+# other camera's old 96 MB held its last 15 frames only; its scrub-window share keeps the tracked stretch
+print("[4b] stepping back after an every-camera run (1920x1080)")
+fr2A, GT2A = make_scene("sea", n=40, w=1920, h=1080, seed=0)
+fr2B, GT2B = make_scene("sea", n=40, w=1920, h=1080, seed=3)
+V2A, V2B = os.path.join(OUT, "sea_hd_camA.mp4"), os.path.join(OUT, "sea_hd_camB.mp4")
+write_video(V2A, fr2A)
+write_video(V2B, fr2B)
+del fr2A, fr2B
+forget_recovery(V2A, V2B)
+win._open_video(V2A)
+wait(lambda: win.state == READY and win.info is not None and win.info.path == V2A, 60, "open the HD camA")
+assert win._add_view(V2B), "add the HD camB"
+wait(lambda: win.project is not None and win.project.n_views == 2 and win.state == READY, 60, "HD camB")
+win._refresh_companions()
+pump(0.3)
+win.act_pm_spot.trigger()
+p = win.project
+for v, gt in ((0, GT2A), (1, GT2B)):
+    win._set_active_view(v)
+    pump(0.2)
+    if v == 0:
+        win._goto(0, force=True)
+        win.btn_add.setChecked(True)
+        win.canvas.add_requested.emit(float(gt[0, 0]), float(gt[0, 1]))
+        pump(0.1)
+        name2 = p.sessions[0].points[0].name
+        win._goto(1, force=True)
+        win._on_annotate(*gt[1])
+    else:
+        win.layers.setCurrentItem(win.layers.point_item(p.sessions[v].pid_by_name(name2)))
+        for f in (0, 1):
+            win._goto(f, force=True)
+            win._on_annotate(*gt[f])
+win._set_active_view(0)
+pump(0.2)
+win._goto(1, force=True)
+win.act_track_all.setChecked(True)
+pump(0.05)
+win.act_select_all.trigger()
+QTest.keyClick(win, Qt.Key_T)
+wait(lambda: win._multi is not None or win.state == TRACKING, 30, "the HD every-camera start")
+wait(lambda: win._multi is None and win.state == READY, 180, "the HD every-camera end")
+win.act_track_all.setChecked(False)
+pump(0.5)
+ends = [int(np.nonzero(p.sessions[v].tracked[:, p.sessions[v].pid_by_name(name2)])[0].max()) for v in (0, 1)]
+assert min(ends) >= 30, f"the HD run tracked too little to test: {ends}"
+misses2 = []
+_slow2 = win._on_seek_slow
+win._on_seek_slow = lambda view, idx: (misses2.append((view, idx)), _slow2(view, idx))[1]
+start2 = win.current
+for _ in range(20):
+    before = win.current
+    QTest.keyClick(win, Qt.Key_B)
+    wait(lambda: win.current == before - 1 and win._lock is None, 20, "a step back")
+    pump(0.25)
+del win._on_seek_slow
+assert win.current == start2 - 20, (start2, win.current)
+assert not misses2, f"(I306) after the run a step back re-decoded: {misses2}"
+print(f"  20 steps back from frame {start2} after the run: both cameras from their caches OK")
+
 win.close()
 pump(0.3)
 if getattr(win, "_dev_probe", None) is not None:

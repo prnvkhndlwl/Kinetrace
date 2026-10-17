@@ -64,8 +64,8 @@ while not served and time.time() - t0 < 10:
     app.processEvents()
     time.sleep(0.005)
 assert served == [100], served
-# the idle fill: a first move leans forward, below keeps one keyframe interval or a third of the window
-below = max(SEEK_BACK_PREFETCH, SCRUB_WINDOW // 3)
+# the idle fill: a first move leans forward, a third of the window behind (at least one keyframe interval)
+below = max(SEEK_BACK_PREFETCH, SCRUB_WINDOW - (2 * SCRUB_WINDOW) // 3)
 win_frames = list(range(100 - below, 100)) + list(range(101, 101 + SCRUB_WINDOW - below))
 t0 = time.time()
 while any(cache2.get(j) is None for j in win_frames) and time.time() - t0 < 10:
@@ -125,6 +125,76 @@ src4.close()
 assert not bad, f"(I306) the window holds a frame that is not the file read forward: {bad[:8]}"
 assert not gaps, f"(I306) the window lost frames it had filled: {gaps[:8]}"
 print(f"scrub window exact OK: {len(seq)} moves on 4K, {len(seen)} cached frames, each == the file read forward")
+
+# ---- (I306) a read that fails inside a fill ends it: nothing after it is filed under a wrong number ----
+REF600 = []
+rd = FrameReader(VID, 0)
+for f in range(600):
+    REF600.append(hashlib.sha256(cv2.cvtColor(rd.read(f), cv2.COLOR_BGR2RGB).tobytes()).hexdigest())
+rd.release()
+
+
+class _SkipOnce(VideoSource):
+    """At frame `fail_at` the decoder consumes a packet and gives no picture (a share hiccup)."""
+    fail_at = None
+
+    def read_next(self):
+        if self._pos == _SkipOnce.fail_at:
+            _SkipOnce.fail_at = None
+            self._cap.grab()
+            return None
+        return super().read_next()
+
+
+cache5 = FrameCache(500 * 1024 * 1024)
+svc5 = SeekService(VID, cache5, n_frames=600)
+src5 = _SkipOnce(VID, cache5)
+svc5.request(301)
+svc5.request(300)                               # moving back: below first, then above (within 30 frames)
+svc5._target = None
+fr = src5.get_frame(300)
+_SkipOnce.fail_at = 292
+ok5 = svc5._fill(src5, 300, fr.nbytes)
+src5.close()
+wrong5 = [f for f, arr in list(cache5._data.items()) if hashlib.sha256(arr.tobytes()).hexdigest() != REF600[f]]
+assert not ok5, "a failed read in a fill is reported, so the capture is reopened"
+assert not wrong5, f"(I306) after a failed read the fill filed pictures under wrong numbers: {sorted(wrong5)[:8]}"
+print("failed read in a fill OK: the fill ends, every cached frame is the file read forward")
+
+# ---- (I306) keyframes far apart (x264's default 250): the window still fills the way the user moves ----
+import imageio_ffmpeg                           # noqa: E402
+import subprocess                               # noqa: E402
+
+LONG = os.path.join(ROOT, "tests", "out", "scrub_long_gop.mp4")
+if not os.path.exists(LONG):
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "testsrc2=size=640x360:rate=30", "-frames:v", "600", "-c:v", "libx264", "-g", "250",
+                    "-pix_fmt", "yuv420p", LONG], check=True)
+from kinetrace.video_source import check_seeks, set_seek_plan   # noqa: E402
+plan_long = check_seeks(LONG, 600)
+assert plan_long.gop == 250, plan_long.gop
+set_seek_plan(LONG, plan_long)
+cache6 = FrameCache(500 * 1024 * 1024)
+svc6 = SeekService(LONG, cache6, n_frames=600)
+slow6, got6 = [], []
+svc6.seek_slow.connect(lambda i: slow6.append(i))
+svc6.frame_ready.connect(lambda i, f: got6.append(i))
+svc6.start()
+for idx in range(400, 411):                     # a jump, then 10 lone F steps
+    svc6.request(idx)
+    t0 = time.time()
+    while idx not in got6 and time.time() - t0 < 20:
+        app.processEvents()
+        time.sleep(0.005)
+    t0 = time.time()
+    while time.time() - t0 < 0.5:
+        app.processEvents()
+        time.sleep(0.005)
+svc6.stop()
+set_seek_plan(LONG, None)
+fwd6 = [i for i in slow6 if i > 400]
+assert not fwd6, f"(I306) with keyframes 250 apart the F steps re-decode: {fwd6}"
+print("long keyframe interval OK: 10 F steps after a jump, all from the window")
 
 # ---- a failed read is not the end of the video; an exception never kills the thread (I40) ----
 from kinetrace import video_source as _vs       # noqa: E402
@@ -331,19 +401,21 @@ def step(key, n):
         pump(lambda: win.current != start and win._lock is None, 10, "a step")
         hit = win.cache.get(win.current)
         assert hit is not None and win.canvas.shows(hit), "the working camera shows its frame from the cache"
-        settle(max(1.2, 3 * STEP_GAP_S))        # a lone step; the idle fill runs
+        settle(max(1.0, 3 * STEP_GAP_S))        # a lone step; the idle fill runs
 
 
-step(Qt.Key_F, 15)
+# 30 each way: farther than the window reaches from where it was first filled (27 ahead, 13 behind), so
+# each camera's window must FOLLOW the playhead, cache hits included
+step(Qt.Key_F, 30)
 fwd = list(misses[1])
-assert win.current == 115, win.current
-step(Qt.Key_B, 15)
+assert win.current == 130, win.current
+step(Qt.Key_B, 30)
 back = misses[1][len(fwd):]
 assert win.current == 100, win.current
-print(f"scrub window: companion misses forward {len(fwd)}/15, backward {len(back)}/15; "
-      f"working camera {len(misses[0])}/30")
-check(len(fwd) <= 1, f"(I306) the other camera re-decoded on forward steps: {fwd}")
-check(len(back) <= 2, f"(I306) the other camera re-decoded on backward steps: {back}")
+print(f"scrub window: companion misses forward {len(fwd)}/30, backward {len(back)}/30; "
+      f"working camera {len(misses[0])}/60")
+check(not fwd, f"(I306) the other camera re-decoded on forward steps: {fwd}")
+check(not back, f"(I306) the other camera re-decoded on backward steps: {back}")
 
 # every picture the window served is the frame read forward from the start of the file
 rd = FrameReader(CAM_B, 95)
@@ -395,28 +467,44 @@ assert not win.canvas.is_stale(), "a preview veil must not read as an out-of-dat
 pump(lambda: win.cache.get(250) is not None, 20, "frame 250")
 settle(0.2)
 assert not win.canvas._stale.isVisible(), "the veil stays after the real frame arrived"
-# a camera switch while the stand-in is up: no veil carries over, and the camera left gets its real frame
 QTest.mouseClick(win.cameras._rows[1].btn_eye, Qt.LeftButton)
 settle(0.5)
 assert win.grid.visible_indices() == [0, 1]
-for typed in ("40", "45"):                      # two quick jumps: one continuous move, so no lockstep
+
+
+def type_frame(text):
     win.spin.setFocus()
     win.spin.selectAll()
-    QTest.keyClicks(win.spin, typed)
+    QTest.keyClicks(win.spin, text)
     QTest.keyClick(win.spin, Qt.Key_Return)
-assert win.current == 45 and win._lock is None and win.cache.get(45) is None
-check(win.canvas.is_preview(), "(G204) the stand-in during a continuous move is veiled")
+
+
+# a continuous move (playing, a held key; here two quick jumps) shows no stand-in and no veil: the next frame
+# is a decode away, and a veil would flash on and off at the playback rate
+for typed in ("40", "45"):
+    type_frame(typed)
+    assert not win.canvas.is_preview(), f"(G204) a continuous move veils the picture (at {typed})"
+assert win.current == 45 and win._lock is None
+pump(lambda: all(rt.cache.get(45) is not None for rt in win._views), 20, "frame 45 in both cameras")
+settle(1.5)
+# a camera switch while a stand-in is up (Active view only: a lone jump shows one): the camera left is not
+# veiled and shows its real frame when it arrives
+win.act_sync_active.trigger()
+settle(0.3)
+type_frame("280")
+assert win.current == 280 and win.cache.get(280) is None and win.canvas.is_preview()
 cv1 = win.grid.canvas(1)
 QTest.mouseClick(cv1.viewport(), Qt.LeftButton, Qt.NoModifier, cv1.viewport().rect().center())
 settle(0.05)
 assert win.project.active == 1, "a click on the other camera works in it"
 cv0 = win.grid.canvas(0)
 assert not cv0.is_preview(), "the camera left kept its stand-in veil"   # (B may show its OWN stand-in)
-pump(lambda: win._views[0].cache.get(45) is not None, 20, "camera A's frame 45")
+pump(lambda: win._views[0].cache.get(280) is not None, 20, "camera A's frame 280")
 settle(0.3)
-assert cv0._raw_rgb is win._views[0].cache.get(45), "the camera left must show its real frame 45"
+assert cv0._raw_rgb is win._views[0].cache.get(280), "the camera left must show its real frame 280"
 win._set_active_view(0)
-settle(0.3)
+win.act_sync_all.trigger()
+settle(0.5)
 print("preview veil OK (G204)")
 
 # (I306) Help > System Check names the window and its verdict
@@ -432,7 +520,53 @@ del win._text_report
 GB = 1024 ** 3
 assert " - ok:" in describe_scrub(4 * GB, [(30, 12, fb)] * 4)            # inside a keyframe interval: ok
 assert " - poor:" in describe_scrub(4 * GB, [(6, 12, fb)] * 10)          # less than one interval: poor
+assert " - ok:" in describe_scrub(24 * GB, [(40, 250, fb)] * 2)          # keyframes 250 apart: not good
 print("System Check scrubbing line OK")
+
+# (I306) Shift+C while a fill is under way: each decoder stops BEFORE its cache is cleared, so no picture
+# reached the old way is filed after the clear (with an inexact seek plan it could be the wrong picture)
+from kinetrace import video_source as _vsm      # noqa: E402
+made = []
+
+
+class _SlowSource(_vsm.VideoSource):
+    slow = False
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.produced = []
+        made.append(self)
+
+    def read_next(self):
+        if _SlowSource.slow:
+            time.sleep(0.15)
+        r = super().read_next()
+        if r is not None:
+            self.produced.append(r[1])
+        return r
+
+
+_real_vs = _vsm.VideoSource
+_vsm.VideoSource = _SlowSource                  # the scrubbing threads open their sources through this name
+try:
+    QTest.keyClick(win, Qt.Key_C, Qt.ShiftModifier)   # fresh decoders, on the slow source
+    pump(lambda: win.cache.get(win.current) is not None, 20, "the frame after Shift+C")
+    settle(1.5)
+    _SlowSource.slow = True
+    type_frame("200")
+    pump(lambda: win.cache.get(200) is not None and win._lock is None, 30, "frame 200")
+    settle(0.4)                                 # the window fill is under way, 0.15 s a frame
+    old = list(made)
+    QTest.keyClick(win, Qt.Key_C, Qt.ShiftModifier)
+    settle(1.0)
+    _SlowSource.slow = False
+    late = sorted(f for rt in win._views for f, arr in list(rt.cache._data.items())
+                  if any(arr is p for s in old for p in s.produced))
+    check(not late, f"(I306) Shift+C: frames from the old decoders were filed after the clear: {late[:8]}")
+finally:
+    _SlowSource.slow = False
+    _vsm.VideoSource = _real_vs
+print("Shift+C during a fill OK: the old decoders stop before the clear")
 
 win._dev_probe.wait(180_000)
 win.close()
