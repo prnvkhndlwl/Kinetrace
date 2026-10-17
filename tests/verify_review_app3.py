@@ -280,6 +280,15 @@ def _i170_axes():
     check(worst < 1e-4, f"every camera projects every point to the same pixel (max change {worst:.2e} px)")
     check(p.dirty and not win._hull_cache and any("World axes set" in t for t in TOASTS),
           "marked changed, volumes cleared, the notice says what was done")
+    # (G201) the chosen world is kept as data, through the project file too
+    want = {"origin": "O", "x": "PX", "y": "PY", "when": f"frame {win._reference_instant()}"}
+    check(cal2.world == want, f"the calibration keeps the chosen world's landmarks: {cal2.world}")
+    os.makedirs(OUT, exist_ok=True)
+    _wp = os.path.join(OUT, "world_axes.kinetrace")
+    p.save(_wp)
+    _back = Project.load(_wp)
+    check(_back.calibration.world == want and _back.reconstruction.source == "tracks",
+          f"saved and opened again: the world {(_back.calibration.world)} and the result's source")
     # the mirrored (left-handed) case: the world is made right-handed too
     mir = cal2.reframed(np.diag([1.0, 1.0, -1.0]), np.zeros(3), "world: test mirror")
     check(calib.world_is_left_handed(mir) and not calib.world_is_left_handed(cal2),

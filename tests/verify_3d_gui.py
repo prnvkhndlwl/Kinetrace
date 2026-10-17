@@ -379,6 +379,117 @@ assert not np.array_equal(win.view3d.last_image, img)
 print(f"volume hull OK: {h.n_views} views, {h.volume() * 1e6:.1f} cm3 (sphere {V * 1e6:.1f} cm3), "
       f"{len(faces)} triangles; 3D view renders")
 
+# ---- (G202, G203) the figure: the grid box, its walls, text, the light background, trails, verdict rings ----
+from kinetrace.hull import _view_rotation  # noqa: E402
+v = win.view3d
+v.azimuth, v.elevation, v.zoom, v.pan = 35.0, 25.0, 1.0, [0.0, 0.0]
+v.chk_mesh.setChecked(False)
+assert v.chk_grid.isChecked(), "the grid is on by default"
+v._render()
+g = v._hits.get("grid")
+assert g is not None, "a grid box is drawn around the 3D result"
+lo_, hi_, step_ = g
+_P = win.project.reconstruction.xyz.reshape(-1, 3)
+_P = _P[np.isfinite(_P).all(axis=1)]
+assert (_P >= lo_ - 1e-9).all() and (_P <= hi_ + 1e-9).all(), "the box holds every finite 3D point"
+_m = step_ / 10 ** np.floor(np.log10(step_))
+assert min(abs(_m - x) for x in (1.0, 2.0, 5.0)) < 1e-6, f"a round tick step (1/2/5 x 10^k): {step_}"
+assert 4 <= (hi_ - lo_).max() / step_ <= 11, ((hi_ - lo_) / step_)
+_labs = [t for _x, _y, t in v._hits["labels"]]
+assert any(t.startswith("X") for t in _labs) and any(t.startswith("Z") for t in _labs), _labs
+img_grid = v.last_image.copy()
+QTest.mouseClick(v.chk_grid, Qt.LeftButton)
+pump(0.1)
+v._render()
+assert not v.chk_grid.isChecked() and v._hits.get("grid") is None and not np.array_equal(img_grid, v.last_image), \
+    "a click on Grid takes the grid away"
+QTest.mouseClick(v.chk_grid, Qt.LeftButton)
+pump(0.1)
+w1, w2 = v3.back_walls(_view_rotation(35.0, 25.0, 2)), v3.back_walls(_view_rotation(215.0, 25.0, 2))
+assert w1[0] != w2[0] and w1[1] != w2[1] and w1[2] == w2[2] == 0, (w1, w2)          # the floor stays below
+assert v3.back_walls(_view_rotation(35.0, -25.0, 2))[2] == 1, "looking from below, Z's wall is the ceiling"
+# text is drawn into the picture itself (Save PNG keeps it): the first tick number's box is not flat
+v._render()
+_x, _y, _t = v._hits["labels"][0]
+_box = v.last_image[max(0, int(_y) - 10):int(_y) + 2, max(0, int(_x) - 12):int(_x) + 12]
+assert _box.size and _box.std() > 6, f"the label {_t!r} is drawn into the picture"
+# Light background: a click, the picture turns white, the PNG is the picture; remembered, then back to dark
+was_light = v.chk_light.isChecked()
+if was_light:
+    QTest.mouseClick(v.chk_light, Qt.LeftButton)
+QTest.mouseClick(v.chk_light, Qt.LeftButton)
+pump(0.1)
+v._render()
+assert tuple(int(c) for c in v.last_image[2, 2]) == v3.PALETTES["light"]["bg"], v.last_image[2, 2]
+assert v3._light_preference() is True, "the choice is remembered"
+_png = os.path.join(SCRATCH, "test3d_gui_light.png")
+v.save_png(_png)
+assert np.array_equal(cv2.imread(_png), v.last_image)
+QTest.mouseClick(v.chk_light, Qt.LeftButton)
+pump(0.1)
+v._render()
+assert tuple(int(c) for c in v.last_image[2, 2]) == v3.PALETTES["dark"]["bg"] and v3._light_preference() is False
+# trails: +-N rows fade around the instant; the whole path reaches far frames
+v.chk_grid.setChecked(False)
+v.scene.trail_frames = 5
+v.cmb_trail.setCurrentIndex(1)
+v._render()
+k_ = v.scene.t_index
+assert v._hits.get("trail") == (max(0, k_ - 5), min(v.scene.points_all.shape[0] - 1, k_ + 5)), (v._hits.get("trail"), k_)
+H_, W_ = v.last_image.shape[:2]
+_ts = v3.screen_transform(v.scene, (W_, H_), v.azimuth, v.elevation, v.zoom, tuple(v.pan), 2, False, False)[0]
+# a frame at least 20 rows away whose hip is on screen, away from the other landmarks' dots and labels
+_cand = [f for f in range(v.scene.points_all.shape[0]) if abs(f - k_) >= 20
+         and np.isfinite(v.scene.points_all[f, 1]).all()]
+_scr = {f: _ts(v.scene.points_all[f, 1][None])[0][0] for f in _cand}
+_dots = _ts(v.scene.points[np.isfinite(v.scene.points).all(axis=1)])[0]
+far = next(f for f in _cand if 20 < _scr[f][0] < W_ - 20 and 20 < _scr[f][1] < H_ - 20
+           and np.min(np.hypot(*(_dots - _scr[f]).T)) > 60)
+_q = _scr[far]
+_bg = np.array(v3.PALETTES["dark"]["bg"])
+_near = v.last_image[int(_q[1]) - 1:int(_q[1]) + 2, int(_q[0]) - 1:int(_q[0]) + 2].reshape(-1, 3).astype(int)
+assert (np.abs(_near - _bg).max(axis=1) <= 3).all(), "+-5 rows: the hip's position 30 rows away is not drawn"
+v.cmb_trail.setCurrentIndex(2)
+v._render()
+assert v._hits.get("trail") == (0, v.scene.points_all.shape[0] - 1)
+_near = v.last_image[int(_q[1]) - 1:int(_q[1]) + 2, int(_q[0]) - 1:int(_q[0]) + 2].reshape(-1, 3).astype(int)
+assert (np.abs(_near - _bg).max(axis=1) > 3).any(), "the whole path passes through it"
+v.cmb_trail.setCurrentIndex(1)
+v.chk_grid.setChecked(True)
+# a poor point wears a red ring, an ok one a yellow ring, a good one none
+_sc = v3.Scene3D()
+_sc.points = np.array([[0.0, 0.0, 0.0], [0.3, 0.0, 0.0], [0.0, 0.0, 0.3]])     # seen from +Y: three places
+_sc.names = ["a", "b", "c"]
+_sc.verdicts = ["poor", "ok", "good"]
+_im = v3.render_scene(_sc, (400, 300), 0.0, 0.0)
+_ts = v3.screen_transform(_sc, (400, 300), 0.0, 0.0)[0]
+
+
+def _ring(i):
+    c = _ts(_sc.points[i][None])[0][0]
+    yy, xx = np.mgrid[0:300, 0:400]
+    rr = np.hypot(xx - c[0], yy - c[1])
+    return _im[(rr > 6.2) & (rr < 7.8)].astype(int)
+
+
+_poor, _ok = np.array(v3._bgr(v3.theme.VERDICT["poor"])), np.array(v3._bgr(v3.theme.VERDICT["ok"]))
+assert (np.abs(_ring(0) - _poor).max(axis=1) < 60).mean() > 0.5, "a poor point: a red ring"
+assert (np.abs(_ring(1) - _ok).max(axis=1) < 60).mean() > 0.5, "an ok point: a yellow ring"
+_g = _ring(2)
+assert ((np.abs(_g - _poor).max(axis=1) < 60) | (np.abs(_g - _ok).max(axis=1) < 60)).mean() < 0.1,     "a good point: no yellow or red ring"
+_fig = os.path.join(SCRATCH, "test3d_gui_figure_dark.png")
+if os.path.exists(_fig):
+    os.remove(_fig)
+QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (_fig[:-4], "PNG picture (*.png)"))
+QTest.mouseClick(v.btn_save, Qt.LeftButton)            # Save picture...: twice the window's resolution
+pump(0.2)
+_saved = cv2.imread(_fig)
+v._render()
+assert _saved is not None and _saved.shape[0] == 2 * v.canvas.height() and _saved.shape[1] == 2 * v.canvas.width(),     (None if _saved is None else _saved.shape, v.canvas.size())
+assert "Saved" in v.info.text(), v.info.text()
+print("3D figure OK: grid box on round ticks (walls behind the points, swapping as it orbits), text in the picture, "
+      "light / dark remembered, trails +-N rows or the whole path, verdict rings (G202, G203)")
+
 # exports: xyz through the export dialog, mesh through its dialog
 QFileDialog.getSaveFileName = staticmethod(
     lambda *a, **k: (os.path.join(SCRATCH, "test3d_gui_xyz.csv"),
@@ -412,7 +523,12 @@ back = Project.load(PROJ)
 assert back.calibration is not None and len(back.calibration) == 3
 assert np.allclose(back.offsets, p.offsets) and back.rates == RATES
 assert back.reconstruction is not None and np.allclose(back.reconstruction.xyz, r1.xyz, equal_nan=True)
-print("project round trip with calibration + 3D OK")
+# (I305) the saved result opens again bit for bit: the automatic update keeps the cells it does not touch
+_now = win.project.reconstruction
+for _k in ("xyz", "residual", "n_cams", "per_cam"):
+    assert np.array_equal(getattr(back.reconstruction, _k), getattr(_now, _k), equal_nan=True), _k
+assert back.reconstruction.source == "tracks" and back.calibration.world is None
+print("project round trip with calibration + 3D OK (the 3D result bit for bit, its source)")
 
 # 3D points for Anipose / DLTdv out, and back in through File -> Import -> 3D Points
 from kinetrace import calibio  # noqa: E402
@@ -444,6 +560,46 @@ win._import_offsets()
 pump()
 assert np.allclose(p.offsets, saved_off) and p.rates == RATES, (p.offsets, saved_off)
 print("camera offsets out and back in OK")
+
+# ---- (G201) Set World Axes -> the 3D window draws the chosen world: arrows from the origin, the landmarks named --
+import kinetrace.app as app_mod  # noqa: E402
+v = win.view3d
+assert not v.chk_world.isEnabled(), "World axes is greyed until a world is chosen"
+_orig_exec = app_mod._WorldAxesDialog.exec
+
+
+def _world_exec(self):
+    self.rb_now.setChecked(True)
+    self.cb_origin.setCurrentText("head")
+    self.cb_x.setCurrentText("hip")
+    self.cb_y.setCurrentText("tail")
+    self._accept()
+    return QDialog.Accepted
+
+
+app_mod._WorldAxesDialog.exec = _world_exec
+try:
+    win.act_set_axes.trigger()                     # 3D > Set World Axes... (the dialog answers above)
+    pump(1.5)                                      # the automatic update and the window's redraw
+finally:
+    app_mod._WorldAxesDialog.exec = _orig_exec
+assert win.project.calibration.world["origin"] == "head", win.project.calibration.world
+win._refresh_view3d()
+pump(0.2)
+assert v.chk_world.isEnabled() and v.chk_world.isChecked(), "World axes is on once a world is chosen"
+v._render()
+o_scr = v._hits.get("origin")
+k_ = v.scene.t_index
+head = v.scene.points_all[k_, v.scene.names.index("head")]
+H_, W_ = v.last_image.shape[:2]
+box_ = v._hits.get("grid")
+_ts = v3.screen_transform(v.scene, (W_, H_), v.azimuth, v.elevation, v.zoom, tuple(v.pan), 2, False, False, box_)[0]
+h_scr = _ts(head[None])[0][0]
+assert o_scr is not None and np.hypot(*(o_scr - h_scr)) < 1.0, (o_scr, h_scr)
+_labs = [t for _x, _y, t in v._hits["labels"]]
+assert {"head · origin", "hip · +X", "tail · +Y"} <= set(_labs) and {"+X", "+Y", "+Z"} <= set(_labs), _labs
+v.save_png(os.path.join(SCRATCH, "test3d_gui_world.png"))
+print("World axes OK: arrows from the chosen origin (on the head's dot), the three landmarks named (G201)")
 
 # no cameras -> the 3D actions are off; teardown hides the view
 win._teardown_video()

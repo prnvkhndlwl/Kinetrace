@@ -2360,10 +2360,37 @@ Four steps, in this order:
    step.
 3. **3D → Reconstruct 3D Landmarks** (**Ctrl+3**). Every landmark seen by at
    least two cameras at the same instant becomes an X, Y, Z position in the
-   calibration's units (metres if the wand was measured in metres). The **3D
-   view** window opens (**3D → Show 3D View**, **Ctrl+5**, opens and closes it
-   later): drag to turn it, wheel to zoom, middle-drag or Shift+drag to pan,
-   double-click to reset. It follows the frame you are on. With a calibration
+   calibration's units (metres if the wand was measured in metres). **With a
+   calibration you rarely need to press it:** the 3D result keeps itself up to
+   date. Click a landmark in a second camera, move it, delete it, rename it,
+   undo, or let a tracking run finish, and within a fraction of a second its
+   3D positions are recomputed — only the frames that changed, with exactly the
+   numbers Ctrl+3 would give. A new calibration, new camera offsets or a camera
+   added, removed or reordered recomputes the whole result (the "Updating the
+   3D landmarks" card). Ctrl+3 still recomputes everything and gives the
+   verdict below. Two things to know: a result you **imported** (File →
+   Import → 3D Points) is left as it is until you press Ctrl+3; and when the
+   cameras' offsets are fractional (after *Estimate Sub-frame Offsets*), the
+   3D position at an instant is made from the two frames of each camera around
+   it, so a landmark clicked on one single frame of a camera gets no 3D point
+   there — click the next frame too (the guides' ◇ can still show one). A
+   project saved before this version may hold an older result: press Ctrl+3
+   once. The **3D view** window opens (**3D → Show 3D View**, **Ctrl+5**,
+   opens and closes it later): drag to turn it, wheel to zoom, middle-drag or
+   Shift+drag to pan, double-click to reset. It follows the frame you are on.
+   Each landmark has its own soft colour; a **yellow ring** around a dot means
+   its cameras agree only roughly there (ok), a **red ring** that they
+   disagree (poor) — the same verdict the epipolar guides give, and the line
+   at the top counts them. **Grid** draws a box around the whole 3D result
+   with a grid on the floor and on the two walls behind the points, numbered
+   in the calibration's unit, so you can read a position off it; the walls
+   swap as you turn the view, and the box stays put while the animal moves.
+   **Trail** shows each landmark's path: the second before and after the
+   frame on screen, fading with time, or the **whole path**. **Light
+   background** makes a white figure for a paper or a slide (the choice is
+   remembered); **Save picture…** writes what you see to a PNG at twice the
+   window's resolution, text included. **World axes** draws the world you chose with Set World Axes (see
+   *Choosing the axes of the 3D world*). With a calibration
    it also offers the **wand calibration** layers of the wizard's *Show in 3D*
    (wand points, camera pyramids, fields of view, covered space, the Cameras
    menu); there a click on a wand end moves the timeline to that frame, so you
@@ -2528,7 +2555,8 @@ A calibration puts the origin and the axes somewhere: wherever the wand's
 centre was, with a vertical from a dropped ball, or at camera 1 if you gave it
 neither. If you want the world to mean something to you — the corner of a
 frame as (0, 0, 0), the long edge of a table as the X axis — use **3D → Set
-World Axes…**. It needs a 3D result first (**Ctrl+3**), because you pick the
+World Axes…**. It needs a 3D result first (with a calibration it is there as soon as the landmarks are in two
+cameras; **Ctrl+3** makes it all at once), because you pick the
 axes **from three landmarks** that were tracked in 3D. A pole's foot, three
 marks on the floor or the corners of a frame all work:
 
@@ -2550,7 +2578,12 @@ along X) and greys out OK until the three are different landmarks that all have
 a 3D position.
 
 What changes: the calibration and the 3D result are re-expressed in the new
-world. **What does not change:** the pictures, your tracks and every camera's
+world. The **3D view** then draws it (its **World axes** tick, greyed until
+a world is chosen): arrows along +X, +Y and +Z from (0, 0, 0), their length
+written beside the origin, and the three landmarks you chose named "origin",
+"+X" and "+Y" next to their dots — a quick check that the world is the one you
+meant (the origin's arrows start on the origin landmark's dot at the frame
+you chose). The choice is saved with the project. **What does not change:** the pictures, your tracks and every camera's
 pixels (each camera still projects every point to the same pixel as before).
 A volume you carved earlier is cleared, because it was in the old axes: carve
 it again (**Ctrl+4**). Afterwards **export the calibration and the 3D points
@@ -3943,7 +3976,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Ctrl+1** | show / hide the right panel |
 | **Ctrl+2** | show only the camera you are working on (the same as **M**) |
 | **Ctrl+Shift+2** | Active view only: only the working camera reads its video; the others stay where they are until Sync all views (again: back to Sync all views; also *View → Other cameras*) |
-| **Ctrl+3** | reconstruct the 3D landmarks (needs two or more calibrated cameras) and show the 3D view |
+| **Ctrl+3** | reconstruct all the 3D landmarks with the verdict (needs two or more calibrated cameras) and show the 3D view; the result also keeps itself up to date as you click and track |
 | **Ctrl+4** | carve the animal's volume at this frame from the cameras' outlines |
 | **3D → Set World Axes…** | choose the 3D world's origin, +X and +Y from three landmarks of the 3D result (+Z by the right-hand rule) |
 | **Ctrl+5** | show / hide the 3D view (drag to turn it, wheel to zoom, double-click to reset; with a calibration: the wand calibration layers, a click on a wand end goes to its frame) |

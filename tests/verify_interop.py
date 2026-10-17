@@ -441,6 +441,7 @@ calibio.write_points3d(rec, p, "kinetrace", models=ms_lh)
 back, _ = calibio.read_points3d(p)
 check(np.allclose(back.xyz[:, :, 2], -xyz3[:, :, 2], equal_nan=True, atol=1e-6),
       "3D points written beside mirrored cameras are mirrored the same way")
+check(back.source == "imported", f"an imported 3D result says so (I305: left alone until Ctrl+3): {back.source}")
 gone = os.path.join(OUT, "no_such_file")
 said_missing = []
 for label, fn in (("3D points", lambda: calibio.read_points3d(gone + ".csv")),

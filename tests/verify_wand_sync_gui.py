@@ -373,6 +373,7 @@ def drive_cancel(wiz):
 
 
 cw.WandWizard.exec = drive_cancel
+pump(1.0)                         # (I305) the 3D result follows the Ctrl+Z above (a rebuild one quiet tick later)
 before_cancel = (list(p.offsets), p.calibration, p.reconstruction)
 win._wand_wizard()
 pump(0.3)
