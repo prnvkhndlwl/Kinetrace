@@ -458,6 +458,11 @@ number and the time in seconds. The three magnifier buttons in the timeline's
 top-left corner, left of the frame numbers, zoom the timeline out, in, and back
 to the whole video.
 
+After a jump far away, the picture may show **dimmed** for a moment: that is the
+nearest picture already in memory, standing in while the frame you asked for is
+read from the video. The dimming goes as soon as the real frame is there, so a
+dimmed picture is never the frame whose number and markers you see.
+
 **The control bar at the bottom**, from left to right:
 
 - the **frame box** (type a frame number and press Enter), then **⏴ ▶ ⏵** —
@@ -1614,7 +1619,14 @@ them by name.
 - **Sync all views** (the usual choice): every camera shows the instant the
   playhead is on, with its markers and guides. When you step one frame (**F**,
   **B**, a click on the timeline) every camera's new picture appears at the same
-  moment, so what you compare is always one instant.
+  moment, so what you compare is always one instant. To make steps instant,
+  every camera shown keeps the frames around the playhead in memory (up to
+  about 20 each way, more of them the way you are moving), read in the
+  background while you look. They are the very pictures reading the video from
+  the start gives, never a lower-quality copy. On a computer with less memory,
+  or with many cameras, fewer frames fit: **Help → System Check…** says how many
+  and whether that is good, ok or poor; hiding cameras you do not need gives
+  the others more.
 - **Active view only** (**Ctrl+Shift+2**, or untick **Sync all**): only the
   camera you are working on reads its video — much faster with many 4K cameras.
   The others stay on the picture they last showed, dimmed, with "not following
@@ -3541,6 +3553,17 @@ program's PyTorch (update the driver at nvidia.com/drivers, then restart the
 computer) or whether the CPU version was installed (delete the `.venv` folder
 and start the launcher again with the driver up to date). The same report
 prints in a terminal with `run.bat --check` / `./run.sh --check`.
+
+**Stepping through frames with several cameras feels slow.** Open **Help →
+System Check…** and read its last line, *Scrubbing*: how many frames each camera
+shown keeps around the playhead, and a verdict. *Good* (about ±20) means every
+step forward or back shows all cameras at once. *Ok* or *poor* means the frame
+budget (a quarter of the computer's memory) is shared by too many cameras for
+that: hide the cameras you do not need with their eye in CAMERAS, use **Active
+view only** while you work in one camera, close other programs, or give the
+program a larger budget with the environment variable `KINETRACE_CACHE_GB`
+(for example 12) before starting it. Hand check: press F and B twenty times with
+every camera shown: all pictures should change together.
 
 **"… could not be downloaded" when you press Track or click an animal.** The
 first use of a model downloads it (see section 2). The message says why: no

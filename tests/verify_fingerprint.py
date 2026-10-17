@@ -14,7 +14,8 @@ never silently accepted, never silently fixed. No Qt, no GPU.
       gets slower: the same number of seeks and decodes as before)
   [6] a real file whose timestamps skip a frame (a camera that dropped one): on this computer its
       seeks land one frame early after the gap -- the old VideoSource showed the wrong pictures;
-      with the plan every frame is the one reading forward gives
+      with the plan every frame is the one reading forward gives, and so is every frame the scrub
+      window (I306) serves or caches
 
 .venv\\Scripts\\python.exe tests\\verify_fingerprint.py
 """
@@ -399,8 +400,32 @@ for t in list(range(90, 115)) + [130, 150, 190, len(ref) - 1, 5]:
     if g != t:
         bad.append((t, g))
 src.close()
-vs.set_seek_plan(GAP, None)
 check(not bad, "every frame is the one reading forward gives", str(bad))
+# (I306) the scrub window on this file, with its plan: every frame served or cached is the one reading forward gives
+cap = cv2.VideoCapture(GAP)
+rgb = []
+while True:
+    ok, bgr = cap.read()
+    if not ok:
+        break
+    rgb.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+cap.release()
+fbg = rgb[0].nbytes
+wcache = vs.FrameCache((vs.SCRUB_WINDOW + 2) * fbg)
+svc = vs.SeekService(GAP, wcache, n_frames=len(rgb))
+src = vs.VideoSource(GAP, wcache)
+wbad = []
+for idx in list(range(95, 112)) + list(range(111, 85, -1)) + [180, 150] + list(range(149, 139, -1)) + [3, 0]:
+    svc.request(idx)
+    svc._target = None                       # what SeekService.run does, step by step
+    fr = src.get_frame(idx)
+    if not np.array_equal(fr, rgb[idx]):
+        wbad.append(("served", idx))
+    svc._fill(src, idx, fr.nbytes)
+    wbad += [("cached", f) for f, arr in list(wcache._data.items()) if not np.array_equal(arr, rgb[f])]
+src.close()
+vs.set_seek_plan(GAP, None)
+check(not wbad, "(I306) the scrub window on it holds only frames reading forward gives", str(sorted(set(wbad))[:8]))
 
 print("[6b] (I286) a damaged frame after a dropped one: the run says 'damaged', not 'press Track again'")
 # a sky clip (a dark bird, followed by the Moving spot model, no model weights) whose timestamps skip a frame

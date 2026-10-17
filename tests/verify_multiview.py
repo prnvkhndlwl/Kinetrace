@@ -322,7 +322,9 @@ _orig_flush = win._flush_lockstep
 win._flush_lockstep = lambda: (flushes.append((time.monotonic(), dict(win._lock or {}))), _orig_flush())[1]
 win._last_goto_t = 0.0
 win._goto(F + 5)
-assert win._lock is not None and win._lock["want"] >= {2}, "a lone step waits for every camera"
+# a lone step waits for every camera -- or, every frame already in the cameras' scrub windows (I306), shows
+# them all together at once inside the step
+assert (win._lock is not None and win._lock["want"] >= {2}) or flushes, "a lone step waits for every camera"
 for _ in range(100):
     pump(0.02)
     if win._lock is None:
@@ -343,7 +345,7 @@ for k in (0, 1):
     rt_ = win._views[k]
     if rt_.seek is None:
         win._start_seek_service(k)
-    rt_.seek.request = (lambda orig, k: lambda f: (requests.__setitem__(k, requests[k] + 1), orig(f))[1])(
+    rt_.seek.request = (lambda orig, k: lambda f, **kw: (requests.__setitem__(k, requests[k] + 1), orig(f, **kw))[1])(
         rt_.seek.request, k)
 win.cameras.btn_sync.click()
 pump(0.05)
