@@ -52,7 +52,7 @@ from kinetrace.skeletons import all_templates, save_user_template
 from kinetrace.theme import apply_theme
 from kinetrace.timeline import TIME_ZOOM_STEP, TimelinePanel
 from kinetrace.video_source import (DEFAULT_CACHE_BYTES, SCRUB_WINDOW, FrameCache, SeekService, VideoInfo,
-                                    probe_video, scrub_budget)
+                                    describe_scrub, probe_video, scrub_budget)
 from kinetrace import icons
 from kinetrace.widgets import LoadingOverlay, ManualDialog, OnboardingStrip, SettingsDialog, Toast, native_keys, pop_menu, wrap_caption
 
@@ -2728,7 +2728,14 @@ class MainWindow(QMainWindow):
                                 hint="This happens once per start of Kinetrace.")
         text = describe() if cached_device() is not None else \
             "The hardware check has not finished yet (PyTorch is still loading). Try again in a moment."
-        self._text_report("System check", text, (640, 420))
+        self._text_report("System check", text + "\n\n" + self._scrub_report(), (640, 420))
+
+    def _scrub_report(self) -> str:
+        """The System Check's scrubbing lines (I306): the window each decoding camera keeps, with a verdict."""
+        self._rebudget_caches()
+        cams = [(rt.window, rt.seek_plan.gop if rt.seek_plan is not None else 0, rt.info.width * rt.info.height * 3)
+                for i, rt in enumerate(self._views) if i in self._decoding_views()]
+        return describe_scrub(DEFAULT_CACHE_BYTES, cams)
 
     def _text_report(self, title: str, text: str, size: tuple[int, int], note: str = "",
                      nowrap: bool = False, extra=None) -> None:
@@ -3649,6 +3656,17 @@ class MainWindow(QMainWindow):
                 return k
         return -1
 
+    def _decoding_views(self) -> set:
+        """The cameras that decode as the playhead moves: the working one, and in Sync all every
+        other one shown (I306; Active view only and hidden cameras do not, G27)."""
+        p = self.project
+        active = p.active if p is not None else 0
+        n = len(self._views)
+        decoding = {active}
+        if p is not None and n > 1 and self._sync_mode == "all":
+            decoding |= {i for i in self.grid.visible_indices() if i < n}
+        return decoding
+
     def _rebudget_caches(self):
         """One frame budget split between the cameras that DECODE (I306, `scrub_budget`).
 
@@ -3660,14 +3678,10 @@ class MainWindow(QMainWindow):
         shows one frame: its prefetch pushed out the next step's frame, so every step
         re-decoded.) It re-splits only when who decodes changes; `_refresh_companions`
         calls it on every move, so a new eye, mode or camera is always seen."""
-        p = self.project
         if not self._views:
             return
-        active = p.active if p is not None else 0
-        n = len(self._views)
-        decoding = {active}
-        if p is not None and n > 1 and self._sync_mode == "all":
-            decoding |= {i for i in self.grid.visible_indices() if i < n}
+        active = self.project.active if self.project is not None else 0
+        decoding = self._decoding_views()
         key = (tuple(id(rt) for rt in self._views), active, frozenset(decoding))
         if key == self._budget_key:
             return

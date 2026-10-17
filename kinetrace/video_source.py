@@ -68,15 +68,16 @@ def scrub_budget(budget: int, frame_bytes: dict, decoding: set, active,
                  target: int = SCRUB_WINDOW) -> dict:
     """One frame budget split between the cameras (I306): {view: (cache bytes, window)}.
 
-    The working camera (`active`) keeps at least half; the other cameras that decode (`decoding`:
-    shown, in Sync all) share the other half evenly, each capped at `target` + 2 frames of ITS
-    frame size (the window, the picture on screen and one spare slot, so a fill never pushes out
-    the picture on screen); what they leave goes back to the working camera. A camera that does
-    not decode keeps `scrub_floor` and no window. Window = frames kept besides the one on screen."""
+    Every camera that decodes (`decoding`: shown, in Sync all; the working one, `active`, always)
+    gets an equal share, the others each capped at `target` + 2 frames of ITS frame size (the
+    window, the picture on screen and one spare slot, so a fill never pushes out the picture on
+    screen); the working camera takes what they leave (its window, then the stretches already
+    seen). A camera that does not decode keeps `scrub_floor` and no window. Window = frames kept
+    besides the one on screen."""
     def window(b, v):
         return max(0, min(int(target), int(b) // int(frame_bytes[v]) - 2))
     others = [v for v in frame_bytes if v != active and v in decoding]
-    share = (int(budget) // 2) // len(others) if others else 0
+    share = int(budget) // (len(others) + 1)
     out, used = {}, 0
     for v in frame_bytes:
         if v == active:
@@ -91,6 +92,34 @@ def scrub_budget(budget: int, frame_bytes: dict, decoding: set, active,
         b = max(scrub_floor(frame_bytes[active]), int(budget) - used)
         out[active] = (b, window(b, active))
     return out
+
+
+def describe_scrub(budget: int, cams: list, target: int = SCRUB_WINDOW) -> str:
+    """The System Check lines about stepping through frames (I306), ASCII only.
+
+    `cams` = one (window, keyframe interval or 0, bytes of one frame) per camera that DECODES
+    (shown, in Sync all; the working one always). Verdict: good = every one keeps the full window;
+    ok = every one keeps at least one keyframe interval below the playhead (a step back never
+    decodes a whole interval while it stays inside); poor = less."""
+    if not cams:
+        return "Scrubbing:  no video open."
+    w = min(c[0] for c in cams)
+    gop = max((c[1] or SEEK_BACK_PREFETCH) for c in cams)
+    held = sum((c[0] + 1) * c[2] for c in cams) / 1024 ** 3
+    own = ", set by KINETRACE_CACHE_GB" if os.environ.get("KINETRACE_CACHE_GB") else ", a quarter of the memory"
+    where = "the camera" if len(cams) == 1 else f"each of the {len(cams)} cameras shown"
+    head = (f"Scrubbing:  about +-{w // 2} frames kept around the playhead in {where} "
+            f"({held:.1f} GB of the {budget / 1024 ** 3:.1f} GB frame budget{own})")
+    if w >= target:
+        verdict = "good: steps forward and back show every camera at once"
+    elif w >= gop:
+        verdict = (f"ok: steps within about +-{w // 2} frames are instant; farther ones wait for the video to "
+                   "decode. Hiding cameras you do not need gives the others more")
+    else:
+        verdict = ("poor: steps back wait for the video to decode. Hide cameras you do not need, close other "
+                   "programs, or set KINETRACE_CACHE_GB to a larger frame budget")
+    return (f"{head} - {verdict}.\n"
+            "            Hand check: press F and B 20 times with every camera shown: all pictures change together.")
 
 
 class FrameCache:

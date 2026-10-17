@@ -417,6 +417,21 @@ win._set_active_view(0)
 settle(0.3)
 print("preview veil OK (G204)")
 
+# (I306) Help > System Check names the window and its verdict
+from kinetrace.video_source import describe_scrub   # noqa: E402
+shown = []
+win._text_report = lambda title, text, *a, **k: shown.append(text)
+win._dev_probe.wait(180_000)
+win.act_syscheck.trigger()
+assert shown and "Scrubbing:" in shown[0] and "each of the 2 cameras shown" in shown[0], shown[-1:]
+assert "+-20 frames" in shown[0] and " - good:" in shown[0] and "Hand check:" in shown[0], shown[0][-400:]
+assert all(ord(c) < 128 for c in shown[0].split("Scrubbing:")[1]), "the scrubbing lines are ASCII"
+del win._text_report
+GB = 1024 ** 3
+assert " - ok:" in describe_scrub(4 * GB, [(30, 12, fb)] * 4)            # inside a keyframe interval: ok
+assert " - poor:" in describe_scrub(4 * GB, [(6, 12, fb)] * 10)          # less than one interval: poor
+print("System Check scrubbing line OK")
+
 win._dev_probe.wait(180_000)
 win.close()
 gui.processEvents()

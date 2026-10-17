@@ -359,7 +359,7 @@ win._goto(60, force=True)
 settle(1.5)
 budgets = [rt.cache.max_bytes for rt in win._views]
 floors = sum(scrub_floor(rt.info.width * rt.info.height * 3) for rt in win._views)
-assert budgets[p.active] >= DEFAULT_CACHE_BYTES // 2 and budgets[p.active] == max(budgets), \
+assert budgets[p.active] == max(budgets), \
     f"the working camera keeps the largest share, got {budgets}"
 assert sum(budgets) <= DEFAULT_CACHE_BYTES + floors, f"15 cameras over the frame budget: {budgets}"
 assert all(rt.window > 0 for rt in win._views), "every shown camera in Sync all keeps a window"
