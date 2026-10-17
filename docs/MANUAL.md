@@ -2579,6 +2579,22 @@ in and every toggle. Opening it (**File → Open Project…**, **Ctrl+Shift+O**:
 go into the project folder and choose its `kinetrace.json`) puts you back
 exactly where you were.
 
+**Your last projects are one click away.** **File → Open Recent** lists the
+last 10 projects you opened or saved, newest first (hover over one to see its
+full path); the same list appears on the empty window when the program starts,
+under *Open a video to begin*. Click one to open it. **Clear List** at the bottom
+of the menu empties it (your projects are not touched). If you **moved or renamed**
+a project folder, its entry says *(not found)*: click it and choose **Locate…**,
+then pick the project's `kinetrace.json` in its new place, and the list remembers
+the new place (opening the moved project with File → Open Project does the same).
+If the project is on a drive or network share that is not connected, connect it
+and click the entry again; **Remove from List** drops an entry you no longer
+want. A copy of a project folder gets its own entry, and two projects with the
+same name show the folder each one is in. The list is kept in Kinetrace's own
+`settings.ini` (in the Kinetrace folder, or in your user folder when the
+Kinetrace folder cannot be written), so it works the same on Windows, macOS and
+Linux.
+
 **Saving is quick, even for a big project:** a save writes only what changed
 since the last one — correct one point and only that point's file is written.
 

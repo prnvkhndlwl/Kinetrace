@@ -38,6 +38,10 @@ import traceback
 faulthandler.enable()
 os.environ.setdefault("KINETRACE_UPDATE_API", "http://127.0.0.1:9/api")   # Help -> Check for Updates never asks GitHub here (G37)
 os.environ["KINETRACE_START_MENU_DIR"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out", "start_menu")   # never the real Start menu
+# (G205) never the user's settings.ini: its recent projects are buttons on the start screen, and this audit clicks
+# every button (it would open, and later save, the user's real project)
+os.environ["KINETRACE_SETTINGS"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out",
+                                                "gui_real_settings.ini")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
@@ -850,8 +854,8 @@ def walk_toolbar():
     btns = [b for b in win.findChildren(QToolButton) if b.isVisible() and b.window() is win]
     for b in btns:
         name = (b.text() or b.toolTip().split("\n")[0])[:40]
-        if b is win.btn_track:
-            continue
+        if b is win.btn_track or any(b in cv.start_buttons for cv in win.grid.canvases):
+            continue                     # (G205) a recent project would replace the window's state
         CTX["step"] = f"toolbar {name}"
         rec("button", text=b.text(), tip=b.toolTip(), enabled=b.isEnabled(), checkable=b.isCheckable())
         if not b.isEnabled():

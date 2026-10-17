@@ -62,6 +62,8 @@ MAP = [
     ([K + "project.py", K + "folderimport.py", K + "cameraorder.py"],
      ["verify_multicam", "verify_shared_landmarks", "verify_multiview", "verify_camera_views", "verify_projectfile",
       "verify_3d_gui", "verify_open_replace"]),
+    # (G205) the recent-projects list: its logic, the File menu entry and the start-screen panel
+    ([K + "recent.py", K + "app.py", K + "canvas.py"], ["verify_recent"]),
     ([K + "cameraoverview.py"], ["verify_camera_overview", "verify_camera_views"]),
     ([K + f for f in ("projectfile.py", "recovery.py", "csvpool.py", "autoexport.py")], SAVE),
     ([K + "paths.py"], SAVE),            # (R43) every save / autosave replaces through paths.replace_retry

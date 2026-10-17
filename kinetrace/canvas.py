@@ -41,7 +41,7 @@ from PySide6.QtGui import (QBrush, QColor, QCursor, QImage, QPainter, QPainterPa
 from PySide6.QtWidgets import (QApplication, QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem,
                                QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene,
                                QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QLabel, QMenu,
-                               QToolButton, QWidget)
+                               QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from kinetrace.widgets import WheelSteps, pop_menu
 
@@ -583,6 +583,7 @@ class VideoCanvas(QGraphicsView):
         self._prompt_box_item.setVisible(False)
         self._scene.addItem(self._prompt_box_item)
         self._build_zoom_bar()
+        self._build_start_panel()
 
     def _build_zoom_bar(self) -> None:
         """(G152) The VIDEO's zoom in / out / fit, in the picture's lower-right corner: the wheel,
@@ -622,6 +623,66 @@ class VideoCanvas(QGraphicsView):
         bar.move(vp.right() - bar.width() - 6, vp.bottom() - bar.height() - 6)
         bar.setVisible(self._native_size is not None)
         bar.raise_()
+        self._place_start_panel()
+
+    START_TEXT_PX = 460      # a recent project's name is elided in the middle beyond this width
+
+    def _build_start_panel(self) -> None:
+        """(G205) The start screen's recent projects, under "Open a video to begin": one click opens one (the
+        app does the opening, `set_start_recent`). Shown only while no video is open."""
+        # (G168) a child of the VIEW, like the zoom bar; it is in no layout, so it never sets the window width
+        panel = QWidget(self)
+        panel.setObjectName("start_recent")
+        panel.setAttribute(Qt.WA_StyledBackground, True)
+        panel.setStyleSheet(
+            "#start_recent { background: rgba(20, 20, 24, 150); border-radius: 6px; }"
+            "#start_recent QLabel { color: rgb(160, 160, 170); }"
+            "#start_recent QToolButton { color: rgb(215, 215, 225); border: none; padding: 3px 8px; }"
+            "#start_recent QToolButton:hover { background: rgba(255, 255, 255, 30); border-radius: 4px; }")
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(1)
+        lay.addWidget(QLabel("Recent projects  (also in File → Open Recent)", panel), 0, Qt.AlignHCenter)
+        panel.setVisible(False)
+        self._start_panel = panel
+        self.start_buttons: list[QToolButton] = []
+
+    def set_start_recent(self, items: list[dict], on_open) -> None:
+        """The recent projects on the start screen: `items` ({"path", "name", "missing"}, newest first),
+        `on_open(item)` called on a click."""
+        lay = self._start_panel.layout()
+        for b in self.start_buttons:
+            lay.removeWidget(b)               # out of the layout now: adjustSize below must not count it
+            b.hide()
+            b.deleteLater()
+        self.start_buttons = []
+        fm = self._start_panel.fontMetrics()
+        for it in items:
+            b = QToolButton(self._start_panel)
+            b.setAutoRaise(True)
+            b.setFocusPolicy(Qt.NoFocus)          # the hotkeys stay with the window
+            name = fm.elidedText(it["name"], Qt.ElideMiddle, self.START_TEXT_PX)
+            b.setText(name.replace("&", "&&") + ("  (not found)" if it.get("missing") else ""))
+            b.setToolTip(it["path"] + ("\nNot found there: click to locate it" if it.get("missing") else ""))
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            b.clicked.connect(lambda _=False, it=it: on_open(it))
+            lay.addWidget(b)
+            b.show()                  # a child added to a panel already on screen stays hidden until shown
+            self.start_buttons.append(b)
+        self._start_panel.adjustSize()
+        self._place_start_panel()
+
+    def _place_start_panel(self) -> None:
+        panel = self._start_panel
+        show = self._native_size is None and bool(self.start_buttons)
+        panel.setVisible(show)
+        if not show:
+            return
+        vp = self.viewport().geometry()
+        x = vp.center().x() - panel.width() // 2
+        y = min(vp.center().y() + 24, vp.bottom() - panel.height() - 6)      # under the grey placeholder
+        panel.move(max(vp.left() + 6, x), max(vp.top() + 6, y))
+        panel.raise_()
 
     # ---------------------------------------------------------------- frames
 
