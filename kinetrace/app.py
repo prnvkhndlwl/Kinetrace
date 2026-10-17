@@ -7901,7 +7901,7 @@ class MainWindow(QMainWindow):
         "note" ("" or why two cameras cannot say "good")}; None with fewer. Two rays are blind to
         a mistake along the line, so two cameras cap at "ok" as the Reconstruct report does (G83,
         I101)."""
-        from kinetrace.calib import dlt_ray, triangulate, widest_angle_deg
+        from kinetrace.calib import cell_verdict, dlt_ray, triangulate, widest_angle_deg
         rows = []
         for c, cal, uv in obs:
             q = cal.to_calib_frame(uv)[0]
@@ -7916,10 +7916,7 @@ class MainWindow(QMainWindow):
         except Exception:           # noqa: BLE001 -- a degenerate calibration must not break the overlay
             return None
         views = [c for c, _cal, _q in rows]
-        good, usable = self._residual_bands(views)
-        verdict = "good" if res <= good else "ok" if res <= usable else "poor"
-        if len(views) == 2 and verdict == "good":
-            verdict = "ok"
+        verdict = cell_verdict(res, len(views), self._residual_bands(views)) or "poor"   # (I305) one rule
         return {"xyz": xyz, "residual": float(res),
                 "angle_deg": widest_angle_deg(dirs),
                 "views": views, "verdict": verdict, "note": self.TWO_CAM_NOTE if len(views) == 2 else ""}
