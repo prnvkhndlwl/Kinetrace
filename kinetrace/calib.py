@@ -528,6 +528,9 @@ class Calibration:
         # (I278) False: the file does not say how it counted pixels (a bare dltCoefs.csv, easyWand),
         # so the user is asked before `to_internal`
         self.convention_stated = True
+        # (G201) the world the user chose with 3D -> Set World Axes: {"origin", "x", "y": landmark names,
+        # "when": "frame N" | "median"}; None = the calibration's own world. The 3D window draws it.
+        self.world: dict | None = None
 
     def with_cameras(self, cams: list, source: str | None = None) -> "Calibration":
         """The same calibration with other cameras: unit, source (or `source`), the moved
@@ -535,6 +538,7 @@ class Calibration:
         out = Calibration(cams, self.unit, self.source if source is None else source)
         out.origin_shift = self.origin_shift
         out.notes = list(self.notes)
+        out.world = None if self.world is None else dict(self.world)
         if hasattr(self, "report"):
             out.report = self.report
         return out
@@ -826,7 +830,7 @@ class Calibration:
         return cal
 
     # ---- a world the user chose (I170) -----------------------------------
-    def reframed(self, B: np.ndarray, o: np.ndarray, note: str = "") -> "Calibration":
+    def reframed(self, B: np.ndarray, o: np.ndarray, note: str = "", world: dict | None = None) -> "Calibration":
         """The same cameras in another world: X_old = B^T X_new + o, i.e.
         X_new = B (X_old - o) -- B's rows are the new axes in the old
         coordinates (`world_axes`), o the new origin in the old ones. Every
@@ -836,7 +840,7 @@ class Calibration:
         point to the same pixel (to rounding) before and after. `origin_shift`
         is dropped (the new origin is the user's, not the file's). `note` is
         recorded in `source` (replacing an earlier world note), which the
-        project file already saves."""
+        project file already saves; `world` (G201) = the landmarks that made it, kept as `self.world`."""
         B = np.asarray(B, np.float64).reshape(3, 3)
         o = np.asarray(o, np.float64).reshape(3)
         T = np.eye(4)
@@ -858,6 +862,7 @@ class Calibration:
         src = re.sub(r"\s*\(world: .*\)\s*$", "", self.source or "")
         out = self.with_cameras(cams, f"{src} ({note})".strip() if note else src)
         out.origin_shift = None
+        out.world = None if world is None else {k: str(v) for k, v in world.items()}
         return out
 
     # ---- arrays form (the project file stores it as calibration.json) -----
@@ -877,6 +882,8 @@ class Calibration:
                          for c in cams]}
         if self.origin_shift is not None:
             meta["origin_shift"] = np.asarray(self.origin_shift, np.float64).tolist()
+        if self.world:
+            meta["world"] = dict(self.world)                                   # (G201)
         return {f"{prefix}coefs": np.stack([np.full(11, np.nan) if c is None else c.coefs
                                             for c in cams]).astype(np.float64),
                 f"{prefix}meta": json.dumps(meta)}
@@ -901,6 +908,9 @@ class Calibration:
         cal = Calibration(cams, str(meta.get("unit", "")), str(meta.get("source", "")))
         if meta.get("origin_shift") is not None:
             cal.origin_shift = np.asarray(meta["origin_shift"], np.float64).reshape(3)
+        w = meta.get("world")
+        if isinstance(w, dict) and all(isinstance(w.get(k), str) for k in ("origin", "x", "y")):
+            cal.world = {k: str(v) for k, v in w.items()}                      # (G201)
         return cal
 
 
@@ -943,6 +953,9 @@ class Reconstruction:
     # pixels, NaN where that camera did not see the landmark: which camera
     # disagrees, not just by how much the set disagrees
     per_cam: np.ndarray | None = None
+    # (I305) "tracks" = triangulated from the project's 2D data (kept up to date with every change);
+    # "imported" = read from a file (File > Import > 3D Points): left alone until Ctrl+3
+    source: str = "tracks"
 
     @property
     def n_frames(self) -> int:
@@ -970,7 +983,7 @@ class Reconstruction:
         o = np.asarray(o, np.float64).reshape(3)
         xyz = (np.asarray(self.xyz, np.float64) - o) @ B.T          # NaN stays NaN
         return Reconstruction(self.t0, list(self.names), xyz, self.residual.copy(), self.n_cams.copy(),
-                              self.unit, None if self.per_cam is None else self.per_cam.copy())
+                              self.unit, None if self.per_cam is None else self.per_cam.copy(), self.source)
 
     def export_csv(self, path: str | Path) -> None:
         """DLTdv-style `xyzpts` CSV (`pt1_X,pt1_Y,pt1_Z,...`) with a leading
@@ -1439,6 +1452,17 @@ def residual_bands(width_px: float, height_px: float = 0.0) -> tuple[float, floa
     return 1.5 * s, 5.0 * s
 
 
+def cell_verdict(residual: float, n_cams: int, bands: tuple[float, float]) -> str:
+    """good / ok / poor of one triangulated point from its residual (px) against `bands` = (good, ok)
+    limits (`residual_bands`). Two rays are blind to a mistake along the line, so two cameras cap at
+    "ok" as the Reconstruct report does (G83, I101). "" for no point."""
+    if not np.isfinite(residual) or n_cams < 2:
+        return ""
+    good, usable = bands
+    verdict = "good" if residual <= good else "ok" if residual <= usable else "poor"
+    return "ok" if (n_cams == 2 and verdict == "good") else verdict
+
+
 def reconstruction_report(rec: Reconstruction, n_views: int, width_px: float = 1920.0,
                           height_px: float = 0.0) -> dict:
     """A verdict a first-time user can act on, from the residuals alone.
@@ -1600,14 +1624,23 @@ def triangulate_batch(coefs: np.ndarray, uv: np.ndarray, min_cams: int = 2,
         ok = n >= min_cams
         X = np.full((M, 3), np.nan)
         if ok.any():
+            # (I305) a cell's answer depends on that cell alone: a singular cell goes to `lstsq` by itself
+            # (it used to send EVERY cell of the batch there), so a few cells solved on their own give the
+            # same bits as the whole result
             try:
                 X[ok] = np.linalg.solve(AtA[ok], Atb[ok][..., None])[..., 0]
             except np.linalg.LinAlgError:
                 for m in np.nonzero(ok)[0]:
-                    X[m] = np.linalg.lstsq(AtA[m], Atb[m], rcond=None)[0]
-        den = X @ Ls[:, 8:11].T + 1.0                            # (M, C)
-        pu = (X @ Ls[:, 0:3].T + Ls[:, 3]) / den
-        pv = (X @ Ls[:, 4:7].T + Ls[:, 7]) / den
+                    try:
+                        X[m] = np.linalg.solve(AtA[m], Atb[m][..., None])[..., 0]
+                    except np.linalg.LinAlgError:
+                        X[m] = np.linalg.lstsq(AtA[m], Atb[m], rcond=None)[0]
+        # (I305) element by element, not `X @ Ls.T`: a one-row matrix product takes another BLAS path and
+        # changed a cell's error in the last bit, so a cell recomputed alone must not depend on the batch
+        x0, x1, x2 = X[:, 0, None], X[:, 1, None], X[:, 2, None]
+        den = x0 * Ls[:, 8] + x1 * Ls[:, 9] + x2 * Ls[:, 10] + 1.0          # (M, C)
+        pu = (x0 * Ls[:, 0] + x1 * Ls[:, 1] + x2 * Ls[:, 2] + Ls[:, 3]) / den
+        pv = (x0 * Ls[:, 4] + x1 * Ls[:, 5] + x2 * Ls[:, 6] + Ls[:, 7]) / den
         e = np.hypot(pu - u, pv - v)
         e[~use] = np.nan
         r = np.sqrt(np.nansum(e ** 2, axis=1) / np.maximum(2 * n - 3, 1))
@@ -1624,27 +1657,22 @@ def triangulate_batch(coefs: np.ndarray, uv: np.ndarray, min_cams: int = 2,
             err.reshape(lead + (C,)))
 
 
+def landmark_names(sessions) -> list[str]:
+    """The 3D result's columns: every landmark name of every view, in order of first appearance."""
+    names: list[str] = []
+    for s in sessions:
+        for q in s.points:
+            if q.name not in names:
+                names.append(q.name)
+    return names
+
+
 class _Prepared:
     """Per-view calibration-frame tracks + name index, computed once per
     reconstruction so repeated calls (offset search) stay cheap."""
 
     def __init__(self, sessions, calib: Calibration, names: list[str] | None):
-        if len(calib) > len(sessions):
-            raise ValueError("calibration has a different number of cameras than the project")
-        # (I273) a camera that is not calibrated (a gap, or past the end of the list) has no data
-        # here: its tracks are all NaN and it never enters a triangulation
-        cams = calib.padded(len(sessions))
-        self.used = [c for c, cam in enumerate(cams) if cam is not None]
-        self.n_views = len(sessions)
-        if names is None:
-            names = []
-            for s in sessions:
-                for q in s.points:
-                    if q.name not in names:
-                        names.append(q.name)
-        self.names = list(names)
-        self.coefs = (np.stack([cams[c].coefs for c in self.used]) if self.used
-                      else np.zeros((0, 11)))                          # the CALIBRATED cameras' rows
+        cams = self._cameras(sessions, calib, names)
         self.ct = []                    # per view (T, N_names, 2) in calibration frame
         for s, cal in zip(sessions, cams):
             if cal is None:
@@ -1657,6 +1685,37 @@ class _Prepared:
                 if nm in idx:
                     arr[:, j] = full[:, idx[nm]]
             self.ct.append(arr)
+
+    def _cameras(self, sessions, calib: Calibration, names: list[str] | None) -> list:
+        if len(calib) > len(sessions):
+            raise ValueError("calibration has a different number of cameras than the project")
+        # (I273) a camera that is not calibrated (a gap, or past the end of the list) has no data
+        # here: its tracks are all NaN and it never enters a triangulation
+        cams = calib.padded(len(sessions))
+        self.used = [c for c, cam in enumerate(cams) if cam is not None]
+        self.n_views = len(sessions)
+        self.names = list(landmark_names(sessions) if names is None else names)
+        self.coefs = (np.stack([cams[c].coefs for c in self.used]) if self.used
+                      else np.zeros((0, 11)))                          # the CALIBRATED cameras' rows
+        return cams
+
+    @classmethod
+    def one_landmark(cls, sessions, calib: Calibration, name: str, rows: list) -> "_Prepared":
+        """(I305) `name` alone, read only at the local frames `rows[v]` of each view (NaN elsewhere): what
+        `__init__` would hold there (`calib_tracks`' rule: exportable and finite, undistorted point by
+        point) without converting every frame of every landmark. For `update_reconstruction`."""
+        self = cls.__new__(cls)
+        cams = self._cameras(sessions, calib, [name])
+        self.ct = []
+        for s, cal, r in zip(sessions, cams, rows):
+            ct = np.full((s.n_frames, 1, 2), np.nan)
+            j = {q.name: k for k, q in enumerate(s.points)}.get(name)          # the column __init__ reads
+            if cal is not None and j is not None and len(r):
+                r = r[s.exportable_at(r, j) & np.isfinite(s.tracks[r, j]).all(axis=1)]
+                if len(r):
+                    ct[r, 0] = cal.to_calib_frame(s.tracks[r, j].astype(np.float64))
+            self.ct.append(ct)
+        return self
 
     def triangulate(self, uv: np.ndarray, min_cams: int = 2, max_residual: float = float("inf")):
         """`triangulate_batch` over the calibrated cameras of `uv` (..., C views, 2); the per-camera
@@ -1715,6 +1774,77 @@ MAX_SCAN_INSTANTS = 6000     # estimate_offsets looks at no more than this many 
 MAX_SCORE_INSTANTS = 500     # ... and scores the search on at most this many MOVING ones (G76)
 ROBUST_CAP_K = 4.0           # estimate_offsets(robust=True): a cell counts at most this x the starting median (I271)
 MIN_OWN_CELLS = 30           # (I302) a camera judged on fewer of its own scored cells reads at most "weak"
+
+
+def reference_span(f_lo: int, f_hi: int, rate: float, offset: float) -> tuple[int, int]:
+    """(I305) The reference instants whose sample (`sample_tracks_at` at `local_frame(t)`) can read a local
+    frame in f_lo..f_hi: floor(rate t + offset) in f_lo - 1 .. f_hi, widened by one instant each side.
+    Over-including only recomputes a cell to the same value."""
+    lo = int(np.floor((f_lo - 1 - offset) / rate)) - 1
+    hi = int(np.ceil((f_hi + 1 - offset) / rate)) + 1
+    return lo, hi
+
+
+def update_reconstruction(rec: "Reconstruction | None", sessions: list, calib: Calibration, rates: list[float],
+                          offsets: list[float], t_range: tuple[int, int],
+                          changed: dict[str, list[tuple[int, int]]]) -> Reconstruction:
+    """(I305) `rec` brought up to date with the 2D data: the result `reconstruct(sessions, calib, rates,
+    offsets, t_range)` would give, computed only where it can differ. Columns = `landmark_names(sessions)`;
+    a column whose name `rec` has keeps its cells inside `rec`'s range except the reference instants in
+    `changed[name]` (inclusive spans); every other cell (a new name, rows outside `rec`'s range) is
+    computed, through the same `_Prepared.samples` / `triangulate` as `reconstruct` on the needed cells
+    only. Each cell depends on that cell's data alone, so the result is the same bits (verify_3d,
+    verify_auto3d). `rec` None or of another camera count: everything is computed."""
+    names = landmark_names(sessions)
+    t0, t1 = int(t_range[0]), int(t_range[1])
+    T = max(t1 + 1, t0) - t0
+    n_views = len(sessions)
+    if (rec is None or rec.per_cam is None or rec.per_cam.ndim != 3 or rec.per_cam.shape[2] != n_views):
+        return reconstruct(sessions, calib, rates, offsets, (t0, t1))
+    N = len(names)
+    same = list(rec.names) == names and int(rec.t0) == t0 and rec.n_frames == T
+    if same:                            # the usual case (a click, a run): whole copies, then the changed rows
+        xyz, resid = rec.xyz.astype(np.float64, copy=True), rec.residual.astype(np.float64, copy=True)
+        ncams, err = rec.n_cams.astype(np.int32, copy=True), rec.per_cam.astype(np.float32, copy=True)
+    else:
+        xyz = np.full((T, N, 3), np.nan)
+        resid = np.full((T, N), np.nan)
+        ncams = np.zeros((T, N), np.int32)
+        err = np.full((T, N, n_views), np.nan, np.float32)
+    lo, hi = max(t0, rec.t0), min(t1, rec.t0 + rec.n_frames - 1)
+    old_col = {nm: j for j, nm in enumerate(rec.names)}
+    for k, nm in enumerate(names):
+        need = np.ones(T, bool)
+        if same:
+            need[:] = False
+            for c_lo, c_hi in changed.get(nm, ()):
+                need[min(max(c_lo - t0, 0), T):min(max(c_hi - t0 + 1, 0), T)] = True
+        elif nm in old_col and lo <= hi:
+            jo = old_col[nm]
+            a, b, ao = lo - t0, hi - t0 + 1, lo - rec.t0
+            xyz[a:b, k] = rec.xyz[ao:ao + b - a, jo]
+            resid[a:b, k] = rec.residual[ao:ao + b - a, jo]
+            ncams[a:b, k] = rec.n_cams[ao:ao + b - a, jo]
+            err[a:b, k] = rec.per_cam[ao:ao + b - a, jo]
+            need[a:b] = False
+            for c_lo, c_hi in changed.get(nm, ()):
+                need[min(max(c_lo - t0, 0), T):min(max(c_hi - t0 + 1, 0), T)] = True
+        if not need.any():
+            continue
+        t = t0 + np.nonzero(need)[0]
+        rows = []                       # each view's local frames these instants read (both neighbours)
+        for v, s in enumerate(sessions):
+            f0 = np.floor(local_frame(t, rates[v], offsets[v])).astype(np.int64)
+            r = np.unique(np.concatenate([f0, f0 + 1]))
+            rows.append(r[(r >= 0) & (r < s.n_frames)])
+        prep = _Prepared.one_landmark(sessions, calib, nm, rows)
+        x, r, n, e = prep.triangulate(prep.samples(rates, offsets, t))
+        rows = t - t0
+        xyz[rows, k] = x[:, 0]
+        resid[rows, k] = r[:, 0]
+        ncams[rows, k] = n[:, 0]
+        err[rows, k] = e[:, 0]
+    return Reconstruction(t0, names, xyz, resid, ncams, calib.unit, err)
 
 
 class _SearchCancelled(Exception):

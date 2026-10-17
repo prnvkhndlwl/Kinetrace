@@ -55,6 +55,8 @@ MAP = [
                       "icons.py")], GUI),
     # (I303) the wand wizard's accept path and its one Ctrl+Z live in app.py
     ([K + "app.py"], ["verify_wand_subset", "verify_wand_sync_gui"]),
+    # (I305) the automatic 3D result follows every 2D gesture; the saved result's format
+    ([K + f for f in ("app.py", "projectfile.py", "session.py")], ["verify_auto3d"]),
     ([K + "threads.py"], ["verify_sweep_fixes", "verify_review_infra", "verify_review_tracking", "verify_review_ui",
                            "verify_review_app3", "verify_downloads"]),
     ([K + "tour.py", K + "demo.py"], ["verify_tour", "verify_ui_focus", "verify_keys_follow"]),
@@ -74,7 +76,7 @@ MAP = [
     # cameras, calibration, 3D, body
     ([K + f for f in ("calib.py", "hull.py", "view3d.py", "retrack.py", "kinematics.py", "calibview.py")],
      ["verify_3d", "verify_3d_gui", "verify_retrack", "verify_review_3d", "verify_multicam",
-      "verify_wand_subset", "verify_calib3d"]),
+      "verify_wand_subset", "verify_calib3d", "verify_auto3d"]),
     # (I302) estimate_offsets' verdict and its robust search; (G200) the picture the wand wizard opens
     ([K + "calib.py"], ["verify_wand_sync", "verify_review_app3"]),
     ([K + f for f in ("view3d.py", "calibview.py")], ["verify_wand_sync_gui"]),

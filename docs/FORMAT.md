@@ -231,7 +231,8 @@ values fall back to the defaults: this is never data.
 {"unit": "m", "source": "wand calibration",
  "cams": [{"width": 2704, "height": 1520, "pixel_origin": 0.0, "y_flip": false,
            "rmse": 0.41, "undistort": {"kind": "opencv", "K": [[…]], "dist": […], "fisheye": false}}],
- "coefs": [[L1, …, L11], …], "origin_shift": [x, y, z], "notes": []}
+ "coefs": [[L1, …, L11], …], "origin_shift": [x, y, z], "notes": [],
+ "world": {"origin": "floor mark A", "x": "floor mark B", "y": "floor mark C", "when": "median"}}
 ```
 
 Per camera the 11 DLT coefficients (`coefs`, in camera order), always in
@@ -247,6 +248,9 @@ A camera the calibration does not cover (left out of a wand calibration) is
 entry are not calibrated either (a camera added after calibrating). 3D uses
 the calibrated cameras. A `*.kcal.json` marks such a camera `null` in its
 `cameras` list the same way.
+`world` (optional) = the three landmarks **3D → Set World Axes…** chose: the origin,
+the one +X points toward and the one +Y points toward, and `when` (`frame N` or
+`median`); the 3D window draws these axes. Absent = the calibration's own world.
 To hand the cameras to another program, use **File → Export → Calibration**
 (Anipose, OpenCV, MATLAB, Blender, DLTdv — converted and checked), not this
 file.
@@ -276,8 +280,10 @@ row per frame that has one.
 
 ### `reconstruction/`
 
-`meta.json`: `t0` (first reference frame), `n_frames`, `unit`, `points` (each
-landmark's `name` and `file`), `per_camera_columns`. `points/<landmark>.csv`:
+`meta.json`: `t0` (first reference frame), `n_frames`, `unit`, `source`, `points` (each
+landmark's `name` and `file`), `per_camera_columns`. `source` = `tracks` (triangulated
+from the project's 2D points, kept up to date with every change) or `imported` (read
+from a file with File → Import → 3D Points, left as it is until Ctrl+3). `points/<landmark>.csv`:
 `frame, x, y, z, residual, n_cams, <camera>_px …` — `frame` in the REFERENCE
 camera's frames (the first camera's), `residual` = DLTdv's rmse in pixels,
 `n_cams` = cameras used, `<camera>_px` = that camera's own reprojection error.
