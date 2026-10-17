@@ -13032,8 +13032,10 @@ class MainWindow(QMainWindow):
         # tears Qt down, or Qt aborts ("QThread: Destroyed while thread is
         # still running" = exit 0xC0000409 on Windows). Only the working
         # camera's decoder used to be stopped here.
+        # (I308) the autosave too: a closed window lives on until the garbage collector frees it, and its
+        # 30 s tick wrote the work just discarded back to recovery (and started a writer thread on it)
         for timer in (self._render_timer, self._play_timer,
-                      self._lock_timer):
+                      self._lock_timer, self._autosave_timer):
             if timer is not None:
                 timer.stop()
         self._fc_stop()                      # (I266) a frame check stops between frames
