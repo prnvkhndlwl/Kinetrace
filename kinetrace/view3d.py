@@ -395,19 +395,30 @@ class Scene3D:
         self.calib = None               # (G185) calibview.CalibPicture: the wand calibration layer
         self.cover_n = 2                # (G186) the covered space drawn: seen by >= this many cameras
         self.calib_views = None         # the cameras (CamDraw.view) whose pyramid / field of view are drawn
+        # (G203) the landmarks' paths: the row of the instant in `points_all`, and how many rows either side a
+        # fading trail spans (the app: 1 s at the reference camera's rate)
+        self.t_index: int | None = None
+        self.trail_frames = 0
+        self.verdicts: list[str] = []   # per landmark at the instant: good / ok / poor / "" (cell_verdict)
+        self.world: dict | None = None  # (G201) Calibration.world: the origin / +X / +Y landmarks' names
 
-    def framing(self, include_cameras: bool, include_calib: bool = False) -> tuple[np.ndarray, float]:
+    def framing(self, include_cameras: bool, include_calib: bool = False,
+                box: tuple | None = None) -> tuple[np.ndarray, float]:
         """Centre and span to frame: the CURRENT instant's landmarks and hull
         (the animal fills the window and the view follows it through the
         glide); the whole trajectory only when the instant has nothing, and
         the cameras only when asked (they are metres away from a centimetre
         animal, so including them shrinks it to a dot). With the wand calibration layer: the wand cloud and
-        the cameras (G185)."""
+        the cameras (G185). With the grid (G202, `box` = `grid_box`): the box, which does not move with the
+        animal, so the grid stays put while the time moves."""
         if include_calib and self.calib is not None:
             cal = [self.calib.finite_ends()] + [np.array([c.centre for c in self.calib.cams]).reshape(-1, 3)]
             allp = np.concatenate([p for p in cal if len(p)]) if sum(len(p) for p in cal) else np.zeros((1, 3))
             centre = (allp.min(axis=0) + allp.max(axis=0)) / 2
             return centre, max(float(np.linalg.norm(allp.max(axis=0) - allp.min(axis=0))), 0.05)
+        if box is not None:
+            lo, hi = box[0], box[1]
+            return (lo + hi) / 2, max(float(np.linalg.norm(hi - lo)), 0.05)
         pts = []
         if self.points is not None and len(self.points):
             p = np.asarray(self.points).reshape(-1, 3)
@@ -430,13 +441,13 @@ class Scene3D:
 
 def screen_transform(scene: Scene3D, size: tuple[int, int], azimuth: float, elevation: float,
                      zoom: float = 1.0, pan: tuple[float, float] = (0.0, 0.0), up: int = 2,
-                     show_cameras: bool = False, show_calib: bool = False):
+                     show_cameras: bool = False, show_calib: bool = False, box: tuple | None = None):
     """(to_screen, R, scale): world points -> ((N, 2) pixels of the rendered image, (N,) depth towards the
     viewer), the view rotation, pixels per world unit. THE projection `render_scene` draws with (picking a
     point under the mouse uses the same, G185)."""
     W, H = size
     R = _view_rotation(azimuth, elevation, up)
-    centre, span = scene.framing(show_cameras, show_calib)
+    centre, span = scene.framing(show_cameras, show_calib, box)
     scale = 0.85 * min(W, H) / span * zoom
 
     def to_screen(p):
@@ -464,6 +475,231 @@ def _nice_length(x: float) -> float:
 
 
 FOV_SIDE_ALPHA = 0.10          # (G187, owner 2026-10-12) each field-of-view side: 10 % of its camera's colour
+
+# (G202, owner 2026-10-16: "make the figures and vis look clean and publication ready with pastel shades") one
+# palette per background, BGR. The dark background is the one the window always had (the wand layers' colours
+# are blended over it).
+PALETTES = {
+    "dark": {"bg": (24, 26, 30), "pane": (33, 36, 41), "grid": (55, 59, 66), "edge": (92, 98, 108),
+             "text": (214, 219, 224), "dim": (150, 156, 165), "bone": (150, 152, 156),
+             "axes": ((130, 130, 240), (140, 210, 150), (236, 180, 128))},
+    "light": {"bg": (250, 249, 247), "pane": (242, 240, 237), "grid": (220, 216, 212), "edge": (168, 163, 158),
+              "text": (58, 54, 50), "dim": (118, 113, 108), "bone": (150, 147, 144),
+              "axes": ((88, 88, 214), (92, 168, 104), (196, 138, 78))},
+}
+# one soft colour per landmark (dot and trail), in order: blue, salmon, mint, butter, lavender, pink, teal, tan
+LANDMARK_COLOURS = ((222, 184, 143), (160, 167, 242), (181, 217, 158), (138, 211, 246),
+                    (224, 166, 195), (208, 179, 245), (209, 209, 142), (155, 185, 217))
+TRAIL_MIN_ALPHA = 0.12         # a trail's far end: this much of its colour over the background
+LABEL_PX = 11                  # label text height in screen pixels (x the display's density)
+TICK_PX = 10
+
+
+def _bgr(hex_colour: str) -> tuple:
+    h = hex_colour.lstrip("#")
+    return int(h[4:6], 16), int(h[2:4], 16), int(h[0:2], 16)
+
+
+def _mix(a, b, t: float) -> tuple:
+    """`a` moved toward `b` by t (0 = a)."""
+    return tuple(int(round(x + (y - x) * t)) for x, y in zip(a, b))
+
+
+def _draw_labels(img: np.ndarray, labels: list, px: float) -> np.ndarray:
+    """Text drawn last, anti-aliased in the application's sans font (QPainter on the picture's own pixels, so
+    Save PNG keeps it). labels: (x, y, text, BGR, size in screen px, align "l" / "c" / "r"); y = the baseline.
+    Without a Qt application (a script): OpenCV's font."""
+    if not labels:
+        return img
+    from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter
+    from PySide6.QtCore import QPointF
+    buf = np.ascontiguousarray(img)
+    if QGuiApplication.instance() is None:
+        for x, y, text, col, size, align in labels:
+            cv2.putText(buf, text, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, size / 24.0 * px, col, _px(1, px),
+                        cv2.LINE_AA)
+        return buf
+    h, w = buf.shape[:2]
+    qi = QImage(buf.data, w, h, 3 * w, QImage.Format_BGR888)
+    pa = QPainter(qi)
+    pa.setRenderHint(QPainter.TextAntialiasing, True)
+    pa.setRenderHint(QPainter.Antialiasing, True)
+    font = QFont()
+    for x, y, text, col, size, align in labels:
+        font.setPixelSize(max(6, int(round(size * px))))
+        pa.setFont(font)
+        pa.setPen(QColor(int(col[2]), int(col[1]), int(col[0])))
+        tw = pa.fontMetrics().horizontalAdvance(text)
+        dx = 0.0 if align == "l" else (-tw / 2.0 if align == "c" else -float(tw))
+        pa.drawText(QPointF(float(x) + dx, float(y)), text)
+    pa.end()
+    return buf
+
+
+def grid_box(points, extra=()) -> tuple | None:
+    """(G202) (lo (3,), hi (3,), step): a box on round ticks around every finite point of `points` (T, N, 3)
+    and of `extra` (e.g. the world's origin), ONE step for the three axes (1, 2 or 5 x 10^k, 4 to 10
+    intervals across the widest side) so the box is not stretched; None without a point."""
+    pts = []
+    if points is not None:
+        a = np.asarray(points, np.float64).reshape(-1, 3)
+        pts.append(a[np.isfinite(a).all(axis=1)])
+    for e in extra:
+        e = np.asarray(e, np.float64).reshape(-1, 3)
+        pts.append(e[np.isfinite(e).all(axis=1)])
+    if not pts or not sum(len(q) for q in pts):
+        return None
+    allp = np.concatenate([q for q in pts if len(q)])
+    lo, hi = allp.min(axis=0), allp.max(axis=0)
+    span = float((hi - lo).max())
+    if not span > 0:
+        span = max(float(np.abs(lo).max()), 1e-3) * 0.2
+    step = _nice_length(span / 4.0)
+    lo = np.floor(lo / step - 1e-9) * step
+    hi = np.ceil(hi / step + 1e-9) * step
+    hi = np.where(hi - lo < step / 2, lo + step, hi)
+    return lo, hi, step
+
+
+def back_walls(R: np.ndarray) -> np.ndarray:
+    """(G202) For each world axis, which side of the box its wall stands on: 1 = the high end, 0 = the low end
+    - the side AWAY from the viewer, so the walls never hide the points and swap as the view orbits. (With
+    Z up and the view from above, Z's wall is the floor.)"""
+    toward = np.asarray(R, np.float64).T @ np.array([0.0, 0.0, 1.0])     # world direction toward the viewer
+    return (toward < 0).astype(int)
+
+
+def _tick_text(v: float, step: float) -> str:
+    d = max(0, int(-np.floor(np.log10(step) + 1e-9)))
+    t = f"{v:.{d}f}"
+    return "0" if t.strip("-0.") == "" else t
+
+
+def _draw_grid(img, box, to_screen, R, pal: dict, unit: str, labels: list, px: float) -> None:
+    """(G202) The floor and the two back walls (filled, under everything), their grid lines at every tick,
+    the box's edges, and the tick numbers and axis names along the edges nearest the viewer."""
+    lo, hi, step = box
+    side = back_walls(R)
+    wall = np.where(side == 1, hi, lo)              # each axis' wall coordinate
+    near = np.where(side == 1, lo, hi)              # the opposite (front) side
+    ticks = [np.arange(lo[k], hi[k] + step / 2, step) for k in range(3)]
+    for k in range(3):                               # the pane perpendicular to axis k
+        a, b = [i for i in range(3) if i != k]
+        quad = np.zeros((4, 3))
+        quad[:, k] = wall[k]
+        quad[:, a] = [lo[a], hi[a], hi[a], lo[a]]
+        quad[:, b] = [lo[b], lo[b], hi[b], hi[b]]
+        scr = to_screen(quad)[0]
+        if np.isfinite(scr).all():
+            cv2.fillPoly(img, [_to_int_px(scr)], pal["pane"], cv2.LINE_AA)
+    for k in range(3):
+        a, b = [i for i in range(3) if i != k]
+        for u, v in ((a, b), (b, a)):                 # lines across the pane at u's ticks
+            for tv in ticks[u][1:-1]:
+                seg = np.zeros((2, 3))
+                seg[:, k] = wall[k]
+                seg[:, u] = tv
+                seg[:, v] = [lo[v], hi[v]]
+                _draw_poly(img, to_screen(seg)[0], pal["grid"], False, _px(1, px))
+        quad = np.zeros((4, 3))
+        quad[:, k] = wall[k]
+        quad[:, a] = [lo[a], hi[a], hi[a], lo[a]]
+        quad[:, b] = [lo[b], lo[b], hi[b], hi[b]]
+        _draw_poly(img, to_screen(quad)[0], pal["edge"], True, _px(1, px))
+    centre_scr = to_screen(((lo + hi) / 2)[None])[0][0]
+    # each axis is numbered along one front edge: X and Y on the floor (Z at its wall) at the other one's near
+    # side; Z up the vertical edge where the X and Y walls' near sides meet
+    for k in range(3):
+        if k == 2:
+            fixed = {0: near[0], 1: wall[1]}
+        else:
+            o = 1 - k
+            fixed = {o: near[o], 2: wall[2]}
+        pts = np.zeros((len(ticks[k]), 3))
+        pts[:, k] = ticks[k]
+        for i, v in fixed.items():
+            pts[:, i] = v
+        scr = to_screen(pts)[0]
+        if not np.isfinite(scr).all() or len(scr) < 2:
+            continue
+        out = scr.mean(axis=0) - centre_scr          # push the numbers away from the box
+        out = out / max(float(np.linalg.norm(out)), 1e-9)
+        gap = float(np.median(np.linalg.norm(np.diff(scr, axis=0), axis=1)))
+        every = max(1, int(np.ceil(34.0 * px / max(gap, 1e-9))))      # never closer than ~34 px
+        # a corner two numbered edges share is numbered once: Y's end at X's edge, Z's foot at Y's edge
+        corner = near[0] if k == 0 else (wall[2] if k == 2 else None)
+        for j in range(0, len(scr), every):
+            if corner is not None and abs(ticks[k][j] - corner) < step / 2:
+                continue
+            q = scr[j] + out * 14 * px
+            labels.append((q[0], q[1] + 4 * px, _tick_text(ticks[k][j], step), pal["dim"], TICK_PX, "c"))
+        mid = (scr[0] + scr[-1]) / 2 + out * 32 * px
+        name = "XYZ"[k] + (f" ({unit})" if unit else "")
+        labels.append((mid[0], mid[1] + 4 * px, name, pal["text"], LABEL_PX, "c"))
+
+
+def _draw_trails(img, scene: Scene3D, to_screen, pal: dict, trail, px: float) -> tuple | None:
+    """(G203) Each landmark's path in its own colour: `trail` = "all" (the whole result, one soft line) or a
+    number of rows either side of the instant (fading with the distance in time, blended toward the
+    background). -> the rows drawn (lo, hi), None when nothing."""
+    P, k = scene.points_all, scene.t_index
+    if P is None or not len(P) or trail in (None, 0):
+        return None
+    T = P.shape[0]
+    if trail == "all":
+        lo, hi = 0, T - 1
+    else:
+        if k is None:
+            return None
+        lo, hi = max(0, k - int(trail)), min(T - 1, k + int(trail))
+    seg = P[lo:hi + 1]
+    for j in range(seg.shape[1]):
+        col = LANDMARK_COLOURS[j % len(LANDMARK_COLOURS)]
+        scr = to_screen(seg[:, j])[0]
+        ok = np.isfinite(seg[:, j]).all(axis=1) & np.isfinite(scr).all(axis=1)
+        if trail == "all":
+            c = _mix(pal["bg"], col, 0.55)
+            run = []
+            for i in range(len(scr) + 1):              # one polyline per stretch with data
+                if i < len(scr) and ok[i]:
+                    run.append(i)
+                    continue
+                if len(run) >= 2:
+                    cv2.polylines(img, [_to_int_px(scr[run])], False, c, _px(1, px), cv2.LINE_AA)
+                run = []
+            continue
+        for i in range(len(scr) - 1):
+            if ok[i] and ok[i + 1]:
+                dt = abs((lo + i + 0.5) - k) / max(float(trail), 1.0)
+                a = max(TRAIL_MIN_ALPHA, 1.0 - dt)
+                p0, p1 = _to_int_px(scr[i:i + 2])
+                cv2.line(img, tuple(int(v) for v in p0), tuple(int(v) for v in p1), _mix(pal["bg"], col, a),
+                         _px(1.5, px), cv2.LINE_AA)
+    return lo, hi
+
+
+def _draw_world(img, scene: Scene3D, to_screen, pal: dict, length: float, unit: str, labels: list,
+                px: float) -> np.ndarray | None:
+    """(G201) The chosen world: X / Y / Z arrows from (0, 0, 0), `length` long, labelled, and the length said
+    once. -> the origin on screen (None when off screen)."""
+    o = to_screen(np.zeros((1, 3)))[0][0]
+    if not np.isfinite(o).all():
+        return None
+    for k in range(3):
+        tip = np.zeros((1, 3))
+        tip[0, k] = length
+        t = to_screen(tip)[0][0]
+        if not np.isfinite(t).all():
+            continue
+        col = pal["axes"][k]
+        p0, p1 = tuple(int(v) for v in _to_int_px(o[None])[0]), tuple(int(v) for v in _to_int_px(t[None])[0])
+        n = max(float(np.hypot(p1[0] - p0[0], p1[1] - p0[1])), 1.0)
+        cv2.arrowedLine(img, p0, p1, col, _px(2, px), cv2.LINE_AA, tipLength=min(0.3, 12.0 * px / n))
+        d = (t - o) / n
+        labels.append((t[0] + d[0] * 12 * px, t[1] + d[1] * 12 * px + 4 * px, "+" + "XYZ"[k], col, LABEL_PX, "c"))
+    cv2.circle(img, tuple(int(v) for v in _to_int_px(o[None])[0]), _px(3, px), pal["text"], -1, cv2.LINE_AA)
+    labels.append((o[0] - 8 * px, o[1] + 16 * px, f"0 · arrows {length:g} {unit}".strip(), pal["dim"], TICK_PX, "r"))
+    return o
 
 
 def _px(v: float, px: float) -> int:
@@ -520,12 +756,14 @@ def _blend_poly(img, poly: np.ndarray, colour, alpha: float) -> None:
 
 
 def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool, show_pyramids: bool,
-                show_fov: bool, show_cover: bool, hits: dict | None, px: float = 1.0) -> np.ndarray:
+                show_fov: bool, show_cover: bool, hits: dict | None, px: float = 1.0,
+                labels: list | None = None) -> np.ndarray:
     """(G185, G186, G187) the fields of view's translucent sides, the covered space (translucent, over them),
     the fields of view's edges, the cameras' pose pyramids, the wand lines and ends, and the scale bar. Every
-    fixed size is in screen pixels times `px` (the display's pixel density). Returns the image (the
-    translucent layer makes a new one)."""
+    fixed size is in screen pixels times `px` (the display's pixel density). Text goes into `labels` (drawn
+    last, `_draw_labels`). Returns the image (the translucent layer makes a new one)."""
     pic = scene.calib
+    labels = [] if labels is None else labels
     H, W = img.shape[:2]
     if show_fov:
         faces = []
@@ -565,8 +803,7 @@ def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool
                 _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], col, False, _px(1, px))
         cs = to_screen(cd.centre)[0][0]
         if (show_pyramids or show_fov) and np.isfinite(cs).all():
-            cv2.putText(img, cd.name, (int(cs[0]) + _px(8, px), int(cs[1]) - _px(6, px)), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.45 * px, col, _px(1, px), cv2.LINE_AA)
+            labels.append((cs[0] + 8 * px, cs[1] - 6 * px, cd.name, col, LABEL_PX, "l"))
     es, _ = to_screen(pic.ends)
     if hits is not None:
         hits["ends"] = es if show_ends else None
@@ -591,8 +828,7 @@ def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool
         for x in (x1 - n, x1):
             cv2.line(img, (x, y - _px(5, px)), (x, y + _px(5, px)), (220, 220, 220), _px(1, px), cv2.LINE_AA)
         lab = f"{L:g} {pic.unit or scene.unit}".strip()
-        cv2.putText(img, lab, (x1 - n, y - _px(9, px)), cv2.FONT_HERSHEY_SIMPLEX, 0.45 * px, (220, 220, 220),
-                    _px(1, px), cv2.LINE_AA)
+        labels.append((x1 - n, y - 9 * px, lab, (220, 220, 220), LABEL_PX, "l"))
     return img
 
 
@@ -600,32 +836,50 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
                  zoom: float = 1.0, show_mesh: bool = True, show_points: bool = True,
                  show_cameras: bool = False, up: int = 2, pan: tuple[float, float] = (0.0, 0.0),
                  show_calib: bool = False, show_fov: bool = False, show_cover: bool = False,
-                 hits: dict | None = None, show_pyramids: bool | None = None, px: float = 1.0) -> np.ndarray:
+                 hits: dict | None = None, show_pyramids: bool | None = None, px: float = 1.0,
+                 show_grid: bool = False, show_world: bool = False, trail=None, palette: str = "dark") -> np.ndarray:
     """The 3D window's picture (BGR). The wand calibration layers (G185, G186) are drawn only when asked and
     the scene has a picture: `show_calib` = the wand points (and the scale bar), `show_pyramids` the
     cameras' pose pyramids (None = with the wand points), `show_fov` their fields of view, `show_cover`
     the covered space; each on its own (owner 2026-10-12). `hits`, when given, receives "ends" = the wand
     ends' (P, 2) image pixels (None when they are not drawn). `px` (G187): the display's pixel density -
     `size` is in device pixels, `pan` in screen (logical) pixels, and every fixed size (lines, dots, text)
-    is scaled by it, so the picture is sharp on a scaled display; px = 1 draws exactly as before."""
+    is scaled by it, so the picture is sharp on a scaled display; px = 1 draws exactly as before.
+    (G201-G203) `show_grid`: the box grid around the whole 3D result (and the view frames it); `show_world`:
+    the chosen world's arrows (with `scene.world`); `trail`: None, a number of rows either side, or "all";
+    `palette`: "dark" | "light". `hits` also receives "labels" (every text drawn), "grid" (the box),
+    "origin" (the world's origin on screen) and "trail" (the rows drawn)."""
     W, H = size
-    img = np.full((H, W, 3), (24, 26, 30), np.uint8)
+    pal = PALETTES.get(palette, PALETTES["dark"])
+    img = np.full((H, W, 3), pal["bg"], np.uint8)
     pyr = show_calib if show_pyramids is None else show_pyramids
     calib_on = (show_calib or pyr or show_fov or show_cover) and scene.calib is not None
+    world_on = bool(show_world and scene.world)
+    box = (grid_box(scene.points_all, [np.zeros(3)] if world_on else ())
+           if (show_grid and scene.points_all is not None) else None)
     to_screen, R, scale = screen_transform(scene, size, azimuth, elevation, zoom,
-                                           (pan[0] * px, pan[1] * px), up, show_cameras, calib_on)
-    fs, t1 = 0.45 * px, _px(1, px)                                  # text scale, a 1 px line
+                                           (pan[0] * px, pan[1] * px), up, show_cameras, calib_on,
+                                           None if calib_on else box)
+    t1 = _px(1, px)                                                  # a 1 px line
+    labels: list = []
+    unit = scene.unit or (scene.calib.unit if scene.calib is not None else "")
+    if box is not None:
+        _draw_grid(img, box, to_screen, R, pal, unit, labels, px)
+    if hits is not None:
+        hits["grid"] = box
 
-    # axes triad (bottom-left), world axes after the same rotation
-    o = np.array([48.0 * px, H - 48.0 * px])
-    for k, (col, lab) in enumerate((((60, 60, 230), "X"), ((60, 200, 60), "Y"), ((230, 120, 60), "Z"))):
-        a = np.zeros(3)
-        a[k] = 1.0
-        d = (R @ a)[:2] * 32 * px
-        tip = (int(o[0] + d[0]), int(o[1] - d[1]))
-        cv2.line(img, (int(o[0]), int(o[1])), tip, col, _px(2, px), cv2.LINE_AA)
-        cv2.putText(img, lab, (tip[0] + _px(3, px), tip[1] + _px(4, px)), cv2.FONT_HERSHEY_SIMPLEX, fs, col, t1,
-                    cv2.LINE_AA)
+    if box is None and not world_on:
+        # axes triad (bottom-left), world axes after the same rotation: the one orientation cue left when
+        # neither the grid nor the world's arrows say it (no redundant UI)
+        o = np.array([48.0 * px, H - 48.0 * px])
+        for k, lab in enumerate("XYZ"):
+            col = pal["axes"][k]
+            a = np.zeros(3)
+            a[k] = 1.0
+            d = (R @ a)[:2] * 32 * px
+            tip = (int(o[0] + d[0]), int(o[1] - d[1]))
+            cv2.line(img, (int(o[0]), int(o[1])), tip, col, _px(2, px), cv2.LINE_AA)
+            labels.append((tip[0] + 3 * px, tip[1] + 4 * px, lab, col, LABEL_PX, "l"))
     if show_mesh and scene.mesh is not None and len(scene.mesh[1]):
         verts, faces = scene.mesh
         fn = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
@@ -642,7 +896,7 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
             c = (base * shade[k]).astype(int).tolist()
             cv2.fillConvexPoly(img, tri[k], c, lineType=cv2.LINE_AA)
     if calib_on:
-        img = _draw_calib(img, scene, to_screen, R, scale, show_calib, pyr, show_fov, show_cover, hits, px)
+        img = _draw_calib(img, scene, to_screen, R, scale, show_calib, pyr, show_fov, show_cover, hits, px, labels)
     if show_cameras and not calib_on and scene.cameras is not None and len(scene.cameras):
         cs, _ = to_screen(scene.cameras)
         m = 50 * px
@@ -651,22 +905,59 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
                 cv2.drawMarker(img, (int(x), int(y)), (80, 120, 255), cv2.MARKER_TRIANGLE_UP, _px(14, px),
                                _px(2, px), cv2.LINE_AA)
                 nm = scene.camera_names[k] if k < len(scene.camera_names) else f"cam {k + 1}"
-                cv2.putText(img, nm, (int(x) + _px(8, px), int(y) + _px(4, px)), cv2.FONT_HERSHEY_SIMPLEX, fs,
-                            (120, 150, 255), t1, cv2.LINE_AA)
+                labels.append((x + 8 * px, y + 4 * px, nm, (120, 150, 255), LABEL_PX, "l"))
+    if show_points:
+        drawn = _draw_trails(img, scene, to_screen, pal, trail, px)
+        if hits is not None:
+            hits["trail"] = drawn
     if show_points and scene.points is not None and len(scene.points):
         ps, _ = to_screen(scene.points)
         ok = np.isfinite(scene.points).all(axis=1)
         for i, j in scene.bones:
             if i < len(ok) and j < len(ok) and ok[i] and ok[j]:
                 cv2.line(img, (int(ps[i, 0]), int(ps[i, 1])), (int(ps[j, 0]), int(ps[j, 1])),
-                         (200, 200, 200), t1, cv2.LINE_AA)
+                         pal["bone"], t1, cv2.LINE_AA)
+        roles = {}
+        if world_on:
+            roles = {scene.world.get("origin"): "origin", scene.world.get("x"): "+X", scene.world.get("y"): "+Y"}
+        ring = {"ok": _bgr(theme.VERDICT["ok"]), "poor": _bgr(theme.VERDICT["poor"])}
         for k, (x, y) in enumerate(ps):
             if ok[k] and np.isfinite(x) and np.isfinite(y):
-                cv2.circle(img, (int(x), int(y)), _px(4, px), (60, 230, 120), -1, cv2.LINE_AA)
+                col = LANDMARK_COLOURS[k % len(LANDMARK_COLOURS)]
+                c = (int(x), int(y))
+                vd = scene.verdicts[k] if k < len(scene.verdicts) else ""
+                if vd in ring:                                   # ok / poor: a ring in the verdict's colour
+                    cv2.circle(img, c, _px(7, px), ring[vd], _px(1.5, px), cv2.LINE_AA)
+                cv2.circle(img, c, _px(4.5, px), col, -1, cv2.LINE_AA)
+                cv2.circle(img, c, _px(4.5, px), _mix(col, (0, 0, 0), 0.4), t1, cv2.LINE_AA)
                 if k < len(scene.names):
-                    cv2.putText(img, scene.names[k], (int(x) + _px(6, px), int(y) - _px(4, px)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4 * px, (170, 240, 190), t1, cv2.LINE_AA)
-    return img
+                    nm = scene.names[k]
+                    tag = roles.get(nm)
+                    labels.append((x + 8 * px, y - 6 * px, nm + (f" · {tag}" if tag else ""), pal["text"],
+                                   LABEL_PX, "l"))
+    if world_on:
+        span = float(np.linalg.norm(box[1] - box[0])) if box is not None else scene.framing(show_cameras)[1]
+        o = _draw_world(img, scene, to_screen, pal, _nice_length(0.3 * span), unit, labels, px)
+        if hits is not None:
+            hits["origin"] = o
+    if hits is not None:
+        hits["labels"] = [(x, y, t) for x, y, t, *_ in labels]
+    return _draw_labels(img, labels, px)
+
+
+def _light_preference(value: bool | None = None) -> bool:
+    """(G202) The 3D window's Light background, remembered for every project (the app's settings file, as the
+    annotator's name): read it, or store `value`."""
+    from PySide6.QtCore import QSettings
+    from kinetrace import recovery
+    try:
+        st = QSettings(str(recovery.settings_path()), QSettings.IniFormat)
+        if value is not None:
+            st.setValue("view3d/light_background", bool(value))
+            return bool(value)
+        return str(st.value("view3d/light_background", "false")).lower() in ("true", "1")
+    except Exception:           # noqa: BLE001 - a preference that cannot be read is the default
+        return False if value is None else bool(value)
 
 
 class _CoverageThread(QThread):
@@ -716,9 +1007,36 @@ class View3D(QWidget):
         self.chk_cams = QCheckBox("Cameras")
         self.chk_cams.setChecked(False)
         self.chk_cams.setToolTip("Include the camera positions (zooms the view out to fit them)")
-        for c in (self.chk_points, self.chk_mesh, self.chk_cams):
+        # (G202, G201, G203) the figure: the grid, the chosen world, the paths, the background
+        self.chk_grid = QCheckBox("Grid")
+        self.chk_grid.setChecked(True)
+        self.chk_grid.setToolTip("A box around the whole 3D result with a grid on the floor and the two walls behind "
+                                 "the points, numbered in the calibration's unit: read a position off it. The box "
+                                 "stays put while the landmarks move.")
+        self.chk_world = QCheckBox("World axes")
+        self.chk_world.setChecked(True)
+        self.chk_world.setToolTip("The world chosen with 3D → Set World Axes: arrows from the origin along +X, +Y "
+                                  "and +Z, and the three landmarks that set it")
+        self.cmb_trail = QComboBox()
+        self.cmb_trail.addItems(["No trail", "Trail ±1 s", "Whole path"])
+        self.cmb_trail.setCurrentIndex(1)
+        self.cmb_trail.setToolTip("Each landmark's path in its own colour: the second before and after the frame on "
+                                  "screen (fading), or the whole 3D result")
+        self.chk_light = QCheckBox("Light background")
+        self.chk_light.setToolTip("A white figure for a paper or a slide; remembered")
+        self.chk_light.setChecked(_light_preference())
+        for c in (self.chk_points, self.chk_mesh, self.chk_cams, self.chk_grid, self.chk_world):
             c.toggled.connect(lambda _=False: self.request_render())
             top.addWidget(c)
+        self.cmb_trail.currentIndexChanged.connect(lambda _=0: self.request_render())
+        top.addWidget(self.cmb_trail)
+        self.chk_light.toggled.connect(self._light_toggled)
+        top.addWidget(self.chk_light)
+        self.btn_save = QPushButton("Save picture…")
+        self.btn_save.setToolTip("Write the picture as it is on screen to a PNG file, at twice the window's "
+                                 "resolution (for a paper or a slide)")
+        self.btn_save.clicked.connect(self._save_clicked)
+        top.addWidget(self.btn_save)
         top.addStretch(1)
         self.info = QLabel("")
         self.info.setStyleSheet(f"color: {theme.TEXT_DIM};")
@@ -764,7 +1082,7 @@ class View3D(QWidget):
         self.canvas.setMinimumSize(320, 240)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.canvas.setAlignment(Qt.AlignCenter)
-        self.canvas.setStyleSheet("background: #181a1e;")
+        self._apply_background()
         self.canvas.setMouseTracking(True)
         self.canvas.installEventFilter(self)
         lay.addWidget(self.canvas, 1)
@@ -784,6 +1102,23 @@ class View3D(QWidget):
         self._cover_key = None
         self._base_info = ""
 
+    # ---- the figure's background (G202)
+    def _palette(self) -> str:
+        return "light" if self.chk_light.isChecked() else "dark"
+
+    def _apply_background(self) -> None:
+        b, g, r = PALETTES[self._palette()]["bg"]
+        self.canvas.setStyleSheet(f"background: #{r:02x}{g:02x}{b:02x};")
+
+    def _light_toggled(self, on: bool) -> None:
+        _light_preference(bool(on))
+        self._apply_background()
+        self.request_render()
+
+    def _trail(self):
+        i = self.cmb_trail.currentIndex()
+        return None if i == 0 else ("all" if i == 2 else max(1, int(self.scene.trail_frames)))
+
     # ---- data
     def set_scene(self, scene: Scene3D, info: str = "") -> None:
         old = self.scene.calib if self.scene is not None else None
@@ -791,6 +1126,7 @@ class View3D(QWidget):
         scene.cover_n = self.scene.cover_n if self.scene is not None else scene.cover_n
         self.scene = scene
         self._base_info = info
+        self.chk_world.setEnabled(bool(scene.world))          # (G201) greyed until Set World Axes
         if scene.calib is not old:
             self._picture_changed()
             if self.chk_cover.isChecked() and scene.calib is not None:
@@ -1010,16 +1346,45 @@ class View3D(QWidget):
                            self.chk_cams.isChecked(), pan=tuple(self.pan),
                            show_calib=self.chk_calib.isChecked(), show_fov=self.chk_fov.isChecked(),
                            show_cover=self.chk_cover.isChecked(), hits=hits,
-                           show_pyramids=self.chk_pyr.isChecked(), px=dpr)
+                           show_pyramids=self.chk_pyr.isChecked(), px=dpr,
+                           show_grid=self.chk_grid.isChecked(), show_world=self.chk_world.isChecked(),
+                           trail=self._trail(), palette=self._palette())
         self._hits = hits
         self._last_dpr = dpr
         self.last_image = img
         self.canvas.setPixmap(bgr_pixmap(img, dpr))
 
-    def save_png(self, path: str) -> None:
-        if self.last_image is None:
-            self._render()
-        cv2.imwrite(path, self.last_image)
+    def save_png(self, path: str, scale: float | None = None) -> None:
+        """The picture on screen to a PNG; `scale` (G202): drawn again at that many times the window's
+        resolution (lines and text scale with it), else the picture as shown."""
+        if scale is None:
+            if self.last_image is None:
+                self._render()
+            img = self.last_image
+        else:
+            w, h = max(64, self.canvas.width()), max(64, self.canvas.height())
+            img = render_scene(self.scene, (int(round(w * scale)), int(round(h * scale))), self.azimuth,
+                               self.elevation, self.zoom, self.chk_mesh.isChecked(), self.chk_points.isChecked(),
+                               self.chk_cams.isChecked(), pan=tuple(self.pan),
+                               show_calib=self.chk_calib.isChecked(), show_fov=self.chk_fov.isChecked(),
+                               show_cover=self.chk_cover.isChecked(), show_pyramids=self.chk_pyr.isChecked(),
+                               px=float(scale), show_grid=self.chk_grid.isChecked(),
+                               show_world=self.chk_world.isChecked(), trail=self._trail(), palette=self._palette())
+        if not cv2.imwrite(path, img):
+            raise OSError(f"the picture could not be written to {path}")
+
+    def _save_clicked(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save the 3D picture", "3d_view.png", "PNG picture (*.png)")
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        try:
+            self.save_png(path, scale=2.0)
+        except OSError as e:
+            self.info.setText(str(e))
+            return
+        self.info.setText(f"Saved {Path(path).name} (twice the window's resolution)")
 
     # ---- interaction
     def resizeEvent(self, ev):

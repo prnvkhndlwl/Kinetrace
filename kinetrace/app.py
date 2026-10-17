@@ -1870,7 +1870,9 @@ class MainWindow(QMainWindow):
                                  triggered=self._reconstruct_3d)
         self.act_recon.setToolTip("Turn the landmarks tracked in two or more cameras (matched by name) into\n"
                                   "3D positions with the calibration, and say how well the cameras agree\n"
-                                  "(GOOD / USABLE / NOT TRUSTWORTHY). Needs two or more calibrated cameras.")
+                                  "(GOOD / USABLE / NOT TRUSTWORTHY). Needs two or more calibrated cameras.\n"
+                                  "The 3D result also keeps itself up to date as you click and track (only\n"
+                                  "what changed); this recomputes everything and gives the verdict.")
         self.act_set_axes = QAction("Set World &Axes…", self, triggered=self._set_world_axes)      # (I170)
         self.act_set_axes.setToolTip("Choose the 3D world yourself: three landmarks give the origin, the +X and the\n"
                                      "+Y direction (+Z follows the right-hand rule). The calibration and the 3D\n"
@@ -12171,21 +12173,38 @@ class MainWindow(QMainWindow):
         t = self._reference_instant()       # (G107) the one rounding rule: the hull cache is keyed by it
         info = f"reference frame {t}"
         if r is not None:
+            from kinetrace.calib import cell_verdict
             scene.points_all = r.xyz
             scene.names = list(r.names)
             k = r.index(t)
+            scene.t_index = k                               # (G203) the trails fade around this row
             if k is not None:
                 scene.points = r.xyz[k]                     # every row: they line up with the names
                 n_ok = int(np.isfinite(scene.points).all(axis=1).sum())
                 res = r.residual[k]
                 med = float(np.nanmedian(res)) if n_ok else float("nan")
                 info += f" · {n_ok}/{len(r.names)} landmarks · residual {med:.2f} px"
+                # each point's verdict, the guides' rule and bands (its own cameras): the dot's ring
+                verdicts = []
+                for j in range(len(r.names)):
+                    views = (list(np.nonzero(np.isfinite(r.per_cam[k, j]))[0]) if r.per_cam is not None
+                             else list(range(p.n_views)))
+                    views = [c for c in views if c < p.n_views]
+                    verdicts.append(cell_verdict(float(res[j]), int(r.n_cams[k, j]), self._residual_bands(views))
+                                    if views else "")
+                scene.verdicts = verdicts
+                counts = [(w, verdicts.count(w)) for w in ("good", "ok", "poor") if verdicts.count(w)]
+                if counts:
+                    info += " · " + ", ".join(f"{n} {w}" for w, n in counts)
             idx = {nm: i for i, nm in enumerate(r.names)}
             s = p.session
             scene.bones = [(idx[a], idx[b]) for a, b in
                            (p.session.bone_names() if s else [])
                            if a in idx and b in idx]
             scene.unit = r.unit
+        # (G203) a trail spans 1 s either side at the reference camera's rate; (G201) the chosen world
+        scene.trail_frames = max(1, int(round(p.sessions[0].fps or 30.0))) if p.sessions else 30
+        scene.world = p.calibration.world if p.calibration is not None else None
         if p.calibration is not None:
             views = [v for v in p.calibration.views() if v < p.n_views]      # (I273) calibrated cameras
             scene.cameras = np.array([p.calibration.camera(v).center() for v in views]).reshape(-1, 3)
