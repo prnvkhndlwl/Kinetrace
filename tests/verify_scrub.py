@@ -24,7 +24,7 @@ from PySide6.QtWidgets import QApplication
 # MainWindow, and widgets need a GUI application object
 app = QApplication([])
 from _clean import forget_recovery  # noqa: E402
-from kinetrace.video_source import (FrameCache, PREFETCH_AHEAD, SEEK_BACK_PREFETCH,
+from kinetrace.video_source import (FrameCache, SCRUB_WINDOW, SEEK_BACK_PREFETCH,
                                         SeekService, VideoSource)
 
 VID = os.path.join(ROOT, r"test600.mp4")
@@ -64,10 +64,15 @@ while not served and time.time() - t0 < 10:
     app.processEvents()
     time.sleep(0.005)
 assert served == [100], served
-time.sleep(0.4)                               # let the idle prefetch run
-missing = [j for j in range(101, 101 + PREFETCH_AHEAD) if cache2.get(j) is None]
-assert not missing, f"prefetch left gaps: {missing}"
-print(f"prefetch OK: frames 101..{100 + PREFETCH_AHEAD} warmed after serving 100")
+# the idle fill: a first move leans forward, below keeps one keyframe interval or a third of the window
+below = max(SEEK_BACK_PREFETCH, SCRUB_WINDOW // 3)
+win_frames = list(range(100 - below, 100)) + list(range(101, 101 + SCRUB_WINDOW - below))
+t0 = time.time()
+while any(cache2.get(j) is None for j in win_frames) and time.time() - t0 < 10:
+    time.sleep(0.02)
+missing = [j for j in win_frames if cache2.get(j) is None]
+assert not missing, f"the scrub window left gaps: {missing}"
+print(f"scrub window OK: frames {win_frames[0]}..{win_frames[-1]} warmed after serving 100")
 
 # latest-wins: spam requests, only the newest needs to be served last
 served.clear()
@@ -83,6 +88,43 @@ print(f"latest-wins OK ({len(served)} of 20 spammed requests decoded)")
 svc.stop()
 
 svc.stop()
+
+# ---- (I306, w4) the scrub window on a 4K file: every frame it serves or caches is the file read forward ----
+import hashlib                                  # noqa: E402
+from kinetrace.video_source import FrameReader  # noqa: E402
+
+V4K = os.path.join(ROOT, "test4k.mp4")          # 3840x2160, 300 frames, a keyframe every 12
+rd = FrameReader(V4K, 0)
+REF4K = []                                      # SHA-256 of each frame read forward from frame 0 (25 MB each)
+import cv2                                      # noqa: E402
+for f in range(300):
+    REF4K.append(hashlib.sha256(cv2.cvtColor(rd.read(f), cv2.COLOR_BGR2RGB).tobytes()).hexdigest())
+rd.release()
+fb4k = 3840 * 2160 * 3
+cache4 = FrameCache((SCRUB_WINDOW + 2) * fb4k)  # exactly what a camera's window gets: eviction is exercised
+svc4 = SeekService(V4K, cache4, n_frames=300)
+src4 = VideoSource(V4K, cache4)
+seen, bad, gaps = {}, [], []
+seq = (list(range(100, 116)) + list(range(114, 94, -1)) + [230] + list(range(229, 219, -1))
+       + list(range(221, 226)) + [10] + list(range(9, -1, -1)) + [299, 298, 297])
+for idx in seq:                                 # what SeekService.run does, step by step
+    svc4.request(idx)
+    svc4._target = None
+    fr = src4.get_frame(idx)
+    if hashlib.sha256(fr.tobytes()).hexdigest() != REF4K[idx]:
+        bad.append(("served", idx))
+    svc4._fill(src4, idx, fr.nbytes)
+    for f, arr in list(cache4._data.items()):
+        if seen.get(f) is not arr:              # each cached array checked once
+            seen[f] = arr
+            if hashlib.sha256(arr.tobytes()).hexdigest() != REF4K[f]:
+                bad.append(("cached", f))
+    want = [f for a, b in svc4._plan_fill(idx, fb4k) for f in range(a, b + 1)]
+    gaps += [(idx, f) for f in want + [idx] if cache4.get(f) is None]
+src4.close()
+assert not bad, f"(I306) the window holds a frame that is not the file read forward: {bad[:8]}"
+assert not gaps, f"(I306) the window lost frames it had filled: {gaps[:8]}"
+print(f"scrub window exact OK: {len(seq)} moves on 4K, {len(seen)} cached frames, each == the file read forward")
 
 # ---- a failed read is not the end of the video; an exception never kills the thread (I40) ----
 from kinetrace import video_source as _vs       # noqa: E402
