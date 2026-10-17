@@ -298,9 +298,40 @@ def gui_moved():
     close(w)
 
 
+def gui_start_screen():
+    print("[4] the start screen's list")
+    copy = os.path.join(OUT, "elsewhere", "first copy.kinetrace")
+    w = window()
+    cv = w.canvas
+    names = [b.text() for b in cv.start_buttons]
+    check(cv._start_panel.isVisible() and names == ["first copy.kinetrace", "first.kinetrace"],
+          "a new start lists the recent projects under the placeholder, newest first", f"{names}")
+    check(all(b.focusPolicy() == Qt.NoFocus for b in cv.start_buttons), "its buttons never take the keyboard")
+    vp = cv.viewport().geometry()
+    check(vp.contains(cv._start_panel.geometry()), "the list sits inside the picture area")
+    QTest.mouseClick(cv.start_buttons[0], Qt.LeftButton)     # the user's click
+    settle(w, copy)
+    check(w.project_path is not None and os.path.normcase(str(w.project_path.resolve()))
+          == os.path.normcase(os.path.abspath(copy)), "one click on the start screen opened it", f"{w.project_path}")
+    check(not w.canvas._start_panel.isVisible(), "the list is gone once a video is on screen")
+    close(w)
+
+    gone = os.path.join(OUT, "elsewhere", "first.kinetrace")
+    shutil.move(gone, gone + ".away")
+    w = window()
+    names = [b.text() for b in w.canvas.start_buttons]
+    check(names == ["first copy.kinetrace", "first.kinetrace  (not found)"], "a moved project says (not found) there too",
+          f"{names}")
+    menu_entries(w)["&Clear List"].trigger()
+    pump(0.1)
+    check(not w.canvas._start_panel.isVisible() and not w.canvas.start_buttons, "an empty list shows nothing")
+    close(w)
+
+
 unit()
 gui_menu()
 gui_moved()
+gui_start_screen()
 
 if FAILS:
     print(f"verify_recent FAILED ({len(FAILS)}): " + "; ".join(FAILS))

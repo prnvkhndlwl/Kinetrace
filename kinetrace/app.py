@@ -868,6 +868,7 @@ class MainWindow(QMainWindow):
         self._autosave_timer.timeout.connect(lambda: None if self._loading else self._autosave())
         self._autosave_timer.start()
         QTimer.singleShot(2500, self._announce_recovery)
+        self._refresh_start_recent()            # (G205) the start screen's recent projects
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_tick)
         # lockstep: a camera that does not deliver in time is not waited for
@@ -10781,7 +10782,21 @@ class MainWindow(QMainWindow):
         """Put the project at `path` on top of File → Open Recent: once it has opened or been saved."""
         if path is not None:
             st = self._settings()
-            recent.store(st, recent.touch(recent.load(st), path, pid))
+            self._store_recent(recent.touch(recent.load(st), path, pid))
+
+    def _store_recent(self, items: list[dict]) -> None:
+        recent.store(self._settings(), items)
+        self._refresh_start_recent()
+
+    def _refresh_start_recent(self) -> None:
+        """The start screen's list (the canvas shows it only while no video is open): the same projects as
+        File → Open Recent, by name, with this computer's own path form in the tooltip."""
+        items = recent.load(self._settings())
+        found = recent.exists_quick([it["path"] for it in items])
+        shown = [{"path": str(Path(it["path"])), "name": it["name"], "missing": found.get(it["path"]) is False}
+                 for it in items]
+        for cv in self.grid.canvases:            # a view that has no list gets an empty one
+            cv.set_start_recent(shown if cv is self.canvas else [], self._open_recent)
 
     def _refresh_recent_menu(self) -> None:
         """File → Open Recent, rebuilt as it opens: each project by name (its full path as the tooltip), one
@@ -10803,7 +10818,7 @@ class MainWindow(QMainWindow):
         clear.triggered.connect(self._clear_recent)
 
     def _clear_recent(self) -> None:
-        recent.clear(self._settings())
+        self._store_recent([])
 
     def _open_recent(self, it: dict) -> None:
         """A recent project chosen (File → Open Recent): opened exactly like Open Project; one no longer
@@ -10842,7 +10857,7 @@ class MainWindow(QMainWindow):
         box.deleteLater()
         st = self._settings()
         if chosen is drop:
-            recent.store(st, recent.remove(recent.load(st), where))
+            self._store_recent(recent.remove(recent.load(st), where))
             return None
         if chosen is not locate:
             return None
@@ -10857,7 +10872,7 @@ class MainWindow(QMainWindow):
             pid = projectfile.read_meta(root).get("project_id")
         except Exception:      # noqa: BLE001 - opening it says what is wrong with it
             pid = None
-        recent.store(st, recent.touch(recent.remove(recent.load(st), where), root, pid))
+        self._store_recent(recent.touch(recent.remove(recent.load(st), where), root, pid))
         return root
 
     def _announce_recovery(self) -> None:
