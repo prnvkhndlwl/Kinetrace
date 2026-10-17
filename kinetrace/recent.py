@@ -89,16 +89,20 @@ def clear(settings) -> bool:
     return store(settings, [])
 
 
-def nearest_folder(path, isdir=os.path.isdir) -> Path | None:
+def labels(items: list[dict]) -> list[str]:
+    """What the menu and the start screen show for each entry: the project's folder name, followed by the
+    folder it is in when two entries share a name (one `trial.kinetrace` per day folder)."""
+    names = [it["name"] for it in items]
+    return [f"{n}  —  {Path(it['path']).parent.name or Path(it['path']).parent}" if names.count(n) > 1 else n
+            for n, it in zip(names, items)]
+
+
+def nearest_folder(path, timeout: float = 0.5, isdir=os.path.isdir) -> Path | None:
     """The closest folder above `path` that still exists: where Locate... opens; None if not even its drive
-    is there."""
-    for parent in Path(str(path)).parents:
-        try:
-            if isdir(parent):
-                return parent
-        except OSError:
-            continue
-    return None
+    is there (or it does not answer within `timeout`, an unplugged share)."""
+    parents = [str(p) for p in Path(str(path)).parents]
+    found = exists_quick(parents, timeout, check=isdir)
+    return next((Path(p) for p in parents if found.get(p)), None)
 
 
 def exists_quick(paths: list[str], timeout: float = 0.5, check=os.path.exists) -> dict[str, bool | None]:

@@ -60,7 +60,7 @@ QMessageBox.critical = staticmethod(lambda *a, **k: ASK["boxes"].append(("critic
 QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (ASK["open"], ""))
 QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (ASK["save"], ""))
 app = QApplication.instance() or QApplication([])
-from kinetrace.app import IDLE, READY, MainWindow  # noqa: E402
+from kinetrace.app import READY, TRACKING, MainWindow  # noqa: E402
 
 FAILS = []
 
@@ -115,7 +115,7 @@ def unit():
     # round trip through the stored JSON: this OS's own path style, spaces and a non-ASCII folder name
     st = FakeSettings()
     native = r"D:\data\fish\trial 1.kinetrace" if os.name == "nt" else "/home/lab/data/trial 1.kinetrace"
-    keep = [recent.entry(native, "n1"), recent.entry(os.path.join(OUT, "Lézard ñ", "t2.kinetrace"), "u1")]
+    keep = [recent.entry(native, "n1"), recent.entry(os.path.join(OUT, "Données ñ", "t2.kinetrace"), "u1")]
     check(recent.store(st, keep), "stored")
     check(all("\\" not in it["path"] for it in recent.json.loads(st.d[recent.KEY])),
           "paths stored with forward slashes only")
@@ -134,6 +134,11 @@ def unit():
     check(recent.load(st) == [], "Clear List empties it")
     check(len(recent.remove(items, a)) == 1, "Remove from List drops exactly that entry")
 
+    # two projects of the same name: the folder they are in tells them apart
+    same = [recent.entry(os.path.join(OUT, "day1", "trial.kinetrace"), "1"),
+            recent.entry(os.path.join(OUT, "day2", "trial.kinetrace"), "2"), recent.entry(a, "3")]
+    check(recent.labels(same) == ["trial.kinetrace  —  day1", "trial.kinetrace  —  day2", "a.kinetrace"],
+          "two projects of the same name show their folders; a unique one shows its name only")
     # where Locate... opens
     deep = os.path.join(OUT, "moved", "gone", "deeper", "x.kinetrace")
     check(recent.nearest_folder(deep) == recent.Path(os.path.join(OUT, "moved")),
@@ -245,6 +250,11 @@ def gui_menu():
     check(w.project_path is not None and os.path.normcase(str(w.project_path.resolve()))
           == os.path.normcase(os.path.abspath(P1)), "one click opened it", f"{w.project_path}")
     check(listed(w) == [posix(P1)], "opening it again keeps one entry")
+    w.state = TRACKING                      # as during a run (the menu state reads only the state)
+    w._apply_state()
+    check(not w.m_recent.isEnabled(), "Open Recent is greyed while tracking")
+    w.state = READY
+    w._apply_state()
     menu_entries(w)["&Clear List"].trigger()
     check(listed(w) == [] and "No recent projects" in menu_entries(w), "Clear List empties it")
     w._remember_project(w.project_path, w._project_id)      # back on the list for the next parts
@@ -325,6 +335,16 @@ def gui_start_screen():
     names = [b.text() for b in w.canvas.start_buttons]
     check(names == ["first copy.kinetrace", "first.kinetrace  (not found)"], "a moved project says (not found) there too",
           f"{names}")
+    tall = w.canvas._start_panel.height()
+    ASK.update(button="Remove from List", boxes=[])
+    QTest.mouseClick(w.canvas.start_buttons[1], Qt.LeftButton)
+    pump(0.2)
+    panel = w.canvas._start_panel
+    check([b.text() for b in w.canvas.start_buttons] == ["first copy.kinetrace"] and panel.isVisible()
+          and all(b.isVisible() for b in w.canvas.start_buttons)
+          and panel.height() == panel.sizeHint().height() < tall,
+          "Remove from List on the start screen: the list shrinks to what is left",
+          f"{panel.height()} vs {panel.sizeHint().height()} (was {tall})")
     menu_entries(w)["&Clear List"].trigger()
     pump(0.1)
     check(not w.canvas._start_panel.isVisible() and not w.canvas.start_buttons, "an empty list shows nothing")

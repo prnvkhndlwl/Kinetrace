@@ -10790,11 +10790,12 @@ class MainWindow(QMainWindow):
 
     def _refresh_start_recent(self) -> None:
         """The start screen's list (the canvas shows it only while no video is open): the same projects as
-        File → Open Recent, by name, with this computer's own path form in the tooltip."""
+        File → Open Recent, by name, with this computer's own path form in the tooltip. Nothing is looked up
+        on disk while a video is on screen (the list is hidden then; a save must not wait on a share)."""
         items = recent.load(self._settings())
-        found = recent.exists_quick([it["path"] for it in items])
-        shown = [{"path": str(Path(it["path"])), "name": it["name"], "missing": found.get(it["path"]) is False}
-                 for it in items]
+        found = recent.exists_quick([it["path"] for it in items]) if self.session is None else {}
+        shown = [{"path": str(Path(it["path"])), "name": name, "missing": found.get(it["path"]) is False}
+                 for it, name in zip(items, recent.labels(items))]
         for cv in self.grid.canvases:            # a view that has no list gets an empty one
             cv.set_start_recent(shown if cv is self.canvas else [], self._open_recent)
 
@@ -10805,9 +10806,9 @@ class MainWindow(QMainWindow):
         m.clear()
         items = recent.load(self._settings())
         found = recent.exists_quick([it["path"] for it in items])
-        for it in items:
+        for it, name in zip(items, recent.labels(items)):
             gone = found.get(it["path"]) is False
-            a = m.addAction(it["name"].replace("&", "&&") + ("  (not found)" if gone else ""))
+            a = m.addAction(name.replace("&", "&&") + ("  (not found)" if gone else ""))
             a.setToolTip(str(Path(it["path"])) + ("\nNot found there: click to locate it" if gone else ""))
             a.triggered.connect(lambda _=False, it=it: self._open_recent(it))
         if not items:
@@ -10826,7 +10827,8 @@ class MainWindow(QMainWindow):
         if self.state == TRACKING:
             return
         path = Path(it["path"])
-        if not path.exists():
+        # a share that does not answer within a second counts as not there (the box says to connect it)
+        if not recent.exists_quick([str(path)], timeout=1.0)[str(path)]:
             path = self._locate_recent(it)
             if path is None:
                 return

@@ -2577,8 +2577,10 @@ then pick the project's `kinetrace.json` in its new place, and the list remember
 the new place (opening the moved project with File → Open Project does the same).
 If the project is on a drive or network share that is not connected, connect it
 and click the entry again; **Remove from List** drops an entry you no longer
-want. A copy of a project folder gets its own entry. The list is kept in the
-Kinetrace folder's `settings.ini`, so it works the same on Windows, macOS and
+want. A copy of a project folder gets its own entry, and two projects with the
+same name show the folder each one is in. The list is kept in Kinetrace's own
+`settings.ini` (in the Kinetrace folder, or in your user folder when the
+Kinetrace folder cannot be written), so it works the same on Windows, macOS and
 Linux.
 
 **Saving is quick, even for a big project:** a save writes only what changed

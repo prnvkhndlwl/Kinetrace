@@ -648,10 +648,12 @@ class VideoCanvas(QGraphicsView):
     def set_start_recent(self, items: list[dict], on_open) -> None:
         """The recent projects on the start screen: `items` ({"path", "name", "missing"}, newest first),
         `on_open(item)` called on a click."""
+        lay = self._start_panel.layout()
         for b in self.start_buttons:
+            lay.removeWidget(b)               # out of the layout now: adjustSize below must not count it
+            b.hide()
             b.deleteLater()
         self.start_buttons = []
-        lay = self._start_panel.layout()
         fm = self._start_panel.fontMetrics()
         for it in items:
             b = QToolButton(self._start_panel)
@@ -663,6 +665,7 @@ class VideoCanvas(QGraphicsView):
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.clicked.connect(lambda _=False, it=it: on_open(it))
             lay.addWidget(b)
+            b.show()                  # a child added to a panel already on screen stays hidden until shown
             self.start_buttons.append(b)
         self._start_panel.adjustSize()
         self._place_start_panel()
