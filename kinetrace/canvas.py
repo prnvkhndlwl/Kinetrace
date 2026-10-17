@@ -554,6 +554,8 @@ class VideoCanvas(QGraphicsView):
         self._stale.setZValue(30)
         self._stale.setVisible(False)
         self._scene.addItem(self._stale)
+        self._stale_on = False               # the two reasons for the veil (G204): out of date, a stand-in
+        self._preview_on = False
         self._loupe = _Loupe(self.viewport())
         # the loupe shows what is under a STILL cursor too: it redraws when the picture
         # slides under it (scroll) or changes (frame, points, filter, zoom; G85)
@@ -649,15 +651,30 @@ class VideoCanvas(QGraphicsView):
         self.set_prompts([], None)
         self.set_guides([])
         self.set_stale(False)
+        self.set_preview(False)
         self.cancel_gesture()
 
     def set_stale(self, on: bool) -> None:
         """Veil a companion view whose picture is not at the playhead's instant
         (Active view only: it is not decoded until Sync all views is back, G27)."""
-        self._stale.setVisible(bool(on) and self._native_size is not None)
+        self._stale_on = bool(on)
+        self._show_veil()
 
     def is_stale(self) -> bool:
-        return self._stale.isVisible()
+        return self._stale_on and self._stale.isVisible()
+
+    def set_preview(self, on: bool) -> None:
+        """Veil a stand-in picture: the nearest cached frame shown while the frame
+        asked for decodes (G204). The same veil as `set_stale`, but its own flag:
+        `is_stale` (which stops a companion from decoding) never reads it."""
+        self._preview_on = bool(on)
+        self._show_veil()
+
+    def is_preview(self) -> bool:
+        return self._preview_on and self._stale.isVisible()
+
+    def _show_veil(self) -> None:
+        self._stale.setVisible((self._stale_on or self._preview_on) and self._native_size is not None)
 
     # ------------------------------------------------------- animal overlays
 

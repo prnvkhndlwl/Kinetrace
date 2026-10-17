@@ -393,6 +393,28 @@ assert not win.canvas.is_stale(), "a preview veil must not read as an out-of-dat
 pump(lambda: win.cache.get(250) is not None, 20, "frame 250")
 settle(0.2)
 assert not win.canvas._stale.isVisible(), "the veil stays after the real frame arrived"
+# a camera switch while the stand-in is up: no veil carries over, and the camera left gets its real frame
+QTest.mouseClick(win.cameras._rows[1].btn_eye, Qt.LeftButton)
+settle(0.5)
+assert win.grid.visible_indices() == [0, 1]
+for typed in ("40", "45"):                      # two quick jumps: one continuous move, so no lockstep
+    win.spin.setFocus()
+    win.spin.selectAll()
+    QTest.keyClicks(win.spin, typed)
+    QTest.keyClick(win.spin, Qt.Key_Return)
+assert win.current == 45 and win._lock is None and win.cache.get(45) is None
+check(win.canvas.is_preview(), "(G204) the stand-in during a continuous move is veiled")
+cv1 = win.grid.canvas(1)
+QTest.mouseClick(cv1.viewport(), Qt.LeftButton, Qt.NoModifier, cv1.viewport().rect().center())
+settle(0.05)
+assert win.project.active == 1, "a click on the other camera works in it"
+cv0 = win.grid.canvas(0)
+assert not cv0.is_preview(), "the camera left kept its stand-in veil"   # (B may show its OWN stand-in)
+pump(lambda: win._views[0].cache.get(45) is not None, 20, "camera A's frame 45")
+settle(0.3)
+assert cv0._raw_rgb is win._views[0].cache.get(45), "the camera left must show its real frame 45"
+win._set_active_view(0)
+settle(0.3)
 print("preview veil OK (G204)")
 
 win._dev_probe.wait(180_000)

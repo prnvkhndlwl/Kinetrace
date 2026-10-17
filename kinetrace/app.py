@@ -4219,6 +4219,7 @@ class MainWindow(QMainWindow):
         self._set_play_interval(info.fps)
         for cv in self.grid.canvases:
             cv.set_stale(False)              # which one takes edits: `_set_canvas_roles` in `_apply_state`
+            cv.set_preview(False)            # (G204) a stand-in veil belongs to the camera being left
         self.canvas.set_video_size(info.width, info.height)
         self._show_session(int(np.clip(frame, 0, rt.n_frames - 1)), info.path)
 
@@ -4869,10 +4870,12 @@ class MainWindow(QMainWindow):
         if self._lock is not None:
             self._lock_timer.start()
         elif self.cache is not None and self.cache.get(idx) is None:
-            # instant preview from cache while the real frame decodes
+            # instant preview from cache while the real frame decodes, veiled: it is
+            # another frame under this frame's markers (G204)
             near = self.cache.nearest(idx)
             if near is not None:
                 self.canvas.set_frame(near[1])
+                self.canvas.set_preview(True)
         if self.seek is not None and self.state != TRACKING:
             self.seek.request(idx)
         self._refresh_overlay()
@@ -4894,6 +4897,7 @@ class MainWindow(QMainWindow):
                     self._try_lockstep()
                     return
                 self.canvas.set_frame(rgb)
+                self.canvas.set_preview(False)           # the real frame: no stand-in any more (G204)
                 if self._first_frame_token is not None:
                     self._first_frame_arrived()          # the open is over: the loading card goes
                 # the side-by-side window shows the same instant, and the
@@ -5004,6 +5008,7 @@ class MainWindow(QMainWindow):
             if cv is not None and 0 <= v < len(self._views):
                 cv.set_frame(rgb)
         if p.active in lock["frames"]:
+            self.canvas.set_preview(False)        # (G204)
             self._refresh_body_view()
             if self._first_frame_token is not None:
                 self._first_frame_arrived()
