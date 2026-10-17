@@ -536,6 +536,20 @@ def _draw_labels(img: np.ndarray, labels: list, px: float) -> np.ndarray:
     return buf
 
 
+_GRID_CACHE: list = [None, None, None]        # (the points array, the extra points, its box)
+
+
+def _grid_box_cached(points, extra=()) -> tuple | None:
+    """`grid_box` once per 3D result: the window is drawn again on every frame change with the SAME
+    `points_all` (a new result is a new array), and the box over 40k x 20 points took ~35 ms."""
+    key = tuple(tuple(np.asarray(e, float).ravel()) for e in extra)
+    if _GRID_CACHE[0] is points and _GRID_CACHE[1] == key:
+        return _GRID_CACHE[2]
+    box = grid_box(points, extra)
+    _GRID_CACHE[:] = [points, key, box]
+    return box
+
+
 def grid_box(points, extra=()) -> tuple | None:
     """(G202) (lo (3,), hi (3,), step): a box on round ticks around every finite point of `points` (T, N, 3)
     and of `extra` (e.g. the world's origin), ONE step for the three axes (1, 2 or 5 x 10^k, 4 to 10
@@ -638,14 +652,19 @@ def _draw_grid(img, box, to_screen, R, pal: dict, unit: str, labels: list, px: f
         labels.append((mid[0], mid[1] + 4 * px, name, pal["text"], LABEL_PX, "c"))
 
 
+TRAIL_LEVELS = 8               # a fading trail is drawn in this many shades (one cv2 call each)
+TRAIL_MAX_POINTS = 4000        # the whole path: at most this many points per landmark
+
+
 def _draw_trails(img, scene: Scene3D, to_screen, pal: dict, trail, px: float) -> tuple | None:
     """(G203) Each landmark's path in its own colour: `trail` = "all" (the whole result, one soft line) or a
     number of rows either side of the instant (fading with the distance in time, blended toward the
-    background). -> the rows drawn (lo, hi), None when nothing."""
+    background, in TRAIL_LEVELS shades). Segments are drawn in batches: one call per landmark and shade,
+    not one per frame. -> the rows drawn (lo, hi), None when nothing."""
     P, k = scene.points_all, scene.t_index
     if P is None or not len(P) or trail in (None, 0):
         return None
-    T = P.shape[0]
+    T, N = P.shape[0], P.shape[1]
     if trail == "all":
         lo, hi = 0, T - 1
     else:
@@ -653,28 +672,41 @@ def _draw_trails(img, scene: Scene3D, to_screen, pal: dict, trail, px: float) ->
             return None
         lo, hi = max(0, k - int(trail)), min(T - 1, k + int(trail))
     seg = P[lo:hi + 1]
-    for j in range(seg.shape[1]):
+    if len(seg) < 2:
+        return lo, hi
+    have = np.isfinite(seg).all(axis=2)                                      # (L, N)
+    if trail == "all" and len(seg) > TRAIL_MAX_POINTS:
+        # the whole path of a long result: every step-th row (40k rows are far more than the picture's
+        # pixels); a segment only where EVERY row it spans has data, so a gap is never bridged
+        step = -(-len(seg) // TRAIL_MAX_POINTS)
+        rows = np.r_[np.arange(0, len(seg), step), len(seg) - 1]
+        rows = np.unique(rows)
+        missing = np.concatenate([np.zeros((1, N), int), np.cumsum(~have, axis=0)])
+        span_ok = (missing[rows[1:] + 1] - missing[rows[:-1]]) == 0          # (M - 1, N)
+        seg, have = seg[rows], have[rows]
+    else:
+        span_ok = have[:-1] & have[1:]
+    scr = to_screen(seg.reshape(-1, 3))[0].reshape(len(seg), N, 2)
+    ok = have & np.isfinite(scr).all(axis=2)                                 # (L, N)
+    pairs = ok[:-1] & ok[1:] & span_ok                                       # segment i -> i + 1
+    ip = _to_int_px(np.where(np.isfinite(scr), scr, 0.0))
+    if trail == "all":
+        level = np.zeros(len(seg) - 1, int)
+        shades = [0.55]
+    else:
+        dt = np.abs(lo + np.arange(len(seg) - 1) + 0.5 - k) / max(float(trail), 1.0)
+        alpha = np.maximum(TRAIL_MIN_ALPHA, 1.0 - dt)
+        level = np.minimum((alpha * TRAIL_LEVELS).astype(int), TRAIL_LEVELS - 1)
+        shades = [(q + 0.5) / TRAIL_LEVELS for q in range(TRAIL_LEVELS)]
+    thick = _px(1, px) if trail == "all" else _px(1.5, px)
+    for j in range(N):
         col = LANDMARK_COLOURS[j % len(LANDMARK_COLOURS)]
-        scr = to_screen(seg[:, j])[0]
-        ok = np.isfinite(seg[:, j]).all(axis=1) & np.isfinite(scr).all(axis=1)
-        if trail == "all":
-            c = _mix(pal["bg"], col, 0.55)
-            run = []
-            for i in range(len(scr) + 1):              # one polyline per stretch with data
-                if i < len(scr) and ok[i]:
-                    run.append(i)
-                    continue
-                if len(run) >= 2:
-                    cv2.polylines(img, [_to_int_px(scr[run])], False, c, _px(1, px), cv2.LINE_AA)
-                run = []
-            continue
-        for i in range(len(scr) - 1):
-            if ok[i] and ok[i + 1]:
-                dt = abs((lo + i + 0.5) - k) / max(float(trail), 1.0)
-                a = max(TRAIL_MIN_ALPHA, 1.0 - dt)
-                p0, p1 = _to_int_px(scr[i:i + 2])
-                cv2.line(img, tuple(int(v) for v in p0), tuple(int(v) for v in p1), _mix(pal["bg"], col, a),
-                         _px(1.5, px), cv2.LINE_AA)
+        for q, a in enumerate(shades):                                       # faint ones first
+            idx = np.nonzero(pairs[:, j] & (level == q))[0]
+            if not len(idx):
+                continue
+            lines = np.stack([ip[idx, j], ip[idx + 1, j]], axis=1)          # (M, 2, 2)
+            cv2.polylines(img, list(lines), False, _mix(pal["bg"], col, a), thick, cv2.LINE_AA)
     return lo, hi
 
 
@@ -855,7 +887,7 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
     pyr = show_calib if show_pyramids is None else show_pyramids
     calib_on = (show_calib or pyr or show_fov or show_cover) and scene.calib is not None
     world_on = bool(show_world and scene.world)
-    box = (grid_box(scene.points_all, [np.zeros(3)] if world_on else ())
+    box = (_grid_box_cached(scene.points_all, [np.zeros(3)] if world_on else ())
            if (show_grid and scene.points_all is not None) else None)
     to_screen, R, scale = screen_transform(scene, size, azimuth, elevation, zoom,
                                            (pan[0] * px, pan[1] * px), up, show_cameras, calib_on,
