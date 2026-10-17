@@ -358,10 +358,148 @@ _full = _calib.reconstruct(bses, bcal, brates, boffs, btr)
 check(all(np.array_equal(getattr(brec3, k), getattr(_full, k), equal_nan=True)
           for k in ("xyz", "residual", "n_cams", "per_cam")), "... and equals the full reconstruct bit for bit")
 
+# ---- [G] (review) a save right after a click writes the UPDATED 3D result ---------------------------
+print("[G] Ctrl+S right after a click saves the 3D result of the data saved")
+import kinetrace.app as app_mod  # noqa: E402
+from kinetrace.project import Project as _Project  # noqa: E402
+win._set_active_view(0)
+pump(0.3)
+pid = select_point("pelvis")
+win._goto(15, force=True)
+pump(0.2)
+uv = cams[0].project(world_at(15.0))[1] + 0.75
+QTest.mouseClick(win.canvas.viewport(), Qt.LeftButton, Qt.NoModifier, win.canvas.mapFromScene(QPointF(*uv)))
+app.processEvents()                                  # no sync tick yet (300 ms)
+QTest.keyClick(win, Qt.Key_S, Qt.ControlModifier)
+pump(0.5)
+_saved = _Project.load(PROJ).reconstruction
+_f = full()
+check(_saved is not None and all(np.array_equal(getattr(_saved, k), getattr(_f, k), equal_nan=True)
+                                 for k in ("xyz", "residual", "n_cams", "per_cam")),
+      "the saved 3D result is the one of the saved clicks (the update ran before the write)")
+
+# ---- [H] (review) Close, then Cancel: the 3D result still follows the clicks -------------------------
+print("[H] closing and answering Cancel keeps the automatic updates")
+win._goto(16, force=True)
+pump(0.2)
+click(win.canvas, uv[0] + 1.0, uv[1])
+_ask = win._ask_save_before_close
+win._ask_save_before_close = lambda *a, **k: QMessageBox.Cancel
+win.close()
+pump(0.2)
+win._ask_save_before_close = _ask
+check(win.isVisible() and win._sync3d_timer.isActive(), "the window stays and its 3D updates keep running")
+win._goto(17, force=True)
+pump(0.2)
+click(win.canvas, uv[0] + 2.0, uv[1])
+same("after Cancel a click still updates the result")
+
+# ---- [F] (review) without a calibration nothing is fingerprinted while nothing changes -----------------
+print("[F] idle without a calibration: no work on the window's thread")
+_cal_keep = p.calibration
+p.calibration = None
+pump(0.8)                                            # the change is seen once
+_calls = [0]
+_bd = app_mod.block_digests
+
+
+def _counting_bd(sess):
+    _calls[0] += 1
+    return _bd(sess)
+
+
+app_mod.block_digests = _counting_bd
+pump(1.5)
+app_mod.block_digests = _bd
+check(_calls[0] == 0, "five quiet ticks without a calibration fingerprint nothing", f"{_calls[0]} digests")
+p.calibration = _cal_keep
+pump(1.0)
+same("the calibration back: the result is rebuilt and right")
+
+# ---- [E] (review) the window's real path on a long project: a click, the 3D window's picture ---------------
+print("[E] 3 cameras x 40,000 frames x 10 landmarks opened in the app: one click, end to end")
+from kinetrace import view3d as _v3  # noqa: E402
+ET, EN = 40_000, 10
+epaths = []
+esess = []
+erng = np.random.RandomState(4)
+for c, cal in enumerate(cams):
+    ep = os.path.join(SCRATCH, f"auto3d_long_{c}.mp4")
+    if not os.path.exists(ep):
+        vw = cv2.VideoWriter(ep, cv2.VideoWriter_fourcc(*"mp4v"), 60.0, (W, H))
+        frame = np.full((H, W, 3), 40, np.uint8)
+        for f in range(ET):
+            vw.write(frame)
+        vw.release()
+    es = TrackingSession(ep, ET, 60.0, W, H)
+    for j in range(EN):
+        es.add_landmark(f"m{j}")
+    tf = np.arange(ET, dtype=np.float64)
+    for j in range(EN):
+        X = np.stack([0.2 * np.cos(tf * 0.003 + j), 0.2 * np.sin(tf * 0.003 + j), 0.0001 * tf], 1)
+        uvs = cal.project(X) + erng.normal(0, 0.2, (ET, 2))
+        es.tracks[:, j] = uvs.astype(np.float32)
+    es.tracked[:] = True
+    esess.append(es)
+    epaths.append(ep)
+eproj = Project(esess, ["L1", "L2", "L3"], [0.0, 0.4, -0.3])
+eproj.calibration = Calibration(cams, unit="m", source="synthetic")
+EPROJ = os.path.join(SCRATCH, "auto3d_long.kinetrace")
+eproj.save(EPROJ)
+for ep in epaths:
+    forget_recovery(ep)
+win.project.dirty = False
+win._open_project_from_path(EPROJ)
+check(wait(lambda: win.state == READY and win.project is not None and win.project.n_views == 3
+           and win.project.sessions[0].n_frames == ET and not win._loading, 120), "(setup) the long project opens")
+win.act_recon.trigger()
+pump(1.0)
+check(win.project.reconstruction is not None and win.project.reconstruction.n_frames > 30_000,
+      "(setup) its 3D result", None if win.project.reconstruction is None else win.project.reconstruction.n_frames)
+times = []
+_orig_sync = win._sync_3d
+
+
+def _timed_sync(*a, **k):
+    t_ = time.perf_counter()
+    _orig_sync(*a, **k)
+    times.append(time.perf_counter() - t_)
+
+
+win._sync_3d = _timed_sync
+win._sync3d_timer.timeout.disconnect()
+win._sync3d_timer.timeout.connect(win._sync_3d)
+win._set_active_view(1)
+pump(0.3)
+win.layers.setCurrentItem(win.layers.point_item(win.session.pid_by_name("m3")))
+win._goto(20_000, force=True)
+pump(0.5)
+times.clear()
+click(win.canvas, 100.0, 90.0)
+pump(1.0)
+worst = max(times) if times else float("nan")
+check(times and worst < 0.05, f"one click: the update on the window's thread takes {worst * 1000:.0f} ms (< 50 ms)")
+same("... and the long result equals the full reconstruct")
+# the 3D window's picture: drawn on every frame change
+sc = _v3.Scene3D()
+sc.points_all = win.project.reconstruction.xyz
+sc.names = list(win.project.reconstruction.names)
+sc.t_index = 20_000 - win.project.reconstruction.t0
+sc.points = sc.points_all[sc.t_index]
+for label, kw, limit in (("Grid + trail +-1 s", dict(show_grid=True, trail=60), 0.025),
+                         ("Whole path", dict(show_grid=True, trail="all"), 0.12)):
+    _v3.render_scene(sc, (900, 700), 35, 25, **kw)
+    t_ = time.perf_counter()
+    for _ in range(3):
+        _v3.render_scene(sc, (900, 700), 35, 25, **kw)
+    dt_ = (time.perf_counter() - t_) / 3
+    check(dt_ < limit, f"the 3D window with {label} on 40,000 frames draws in {dt_ * 1000:.0f} ms "
+                       f"(< {limit * 1000:.0f} ms)")
+
 win._dev_probe.wait(15000)
 win.project.dirty = False
 win.close()
-for pth in paths:
+for pth in paths + epaths:
     forget_recovery(pth)
 if FAILS:
     print(f"FAILED: {len(FAILS)} check(s)")

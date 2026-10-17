@@ -579,7 +579,7 @@ def _world_exec(self):
 
 app_mod._WorldAxesDialog.exec = _world_exec
 try:
-    win._set_world_axes()
+    win.act_set_axes.trigger()                     # 3D > Set World Axes... (the dialog answers above)
     pump(1.5)                                      # the automatic update and the window's redraw
 finally:
     app_mod._WorldAxesDialog.exec = _orig_exec

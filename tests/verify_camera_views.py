@@ -436,9 +436,11 @@ _f3 = None
 if _r3 is not None:
     from kinetrace.calib import reconstruct as _reconstruct  # noqa: E402
     _f3 = _reconstruct(p.sessions, p.calibration, p.rates, p.offsets, win._t_range_3d())
-check(_r3 is None or (_r3.names == _f3.names and np.array_equal(_r3.xyz, _f3.xyz, equal_nan=True)
-                      and _r3.per_cam.shape[2] == 4),
-      "the 3D result made in the old order is gone: none, or rebuilt in the new order (I305)")
+_t3 = win._t_range_3d()
+check((_r3 is None) == (_t3[1] < _t3[0]) and (_r3 is None or (
+          _r3.names == _f3.names and np.array_equal(_r3.xyz, _f3.xyz, equal_nan=True) and _r3.per_cam.shape[2] == 4)),
+      "the 3D result made in the old order is gone: rebuilt in the new order wherever two cameras tracked (I305)",
+      (None if _r3 is None else _r3.n_frames, _t3))
 check(all(os.path.basename(win._views[k].info.path) == os.path.basename(p.sessions[k].video_path) for k in range(4))
       and all(grid.canvas(k)._native_size == (W, H) for k in range(4)),
       "each view shows its own camera at its new number")

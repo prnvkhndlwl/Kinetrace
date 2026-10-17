@@ -898,6 +898,7 @@ class MainWindow(QMainWindow):
         # (I305) the 3D result follows the 2D data: a tick compares data versions, see `_sync_3d`
         self._sync3d = None
         self._sync3d_busy = False
+        self._sync3d_rebuild_open = False        # the project being opened is a recovery copy
         self._sync3d_timer = QTimer(self, interval=SYNC3D_MS, timerType=Qt.CoarseTimer)
         self._sync3d_timer.timeout.connect(self._sync_3d)
         self._sync3d_timer.start()
@@ -10233,7 +10234,9 @@ class MainWindow(QMainWindow):
             self._save_worker.wait()
 
     def _freeze_now(self, pid: str, target, **kw):
-        """(R49) The project as it is now, for a writer: the working state recorded first."""
+        """(R49) The project as it is now, for a writer: the working state recorded first, and (I305) the 3D
+        result brought up to date with the data being written."""
+        self._sync_3d(force=True)
         self._sync_ui_state()
         return projectfile.freeze(self.project, self._ui_global_state(), pid, target=target, **kw)
 
@@ -10876,6 +10879,7 @@ class MainWindow(QMainWindow):
         path = str(projectfile.project_root(path))   # kinetrace.json -> its folder, the project
         if self.state == TRACKING:
             return
+        self._sync3d_rebuild_open = recovered is not None      # (I305) see _sync_3d
         pname = Path(path).name
         # the card shows at once: reading the file happens right here
         ptok = self._busy_push(f"Opening {pname}", "Reading the project file…", 0,
@@ -11170,6 +11174,7 @@ class MainWindow(QMainWindow):
         self.act_solo.setEnabled(proj.n_views > 1)
         self.m_others.setEnabled(proj.n_views > 1)      # View → Other cameras (G24)
         QTimer.singleShot(0, self._update_disagreement)   # a saved reconstruction paints its disagreement
+        self._sync3d_open()                  # (I305) the 2D data its saved 3D result stands for, as opened
 
     # -------------------------------------------------------------------- 3D
 
@@ -12018,18 +12023,28 @@ class MainWindow(QMainWindow):
 
     def _sync3d_key(self) -> tuple:
         """(I305) What a 3D result depends on besides the 2D data: the calibration (an object replaced on every
-        import, calibration and Set World Axes), the timing, the cameras."""
+        import, calibration and Set World Axes), the timing, the cameras (the objects, compared by identity)."""
         p = self.project
-        return (id(p.calibration), tuple(float(o) for o in p.offsets), tuple(float(r) for r in p.rates),
-                tuple(id(s) for s in p.sessions))
+        return (p.calibration, tuple(float(o) for o in p.offsets), tuple(float(r) for r in p.rates),
+                tuple(p.sessions))
 
-    def _sync3d_seed(self) -> None:
-        """(I305) Remember the 2D data the project's 3D result stands for now: after an open, Ctrl+3 and every
-        update. Nothing is computed."""
+    def _sync3d_seed(self, digests: bool = True) -> None:
+        """(I305) Remember the 2D data the project's 3D result stands for now (after an open, Ctrl+3, a
+        rebuild). `digests` False: the versions only - nothing is updated from them (no calibration, an
+        imported result), so the cameras are not fingerprinted on every tick; the next update rebuilds."""
         p = self.project
         self._sync3d = None if p is None else {
-            "proj": p, "key": self._sync3d_key(), "pend": None,
-            "ver": [s.data_version for s in p.sessions], "dig": [block_digests(s) for s in p.sessions]}
+            "proj": weakref.ref(p), "key": self._sync3d_key(), "pend": None,
+            "ver": [s.data_version for s in p.sessions],
+            "dig": [block_digests(s) for s in p.sessions] if digests else None}
+
+    def _sync3d_open(self) -> None:
+        """(I305) A project just opened: its saved 3D result stands as it is (digests of the data as opened),
+        unless it is a recovery copy, which may have been written in the middle of a run: made again once."""
+        self._sync3d_seed(self._sync3d_ready())
+        if self._sync3d is not None and self._sync3d_rebuild_open:
+            self._sync3d["stale"] = True
+        self._sync3d_rebuild_open = False
 
     def _sync3d_ready(self) -> bool:
         """With a calibration of two or more cameras, and a result made from the tracks (or none): an
@@ -12039,43 +12054,46 @@ class MainWindow(QMainWindow):
         return (cal is not None and cal.n_usable(p.n_views) >= 2
                 and (p.reconstruction is None or p.reconstruction.source == "tracks"))
 
-    def _sync_3d(self) -> None:
+    def _sync_3d(self, force: bool = False) -> None:
         """(I305, owner 2026-10-16: "if there is a calibration available then for each tracked point in +2
         cameras the reconstruct should automatically happen") Bring the project's 3D result up to date with
         the 2D data - a click, a move, Delete, a rename, Ctrl+Z, the end of a run, an import: every way the
         data changes, seen by its effect (each camera's `data_version`, then which landmark's 256-frame
         blocks changed) rather than by hooking each edit. Only the changed cells are recomputed
         (`calib.update_reconstruction`, the same bits as Ctrl+3); a change of calibration, timing or cameras
-        rebuilds the whole result once it has been still for a tick. Never while tracking, opening, busy or
-        a dialog is up; the project's own "changed" state is left to the edit that caused it."""
+        rebuilds the whole result once it has been still for a tick. Never while a Track press is not over
+        (between its passes / cameras / stretches too), opening, busy or a dialog is up. `force` (every
+        writer, `_freeze_now`): now, whatever is up, no waiting tick, and on this thread - what is saved
+        is always the result of the data saved. The project's own "changed" state is left to the edit."""
         p = self.project
-        if (p is None or self._sync3d_busy or self.state != READY or self._loading or self._busy_stack
-                or QApplication.activeModalWidget() is not None):
+        if p is None or self._sync3d_busy or self._run_in_progress() or self._loading:
+            return
+        if not force and (self._busy_stack or QApplication.activeModalWidget() is not None):
             return
         st = self._sync3d
-        if st is None or st["proj"] is not p:
-            self._sync3d_seed()                  # a project just opened: its saved result stands as it is
+        if st is None or st["proj"]() is not p:
+            self._sync3d_open()                  # (normally done when the project is adopted)
             return
         key = self._sync3d_key()
         vers = [s.data_version for s in p.sessions]
-        if key == st["key"] and vers == st["ver"] and p.reconstruction is not None:
-            return
+        if key == st["key"] and vers == st["ver"] and not st.get("stale"):
+            return                               # nothing moved since the last look
         if not self._sync3d_ready():
-            self._sync3d_seed()
+            if key != st["key"] or vers != st["ver"] or st["dig"] is not None:
+                self._sync3d_seed(digests=False)
             return
-        if key != st["key"] or p.reconstruction is None:
-            if key != st["key"] and st["pend"] != key:
+        if key != st["key"] or p.reconstruction is None or st["dig"] is None or st.get("stale"):
+            if key != st["key"] and st["pend"] != key and not force:
                 st["pend"] = key                 # wait one quiet tick: a spin box moves an offset step by step
                 return
-            if key == st["key"] and vers == st["ver"]:
-                return                           # no result, nothing changed since: not again and again
-            self._sync3d_run(None, {})
+            self._sync3d_run(None, force=force)
             return
-        changed, n_cells = {}, 0
+        changed, n_cells, digs = {}, 0, {}
         for v, s in enumerate(p.sessions):
             if vers[v] == st["ver"][v]:
                 continue
             new, old = block_digests(s), st["dig"][v]
+            digs[v] = new
             last = s.n_frames - 1
             for nm in set(new) | set(old):
                 a, b = old.get(nm), new.get(nm)
@@ -12096,15 +12114,22 @@ class MainWindow(QMainWindow):
         t_range = self._t_range_3d()
         if (not changed and t_range == (rec.t0, rec.t0 + rec.n_frames - 1)
                 and landmark_names(p.sessions) == list(rec.names)):
-            self._sync3d_seed()                  # the data moved somewhere 3D does not read (a mask, a name's colour)
+            st["ver"] = vers                     # the data moved somewhere 3D does not read (a mask, a colour)
+            for v, dg in digs.items():
+                st["dig"][v] = dg
             return
-        self._sync3d_run(changed, {}, n_cells)
+        self._sync3d_run(changed, n_cells, digs=digs, force=force)
 
-    def _sync3d_run(self, changed: dict | None, _unused: dict, n_cells: int | None = None) -> None:
+    def _sync3d_run(self, changed: dict | None, n_cells: int = 0, digs: dict | None = None,
+                    force: bool = False) -> None:
         """(I305) Compute the update (`changed` = {name: reference spans}; None = the whole result) and adopt
-        it: small ones here, big ones (a run's frames, a rebuild) behind the loading card."""
+        it: small ones here, big ones (a run's frames, a rebuild) behind the loading card - except when
+        `force`d by a writer, which waits for it here. `digs` = the changed cameras' new digests (the others
+        are not fingerprinted again)."""
         from kinetrace.calib import reconstruct, update_reconstruction
         p = self.project
+        st = self._sync3d
+        vers = [s.data_version for s in p.sessions]
         t0, t1 = self._t_range_3d()
         rec = p.reconstruction
         if t1 < t0:
@@ -12117,14 +12142,19 @@ class MainWindow(QMainWindow):
             else:
                 job = lambda: update_reconstruction(rec, sess, cal, rates, offs, (t0, t1), changed)   # noqa: E731
                 grow = 0 if rec is None else max(rec.t0 - t0, 0) + max(t1 - (rec.t0 + rec.n_frames - 1), 0)
-                big = (n_cells or 0) + grow * len(landmark_names(sess)) > SYNC3D_BG_CELLS
+                big = n_cells + grow * len(landmark_names(sess)) > SYNC3D_BG_CELLS
             self._sync3d_busy = True
             try:
                 new = (self._in_background("Updating the 3D landmarks", job,
                                            detail="Triangulating the landmarks that changed in two or more cameras…")
-                       if big else job())
-            except Exception as e:      # noqa: BLE001 - said, never a crash; the next change tries again
-                self._sync3d_seed()
+                       if big and not force else job())
+            except Exception as e:      # noqa: BLE001 - said, never a crash
+                # the versions move on but the digests do not: the next change of the data diffs against
+                # the old digests, so the cells that failed are tried again with it
+                if changed is not None and st is not None:
+                    st["ver"] = vers
+                else:
+                    self._sync3d_seed(digests=False)
                 self.statusBar().showMessage(_plain_error(e, "The 3D landmarks could not be updated"), 8000)
                 return
             finally:
@@ -12132,7 +12162,12 @@ class MainWindow(QMainWindow):
         if self.project is not p:
             return                               # the project was closed meanwhile
         p.reconstruction = new
-        self._sync3d_seed()
+        if changed is None or st is None or st["dig"] is None:
+            self._sync3d_seed()
+        else:                                    # only the cameras that changed are fingerprinted again
+            st["ver"] = vers
+            for v, d in (digs or {}).items():
+                st["dig"][v] = d
         self._update_disagreement()
         self._refresh_view3d()
         self._refresh_guides()
@@ -13162,7 +13197,6 @@ class MainWindow(QMainWindow):
             _retire(self._preview)
 
     def closeEvent(self, ev):
-        self._sync3d_timer.stop()            # (I305) no 3D update while the window closes
         self._drop_tour()                    # (G183) a tour left open: gone quietly, input back to the window
         if self.view3d is not None:
             self.view3d.stop_threads()           # (G186) the covered-space worker ends before the window
@@ -13205,6 +13239,7 @@ class MainWindow(QMainWindow):
             recovery.discard(self._project_id)
         else:
             self._leave_project()
+        self._sync3d_timer.stop()            # (I305) closing for good (Cancel above keeps it running)
         self._finish_writer()
         if self._exports_worker is not None and self._exports_worker.isRunning():
             self._exports_worker.cancel()            # stops between files (G42)
