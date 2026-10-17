@@ -4,7 +4,11 @@
   the first one (the batch decode caches the run-up).
 - SeekService must prefetch ahead after serving a request, so forward steps
   are cache hits; latest-wins collapsing must survive request spam.
-- Shift+C must drop the cache, rebuild the decoder, and re-decode identically."""
+- Shift+C must drop the cache, rebuild the decoder, and re-decode identically.
+- (I306) Two 4K cameras in Sync all, 15 F and 15 B presses: the other camera's
+  steps come from its window (no re-decode), its cached frames equal the file
+  read forward, one frame budget is split between the decoding cameras.
+- (G204) A typed jump to an uncached frame veils the nearest-frame preview."""
 import os
 import sys
 import time
@@ -205,5 +209,154 @@ win._dev_probe.wait(180_000)
 win.close()
 gui.processEvents()
 forget_recovery(VID)
+
+# ---- (I306, G204) the scrub window: two 4K cameras stepped with real F / B presses ----
+import shutil                                   # noqa: E402
+import cv2                                      # noqa: E402
+from PySide6.QtTest import QTest                # noqa: E402
+from PySide6.QtWidgets import QDialogButtonBox, QFileDialog   # noqa: E402
+from kinetrace import cameraorder               # noqa: E402
+from kinetrace.app import STEP_GAP_S            # noqa: E402
+from kinetrace.video_source import DEFAULT_CACHE_BYTES, FrameReader   # noqa: E402
+
+QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
+QMessageBox.critical = staticmethod(lambda *a, **k: QMessageBox.Ok)
+cameraorder.CameraOrderDialog.exec = lambda self: (self.buttons.button(QDialogButtonBox.Ok).click(), self.result())[1]
+OUT = os.path.join(ROOT, "tests", "out")
+os.makedirs(OUT, exist_ok=True)
+CAM_A, CAM_B = (os.path.join(OUT, f"scrub_window_{c}.mp4") for c in ("a", "b"))
+for _p in (CAM_A, CAM_B):                       # 3840x2160, 300 frames, a keyframe every 12
+    shutil.copyfile(os.path.join(ROOT, "test4k.mp4"), _p)
+forget_recovery(CAM_A, CAM_B)
+QFileDialog.getOpenFileNames = staticmethod(lambda *a, **k: ([CAM_B], ""))
+
+
+FAILS = []
+
+
+def check(ok, msg):
+    """Collect a failure and go on, so one run shows every section that fails."""
+    if not ok:
+        FAILS.append(msg)
+        print("FAIL: " + msg)
+
+
+def pump(cond, timeout, what):
+    t0 = time.time()
+    while not cond():
+        gui.processEvents()
+        time.sleep(0.005)
+        if time.time() - t0 > timeout:
+            raise TimeoutError(what)
+
+
+def settle(seconds):
+    t0 = time.time()
+    while time.time() - t0 < seconds:
+        gui.processEvents()
+        time.sleep(0.005)
+
+
+win = MainWindow()
+win.resize(1400, 900)
+win.show()
+win._open_video(CAM_A)
+pump(lambda: win.state == READY, 30, "open camera A")
+win._add_video_dialog()
+settle(0.5)
+assert win.project.n_views == 2, "the second camera was not added"
+assert win._sync_mode == "all" and win.grid.visible_indices() == [0, 1], "Sync all, both cameras shown"
+win._goto(100)
+pump(lambda: win._views[1].cache.get(100) is not None and win._lock is None, 30, "both cameras at 100")
+settle(1.5)
+
+misses = {0: [], 1: []}
+_orig_slow = win._on_seek_slow
+
+
+def _count_slow(view, idx):
+    misses.setdefault(view, []).append(idx)
+    _orig_slow(view, idx)
+
+
+win._on_seek_slow = _count_slow                 # the services' lambdas look this up at call time
+
+
+def step(key, n):
+    for _ in range(n):
+        start = win.current
+        QTest.keyClick(win, key)
+        pump(lambda: win.current != start and win._lock is None, 10, "a step")
+        settle(max(1.2, 3 * STEP_GAP_S))        # a lone step; the idle fill runs
+
+
+step(Qt.Key_F, 15)
+fwd = list(misses[1])
+assert win.current == 115, win.current
+step(Qt.Key_B, 15)
+back = misses[1][len(fwd):]
+assert win.current == 100, win.current
+print(f"scrub window: companion misses forward {len(fwd)}/15, backward {len(back)}/15; "
+      f"working camera {len(misses[0])}/30")
+check(len(fwd) <= 1, f"(I306) the other camera re-decoded on forward steps: {fwd}")
+check(len(back) <= 2, f"(I306) the other camera re-decoded on backward steps: {back}")
+
+# every picture the window served is the frame read forward from the start of the file
+rd = FrameReader(CAM_B, 95)
+for f in range(95, 120):
+    bgr = rd.read(f)
+    got = win._views[1].cache.get(f)
+    if got is not None:
+        assert np.array_equal(got, cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)), f"cached frame {f} differs from the file"
+rd.release()
+print("scrub window frames exact OK (cache == read forward)")
+
+# (w2) the budget: the other camera holds a window in Sync all, the floor when it does not decode
+fb = 3840 * 2160 * 3
+floor = max(96 * 1024 ** 2, 3 * fb)       # a camera that does not decode keeps what it had before
+comp = win._views[1].cache.max_bytes
+check(comp >= min(42 * fb, DEFAULT_CACHE_BYTES // 2),
+      f"(I306) the other camera's cache holds {comp // fb} 4K frames in Sync all")
+check(sum(rt.cache.max_bytes for rt in win._views) <= DEFAULT_CACHE_BYTES + floor,
+      "(I306) the cameras' caches together are over the frame budget")
+win.act_sync_active.trigger()
+settle(0.3)
+assert win._views[1].cache.max_bytes <= floor, "Active view only: the other camera keeps only the floor"
+assert win._views[0].cache.max_bytes > floor
+win.act_sync_all.trigger()
+settle(0.3)
+try:
+    from kinetrace.video_source import scrub_budget   # noqa: E402
+except ImportError:
+    scrub_budget = None
+check(scrub_budget is not None, "(I306) no scrub_budget: the frame budget is not split between the cameras")
+for n in ((1, 2, 4, 10) if scrub_budget is not None else ()):
+    split = scrub_budget(DEFAULT_CACHE_BYTES, {v: fb for v in range(n)}, set(range(n)), 0)
+    total = sum(b for b, _w in split.values())
+    assert total <= DEFAULT_CACHE_BYTES + n * floor, f"{n} cameras: {total} over the budget"
+    assert all(w >= 1 for _b, w in split.values()), f"{n} cameras: a decoding camera has no window"
+print("scrub budget OK: one budget split between the decoding cameras")
+
+# (w3, G204) the nearest-frame preview is veiled: one camera shown, a typed jump far away
+QTest.mouseClick(win.cameras._rows[1].btn_eye, Qt.LeftButton)
+settle(0.3)
+assert win.grid.visible_indices() == [0]
+win.spin.setFocus()
+win.spin.selectAll()
+QTest.keyClicks(win.spin, "250")
+QTest.keyClick(win.spin, Qt.Key_Return)
+assert win.current == 250 and win.cache.get(250) is None
+check(win.canvas._stale.isVisible(), "(G204) the nearest frame is shown under frame 250's markers, unveiled")
+assert not win.canvas.is_stale(), "a preview veil must not read as an out-of-date camera"
+pump(lambda: win.cache.get(250) is not None, 20, "frame 250")
+settle(0.2)
+assert not win.canvas._stale.isVisible(), "the veil stays after the real frame arrived"
+print("preview veil OK (G204)")
+
+win._dev_probe.wait(180_000)
+win.close()
+gui.processEvents()
+forget_recovery(CAM_A, CAM_B)
+assert not FAILS, f"{len(FAILS)} scrub-window check(s) failed"
 
 print("SCRUB PASSED")
