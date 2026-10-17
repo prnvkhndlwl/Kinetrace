@@ -8198,6 +8198,7 @@ class MainWindow(QMainWindow):
         """3D → Re-track Disagreeing Stretches: explain, list, ask, run."""
         from kinetrace import retrack
         p = self.project
+        self._sync_3d(force=True)            # (I305) the stretches of the 3D result as it is now
         if p is None or p.reconstruction is None or p.reconstruction.per_cam is None or self.state != READY:
             return
         if self._retrack is not None:
@@ -11874,6 +11875,7 @@ class MainWindow(QMainWindow):
         p = self.project
         if self.state == TRACKING:
             return
+        self._sync_3d(force=True)            # (I305) right after a retime the rebuild may be a tick away
         if not self._need_calibration("Set World Axes"):
             return
         r = p.reconstruction
@@ -11929,6 +11931,7 @@ class MainWindow(QMainWindow):
     def _carve_hull_here(self, quiet: bool = False):
         from kinetrace.hull import bounds_from_points, carve, hull_mesh, mesh_volume
         p = self.project
+        self._sync_3d(force=True)            # (I305) the 3D result as it is now, not a tick ago
         if not self._need_calibration("Carve Volume"):
             return
         # (G151k) the segment the user names (one highlighted row, or asked), matched by name in every camera
@@ -12890,6 +12893,7 @@ class MainWindow(QMainWindow):
     def _export_dialog(self):
         if self.session is None:
             return
+        self._sync_3d(force=True)            # (I305) the 3D exports write the result as it is now
         start = self._default_output("_tracks.csv")          # + the camera's name in a multi-camera project
         filters = ";;".join(f[0] for f in self.EXPORT_FORMATS)
         path, chosen = QFileDialog.getSaveFileName(self, "Export tracks", start, filters)
