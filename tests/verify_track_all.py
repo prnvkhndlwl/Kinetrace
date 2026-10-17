@@ -196,6 +196,23 @@ print(f"I141: one T tracked the point in the 2 cameras that have it and the ball
 TOGETHER = {v: {k: getattr(p.sessions[v], k).copy() for k in ("tracks", "confidence", "radius", "visibility",
                                                                "tracked", "manual")} for v in range(3)}
 
+# ---- 1b. (I306) after the run, stepping back is instant in every camera: each kept its tracked stretch ----
+misses = []
+_orig_slow = win._on_seek_slow
+win._on_seek_slow = lambda view, idx: (misses.append((view, idx)), _orig_slow(view, idx))[1]
+end = win.current
+for _ in range(12):
+    before = win.current
+    QTest.keyClick(win, Qt.Key_B)
+    wait(lambda: win.current == before - 1 and win._lock is None, 20, "a step back")
+    pump(0.3)
+del win._on_seek_slow
+assert win.current == end - 12, (end, win.current)
+win._goto(end, force=True)                      # back where the run ended, for the sections below
+pump(0.3)
+assert not misses, f"(I306) after the run a step back re-decoded: {misses}"
+print(f"I306: 12 steps back from frame {end} after the run: every camera from its cache OK")
+
 # ---- 2. one Ctrl+Z, every camera -------------------------------------------------------
 win._undo_run()
 pump(0.2)
