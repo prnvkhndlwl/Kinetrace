@@ -954,7 +954,7 @@ class Reconstruction:
     # disagrees, not just by how much the set disagrees
     per_cam: np.ndarray | None = None
     # (I305) "tracks" = triangulated from the project's 2D data (kept up to date with every change);
-    # "imported" = read from a file (File > Import 3D points): left alone until Ctrl+3
+    # "imported" = read from a file (File > Import > 3D Points): left alone until Ctrl+3
     source: str = "tracks"
 
     @property
@@ -1554,18 +1554,14 @@ def reconstruction_report(rec: Reconstruction, n_views: int, width_px: float = 1
     return out
 
 
-def calib_tracks(session, cal: CameraCalibration, cells: np.ndarray | None = None) -> np.ndarray:
+def calib_tracks(session, cal: CameraCalibration) -> np.ndarray:
     """One view's tracks converted to the calibration frame ONCE (vectorised
     undistortion of every tracked cell), NaN where untracked. Interpolating
-    these at fractional frames is what DLTdv's time shift does too. `cells`
-    (T, N) bool (I305): only those cells (the rest NaN) - the undistortion is
-    per cell, so a cell comes out the same bits either way."""
+    these at fractional frames is what DLTdv's time shift does too."""
     T, N = session.tracks.shape[:2]
     out = np.full((T, N, 2), np.nan)
     # (R36) the cells that leave the app (hand-marked hidden: never triangulated), with a position
     ok = session.exportable & np.isfinite(session.tracks).all(axis=2)
-    if cells is not None:
-        ok &= cells
     if ok.any():
         out[ok] = cal.to_calib_frame(session.tracks[ok].astype(np.float64))
     return out
@@ -1675,8 +1671,22 @@ class _Prepared:
     """Per-view calibration-frame tracks + name index, computed once per
     reconstruction so repeated calls (offset search) stay cheap."""
 
-    def __init__(self, sessions, calib: Calibration, names: list[str] | None, cells: list | None = None):
-        """`cells` (I305): per view None or a (T, N_view) bool of the cells to read (`calib_tracks`)."""
+    def __init__(self, sessions, calib: Calibration, names: list[str] | None):
+        cams = self._cameras(sessions, calib, names)
+        self.ct = []                    # per view (T, N_names, 2) in calibration frame
+        for s, cal in zip(sessions, cams):
+            if cal is None:
+                self.ct.append(np.full((s.n_frames, len(self.names), 2), np.nan))
+                continue
+            full = calib_tracks(s, cal)
+            idx = {q.name: j for j, q in enumerate(s.points)}
+            arr = np.full((full.shape[0], len(self.names), 2), np.nan)
+            for j, nm in enumerate(self.names):
+                if nm in idx:
+                    arr[:, j] = full[:, idx[nm]]
+            self.ct.append(arr)
+
+    def _cameras(self, sessions, calib: Calibration, names: list[str] | None) -> list:
         if len(calib) > len(sessions):
             raise ValueError("calibration has a different number of cameras than the project")
         # (I273) a camera that is not calibrated (a gap, or past the end of the list) has no data
@@ -1687,18 +1697,25 @@ class _Prepared:
         self.names = list(landmark_names(sessions) if names is None else names)
         self.coefs = (np.stack([cams[c].coefs for c in self.used]) if self.used
                       else np.zeros((0, 11)))                          # the CALIBRATED cameras' rows
-        self.ct = []                    # per view (T, N_names, 2) in calibration frame
-        for v, (s, cal) in enumerate(zip(sessions, cams)):
-            if cal is None:
-                self.ct.append(np.full((s.n_frames, len(self.names), 2), np.nan))
-                continue
-            full = calib_tracks(s, cal, None if cells is None else cells[v])
-            idx = {q.name: j for j, q in enumerate(s.points)}
-            arr = np.full((full.shape[0], len(self.names), 2), np.nan)
-            for j, nm in enumerate(self.names):
-                if nm in idx:
-                    arr[:, j] = full[:, idx[nm]]
-            self.ct.append(arr)
+        return cams
+
+    @classmethod
+    def one_landmark(cls, sessions, calib: Calibration, name: str, rows: list) -> "_Prepared":
+        """(I305) `name` alone, read only at the local frames `rows[v]` of each view (NaN elsewhere): what
+        `__init__` would hold there (`calib_tracks`' rule: exportable and finite, undistorted point by
+        point) without converting every frame of every landmark. For `update_reconstruction`."""
+        self = cls.__new__(cls)
+        cams = self._cameras(sessions, calib, [name])
+        self.ct = []
+        for s, cal, r in zip(sessions, cams, rows):
+            ct = np.full((s.n_frames, 1, 2), np.nan)
+            j = {q.name: k for k, q in enumerate(s.points)}.get(name)          # the column __init__ reads
+            if cal is not None and j is not None and len(r):
+                r = r[s.exportable_at(r, j) & np.isfinite(s.tracks[r, j]).all(axis=1)]
+                if len(r):
+                    ct[r, 0] = cal.to_calib_frame(s.tracks[r, j].astype(np.float64))
+            self.ct.append(ct)
+        return self
 
     def triangulate(self, uv: np.ndarray, min_cams: int = 2, max_residual: float = float("inf")):
         """`triangulate_batch` over the calibrated cameras of `uv` (..., C views, 2); the per-camera
@@ -1785,15 +1802,24 @@ def update_reconstruction(rec: "Reconstruction | None", sessions: list, calib: C
     if (rec is None or rec.per_cam is None or rec.per_cam.ndim != 3 or rec.per_cam.shape[2] != n_views):
         return reconstruct(sessions, calib, rates, offsets, (t0, t1))
     N = len(names)
-    xyz = np.full((T, N, 3), np.nan)
-    resid = np.full((T, N), np.nan)
-    ncams = np.zeros((T, N), np.int32)
-    err = np.full((T, N, n_views), np.nan, np.float32)
+    same = list(rec.names) == names and int(rec.t0) == t0 and rec.n_frames == T
+    if same:                            # the usual case (a click, a run): whole copies, then the changed rows
+        xyz, resid = rec.xyz.astype(np.float64, copy=True), rec.residual.astype(np.float64, copy=True)
+        ncams, err = rec.n_cams.astype(np.int32, copy=True), rec.per_cam.astype(np.float32, copy=True)
+    else:
+        xyz = np.full((T, N, 3), np.nan)
+        resid = np.full((T, N), np.nan)
+        ncams = np.zeros((T, N), np.int32)
+        err = np.full((T, N, n_views), np.nan, np.float32)
     lo, hi = max(t0, rec.t0), min(t1, rec.t0 + rec.n_frames - 1)
     old_col = {nm: j for j, nm in enumerate(rec.names)}
     for k, nm in enumerate(names):
         need = np.ones(T, bool)
-        if nm in old_col and lo <= hi:
+        if same:
+            need[:] = False
+            for c_lo, c_hi in changed.get(nm, ()):
+                need[min(max(c_lo - t0, 0), T):min(max(c_hi - t0 + 1, 0), T)] = True
+        elif nm in old_col and lo <= hi:
             jo = old_col[nm]
             a, b, ao = lo - t0, hi - t0 + 1, lo - rec.t0
             xyz[a:b, k] = rec.xyz[ao:ao + b - a, jo]
@@ -1806,16 +1832,12 @@ def update_reconstruction(rec: "Reconstruction | None", sessions: list, calib: C
         if not need.any():
             continue
         t = t0 + np.nonzero(need)[0]
-        cells = []
+        rows = []                       # each view's local frames these instants read (both neighbours)
         for v, s in enumerate(sessions):
-            m = np.zeros(s.tracks.shape[:2], bool)
-            jv = s.pid_by_name(nm)
-            if jv is not None:
-                f0 = np.floor(local_frame(t, rates[v], offsets[v])).astype(np.int64)
-                rows = np.concatenate([f0, f0 + 1])
-                m[rows[(rows >= 0) & (rows < m.shape[0])], jv] = True
-            cells.append(m)
-        prep = _Prepared(sessions, calib, [nm], cells)
+            f0 = np.floor(local_frame(t, rates[v], offsets[v])).astype(np.int64)
+            r = np.unique(np.concatenate([f0, f0 + 1]))
+            rows.append(r[(r >= 0) & (r < s.n_frames)])
+        prep = _Prepared.one_landmark(sessions, calib, nm, rows)
         x, r, n, e = prep.triangulate(prep.samples(rates, offsets, t))
         rows = t - t0
         xyz[rows, k] = x[:, 0]

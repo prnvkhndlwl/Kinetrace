@@ -37,6 +37,7 @@ from kinetrace.pixels import centre_scale, centre_unscale
 from kinetrace.camerapanel import CameraPanel
 from kinetrace.layers import LayersPanel, ROLE_HAS, ROLE_NAME
 from kinetrace.view3d import CalibrationDialog, Scene3D, View3D
+from kinetrace.calib import landmark_names, reference_span
 from kinetrace.canvas import (ZOOM_STEP as CANVAS_ZOOM_STEP,
                                   TRAIL_FRAMES, TRAIL_MAX, DISPLAY_FILTERS, REGION_SHAPES)
 from kinetrace.project import MAX_VIEWS, REFERENCE_VIEW, Project
@@ -99,6 +100,33 @@ COMPANION_CACHE_BYTES = 96 * 1024 ** 2
 # LOCKSTEP_MS for a slow decoder). "Active view only" never decodes them (G27).
 STEP_GAP_S = 0.15
 LOCKSTEP_MS = 300
+# (I305) the automatic 3D result: how often the 2D data is looked at (only data versions are compared on a
+# tick that finds nothing), the frames per digest block, and above how many cells to recompute an update
+# runs behind the loading card instead of on the window's thread
+SYNC3D_MS = 300
+SYNC3D_BLOCK = 256
+SYNC3D_BG_CELLS = 20_000
+_SYNC3D_K = np.array([0x9E3779B97F4A7C15, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9], np.uint64)
+_SYNC3D_W = (np.random.RandomState(305).randint(1, 2 ** 62, SYNC3D_BLOCK, dtype=np.int64).astype(np.uint64)
+             * np.uint64(2) + np.uint64(1))                      # odd: a changed cell always changes its block
+
+
+def block_digests(s) -> dict:
+    """(I305) {landmark name: (blocks,) uint64} - a fingerprint of every SYNC3D_BLOCK frames of what 3D reads
+    from a camera (`tracks` bits, `tracked`, `occluded`): a weighted sum with odd weights, so any changed
+    cell changes its block's number (wrap-around arithmetic, exact; never a float)."""
+    T, N = s.tracked.shape
+    if not N or not T:
+        return {q.name: np.zeros(0, np.uint64) for q in s.points}
+    bits = np.ascontiguousarray(s.tracks, np.float32).view(np.uint32).astype(np.uint64)       # (T, N, 2)
+    flags = s.tracked.astype(np.uint64) + (s.occluded.astype(np.uint64) << np.uint64(1))
+    cell = bits[..., 0] * _SYNC3D_K[0] + bits[..., 1] * _SYNC3D_K[1] + flags * _SYNC3D_K[2]    # (T, N)
+    nb = -(-T // SYNC3D_BLOCK)
+    pad = nb * SYNC3D_BLOCK - T
+    if pad:
+        cell = np.concatenate([cell, np.zeros((pad, N), np.uint64)])
+    h = (cell.reshape(nb, SYNC3D_BLOCK, N) * _SYNC3D_W[None, :, None]).sum(axis=1, dtype=np.uint64)
+    return {q.name: h[:, j].copy() for j, q in enumerate(s.points)}     # a repeated name: the column 3D reads
 # the loading card stays up until the working camera's first picture is on screen,
 # or this long at most (a file whose first picture never comes is reported elsewhere)
 FIRST_FRAME_WAIT_MS = 6000
@@ -867,6 +895,12 @@ class MainWindow(QMainWindow):
         # never in the middle of an open (the project is half-built until it ends)
         self._autosave_timer.timeout.connect(lambda: None if self._loading else self._autosave())
         self._autosave_timer.start()
+        # (I305) the 3D result follows the 2D data: a tick compares data versions, see `_sync_3d`
+        self._sync3d = None
+        self._sync3d_busy = False
+        self._sync3d_timer = QTimer(self, interval=SYNC3D_MS, timerType=Qt.CoarseTimer)
+        self._sync3d_timer.timeout.connect(self._sync_3d)
+        self._sync3d_timer.start()
         QTimer.singleShot(2500, self._announce_recovery)
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_tick)
@@ -11772,6 +11806,7 @@ class MainWindow(QMainWindow):
             return
         p.dirty = True
         r = p.reconstruction
+        self._sync3d_seed()                  # (I305) the automatic updates continue from this result
         solved = int(np.isfinite(r.residual).sum())
         med = float(np.nanmedian(r.residual)) if solved else float("nan")
         self._apply_state()
@@ -11971,6 +12006,128 @@ class MainWindow(QMainWindow):
                 f"Volume hull at frame {t} of {p.name(0)}: {h.n_views} cameras, {h.volume():.3g} {unit}³ "
                 f"({mesh_volume(verts, faces):.3g} {unit}³ as a mesh), voxel {voxel:.3g} {unit}. "
                 "File → Export → Mesh of This Frame writes it as OBJ/PLY.", "info", 9000)
+
+    def _sync3d_key(self) -> tuple:
+        """(I305) What a 3D result depends on besides the 2D data: the calibration (an object replaced on every
+        import, calibration and Set World Axes), the timing, the cameras."""
+        p = self.project
+        return (id(p.calibration), tuple(float(o) for o in p.offsets), tuple(float(r) for r in p.rates),
+                tuple(id(s) for s in p.sessions))
+
+    def _sync3d_seed(self) -> None:
+        """(I305) Remember the 2D data the project's 3D result stands for now: after an open, Ctrl+3 and every
+        update. Nothing is computed."""
+        p = self.project
+        self._sync3d = None if p is None else {
+            "proj": p, "key": self._sync3d_key(), "pend": None,
+            "ver": [s.data_version for s in p.sessions], "dig": [block_digests(s) for s in p.sessions]}
+
+    def _sync3d_ready(self) -> bool:
+        """With a calibration of two or more cameras, and a result made from the tracks (or none): an
+        imported result is left alone until Ctrl+3."""
+        p = self.project
+        cal = p.calibration
+        return (cal is not None and cal.n_usable(p.n_views) >= 2
+                and (p.reconstruction is None or p.reconstruction.source == "tracks"))
+
+    def _sync_3d(self) -> None:
+        """(I305, owner 2026-10-16: "if there is a calibration available then for each tracked point in +2
+        cameras the reconstruct should automatically happen") Bring the project's 3D result up to date with
+        the 2D data - a click, a move, Delete, a rename, Ctrl+Z, the end of a run, an import: every way the
+        data changes, seen by its effect (each camera's `data_version`, then which landmark's 256-frame
+        blocks changed) rather than by hooking each edit. Only the changed cells are recomputed
+        (`calib.update_reconstruction`, the same bits as Ctrl+3); a change of calibration, timing or cameras
+        rebuilds the whole result once it has been still for a tick. Never while tracking, opening, busy or
+        a dialog is up; the project's own "changed" state is left to the edit that caused it."""
+        p = self.project
+        if (p is None or self._sync3d_busy or self.state != READY or self._loading or self._busy_stack
+                or QApplication.activeModalWidget() is not None):
+            return
+        st = self._sync3d
+        if st is None or st["proj"] is not p:
+            self._sync3d_seed()                  # a project just opened: its saved result stands as it is
+            return
+        key = self._sync3d_key()
+        vers = [s.data_version for s in p.sessions]
+        if key == st["key"] and vers == st["ver"] and p.reconstruction is not None:
+            return
+        if not self._sync3d_ready():
+            self._sync3d_seed()
+            return
+        if key != st["key"] or p.reconstruction is None:
+            if key != st["key"] and st["pend"] != key:
+                st["pend"] = key                 # wait one quiet tick: a spin box moves an offset step by step
+                return
+            if key == st["key"] and vers == st["ver"]:
+                return                           # no result, nothing changed since: not again and again
+            self._sync3d_run(None, {})
+            return
+        changed, n_cells = {}, 0
+        for v, s in enumerate(p.sessions):
+            if vers[v] == st["ver"][v]:
+                continue
+            new, old = block_digests(s), st["dig"][v]
+            last = s.n_frames - 1
+            for nm in set(new) | set(old):
+                a, b = old.get(nm), new.get(nm)
+                if a is not None and b is not None and len(a) == len(b):
+                    idx = np.nonzero(a != b)[0]
+                    if not len(idx):
+                        continue
+                    cut = np.nonzero(np.diff(idx) > 1)[0]
+                    runs = zip(np.r_[idx[0], idx[cut + 1]], np.r_[idx[cut], idx[-1]])
+                    spans = [(int(i0) * SYNC3D_BLOCK, min(last, (int(i1) + 1) * SYNC3D_BLOCK - 1)) for i0, i1 in runs]
+                else:
+                    spans = [(0, last)]          # a landmark added, renamed or removed in this camera
+                for f_lo, f_hi in spans:
+                    lo, hi = reference_span(f_lo, f_hi, p.rates[v], p.offsets[v])
+                    changed.setdefault(nm, []).append((lo, hi))
+                    n_cells += hi - lo + 1
+        rec = p.reconstruction
+        t_range = self._t_range_3d()
+        if (not changed and t_range == (rec.t0, rec.t0 + rec.n_frames - 1)
+                and landmark_names(p.sessions) == list(rec.names)):
+            self._sync3d_seed()                  # the data moved somewhere 3D does not read (a mask, a name's colour)
+            return
+        self._sync3d_run(changed, {}, n_cells)
+
+    def _sync3d_run(self, changed: dict | None, _unused: dict, n_cells: int | None = None) -> None:
+        """(I305) Compute the update (`changed` = {name: reference spans}; None = the whole result) and adopt
+        it: small ones here, big ones (a run's frames, a rebuild) behind the loading card."""
+        from kinetrace.calib import reconstruct, update_reconstruction
+        p = self.project
+        t0, t1 = self._t_range_3d()
+        rec = p.reconstruction
+        if t1 < t0:
+            new = None                           # no instant two cameras tracked: no 3D result
+        else:
+            sess, cal, rates, offs = list(p.sessions), p.calibration, list(p.rates), list(p.offsets)
+            if changed is None:
+                job = lambda: reconstruct(sess, cal, rates, offs, (t0, t1))           # noqa: E731
+                big = True
+            else:
+                job = lambda: update_reconstruction(rec, sess, cal, rates, offs, (t0, t1), changed)   # noqa: E731
+                grow = 0 if rec is None else max(rec.t0 - t0, 0) + max(t1 - (rec.t0 + rec.n_frames - 1), 0)
+                big = (n_cells or 0) + grow * len(landmark_names(sess)) > SYNC3D_BG_CELLS
+            self._sync3d_busy = True
+            try:
+                new = (self._in_background("Updating the 3D landmarks", job,
+                                           detail="Triangulating the landmarks that changed in two or more cameras…")
+                       if big else job())
+            except Exception as e:      # noqa: BLE001 - said, never a crash; the next change tries again
+                self._sync3d_seed()
+                self.statusBar().showMessage(_plain_error(e, "The 3D landmarks could not be updated"), 8000)
+                return
+            finally:
+                self._sync3d_busy = False
+        if self.project is not p:
+            return                               # the project was closed meanwhile
+        p.reconstruction = new
+        self._sync3d_seed()
+        self._update_disagreement()
+        self._refresh_view3d()
+        self._refresh_guides()
+        self._apply_state()
 
     def _show_view3d(self) -> None:
         """The 3D window open and redrawn (R25: Reconstruct and Carve did it in two copies). `act_view3d` is
@@ -12979,6 +13136,7 @@ class MainWindow(QMainWindow):
             _retire(self._preview)
 
     def closeEvent(self, ev):
+        self._sync3d_timer.stop()            # (I305) no 3D update while the window closes
         self._drop_tour()                    # (G183) a tour left open: gone quietly, input back to the window
         if self.view3d is not None:
             self.view3d.stop_threads()           # (G186) the covered-space worker ends before the window

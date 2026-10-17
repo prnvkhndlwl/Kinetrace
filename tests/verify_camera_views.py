@@ -430,7 +430,15 @@ check(all(abs(p.map_frame_exact(p.names.index(x), p.names.index(y), 20) - v) < 1
 check(p.session is s_cam2 and p.name(p.active) == "cam2" and win.current == 12 and p.sessions[2].pid_by_name("nose") is not None,
       "the working camera is still cam2 at frame 12, with its point")
 check([round(c.coefs[0]) for c in p.calibration.cameras] == [200, 0, 100, 300], "the calibration follows its cameras")
-check(p.reconstruction is None, "the 3D result is dropped (made in the old order)")
+pump(1.0)                                         # (I305) the automatic 3D update rebuilds it in the new order
+_r3 = p.reconstruction
+_f3 = None
+if _r3 is not None:
+    from kinetrace.calib import reconstruct as _reconstruct  # noqa: E402
+    _f3 = _reconstruct(p.sessions, p.calibration, p.rates, p.offsets, win._t_range_3d())
+check(_r3 is None or (_r3.names == _f3.names and np.array_equal(_r3.xyz, _f3.xyz, equal_nan=True)
+                      and _r3.per_cam.shape[2] == 4),
+      "the 3D result made in the old order is gone: none, or rebuilt in the new order (I305)")
 check(all(os.path.basename(win._views[k].info.path) == os.path.basename(p.sessions[k].video_path) for k in range(4))
       and all(grid.canvas(k)._native_size == (W, H) for k in range(4)),
       "each view shows its own camera at its new number")

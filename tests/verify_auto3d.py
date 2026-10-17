@@ -258,6 +258,106 @@ pump(0.3)
 check(win.session.pid_by_name("head") is None, "(setup) Delete removed the head")
 same("Delete: the head's column is gone")
 
+# ---- [B] a retime in the camera panel rebuilds the result once, after the box is still ---------------
+print("[B] a retime rebuilds the whole result once it is still (I305)")
+from PySide6.QtWidgets import QFileDialog  # noqa: E402
+from kinetrace import calib as _calib  # noqa: E402
+
+full_calls = []
+_orig_run = win._sync3d_run
+
+
+def _counting_run(changed, *a, **k):
+    full_calls.append(changed is None)
+    return _orig_run(changed, *a, **k)
+
+
+win._sync3d_run = _counting_run
+win._refresh_cameras()
+pump(0.2)
+row = win.cameras._rows[1]
+if not row.expanded():
+    QTest.mouseClick(row.btn_expand, Qt.LeftButton)
+    pump(0.2)
+off0 = p.offsets[1]
+row.spin.setFocus()
+for _ in range(3):                                # three steps in a row, faster than a sync tick
+    QTest.keyClick(row.spin, Qt.Key_Up)
+    app.processEvents()
+check(p.offsets[1] != off0, "(setup) the arrows moved camera 2's offset", f"{off0} -> {p.offsets[1]}")
+pump(1.5)
+check(sum(full_calls) == 1, "three quick offset steps rebuild the 3D result ONCE", f"rebuilds: {full_calls}")
+same("after the retime the result is the full reconstruct at the new offset")
+win._sync3d_run = _orig_run
+
+# ---- [C] an imported 3D result is left alone until Ctrl+3 ----------------------------------------
+print("[C] an imported result is not overwritten by the automatic updates")
+csv3 = os.path.join(SCRATCH, "auto3d_import_xyz.csv")
+p.reconstruction.export_csv(csv3)
+QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (csv3, ""))
+win.act_import_xyz.trigger()
+pump(0.5)
+imp = p.reconstruction
+check(imp is not None and imp.source == "imported", "(setup) the 3D points were imported",
+      None if imp is None else imp.source)
+win._set_active_view(0)
+pump(0.3)
+pid = select_point("tail")
+win._goto(12, force=True)
+pump(0.2)
+click(win.canvas, 100.0, 90.0)
+pump(1.0)
+check(p.reconstruction is imp, "a click leaves the imported result as it is")
+win.act_recon.trigger()
+pump(0.5)
+check(p.reconstruction.source == "tracks", "Ctrl+3 makes a result from the tracks again")
+same("... and the updates follow it from there")
+
+# ---- [D] the cost on a long 4K project: a click, a run's end ---------------------------------------
+print("[D] what an update costs on 40,000 frames of 4K, 3 cameras, 10 landmarks")
+from kinetrace.app import block_digests  # noqa: E402
+
+BW, BH, BT, BN = 3840, 2160, 40_000, 10
+bcams = []
+Kb = np.array([[2800.0, 0, BW / 2], [0, 2800.0, BH / 2], [0, 0, 1]])
+for k, a in enumerate((0.3, 2.4, 4.4)):
+    Rb, tb = look_at(np.array([3.0 * np.cos(a), 3.0 * np.sin(a), 1.0]))
+    lens = OpenCVUndistort(Kb, np.array([-0.2, 0.05, 0.0, 0.0])) if k == 1 else NoUndistort()
+    bcams.append(CameraCalibration(dlt_from_camera(Kb, Rb, tb), BW, BH, lens, pixel_origin=0.0))
+bcal = Calibration(bcams, "m")
+bses = []
+brng = np.random.RandomState(9)
+for k in range(3):
+    sb = TrackingSession(f"big{k}", BT, 120.0, BW, BH)
+    for j in range(BN):
+        sb.add_landmark(f"m{j}")
+    sb.tracks[:] = brng.uniform(500, 3000, (BT, BN, 2)).astype(np.float32)
+    sb.tracked[:] = True
+    bses.append(sb)
+brates, boffs = [1.0, 1.0, 1.0], [0.0, 0.4, -0.3]
+btr = (1, BT - 2)
+brec = _calib.reconstruct(bses, bcal, brates, boffs, btr)
+bdig = block_digests(bses[1])
+bses[1].set_position(20_000, 3, 1234.5, 987.25)          # one click
+t_ = time.perf_counter()
+ndig = block_digests(bses[1])
+blk = [nm for nm in ndig if (ndig[nm] != bdig[nm]).any()]
+lo, hi = _calib.reference_span(20_000 - 20_000 % 256, 20_000 - 20_000 % 256 + 255, brates[1], boffs[1])
+brec2 = _calib.update_reconstruction(brec, bses, bcal, brates, boffs, btr, {"m3": [(lo, hi)]})
+dt_click = (time.perf_counter() - t_) * 1000
+check(blk == ["m3"], "(setup) the digest finds the one changed landmark", str(blk))
+check(dt_click < 50, f"one click on 40,000 frames x 10 landmarks updates in {dt_click:.0f} ms (< 50 ms)")
+for f in range(10_000, 11_000):                           # a run's end: 1,000 frames of every landmark
+    bses[0].tracks[f] += np.float32(0.5)
+t_ = time.perf_counter()
+lo, hi = _calib.reference_span(10_000 - 10_000 % 256, 11_263, brates[0], boffs[0])
+brec3 = _calib.update_reconstruction(brec2, bses, bcal, brates, boffs, btr, {f"m{j}": [(lo, hi)] for j in range(BN)})
+dt_run = time.perf_counter() - t_
+check(dt_run < 1.0, f"a 10-landmark 1,000-frame run's end updates in {dt_run:.2f} s (< 1 s)")
+_full = _calib.reconstruct(bses, bcal, brates, boffs, btr)
+check(all(np.array_equal(getattr(brec3, k), getattr(_full, k), equal_nan=True)
+          for k in ("xyz", "residual", "n_cams", "per_cam")), "... and equals the full reconstruct bit for bit")
+
 win._dev_probe.wait(15000)
 win.project.dirty = False
 win.close()

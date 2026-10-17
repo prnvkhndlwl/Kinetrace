@@ -283,7 +283,7 @@ row per frame that has one.
 `meta.json`: `t0` (first reference frame), `n_frames`, `unit`, `source`, `points` (each
 landmark's `name` and `file`), `per_camera_columns`. `source` = `tracks` (triangulated
 from the project's 2D points, kept up to date with every change) or `imported` (read
-from a file with File → Import 3D points, left as it is until Ctrl+3). `points/<landmark>.csv`:
+from a file with File → Import → 3D Points, left as it is until Ctrl+3). `points/<landmark>.csv`:
 `frame, x, y, z, residual, n_cams, <camera>_px …` — `frame` in the REFERENCE
 camera's frames (the first camera's), `residual` = DLTdv's rmse in pixels,
 `n_cams` = cameras used, `<camera>_px` = that camera's own reprojection error.
