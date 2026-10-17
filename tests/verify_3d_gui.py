@@ -412,7 +412,12 @@ back = Project.load(PROJ)
 assert back.calibration is not None and len(back.calibration) == 3
 assert np.allclose(back.offsets, p.offsets) and back.rates == RATES
 assert back.reconstruction is not None and np.allclose(back.reconstruction.xyz, r1.xyz, equal_nan=True)
-print("project round trip with calibration + 3D OK")
+# (I305) the saved result opens again bit for bit: the automatic update keeps the cells it does not touch
+_now = win.project.reconstruction
+for _k in ("xyz", "residual", "n_cams", "per_cam"):
+    assert np.array_equal(getattr(back.reconstruction, _k), getattr(_now, _k), equal_nan=True), _k
+assert back.reconstruction.source == "tracks" and back.calibration.world is None
+print("project round trip with calibration + 3D OK (the 3D result bit for bit, its source)")
 
 # 3D points for Anipose / DLTdv out, and back in through File -> Import -> 3D Points
 from kinetrace import calibio  # noqa: E402

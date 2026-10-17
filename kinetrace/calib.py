@@ -528,6 +528,9 @@ class Calibration:
         # (I278) False: the file does not say how it counted pixels (a bare dltCoefs.csv, easyWand),
         # so the user is asked before `to_internal`
         self.convention_stated = True
+        # (G201) the world the user chose with 3D -> Set World Axes: {"origin", "x", "y": landmark names,
+        # "when": "frame N" | "median"}; None = the calibration's own world. The 3D window draws it.
+        self.world: dict | None = None
 
     def with_cameras(self, cams: list, source: str | None = None) -> "Calibration":
         """The same calibration with other cameras: unit, source (or `source`), the moved
@@ -535,6 +538,7 @@ class Calibration:
         out = Calibration(cams, self.unit, self.source if source is None else source)
         out.origin_shift = self.origin_shift
         out.notes = list(self.notes)
+        out.world = None if self.world is None else dict(self.world)
         if hasattr(self, "report"):
             out.report = self.report
         return out
@@ -826,7 +830,7 @@ class Calibration:
         return cal
 
     # ---- a world the user chose (I170) -----------------------------------
-    def reframed(self, B: np.ndarray, o: np.ndarray, note: str = "") -> "Calibration":
+    def reframed(self, B: np.ndarray, o: np.ndarray, note: str = "", world: dict | None = None) -> "Calibration":
         """The same cameras in another world: X_old = B^T X_new + o, i.e.
         X_new = B (X_old - o) -- B's rows are the new axes in the old
         coordinates (`world_axes`), o the new origin in the old ones. Every
@@ -836,7 +840,7 @@ class Calibration:
         point to the same pixel (to rounding) before and after. `origin_shift`
         is dropped (the new origin is the user's, not the file's). `note` is
         recorded in `source` (replacing an earlier world note), which the
-        project file already saves."""
+        project file already saves; `world` (G201) = the landmarks that made it, kept as `self.world`."""
         B = np.asarray(B, np.float64).reshape(3, 3)
         o = np.asarray(o, np.float64).reshape(3)
         T = np.eye(4)
@@ -858,6 +862,7 @@ class Calibration:
         src = re.sub(r"\s*\(world: .*\)\s*$", "", self.source or "")
         out = self.with_cameras(cams, f"{src} ({note})".strip() if note else src)
         out.origin_shift = None
+        out.world = None if world is None else {k: str(v) for k, v in world.items()}
         return out
 
     # ---- arrays form (the project file stores it as calibration.json) -----
@@ -877,6 +882,8 @@ class Calibration:
                          for c in cams]}
         if self.origin_shift is not None:
             meta["origin_shift"] = np.asarray(self.origin_shift, np.float64).tolist()
+        if self.world:
+            meta["world"] = dict(self.world)                                   # (G201)
         return {f"{prefix}coefs": np.stack([np.full(11, np.nan) if c is None else c.coefs
                                             for c in cams]).astype(np.float64),
                 f"{prefix}meta": json.dumps(meta)}
@@ -901,6 +908,9 @@ class Calibration:
         cal = Calibration(cams, str(meta.get("unit", "")), str(meta.get("source", "")))
         if meta.get("origin_shift") is not None:
             cal.origin_shift = np.asarray(meta["origin_shift"], np.float64).reshape(3)
+        w = meta.get("world")
+        if isinstance(w, dict) and all(isinstance(w.get(k), str) for k in ("origin", "x", "y")):
+            cal.world = {k: str(v) for k, v in w.items()}                      # (G201)
         return cal
 
 
@@ -943,6 +953,9 @@ class Reconstruction:
     # pixels, NaN where that camera did not see the landmark: which camera
     # disagrees, not just by how much the set disagrees
     per_cam: np.ndarray | None = None
+    # (I305) "tracks" = triangulated from the project's 2D data (kept up to date with every change);
+    # "imported" = read from a file (File > Import 3D points): left alone until Ctrl+3
+    source: str = "tracks"
 
     @property
     def n_frames(self) -> int:
@@ -970,7 +983,7 @@ class Reconstruction:
         o = np.asarray(o, np.float64).reshape(3)
         xyz = (np.asarray(self.xyz, np.float64) - o) @ B.T          # NaN stays NaN
         return Reconstruction(self.t0, list(self.names), xyz, self.residual.copy(), self.n_cams.copy(),
-                              self.unit, None if self.per_cam is None else self.per_cam.copy())
+                              self.unit, None if self.per_cam is None else self.per_cam.copy(), self.source)
 
     def export_csv(self, path: str | Path) -> None:
         """DLTdv-style `xyzpts` CSV (`pt1_X,pt1_Y,pt1_Z,...`) with a leading

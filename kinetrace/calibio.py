@@ -872,7 +872,7 @@ def write_points3d(rec: Reconstruction, path, kind: str = "kinetrace", models: M
     if models is not None:
         xyz = models.world_to_export(xyz.reshape(-1, 3)).reshape(xyz.shape)
     if kind == "kinetrace":
-        r2 = Reconstruction(rec.t0, rec.names, xyz, rec.residual, rec.n_cams, rec.unit, rec.per_cam)
+        r2 = Reconstruction(rec.t0, rec.names, xyz, rec.residual, rec.n_cams, rec.unit, rec.per_cam, rec.source)
         r2.export_csv(path)
         return 0
     from kinetrace.session import _sanitize
@@ -986,6 +986,6 @@ def read_points3d(path, unit: str = "") -> tuple[Reconstruction, list[str]]:
             res[frames - t0, j] = col(idx[f"{nm}_error"])
             if f"{nm}_ncams" in idx:
                 ncams[frames - t0, j] = np.nan_to_num(col(idx[f"{nm}_ncams"])).astype(np.int32)
-    rec = Reconstruction(t0, names, xyz, res, ncams, unit)
+    rec = Reconstruction(t0, names, xyz, res, ncams, unit, source="imported")      # (I305) not from the tracks
     notes.insert(0, f"{kind}: {N} landmark(s), frames {t0} - {t1}")
     return rec, notes

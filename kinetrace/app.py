@@ -11843,9 +11843,9 @@ class MainWindow(QMainWindow):
         dlg.deleteLater()
         if not ok or axes is None:
             return
-        B, o, note = axes
+        B, o, note, world = axes
         try:
-            cal2 = p.calibration.reframed(B, o, note)
+            cal2 = p.calibration.reframed(B, o, note, world)
         except ValueError as e:          # the origin lies on a camera's image plane
             QMessageBox.warning(self, "Set World Axes", str(e))
             return
@@ -13059,7 +13059,8 @@ class MainWindow(QMainWindow):
 class _WorldAxesDialog(QDialog):
     """3D → Set World Axes… (I170): the origin, the +X and the +Y direction as three landmarks of the 3D
     result (their positions at the instant on screen, or their median over the whole result for markers
-    that do not move). `result_axes` = (B, o, note) for `Calibration.reframed` once accepted."""
+    that do not move). `result_axes` = (B, o, note, world) for `Calibration.reframed` once accepted (G201:
+    `world` = the three landmarks' names and when, which the 3D window draws)."""
 
     def __init__(self, parent, rec, instant: int, left_handed: bool, unit: str = ""):
         from PySide6.QtWidgets import QComboBox, QRadioButton
@@ -13158,7 +13159,11 @@ class _WorldAxesDialog(QDialog):
         B, o, note, _ = self._compute()
         if B is None:
             return
-        self.result_axes = (B, o, note)
+        names = self._rec.names
+        world = {"origin": names[self.cb_origin.currentIndex()], "x": names[self.cb_x.currentIndex()],
+                 "y": names[self.cb_y.currentIndex()],
+                 "when": "median" if self.rb_median.isChecked() else f"frame {self._t}"}
+        self.result_axes = (B, o, note, world)
         self.accept()
 
 
