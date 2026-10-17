@@ -54,6 +54,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_review_leftovers",
        # owner reports 2026-10-03: SAM taking another animal (I260), the open question (G143)
        "verify_segment_identity", "verify_open_replace",
+       # (G205) File -> Open Recent and the start-screen list
+       "verify_recent",
        # GoPro footage (G144-G146) and the point tools (G147)
        "verify_gopro", "verify_point_tools", "verify_lens_export",
        # (I269) a lens profile on a camera filmed on its side
