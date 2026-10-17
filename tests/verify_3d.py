@@ -938,4 +938,85 @@ assert _v7b[0] == "better" and "under the 5.0 px band" in _v7b[1], _v7b
 assert retrack.verdict(_b7b, _a7b, [5.0, 5.0, 10.0], _p7b)[1].count("10.0 px") == 1   # camC's own band
 print("the re-track verdict counts and names lost frames; a clean fix is still BETTER (I7) OK")
 
+# ---- (I305) the automatic 3D result: a few cells recomputed == the whole result, bit for bit -----------
+from kinetrace.calib import (OpenCVUndistort, landmark_names, reference_span, triangulate_batch,  # noqa: E402
+                             update_reconstruction)
+
+
+def _same_rec(a, b):
+    """Every array of two results, bit for bit (NaN = NaN), same dtypes, names and range."""
+    if a.t0 != b.t0 or list(a.names) != list(b.names) or a.unit != b.unit:
+        return f"t0 {a.t0}/{b.t0} names {a.names}/{b.names}"
+    for k in ("xyz", "residual", "n_cams", "per_cam"):
+        x, y = getattr(a, k), getattr(b, k)
+        if x.shape != y.shape or x.dtype != y.dtype or not np.array_equal(x, y, equal_nan=True):
+            return k
+    return ""
+
+
+_rng5 = np.random.RandomState(305)
+_ss = sessions                                   # six cameras, camera 6 at 2x, fractional offsets below
+_cal5 = Calibration([CameraCalibration(c.coefs, c.width, c.height, NoUndistort(), pixel_origin=0.0) for c in cams],
+                    "m")
+_cal5.cameras[0].undistort = lwm                 # a MATLAB LWM lens map
+_cal5.cameras[2].undistort = OpenCVUndistort(np.array([[700.0, 0, W / 2], [0, 700.0, H / 2], [0, 0, 1]]),
+                                             np.array([-0.2, 0.05, 0.001, -0.001, -0.01]))
+_off5 = list(est)
+_rates5 = list(proj.rates)
+_tr5 = (5, 190)
+_rec5 = reconstruct(_ss, _cal5, _rates5, _off5, _tr5)
+_n_upd = 0
+for _it in range(500):
+    v = int(_rng5.randint(len(_ss)))
+    sv = _ss[v]
+    j = int(_rng5.randint(sv.n_points))
+    nm = sv.points[j].name
+    f_lo = int(_rng5.randint(sv.n_frames))
+    f_hi = min(sv.n_frames - 1, f_lo + int(_rng5.randint(0, 6)))
+    kind = _it % 3
+    if kind == 0:                               # moved by hand
+        for f in range(f_lo, f_hi + 1):
+            sv.set_position(f, j, float(_rng5.uniform(0, W)), float(_rng5.uniform(0, H)))
+    elif kind == 1:                             # cleared (a gap opens)
+        sv.clear_window([j], f_lo, f_hi)
+    else:                                       # hidden by hand (tracked, not exportable)
+        sv.occluded[f_lo:f_hi + 1, j] = sv.tracked[f_lo:f_hi + 1, j]
+    span = reference_span(f_lo, f_hi, _rates5[v], _off5[v])
+    _rec5 = update_reconstruction(_rec5, _ss, _cal5, _rates5, _off5, _tr5, {nm: [span]})
+    _n_upd += 1
+    if _it % 50 == 49:
+        _d = _same_rec(_rec5, reconstruct(_ss, _cal5, _rates5, _off5, _tr5))
+        assert not _d, f"after {_it + 1} block updates the result differs from the full reconstruct: {_d}"
+assert not _same_rec(_rec5, reconstruct(_ss, _cal5, _rates5, _off5, _tr5))
+# a new landmark, a renamed one, a removed one, and the range moving both ways
+_ss[1].add_landmark("extra")
+_ss[3].add_landmark("extra")
+for f in range(30, 60):
+    _ss[1].set_position(f, _ss[1].pid_by_name("extra"), 100.0 + f, 80.0)
+    _ss[3].set_position(f, _ss[3].pid_by_name("extra"), 120.0, 60.0 + f)
+for sv in _ss:
+    sv.points[sv.pid_by_name("p1")].name = "p1b"
+_ss[0].remove_point(_ss[0].pid_by_name("p3"))          # camera 1 loses p3: every p3 instant is "changed"
+_chg5 = {"p3": [reference_span(0, _ss[0].n_frames - 1, _rates5[0], _off5[0])]}
+for _tr in ((5, 190), (0, 199), (40, 120), (39, 121)):
+    _rec5 = update_reconstruction(_rec5, _ss, _cal5, _rates5, _off5, _tr, _chg5)
+    _chg5 = {}
+    _d = _same_rec(_rec5, reconstruct(_ss, _cal5, _rates5, _off5, _tr))
+    assert not _d, f"range {_tr}: {_d}"
+assert landmark_names(_ss) == _rec5.names and "p1b" in _rec5.names and "p1" not in _rec5.names
+# a singular cell decides only itself (it used to move EVERY cell of the batch to lstsq)
+_L = np.zeros((3, 11))
+_L[0, [0, 5]] = 1.0                              # cameras 1 and 2: the same degenerate camera, exactly
+_L[1, [0, 5]] = 1.0
+_L[2] = cams[1].coefs
+_good = np.array([[np.nan, np.nan], [310.25, 190.5], [400.125, 233.75]])
+_good[0] = (12.0, 7.0)
+_sing = np.array([[3.0, 4.0], [3.0, 4.0], [np.nan, np.nan]])
+_both = triangulate_batch(_L, np.stack([_sing, _good]))
+_alone = triangulate_batch(_L, _good[None])
+assert all(np.array_equal(a[1:], b, equal_nan=True) for a, b in zip(_both, _alone)), "a singular cell moved another"
+print(f"automatic 3D: {_n_upd} block updates (LWM + OpenCV lenses, fractional offsets, 2x camera), a new / renamed / "
+      "removed landmark and a moving range all equal the full reconstruct bit for bit; a singular cell decides "
+      "only itself (I305) OK")
+
 print("VERIFY 3D PASSED")

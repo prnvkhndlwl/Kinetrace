@@ -37,13 +37,14 @@ from kinetrace.pixels import centre_scale, centre_unscale
 from kinetrace.camerapanel import CameraPanel
 from kinetrace.layers import LayersPanel, ROLE_HAS, ROLE_NAME
 from kinetrace.view3d import CalibrationDialog, Scene3D, View3D
+from kinetrace.calib import landmark_names, reference_span
 from kinetrace.canvas import (ZOOM_STEP as CANVAS_ZOOM_STEP,
                                   TRAIL_FRAMES, TRAIL_MAX, DISPLAY_FILTERS, REGION_SHAPES)
 from kinetrace.project import MAX_VIEWS, REFERENCE_VIEW, Project
 from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_token,
                                      model_is_cached as seg_is_cached, preferred_backend,
                                      save_token, working_size)
-from kinetrace import gpmf, projectfile, recovery, trackio
+from kinetrace import gpmf, projectfile, recent, recovery, trackio
 from kinetrace.lens import lens_label
 from kinetrace.errors import cap_first, plain_error as _plain_error
 from kinetrace.session import TRACKER_NAMES, TrackingSession
@@ -51,7 +52,8 @@ from kinetrace.viewgrid import ViewGrid, caption_for
 from kinetrace.skeletons import all_templates, save_user_template
 from kinetrace.theme import apply_theme
 from kinetrace.timeline import TIME_ZOOM_STEP, TimelinePanel
-from kinetrace.video_source import DEFAULT_CACHE_BYTES, FrameCache, SeekService, VideoInfo, probe_video
+from kinetrace.video_source import (DEFAULT_CACHE_BYTES, SCRUB_WINDOW, FrameCache, SeekService, VideoInfo,
+                                    describe_scrub, probe_video, scrub_budget)
 from kinetrace import icons
 from kinetrace.widgets import LoadingOverlay, ManualDialog, OnboardingStrip, SettingsDialog, Toast, native_keys, pop_menu, wrap_caption
 
@@ -90,15 +92,39 @@ def _alltracker_available() -> bool:
 IDLE, READY, TRACKING = range(3)
 VIDEO_FILTER = "Videos (*.mp4 *.avi *.mov *.mkv *.m4v *.wmv *.webm *.mpg *.mpeg);;All files (*)"
 TRACKS_FILTER = ("Tracks - DeepLabCut, SLEAP, DLTdv / Argus, Kinetrace (*.csv);;All files (*)")
-# a companion camera only ever displays ONE frame, so it needs room for a couple
-# of 4K frames and nothing more (see MainWindow._rebudget_caches)
-COMPANION_CACHE_BYTES = 96 * 1024 ** 2
 # the other cameras (G24): playhead moves closer together than STEP_GAP_S are one
 # continuous motion (playing, scrubbing, a held key); a lone move is a STEP, and on
 # a step Sync all views shows every camera's new picture at once (waiting at most
 # LOCKSTEP_MS for a slow decoder). "Active view only" never decodes them (G27).
 STEP_GAP_S = 0.15
 LOCKSTEP_MS = 300
+# (I305) the automatic 3D result: how often the 2D data is looked at (only data versions are compared on a
+# tick that finds nothing), the frames per digest block, and above how many cells to recompute an update
+# runs behind the loading card instead of on the window's thread
+SYNC3D_MS = 300
+SYNC3D_BLOCK = 256
+SYNC3D_BG_CELLS = 20_000
+_SYNC3D_K = np.array([0x9E3779B97F4A7C15, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9], np.uint64)
+_SYNC3D_W = (np.random.RandomState(305).randint(1, 2 ** 62, SYNC3D_BLOCK, dtype=np.int64).astype(np.uint64)
+             * np.uint64(2) + np.uint64(1))                      # odd: a changed cell always changes its block
+
+
+def block_digests(s) -> dict:
+    """(I305) {landmark name: (blocks,) uint64} - a fingerprint of every SYNC3D_BLOCK frames of what 3D reads
+    from a camera (`tracks` bits, `tracked`, `occluded`): a weighted sum with odd weights, so any changed
+    cell changes its block's number (wrap-around arithmetic, exact; never a float)."""
+    T, N = s.tracked.shape
+    if not N or not T:
+        return {q.name: np.zeros(0, np.uint64) for q in s.points}
+    bits = np.ascontiguousarray(s.tracks, np.float32).view(np.uint32).astype(np.uint64)       # (T, N, 2)
+    flags = s.tracked.astype(np.uint64) + (s.occluded.astype(np.uint64) << np.uint64(1))
+    cell = bits[..., 0] * _SYNC3D_K[0] + bits[..., 1] * _SYNC3D_K[1] + flags * _SYNC3D_K[2]    # (T, N)
+    nb = -(-T // SYNC3D_BLOCK)
+    pad = nb * SYNC3D_BLOCK - T
+    if pad:
+        cell = np.concatenate([cell, np.zeros((pad, N), np.uint64)])
+    h = (cell.reshape(nb, SYNC3D_BLOCK, N) * _SYNC3D_W[None, :, None]).sum(axis=1, dtype=np.uint64)
+    return {q.name: h[:, j].copy() for j, q in enumerate(s.points)}     # a repeated name: the column 3D reads
 # the loading card stays up until the working camera's first picture is on screen,
 # or this long at most (a file whose first picture never comes is reported elsewhere)
 FIRST_FRAME_WAIT_MS = 6000
@@ -187,7 +213,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>eye / title bar</td><td>the <b>eye</b> on a camera's line in CAMERAS shows / hides its view (hidden = not decoded; the others get the room); <b>drag a view's title bar</b> onto another view to move it there (only the screen changes, the cameras keep their numbers); right-click a title bar: hide it, show every camera, views back in camera order. <b>▶</b> on a camera's line opens its controls (Align here, offset, frame rate). With Track ▾ → Every camera, a <b>hidden camera is tracked too</b>, without being drawn: Track says "(n hidden)" and a warning names them</td></tr>
 <tr><td class=k>Ctrl+E</td><td><b>ALL CAMERAS — DLTdv8 xypts</b> writes one file for 3D reconstruction: row k = frame k of the reference camera (from 0), every camera sampled through its offset, landmarks matched across cameras <i>by name</i>, NaN where a camera has no data; top-left origin, first pixel = 1</td></tr>
 <tr><td class=k>3D menu</td><td><b>Cameras Overview</b> · <b>Sync ▸</b> <b>Sync Cameras (Sound / Motion)</b> (whole-frame offsets from the sound tracks or the pictures, with a noise filter), <b>Estimate Sub-frame Offsets</b> (fractional sync from the tracks) · <b>Calibrate ▸</b> <b>Calibrate a Lens (checkerboard)</b> (how a wide-angle lens bends the picture; opens with or without a video — with nothing open, save the lens file and attach it later), <b>Load a Lens Profile for Cameras</b>, <b>Calibrate Cameras with a Wand</b> · <b>Reconstruct 3D Landmarks</b> · <b>Re-track Disagreeing Stretches</b> (a camera's landmark put back on the other cameras' rays and re-tracked, before / after verdict) · <b>Carve Volume</b> · <b>Show 3D View</b>. A calibration comes in through File → Import → Calibration (a Kinetrace .kcal.json, DLT coefficients from DLTdv / easyWand / Argus, K + R/t, or a DLTdv8 project with its lens undistortion); calibrations, lens profiles and meshes go out through File → Export. Entries that need more (a video, a second camera, a calibration) open anyway and say what is missing</td></tr>
-<tr><td class=k>Ctrl+3</td><td>reconstruct the 3D landmarks (matched by name across cameras) and open the 3D view</td></tr>
+<tr><td class=k>Ctrl+3</td><td>reconstruct all the 3D landmarks (matched by name across cameras) with the verdict and open the 3D view; the result also keeps itself up to date</td></tr>
 <tr><td class=k>Ctrl+4</td><td>carve the volume hull at this frame from every camera's silhouette</td></tr>
 <tr><td class=k>Ctrl+5</td><td>show / hide the 3D view (drag to orbit, wheel to zoom, middle-drag to pan, double-click to reset; with a calibration: the wand calibration layers - wand points, camera pyramids, fields of view, covered space - and a click on a wand end goes to its frame)</td></tr>
 <tr><td class=k>Ctrl+6</td><td>show / hide the body side-by-side view (footage + skeleton | the pose on its own | joint angles over time)</td></tr>
@@ -588,6 +614,7 @@ class _ViewRuntime:
         self.info = info
         self.n_frames = info.n_frames        # may shrink if the file ends early
         self.cache = FrameCache(cache_bytes)
+        self.window = SCRUB_WINDOW           # (I306) frames kept around the playhead; `_rebudget_caches` sets it
         self.seek: SeekService | None = None
         self.want_frame: int | None = None   # frame last requested (stale-reply guard)
         self.bad_frames: set = set()         # frames already reported as undecodable (I40)
@@ -752,6 +779,7 @@ class MainWindow(QMainWindow):
         self._manual_dlg = None
         self._hotkeys_dlg = None
         self._else_cache = None
+        self._budget_key = None              # (I306) who decoded at the last frame-budget split
         self._point_list_project = None
         self._hidden_warned = None
         self._user_paused = False
@@ -867,7 +895,15 @@ class MainWindow(QMainWindow):
         # never in the middle of an open (the project is half-built until it ends)
         self._autosave_timer.timeout.connect(lambda: None if self._loading else self._autosave())
         self._autosave_timer.start()
+        # (I305) the 3D result follows the 2D data: a tick compares data versions, see `_sync_3d`
+        self._sync3d = None
+        self._sync3d_busy = False
+        self._sync3d_rebuild_open = False        # the project being opened is a recovery copy
+        self._sync3d_timer = QTimer(self, interval=SYNC3D_MS, timerType=Qt.CoarseTimer)
+        self._sync3d_timer.timeout.connect(self._sync_3d)
+        self._sync3d_timer.start()
         QTimer.singleShot(2500, self._announce_recovery)
+        self._refresh_start_recent()            # (G205) the start screen's recent projects
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_tick)
         # lockstep: a camera that does not deliver in time is not waited for
@@ -1571,6 +1607,12 @@ class MainWindow(QMainWindow):
         for a in (self.act_open, self.act_open_folder, self.act_open_proj, self.act_recover, None, self.act_save,
                   self.act_save_as, None):
             m_file.addSeparator() if a is None else m_file.addAction(a)
+        # (G205) the last projects opened or saved, newest first: rebuilt each time it opens (a project
+        # moved since shows "(not found)")
+        self.m_recent = QMenu("Open &Recent", self)
+        self.m_recent.setToolTipsVisible(True)
+        self.m_recent.aboutToShow.connect(self._refresh_recent_menu)
+        m_file.insertMenu(self.act_recover, self.m_recent)
         m_import = m_file.addMenu("&Import")
         self.act_import_tracks.setText("&Tracks…")
         # act_calib (File → Import → Calibration…) is created with the 3D actions and inserted there
@@ -1836,7 +1878,9 @@ class MainWindow(QMainWindow):
                                  triggered=self._reconstruct_3d)
         self.act_recon.setToolTip("Turn the landmarks tracked in two or more cameras (matched by name) into\n"
                                   "3D positions with the calibration, and say how well the cameras agree\n"
-                                  "(GOOD / USABLE / NOT TRUSTWORTHY). Needs two or more calibrated cameras.")
+                                  "(GOOD / USABLE / NOT TRUSTWORTHY). Needs two or more calibrated cameras.\n"
+                                  "The 3D result also keeps itself up to date as you click and track (only\n"
+                                  "what changed); this recomputes everything and gives the verdict.")
         self.act_set_axes = QAction("Set World &Axes…", self, triggered=self._set_world_axes)      # (I170)
         self.act_set_axes.setToolTip("Choose the 3D world yourself: three landmarks give the origin, the +X and the\n"
                                      "+Y direction (+Z follows the right-hand rule). The calibration and the 3D\n"
@@ -2193,6 +2237,7 @@ class MainWindow(QMainWindow):
         self.act_open.setEnabled(not tracking)
         self.act_open_folder.setEnabled(not tracking)
         self.act_open_proj.setEnabled(not tracking)
+        self.m_recent.setEnabled(not tracking)
         # recovering replaces the project on screen: never in the middle of a run
         for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks,
                   self.act_recover):
@@ -2728,7 +2773,14 @@ class MainWindow(QMainWindow):
                                 hint="This happens once per start of Kinetrace.")
         text = describe() if cached_device() is not None else \
             "The hardware check has not finished yet (PyTorch is still loading). Try again in a moment."
-        self._text_report("System check", text, (640, 420))
+        self._text_report("System check", text + "\n\n" + self._scrub_report(), (640, 420))
+
+    def _scrub_report(self) -> str:
+        """The System Check's scrubbing lines (I306): the window each decoding camera keeps, with a verdict."""
+        self._rebudget_caches()
+        cams = [(rt.window, rt.seek_plan.gop if rt.seek_plan is not None else 0, rt.info.width * rt.info.height * 3)
+                for i, rt in enumerate(self._views) if i in self._decoding_views()]
+        return describe_scrub(DEFAULT_CACHE_BYTES, cams)
 
     def _text_report(self, title: str, text: str, size: tuple[int, int], note: str = "",
                      nowrap: bool = False, extra=None) -> None:
@@ -3627,7 +3679,7 @@ class MainWindow(QMainWindow):
         i = self.project.active if index is None else index
         rt = self._views[i]
         rt.stop()
-        rt.seek = SeekService(rt.info.path, rt.cache, n_frames=rt.info.n_frames)
+        rt.seek = SeekService(rt.info.path, rt.cache, n_frames=rt.info.n_frames, window=rt.window)
         # The view's index is looked up when a frame ARRIVES, not bound here:
         # reopening a project saved in camera 2+ moves the first runtime to
         # another index, and removing a camera renumbers the ones after it; a
@@ -3649,21 +3701,43 @@ class MainWindow(QMainWindow):
                 return k
         return -1
 
-    def _rebudget_caches(self):
-        """The WORKING camera keeps the whole frame-cache budget; companions get
-        a small fixed allowance each.
+    def _decoding_views(self) -> set:
+        """The cameras that decode as the playhead moves: the working one, and in Sync all every
+        other one shown (I306; Active view only and hidden cameras do not, G27)."""
+        p = self.project
+        active = p.active if p is not None else 0
+        n = len(self._views)
+        decoding = {active}
+        if p is not None and n > 1 and self._sync_mode == "all":
+            decoding |= {i for i in self.grid.visible_indices() if i < n}
+        return decoding
 
-        An even split would be wrong: the working view is the one being scrubbed,
-        played and prefetched, while a companion only ever displays a single
-        frame. At 15 cameras an even split would leave the working view with a
-        fifteenth of the cache and make scrubbing crawl, while the companions
-        sat on memory they never re-read."""
+    def _rebudget_caches(self):
+        """One frame budget split between the cameras that DECODE (I306, `scrub_budget`).
+
+        Every camera shown in Sync all steps with the playhead (G24), so each decoding
+        camera gets an equal share, the others each up to a window of `SCRUB_WINDOW`
+        frames around their playhead, the working camera what they leave; a camera that does not decode (its
+        eye closed, solo, Active view only) keeps room for its picture only. (Before
+        I306 a companion got 96 MB, four 4K frames, on the belief that it only ever
+        shows one frame: its prefetch pushed out the next step's frame, so every step
+        re-decoded.) It re-splits only when who decodes changes; `_refresh_companions`
+        calls it on every move, so a new eye, mode or camera is always seen."""
+        if not self._views:
+            return
         active = self.project.active if self.project is not None else 0
-        for i, rt in enumerate(self._views):
-            rt.cache.max_bytes = (DEFAULT_CACHE_BYTES if i == active
-                                  else COMPANION_CACHE_BYTES)
-            if i != active:
-                rt.cache.trim()   # hand the memory back now, not on its next decode
+        decoding = self._decoding_views()
+        key = (tuple(id(rt) for rt in self._views), active, frozenset(decoding))
+        if key == self._budget_key:
+            return
+        self._budget_key = key
+        fb = {i: max(1, rt.info.width * rt.info.height * 3) for i, rt in enumerate(self._views)}
+        for i, (nbytes, window) in scrub_budget(DEFAULT_CACHE_BYTES, fb, decoding, active).items():
+            rt = self._views[i]
+            rt.cache.max_bytes, rt.window = nbytes, window
+            if rt.seek is not None:
+                rt.seek.set_window(window)
+            rt.cache.trim()       # hand the memory back now, not on its next decode
 
     def _reset_frame_cache(self):
         """Shift+C failsafe: drop every cached frame and re-decode this one
@@ -3675,9 +3749,11 @@ class MainWindow(QMainWindow):
             return
         n_frames, n_bytes = self.cache.stats()
         for i, rt in enumerate(self._views):
+            restart = i == self.project.active or rt.seek is not None
+            rt.stop()                         # FIRST: a read under way would file its picture after the clear
             rt.cache.clear()
             rt.want_frame = None              # the other cameras ask for their picture again (G133)
-            if i == self.project.active or rt.seek is not None:
+            if restart:
                 self._start_seek_service(i)   # fresh VideoCapture: fixes decoder desync too
         self._goto(self.current, force=True)
         self.statusBar().showMessage(
@@ -3762,9 +3838,11 @@ class MainWindow(QMainWindow):
         i = self._view_index(rt)
         if i < 0 or plan.exact:
             return
-        rt.cache.clear()
+        restart = i == self.project.active or rt.seek is not None
+        rt.stop()                            # FIRST: a read under way would file a picture reached the old
+        rt.cache.clear()                     # way after the clear (the window keeps the decoder busy)
         rt.want_frame = None
-        if i == self.project.active or rt.seek is not None:
+        if restart:
             self._start_seek_service(i)      # a fresh decoder: no frame reached the old way arrives late
         if i == self.project.active:
             self._goto(self.current, force=True)
@@ -4204,6 +4282,7 @@ class MainWindow(QMainWindow):
         self._set_play_interval(info.fps)
         for cv in self.grid.canvases:
             cv.set_stale(False)              # which one takes edits: `_set_canvas_roles` in `_apply_state`
+            cv.set_preview(False)            # (G204) a stand-in veil belongs to the camera being left
         self.canvas.set_video_size(info.width, info.height)
         self._show_session(int(np.clip(frame, 0, rt.n_frames - 1)), info.path)
 
@@ -4531,6 +4610,7 @@ class MainWindow(QMainWindow):
         for rt in self._views:
             rt.stop()
         self._views = []
+        self._budget_key = None              # (I306) the next video's cameras are split afresh
         self._hull_cache.clear()
         if self.view3d is not None:
             self.view3d.hide()
@@ -4851,15 +4931,26 @@ class MainWindow(QMainWindow):
         self._lock = ({"want": {p.active}, "frames": {}}
                       if multi and self._sync_mode == "all" and not continuous
                       and self.seek is not None and self.state != TRACKING else None)
+        # (I306) a frame already in the cache needs no decoder: it goes up now, not when the
+        # scrubbing thread -- perhaps busy filling the window -- gets to the request
+        hit = self.cache.get(idx) if self.cache is not None and self.state != TRACKING else None
         if self._lock is not None:
             self._lock_timer.start()
-        elif self.cache is not None and self.cache.get(idx) is None:
-            # instant preview from cache while the real frame decodes
+            if hit is not None:
+                self._lock["frames"][p.active] = hit      # shown with the other cameras (G24)
+        elif hit is not None:
+            self._show_active_frame(hit, body=False)      # `_refresh_body_view` follows below
+        elif self.cache is not None and not continuous:
+            # a lone jump: the nearest cached frame stands in while the real one decodes,
+            # veiled -- it is another frame under this frame's markers (G204). Not while
+            # playing or holding a key: there the next frame is a decode away, and a veil
+            # would flash on and off at the playback rate
             near = self.cache.nearest(idx)
-            if near is not None:
+            if near is not None and not self.canvas.shows(near[1]):
                 self.canvas.set_frame(near[1])
+            self.canvas.set_preview(True)                 # whatever is up is not frame idx
         if self.seek is not None and self.state != TRACKING:
-            self.seek.request(idx)
+            self.seek.request(idx, quiet=hit is not None)   # (I306) a hit only moves the window
         self._refresh_overlay()
         self._refresh_companions()
         self.timeline.set_current(idx)
@@ -4867,6 +4958,21 @@ class MainWindow(QMainWindow):
         self._update_track_button()
         self._refresh_view3d()
         self._refresh_body_view()
+
+    def _show_active_frame(self, rgb: np.ndarray, body: bool = True) -> None:
+        """The working camera's frame at the playhead goes up (from the cache in `_goto`, or from
+        the scrubbing thread). The same array twice (a cache hit, then the thread's reply: the
+        cache's own object) is drawn once -- twice would also make the difference filter compare
+        the frame with itself."""
+        if not self.canvas.shows(rgb):
+            self.canvas.set_frame(rgb)
+        self.canvas.set_preview(False)           # the real frame: no stand-in any more (G204)
+        if self._first_frame_token is not None:
+            self._first_frame_arrived()          # the open is over: the loading card goes
+        if body:
+            # the side-by-side window shows the same instant, and the
+            # decoded frame only exists here -- a seek is what fills it
+            self._refresh_body_view()
 
     def _on_seek_frame(self, view: int, idx: int, rgb: np.ndarray):
         if self.project is None or not (0 <= view < len(self._views)):
@@ -4878,12 +4984,7 @@ class MainWindow(QMainWindow):
                     lock["frames"][view] = rgb        # goes up with the other cameras (G24)
                     self._try_lockstep()
                     return
-                self.canvas.set_frame(rgb)
-                if self._first_frame_token is not None:
-                    self._first_frame_arrived()          # the open is over: the loading card goes
-                # the side-by-side window shows the same instant, and the
-                # decoded frame only exists here -- a seek is what fills it
-                self._refresh_body_view()
+                self._show_active_frame(rgb)
             return
         # a companion view: only the frame we last asked it for (a scrub leaves
         # older replies in flight, and they would show the wrong instant)
@@ -4893,7 +4994,7 @@ class MainWindow(QMainWindow):
                 self._try_lockstep()
                 return
             cv = self.grid.canvas(view)
-            if cv is not None:
+            if cv is not None and not cv.shows(rgb):
                 cv.set_frame(rgb)
 
     def _refresh_companions(self):
@@ -4902,6 +5003,7 @@ class MainWindow(QMainWindow):
         needs the decode bandwidth, and the companion views would only show
         frames nobody is looking at."""
         p = self.project
+        self._rebudget_caches()             # (I306) who decodes may have changed: an eye, the mode, a camera
         if p is None or p.n_views < 2 or self.state == TRACKING:
             return
         visible = set(self.grid.visible_indices())
@@ -4944,8 +5046,14 @@ class MainWindow(QMainWindow):
                 if cached is not None:
                     if self._lock is not None:
                         self._lock["frames"][i] = cached
-                    else:
+                    elif not cv.shows(cached):
                         cv.set_frame(cached)
+                    # (I306) the camera's window follows the playhead only through its requests:
+                    # a cache hit tells it too (quietly: no reply, the picture is up already)
+                    if rt.seek is None and rt.window > 0:
+                        self._start_seek_service(i)
+                    if rt.seek is not None:
+                        rt.seek.request(f, quiet=True)
                 else:
                     # decoder threads are started on FIRST NEED, not up front: at
                     # 15 cameras that is 15 idle threads each holding a 4K
@@ -4988,6 +5096,7 @@ class MainWindow(QMainWindow):
             if cv is not None and 0 <= v < len(self._views):
                 cv.set_frame(rgb)
         if p.active in lock["frames"]:
+            self.canvas.set_preview(False)        # (G204)
             self._refresh_body_view()
             if self._first_frame_token is not None:
                 self._first_frame_arrived()
@@ -7901,7 +8010,7 @@ class MainWindow(QMainWindow):
         "note" ("" or why two cameras cannot say "good")}; None with fewer. Two rays are blind to
         a mistake along the line, so two cameras cap at "ok" as the Reconstruct report does (G83,
         I101)."""
-        from kinetrace.calib import dlt_ray, triangulate, widest_angle_deg
+        from kinetrace.calib import cell_verdict, dlt_ray, triangulate, widest_angle_deg
         rows = []
         for c, cal, uv in obs:
             q = cal.to_calib_frame(uv)[0]
@@ -7916,10 +8025,7 @@ class MainWindow(QMainWindow):
         except Exception:           # noqa: BLE001 -- a degenerate calibration must not break the overlay
             return None
         views = [c for c, _cal, _q in rows]
-        good, usable = self._residual_bands(views)
-        verdict = "good" if res <= good else "ok" if res <= usable else "poor"
-        if len(views) == 2 and verdict == "good":
-            verdict = "ok"
+        verdict = cell_verdict(res, len(views), self._residual_bands(views)) or "poor"   # (I305) one rule
         return {"xyz": xyz, "residual": float(res),
                 "angle_deg": widest_angle_deg(dirs),
                 "views": views, "verdict": verdict, "note": self.TWO_CAM_NOTE if len(views) == 2 else ""}
@@ -8164,6 +8270,7 @@ class MainWindow(QMainWindow):
         """3D → Re-track Disagreeing Stretches: explain, list, ask, run."""
         from kinetrace import retrack
         p = self.project
+        self._sync_3d(force=True)            # (I305) the stretches of the 3D result as it is now
         if p is None or p.reconstruction is None or p.reconstruction.per_cam is None or self.state != READY:
             return
         if self._retrack is not None:
@@ -9400,6 +9507,9 @@ class MainWindow(QMainWindow):
         the end-of-run handling."""
         self.worker = driver if driver is not None else w
         self._model_worker = w
+        for rt in self._views:                  # (I306) the run gets the decode bandwidth: no window fills
+            if rt.seek is not None:             # (a fill under way ends; `_end_run` gives the windows back)
+                rt.seek.set_window(0)
         w.balls_ready.connect(self._on_ball_radii)
         w.model_loading.connect(self._on_model_loading)
         w.model_progress.connect(self._on_model_progress)
@@ -9547,6 +9657,7 @@ class MainWindow(QMainWindow):
         self.current = idx
         self.session.current_frame = idx
         self.canvas.set_frame(wrgb)
+        self.canvas.set_preview(False)          # (G204) the run's own frame: a stand-in veil from before goes
         self._refresh_overlay()
         overlay = self._member_frames.get(idx)
         if overlay is not None:
@@ -9581,6 +9692,8 @@ class MainWindow(QMainWindow):
         _quiet_close(self._model_dialog)
         self._model_dialog = None
         self._end_run_cleanup()
+        self._budget_key = None                 # (I306) the windows `_launch_run` set to none come back
+        self._rebudget_caches()
         self.act_undo.setEnabled(self._undo_snap is not None)
         self._autosave()  # before the guidance message — 'Saved ✓' must not clobber it
         return step_run
@@ -10200,7 +10313,9 @@ class MainWindow(QMainWindow):
             self._save_worker.wait()
 
     def _freeze_now(self, pid: str, target, **kw):
-        """(R49) The project as it is now, for a writer: the working state recorded first."""
+        """(R49) The project as it is now, for a writer: the working state recorded first, and (I305) the 3D
+        result brought up to date with the data being written."""
+        self._sync_3d(force=True)
         self._sync_ui_state()
         return projectfile.freeze(self.project, self._ui_global_state(), pid, target=target, **kw)
 
@@ -10345,6 +10460,7 @@ class MainWindow(QMainWindow):
             self.project.dirty = False
         recovery.discard(self._project_id)
         self._recovery_sig = None
+        self._remember_project(path, self._project_id)        # (G205) File → Open Recent
         extra = (f" ({self.project.n_views} cameras)" if self.project.n_views > 1 else "")
         what = ""
         if stats is not None:
@@ -10628,7 +10744,12 @@ class MainWindow(QMainWindow):
         self._refresh_guides()
         self._apply_state()
         dropped = had and replacement is None
-        if reason and (dropped or had_hull):
+        if reason and dropped and self._sync3d_ready():       # (I305) the automatic update makes it again
+            self.statusBar().showMessage(
+                f"{cap_first(reason)}: the 3D result is being recomputed"
+                + ("; the carved volume made earlier was cleared — carve with Ctrl+4 again" if had_hull else ""),
+                8000)
+        elif reason and (dropped or had_hull):
             gone = " and ".join(x for x, on in (("the 3D result", dropped), ("the carved volume", had_hull)) if on)
             self.statusBar().showMessage(
                 f"{cap_first(reason)}: {gone} made earlier {'were' if ' and ' in gone else 'was'} "
@@ -10767,6 +10888,107 @@ class MainWindow(QMainWindow):
         if settled is not None:
             self._open_project_from_path(path, discard=settled == "discard")
 
+    # ------------------------------------------------ recent projects (G205)
+
+    def _remember_project(self, path, pid: str | None) -> None:
+        """Put the project at `path` on top of File → Open Recent: once it has opened or been saved."""
+        if path is not None:
+            st = self._settings()
+            self._store_recent(recent.touch(recent.load(st), path, pid))
+
+    def _store_recent(self, items: list[dict]) -> None:
+        recent.store(self._settings(), items)
+        self._refresh_start_recent()
+
+    def _refresh_start_recent(self) -> None:
+        """The start screen's list (the canvas shows it only while no video is open): the same projects as
+        File → Open Recent, by name, with this computer's own path form in the tooltip. Nothing is looked up
+        on disk while a video is on screen (the list is hidden then; a save must not wait on a share)."""
+        items = recent.load(self._settings())
+        found = recent.exists_quick([it["path"] for it in items]) if self.session is None else {}
+        shown = [{"path": str(Path(it["path"])), "name": name, "missing": found.get(it["path"]) is False}
+                 for it, name in zip(items, recent.labels(items))]
+        for cv in self.grid.canvases:            # a view that has no list gets an empty one
+            cv.set_start_recent(shown if cv is self.canvas else [], self._open_recent)
+
+    def _refresh_recent_menu(self) -> None:
+        """File → Open Recent, rebuilt as it opens: each project by name (its full path as the tooltip), one
+        no longer where it was marked "(not found)", then Clear List."""
+        m = self.m_recent
+        m.clear()
+        items = recent.load(self._settings())
+        found = recent.exists_quick([it["path"] for it in items])
+        for it, name in zip(items, recent.labels(items)):
+            gone = found.get(it["path"]) is False
+            a = m.addAction(name.replace("&", "&&") + ("  (not found)" if gone else ""))
+            a.setToolTip(str(Path(it["path"])) + ("\nNot found there: click to locate it" if gone else ""))
+            a.triggered.connect(lambda _=False, it=it: self._open_recent(it))
+        if not items:
+            m.addAction("No recent projects").setEnabled(False)
+        m.addSeparator()
+        clear = m.addAction("&Clear List")
+        clear.setEnabled(bool(items))
+        clear.triggered.connect(self._clear_recent)
+
+    def _clear_recent(self) -> None:
+        self._store_recent([])
+
+    def _open_recent(self, it: dict) -> None:
+        """A recent project chosen (File → Open Recent): opened exactly like Open Project; one no longer
+        where it was is located first (`_locate_recent`)."""
+        if self.state == TRACKING:
+            return
+        path = Path(it["path"])
+        # a share that does not answer within a second counts as not there (the box says to connect it)
+        if not recent.exists_quick([str(path)], timeout=1.0)[str(path)]:
+            path = self._locate_recent(it)
+            if path is None:
+                return
+        settled = self._settle_unsaved(f"opening {path.name}")     # (G143)
+        if settled is not None:
+            self._open_project_from_path(str(path), discard=settled == "discard")
+
+    def _locate_recent(self, it: dict) -> Path | None:
+        """A recent project that is not where it was: say where it was looked for, then Locate… (a picker in
+        the nearest folder still there; the project picked takes over the entry) or Remove from List. The
+        project to open, or None."""
+        where = Path(it["path"])
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Project not found")
+        box.setTextFormat(Qt.PlainText)
+        box.setText(f"{where.name} is no longer at\n{where}")
+        box.setInformativeText(
+            "If it is on a drive or a network share that is not connected, connect it and choose it again.\n\n"
+            "If you moved or renamed the project folder, choose Locate… and pick its kinetrace.json: the list "
+            "then remembers the new place.")
+        locate = box.addButton("Locate…", QMessageBox.AcceptRole)
+        drop = box.addButton("Remove from List", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(locate)
+        box.exec()
+        chosen = box.clickedButton()
+        box.deleteLater()
+        st = self._settings()
+        if chosen is drop:
+            self._store_recent(recent.remove(recent.load(st), where))
+            return None
+        if chosen is not locate:
+            return None
+        start = recent.nearest_folder(where)
+        path, _ = QFileDialog.getOpenFileName(self, f"Locate {where.name} — in its folder, choose kinetrace.json",
+                                              str(start) if start is not None else self._start_folder(),
+                                              f"Kinetrace project (kinetrace.json *{PROJECT_SUFFIX})")
+        if not path:
+            return None
+        root = projectfile.project_root(path)
+        try:
+            pid = projectfile.read_meta(root).get("project_id")
+        except Exception:      # noqa: BLE001 - opening it says what is wrong with it
+            pid = None
+        self._store_recent(recent.touch(recent.remove(recent.load(st), where), root, pid))
+        return root
+
     def _announce_recovery(self) -> None:
         """At start-up: say (without a blocking dialog) that unsaved work is
         waiting, and where to get it back."""
@@ -10838,6 +11060,7 @@ class MainWindow(QMainWindow):
         path = str(projectfile.project_root(path))   # kinetrace.json -> its folder, the project
         if self.state == TRACKING:
             return
+        self._sync3d_rebuild_open = recovered is not None      # (I305) see _sync_3d
         pname = Path(path).name
         # the card shows at once: reading the file happens right here
         ptok = self._busy_push(f"Opening {pname}", "Reading the project file…", 0,
@@ -11027,6 +11250,7 @@ class MainWindow(QMainWindow):
         self.project_path = plan.file_path
         self._keep_single_file = False
         self._project_id, self._saved_at, self._recovery_sig = plan.pid, plan.saved_at, None
+        self._remember_project(plan.file_path, plan.pid)      # (G205) never-saved recovered work has no path
         self._adopt_project(proj, located=located, infos=infos)
         if plan.unsaved:
             self.project.dirty = True
@@ -11132,6 +11356,7 @@ class MainWindow(QMainWindow):
         self.act_solo.setEnabled(proj.n_views > 1)
         self.m_others.setEnabled(proj.n_views > 1)      # View → Other cameras (G24)
         QTimer.singleShot(0, self._update_disagreement)   # a saved reconstruction paints its disagreement
+        self._sync3d_open()                  # (I305) the 2D data its saved 3D result stands for, as opened
 
     # -------------------------------------------------------------------- 3D
 
@@ -11160,7 +11385,9 @@ class MainWindow(QMainWindow):
         self.toast.show_message(
             f"Calibration loaded for {p.calibration.n_calibrated} of {p.n_views} cameras "      # (I273)
             f"({p.calibration.source}). " + self.GUIDES_HINT
-            + " Next: <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3).", "info", 14000)
+            + (" The 3D landmarks now follow by themselves; <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3) "
+               "gives their verdict." if p.calibration.n_usable(p.n_views) >= 2      # (I305)
+               else " Next: <b>3D → Reconstruct 3D Landmarks</b> (Ctrl+3)."), "info", 14000)
 
     GUIDES_HINT = ("Press <b>N</b> (＋ Add) and click a point in one camera: the other cameras show a dashed line "
                    "where that point must be. Click the next camera to work there (the point stays selected) and "
@@ -11775,6 +12002,7 @@ class MainWindow(QMainWindow):
             return
         p.dirty = True
         r = p.reconstruction
+        self._sync3d_seed()                  # (I305) the automatic updates continue from this result
         solved = int(np.isfinite(r.residual).sum())
         med = float(np.nanmedian(r.residual)) if solved else float("nan")
         self._apply_state()
@@ -11828,6 +12056,7 @@ class MainWindow(QMainWindow):
         p = self.project
         if self.state == TRACKING:
             return
+        self._sync_3d(force=True)            # (I305) right after a retime the rebuild may be a tick away
         if not self._need_calibration("Set World Axes"):
             return
         r = p.reconstruction
@@ -11846,9 +12075,9 @@ class MainWindow(QMainWindow):
         dlg.deleteLater()
         if not ok or axes is None:
             return
-        B, o, note = axes
+        B, o, note, world = axes
         try:
-            cal2 = p.calibration.reframed(B, o, note)
+            cal2 = p.calibration.reframed(B, o, note, world)
         except ValueError as e:          # the origin lies on a camera's image plane
             QMessageBox.warning(self, "Set World Axes", str(e))
             return
@@ -11883,6 +12112,7 @@ class MainWindow(QMainWindow):
     def _carve_hull_here(self, quiet: bool = False):
         from kinetrace.hull import bounds_from_points, carve, hull_mesh, mesh_volume
         p = self.project
+        self._sync_3d(force=True)            # (I305) the 3D result as it is now, not a tick ago
         if not self._need_calibration("Carve Volume"):
             return
         # (G151k) the segment the user names (one highlighted row, or asked), matched by name in every camera
@@ -11975,6 +12205,158 @@ class MainWindow(QMainWindow):
                 f"({mesh_volume(verts, faces):.3g} {unit}³ as a mesh), voxel {voxel:.3g} {unit}. "
                 "File → Export → Mesh of This Frame writes it as OBJ/PLY.", "info", 9000)
 
+    def _sync3d_key(self) -> tuple:
+        """(I305) What a 3D result depends on besides the 2D data: the calibration (an object replaced on every
+        import, calibration and Set World Axes), the timing, the cameras (the objects, compared by identity)."""
+        p = self.project
+        return (p.calibration, tuple(float(o) for o in p.offsets), tuple(float(r) for r in p.rates),
+                tuple(p.sessions))
+
+    def _sync3d_seed(self, digests: bool = True) -> None:
+        """(I305) Remember the 2D data the project's 3D result stands for now (after an open, Ctrl+3, a
+        rebuild). `digests` False: the versions only - nothing is updated from them (no calibration, an
+        imported result), so the cameras are not fingerprinted on every tick; the next update rebuilds."""
+        p = self.project
+        self._sync3d = None if p is None else {
+            "proj": weakref.ref(p), "key": self._sync3d_key(), "pend": None,
+            "ver": [s.data_version for s in p.sessions],
+            "dig": [block_digests(s) for s in p.sessions] if digests else None}
+
+    def _sync3d_open(self) -> None:
+        """(I305) A project just opened: its saved 3D result stands as it is (digests of the data as opened),
+        unless it is a recovery copy, which may have been written in the middle of a run: made again once."""
+        self._sync3d_seed(self._sync3d_ready())
+        if self._sync3d is not None and self._sync3d_rebuild_open:
+            self._sync3d["stale"] = True
+        self._sync3d_rebuild_open = False
+
+    def _sync3d_ready(self) -> bool:
+        """With a calibration of two or more cameras, and a result made from the tracks (or none): an
+        imported result is left alone until Ctrl+3."""
+        p = self.project
+        cal = p.calibration
+        return (cal is not None and cal.n_usable(p.n_views) >= 2
+                and (p.reconstruction is None or p.reconstruction.source == "tracks"))
+
+    def _sync_3d(self, force: bool = False) -> None:
+        """(I305, owner 2026-10-16: "if there is a calibration available then for each tracked point in +2
+        cameras the reconstruct should automatically happen") Bring the project's 3D result up to date with
+        the 2D data - a click, a move, Delete, a rename, Ctrl+Z, the end of a run, an import: every way the
+        data changes, seen by its effect (each camera's `data_version`, then which landmark's 256-frame
+        blocks changed) rather than by hooking each edit. Only the changed cells are recomputed
+        (`calib.update_reconstruction`, the same bits as Ctrl+3); a change of calibration, timing or cameras
+        rebuilds the whole result once it has been still for a tick. Never while a Track press is not over
+        (between its passes / cameras / stretches too), opening, busy or a dialog is up. `force` (every
+        writer, `_freeze_now`): now, whatever is up, no waiting tick, and on this thread - what is saved
+        is always the result of the data saved. The project's own "changed" state is left to the edit."""
+        p = self.project
+        if p is None or self._sync3d_busy or self._run_in_progress() or self._loading:
+            return
+        if not force and (self._busy_stack or QApplication.activeModalWidget() is not None):
+            return
+        st = self._sync3d
+        if st is None or st["proj"]() is not p:
+            self._sync3d_open()                  # (normally done when the project is adopted)
+            return
+        key = self._sync3d_key()
+        vers = [s.data_version for s in p.sessions]
+        if key == st["key"] and vers == st["ver"] and not st.get("stale"):
+            return                               # nothing moved since the last look
+        if not self._sync3d_ready():
+            if key != st["key"] or vers != st["ver"] or st["dig"] is not None:
+                self._sync3d_seed(digests=False)
+            return
+        if key != st["key"] or p.reconstruction is None or st["dig"] is None or st.get("stale"):
+            if key != st["key"] and st["pend"] != key and not force:
+                st["pend"] = key                 # wait one quiet tick: a spin box moves an offset step by step
+                return
+            self._sync3d_run(None, force=force)
+            return
+        changed, n_cells, digs = {}, 0, {}
+        for v, s in enumerate(p.sessions):
+            if vers[v] == st["ver"][v]:
+                continue
+            new, old = block_digests(s), st["dig"][v]
+            digs[v] = new
+            last = s.n_frames - 1
+            for nm in set(new) | set(old):
+                a, b = old.get(nm), new.get(nm)
+                if a is not None and b is not None and len(a) == len(b):
+                    idx = np.nonzero(a != b)[0]
+                    if not len(idx):
+                        continue
+                    cut = np.nonzero(np.diff(idx) > 1)[0]
+                    runs = zip(np.r_[idx[0], idx[cut + 1]], np.r_[idx[cut], idx[-1]])
+                    spans = [(int(i0) * SYNC3D_BLOCK, min(last, (int(i1) + 1) * SYNC3D_BLOCK - 1)) for i0, i1 in runs]
+                else:
+                    spans = [(0, last)]          # a landmark added, renamed or removed in this camera
+                for f_lo, f_hi in spans:
+                    lo, hi = reference_span(f_lo, f_hi, p.rates[v], p.offsets[v])
+                    changed.setdefault(nm, []).append((lo, hi))
+                    n_cells += hi - lo + 1
+        rec = p.reconstruction
+        t_range = self._t_range_3d()
+        if (not changed and t_range == (rec.t0, rec.t0 + rec.n_frames - 1)
+                and landmark_names(p.sessions) == list(rec.names)):
+            st["ver"] = vers                     # the data moved somewhere 3D does not read (a mask, a colour)
+            for v, dg in digs.items():
+                st["dig"][v] = dg
+            return
+        self._sync3d_run(changed, n_cells, digs=digs, force=force)
+
+    def _sync3d_run(self, changed: dict | None, n_cells: int = 0, digs: dict | None = None,
+                    force: bool = False) -> None:
+        """(I305) Compute the update (`changed` = {name: reference spans}; None = the whole result) and adopt
+        it: small ones here, big ones (a run's frames, a rebuild) behind the loading card - except when
+        `force`d by a writer, which waits for it here. `digs` = the changed cameras' new digests (the others
+        are not fingerprinted again)."""
+        from kinetrace.calib import reconstruct, update_reconstruction
+        p = self.project
+        st = self._sync3d
+        vers = [s.data_version for s in p.sessions]
+        t0, t1 = self._t_range_3d()
+        rec = p.reconstruction
+        if t1 < t0:
+            new = None                           # no instant two cameras tracked: no 3D result
+        else:
+            sess, cal, rates, offs = list(p.sessions), p.calibration, list(p.rates), list(p.offsets)
+            if changed is None:
+                job = lambda: reconstruct(sess, cal, rates, offs, (t0, t1))           # noqa: E731
+                big = True
+            else:
+                job = lambda: update_reconstruction(rec, sess, cal, rates, offs, (t0, t1), changed)   # noqa: E731
+                grow = 0 if rec is None else max(rec.t0 - t0, 0) + max(t1 - (rec.t0 + rec.n_frames - 1), 0)
+                big = n_cells + grow * len(landmark_names(sess)) > SYNC3D_BG_CELLS
+            self._sync3d_busy = True
+            try:
+                new = (self._in_background("Updating the 3D landmarks", job,
+                                           detail="Triangulating the landmarks that changed in two or more cameras…")
+                       if big and not force else job())
+            except Exception as e:      # noqa: BLE001 - said, never a crash
+                # the versions move on but the digests do not: the next change of the data diffs against
+                # the old digests, so the cells that failed are tried again with it
+                if changed is not None and st is not None:
+                    st["ver"] = vers
+                else:
+                    self._sync3d_seed(digests=False)
+                self.statusBar().showMessage(_plain_error(e, "The 3D landmarks could not be updated"), 8000)
+                return
+            finally:
+                self._sync3d_busy = False
+        if self.project is not p:
+            return                               # the project was closed meanwhile
+        p.reconstruction = new
+        if changed is None or st is None or st["dig"] is None:
+            self._sync3d_seed()
+        else:                                    # only the cameras that changed are fingerprinted again
+            st["ver"] = vers
+            for v, d in (digs or {}).items():
+                st["dig"][v] = d
+        self._update_disagreement()
+        self._refresh_view3d()
+        self._refresh_guides()
+        self._apply_state()
+
     def _show_view3d(self) -> None:
         """The 3D window open and redrawn (R25: Reconstruct and Carve did it in two copies). `act_view3d` is
         wired with `triggered`, so ticking it here does not open the window by itself."""
@@ -12017,21 +12399,38 @@ class MainWindow(QMainWindow):
         t = self._reference_instant()       # (G107) the one rounding rule: the hull cache is keyed by it
         info = f"reference frame {t}"
         if r is not None:
+            from kinetrace.calib import cell_verdict
             scene.points_all = r.xyz
             scene.names = list(r.names)
             k = r.index(t)
+            scene.t_index = k                               # (G203) the trails fade around this row
             if k is not None:
                 scene.points = r.xyz[k]                     # every row: they line up with the names
                 n_ok = int(np.isfinite(scene.points).all(axis=1).sum())
                 res = r.residual[k]
                 med = float(np.nanmedian(res)) if n_ok else float("nan")
                 info += f" · {n_ok}/{len(r.names)} landmarks · residual {med:.2f} px"
+                # each point's verdict, the guides' rule and bands (its own cameras): the dot's ring
+                verdicts = []
+                for j in range(len(r.names)):
+                    views = (list(np.nonzero(np.isfinite(r.per_cam[k, j]))[0]) if r.per_cam is not None
+                             else list(range(p.n_views)))
+                    views = [c for c in views if c < p.n_views]
+                    verdicts.append(cell_verdict(float(res[j]), int(r.n_cams[k, j]), self._residual_bands(views))
+                                    if views else "")
+                scene.verdicts = verdicts
+                counts = [(w, verdicts.count(w)) for w in ("good", "ok", "poor") if verdicts.count(w)]
+                if counts:
+                    info += " · " + ", ".join(f"{n} {w}" for w, n in counts)
             idx = {nm: i for i, nm in enumerate(r.names)}
             s = p.session
             scene.bones = [(idx[a], idx[b]) for a, b in
                            (p.session.bone_names() if s else [])
                            if a in idx and b in idx]
             scene.unit = r.unit
+        # (G203) a trail spans 1 s either side at the reference camera's rate; (G201) the chosen world
+        scene.trail_frames = max(1, int(round(p.sessions[0].fps or 30.0))) if p.sessions else 30
+        scene.world = p.calibration.world if p.calibration is not None else None
         if p.calibration is not None:
             views = [v for v in p.calibration.views() if v < p.n_views]      # (I273) calibrated cameras
             scene.cameras = np.array([p.calibration.camera(v).center() for v in views]).reshape(-1, 3)
@@ -12675,6 +13074,7 @@ class MainWindow(QMainWindow):
     def _export_dialog(self):
         if self.session is None:
             return
+        self._sync_3d(force=True)            # (I305) the 3D exports write the result as it is now
         start = self._default_output("_tracks.csv")          # + the camera's name in a multi-camera project
         filters = ";;".join(f[0] for f in self.EXPORT_FORMATS)
         path, chosen = QFileDialog.getSaveFileName(self, "Export tracks", start, filters)
@@ -13024,6 +13424,7 @@ class MainWindow(QMainWindow):
         else:
             self._leave_project()
         self._save_after_run = False                # (I308) a Ctrl+S waiting for the run's end (I265) dies here
+        self._sync3d_timer.stop()            # (I305) closing for good (Cancel above keeps it running)
         self._finish_writer()
         if self._exports_worker is not None and self._exports_worker.isRunning():
             self._exports_worker.cancel()            # stops between files (G42)
@@ -13064,7 +13465,8 @@ class MainWindow(QMainWindow):
 class _WorldAxesDialog(QDialog):
     """3D → Set World Axes… (I170): the origin, the +X and the +Y direction as three landmarks of the 3D
     result (their positions at the instant on screen, or their median over the whole result for markers
-    that do not move). `result_axes` = (B, o, note) for `Calibration.reframed` once accepted."""
+    that do not move). `result_axes` = (B, o, note, world) for `Calibration.reframed` once accepted (G201:
+    `world` = the three landmarks' names and when, which the 3D window draws)."""
 
     def __init__(self, parent, rec, instant: int, left_handed: bool, unit: str = ""):
         from PySide6.QtWidgets import QComboBox, QRadioButton
@@ -13163,7 +13565,11 @@ class _WorldAxesDialog(QDialog):
         B, o, note, _ = self._compute()
         if B is None:
             return
-        self.result_axes = (B, o, note)
+        names = self._rec.names
+        world = {"origin": names[self.cb_origin.currentIndex()], "x": names[self.cb_x.currentIndex()],
+                 "y": names[self.cb_y.currentIndex()],
+                 "when": "median" if self.rb_median.isChecked() else f"frame {self._t}"}
+        self.result_axes = (B, o, note, world)
         self.accept()
 
 

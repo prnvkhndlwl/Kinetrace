@@ -4,6 +4,13 @@
 Click the body parts you care about, watch them followed live, fix any mistake
 with the mouse, and export the tracks to the tools you already use.
 
+<p align="center">
+  <img src="docs/images/hero.webp" width="640"
+       alt="The Kinetrace window following a flying squirrel's outline, frame by frame, as it leaps off a platform">
+  <br>
+  <em>A flying squirrel's outline followed live as it leaps (4K, 240 fps video, shown slowed down).</em>
+</p>
+
 ![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 ![Platforms](https://img.shields.io/badge/runs%20on-Windows%20%7C%20macOS%20%7C%20Ubuntu-informational)
 ![GPU optional](https://img.shields.io/badge/GPU-optional-success)

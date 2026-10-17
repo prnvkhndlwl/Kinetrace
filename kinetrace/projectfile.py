@@ -469,7 +469,8 @@ def _freeze_reconstruction(files: dict, r, folders: list[str], binary_tracks: bo
     if r is not None and binary_tracks:
         rec = {"xyz": r.xyz.astype(np.float64), "residual": r.residual.astype(np.float64),
                "n_cams": r.n_cams.astype(np.int32),
-               "meta": json.dumps({"t0": int(r.t0), "names": list(r.names), "unit": str(r.unit)})}
+               "meta": json.dumps({"t0": int(r.t0), "names": list(r.names), "unit": str(r.unit),
+                                   "source": str(r.source)})}
         if r.per_cam is not None:
             rec["per_cam"] = np.asarray(r.per_cam, np.float32)
         _put_arrays(files, "reconstruction", rec, "")
@@ -483,6 +484,7 @@ def _freeze_reconstruction(files: dict, r, folders: list[str], binary_tracks: bo
         rfiles = landmark_files(list(r.names))
         files["reconstruction/meta.json"] = _json({
             "t0": int(r.t0), "n_frames": int(r.xyz.shape[0]), "unit": str(r.unit),
+            "source": str(r.source),           # (I305) "tracks" | "imported"
             "points": [{"name": n, "file": f"points/{f}"} for n, f in zip(r.names, rfiles)],
             "per_camera_columns": cams_px,
             "frames": "reference camera's frames (the first camera's)"})
@@ -1904,7 +1906,8 @@ def _read_reconstruction(src: _Source):
             return Reconstruction(int(m["t0"]), list(m["names"]), rec["xyz"].astype(np.float64),
                                   rec["residual"].astype(np.float64), rec["n_cams"].astype(np.int32),
                                   str(m.get("unit", "")),
-                                  rec["per_cam"].astype(np.float32) if "per_cam" in rec else None)
+                                  rec["per_cam"].astype(np.float32) if "per_cam" in rec else None,
+                                  _rec_source(m))
     if src.has("reconstruction/meta.json"):
         return _read_points3d(src)
     return None
@@ -1941,7 +1944,12 @@ def _read_points3d(src: _Source):
         res[r, j], ncam[r, j] = d["residual"], d["n_cams"]
         for k, c in enumerate(cams_px):
             per[r, j, k] = d[c]
-    return Reconstruction(t0, names, xyz, res, ncam, str(m.get("unit", "")), per)
+    return Reconstruction(t0, names, xyz, res, ncam, str(m.get("unit", "")), per, _rec_source(m))
+
+
+def _rec_source(meta: dict) -> str:
+    """(I305) Where a saved 3D result came from: "imported" stays imported, anything else is "tracks"."""
+    return "imported" if meta.get("source") == "imported" else "tracks"
 
 
 def _clean_name(n: str) -> str:

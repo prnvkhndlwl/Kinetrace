@@ -143,12 +143,17 @@ side_draws = [0]
 _real_side = win._render_side
 win._render_side = lambda: (side_draws.__setitem__(0, side_draws[0] + 1), _real_side())[1]
 t0 = time.time()
+# (G204) T pressed while a jump's stand-in is still veiled: the run's live frames must lift the veil
+win.canvas.set_preview(True)
+veiled_live = False
 QTest.keyClick(win, Qt.Key_T)
 wait(lambda: win._multi is not None or win.state == TRACKING, 30, "the run starts")
 seen, together, side_trail = set(), False, False
 while win._multi is not None or win.state != READY:
     if win.state == TRACKING:
         seen.add(p.active)
+        if win.current > F0 + 2 and win.canvas.is_preview():
+            veiled_live = True              # a live frame drawn under the stand-in veil
         past = win.grid.canvas(1)._motion.past or []
         if any(np.isfinite(x).all(axis=1).sum() > 2 for x in past):
             side_trail = True           # another camera draws its trail while it tracks (G33)
@@ -159,6 +164,7 @@ while win._multi is not None or win.state != READY:
     if time.time() - t0 > 900:
         raise TimeoutError("the multi-camera run")
 pump(0.3)
+assert not veiled_live, "(G204) the run's live frames were drawn under a stand-in veil"
 assert together, "the cameras were not tracked at the same time (I141)"
 assert seen == {0}, f"the working camera stays the working camera during the run: {seen}"
 assert side_draws[0] > 3, "the other cameras are drawn live in their own views"
@@ -195,6 +201,23 @@ print(f"I141: one T tracked the point in the 2 cameras that have it and the ball
       f"time, drawn live, ending in camA ({time.time() - t0:.0f} s) OK")
 TOGETHER = {v: {k: getattr(p.sessions[v], k).copy() for k in ("tracks", "confidence", "radius", "visibility",
                                                                "tracked", "manual")} for v in range(3)}
+
+# ---- 1b. (I306) after the run, stepping back is instant in every camera: each kept its tracked stretch ----
+misses = []
+_orig_slow = win._on_seek_slow
+win._on_seek_slow = lambda view, idx: (misses.append((view, idx)), _orig_slow(view, idx))[1]
+end = win.current
+for _ in range(12):
+    before = win.current
+    QTest.keyClick(win, Qt.Key_B)
+    wait(lambda: win.current == before - 1 and win._lock is None, 20, "a step back")
+    pump(0.3)
+del win._on_seek_slow
+assert win.current == end - 12, (end, win.current)
+win._goto(end, force=True)                      # back where the run ended, for the sections below
+pump(0.3)
+assert not misses, f"(I306) after the run a step back re-decoded: {misses}"
+print(f"I306: 12 steps back from frame {end} after the run: every camera from its cache OK")
 
 # ---- 2. one Ctrl+Z, every camera -------------------------------------------------------
 win._undo_run()
