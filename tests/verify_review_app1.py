@@ -765,6 +765,22 @@ def i308_closed_window_never_autosaves():
     check("I308 no recovery copy of the discarded work appears after the close", recovery.for_video(A) is None,
           recovery.for_video(A))
     forget(A)
+    # (b) Ctrl+S during a run asks for a save once the run is over (I265); a Discard close must cancel it, or the
+    # poll saves the discarded work on the closed window when the run ends
+    w = window(A)
+    QTest.keyClick(w, Qt.Key_N)
+    click(w, 160, 120)
+    w._run_in_progress = lambda: True              # a run is going (no model in this suite)
+    app.setActiveWindow(w)
+    QTest.keyClick(w, Qt.Key_S, Qt.ControlModifier)
+    check("I308 Ctrl+S during a run waits for the run to end", w._save_after_run)
+    saves = []
+    w._save_project = lambda: saves.append(1) or False
+    close(w)                                       # Discard
+    w._run_in_progress = lambda: False             # the run ends
+    pump(1.0)
+    check("I308 the closed window does not save the discarded work once the run ends", not saves, len(saves))
+    forget(A)
 
 
 # ================================================================== G134

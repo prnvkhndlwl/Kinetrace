@@ -13020,10 +13020,10 @@ class MainWindow(QMainWindow):
                 ev.ignore()
                 return
         elif answer == QMessageBox.Discard:
-            self._finish_writer()
-            recovery.discard(self._project_id)
+            self._leave_project(discard=True)       # (I308) signed as handled: no later autosave writes it back
         else:
             self._leave_project()
+        self._save_after_run = False                # (I308) a Ctrl+S waiting for the run's end (I265) dies here
         self._finish_writer()
         if self._exports_worker is not None and self._exports_worker.isRunning():
             self._exports_worker.cancel()            # stops between files (G42)
