@@ -22,14 +22,48 @@ sys.path.insert(0, ROOT)
 OUT = os.path.join(HERE, "out", "recent")
 shutil.rmtree(OUT, ignore_errors=True)
 os.makedirs(OUT, exist_ok=True)
+os.environ["KINETRACE_RECOVERY_DIR"] = os.path.join(OUT, "recovery")
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E402
 
 from kinetrace import recent  # noqa: E402
+
+# every dialog is stubbed: an unstubbed modal blocks the test
+ASK = {"open": "", "save": "", "button": None, "boxes": []}
+
+
+def _question(*a, **k):
+    return QMessageBox.Discard if (a[1] if len(a) > 1 else "") == "Save changes?" else QMessageBox.Yes
+
+
+def _exec(self):
+    ASK["boxes"].append((self.windowTitle(), self.text() + "\n" + self.informativeText()))
+    for b in self.buttons():
+        if ASK["button"] is not None and b.text().replace("&", "") == ASK["button"]:
+            b.click()
+            break
+    return 0
+
+
+QMessageBox.exec = _exec
+QMessageBox.question = staticmethod(_question)
+QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
+QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
+QMessageBox.critical = staticmethod(lambda *a, **k: ASK["boxes"].append(("critical", str(a[1:3]))) or QMessageBox.Ok)
+QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (ASK["open"], ""))
+QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (ASK["save"], ""))
+app = QApplication.instance() or QApplication([])
+from kinetrace.app import IDLE, READY, MainWindow  # noqa: E402
 
 FAILS = []
 
 
-def check(cond, what):
-    print(("  ok    " if cond else "  FAIL  ") + what)
+def check(cond, what, detail=""):
+    print(("  ok    " if cond else "  FAIL  ") + what + (f"  ({detail})" if detail and not cond else ""), flush=True)
     if not cond:
         FAILS.append(what)
 
@@ -120,7 +154,102 @@ def unit():
           f"a stalled existence check is 'unknown' within the time limit ({dt:.2f} s)")
 
 
+def pump(sec=0.2):
+    t = time.time()
+    while time.time() - t < sec:
+        app.processEvents()
+        time.sleep(0.005)
+
+
+def clip(name, n=30):
+    path = os.path.join(OUT, name)
+    vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (320, 240))
+    base = np.random.RandomState(5).randint(0, 255, (280, 320 + 4 * n, 3)).astype(np.uint8)
+    for f in range(n):
+        vw.write(np.ascontiguousarray(base[20:260, 4 * f:4 * f + 320]))
+    vw.release()
+    return path
+
+
+def settle(w, want_project=None):
+    for _ in range(300):
+        pump(0.05)
+        if (w.state == READY and w.project is not None and not w._loading
+                and (want_project is None or (w.project_path is not None
+                                              and os.path.normcase(str(w.project_path.resolve()))
+                                              == os.path.normcase(os.path.abspath(want_project))))):
+            break
+    pump(0.3)
+
+
+def window():
+    w = MainWindow()
+    w.resize(1400, 900)
+    w.show()
+    pump(0.3)
+    return w
+
+
+def close(w):
+    w.close()
+    pump(0.3)
+    w._dev_probe.wait(10000)
+
+
+def menu_entries(w):
+    """File → Open Recent as it opens (Qt emits aboutToShow before showing it): {text: action}."""
+    w.m_recent.aboutToShow.emit()
+    return {a.text(): a for a in w.m_recent.actions() if not a.isSeparator()}
+
+
+def listed(w):
+    return [it["path"] for it in recent.load(w._settings())]
+
+
+def posix(p):
+    return recent.entry(p, "")["path"]
+
+
+VID = clip("clip.mp4")
+P1 = os.path.join(OUT, "first.kinetrace")
+
+
+def gui_menu():
+    print("[2] File -> Open Recent")
+    w = window()
+    recent.clear(w._settings())             # the offscreen test settings file is shared by the suites
+    check(list(menu_entries(w)) == ["No recent projects", "&Clear List"]
+          and not menu_entries(w)["&Clear List"].isEnabled(), "an empty list says so; Clear List greyed")
+    w._open_video(VID)
+    settle(w)
+    w.session.add_empty_point()
+    w.session.dirty = True
+    ASK["save"] = P1
+    w.activateWindow()
+    QTest.keyClick(w, Qt.Key_S, Qt.ControlModifier)        # the user's Ctrl+S: Save As the first time
+    pump(0.5)
+    check(os.path.isfile(os.path.join(P1, "kinetrace.json")), "Ctrl+S saved the project")
+    check(listed(w) == [posix(P1)], "a saved project is on the list", f"{listed(w)}")
+    close(w)
+
+    w = window()                            # the next start of the program
+    ents = menu_entries(w)
+    check("first.kinetrace" in ents, "after a restart it is in File -> Open Recent", f"{list(ents)}")
+    check(ents["first.kinetrace"].toolTip().startswith(str(recent.Path(P1))), "its tooltip is the full path")
+    check(w.m_recent.isEnabled(), "Open Recent is available when nothing is tracking")
+    ents["first.kinetrace"].trigger()
+    settle(w, P1)
+    check(w.project_path is not None and os.path.normcase(str(w.project_path.resolve()))
+          == os.path.normcase(os.path.abspath(P1)), "one click opened it", f"{w.project_path}")
+    check(listed(w) == [posix(P1)], "opening it again keeps one entry")
+    menu_entries(w)["&Clear List"].trigger()
+    check(listed(w) == [] and "No recent projects" in menu_entries(w), "Clear List empties it")
+    w._remember_project(w.project_path, w._project_id)      # back on the list for the next parts
+    close(w)
+
+
 unit()
+gui_menu()
 
 if FAILS:
     print(f"verify_recent FAILED ({len(FAILS)}): " + "; ".join(FAILS))

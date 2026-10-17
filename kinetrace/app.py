@@ -43,7 +43,7 @@ from kinetrace.project import MAX_VIEWS, REFERENCE_VIEW, Project
 from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_token,
                                      model_is_cached as seg_is_cached, preferred_backend,
                                      save_token, working_size)
-from kinetrace import gpmf, projectfile, recovery, trackio
+from kinetrace import gpmf, projectfile, recent, recovery, trackio
 from kinetrace.lens import lens_label
 from kinetrace.errors import cap_first, plain_error as _plain_error
 from kinetrace.session import TRACKER_NAMES, TrackingSession
@@ -1571,6 +1571,12 @@ class MainWindow(QMainWindow):
         for a in (self.act_open, self.act_open_folder, self.act_open_proj, self.act_recover, None, self.act_save,
                   self.act_save_as, None):
             m_file.addSeparator() if a is None else m_file.addAction(a)
+        # (G205) the last projects opened or saved, newest first: rebuilt each time it opens (a project
+        # moved since shows "(not found)")
+        self.m_recent = QMenu("Open &Recent", self)
+        self.m_recent.setToolTipsVisible(True)
+        self.m_recent.aboutToShow.connect(self._refresh_recent_menu)
+        m_file.insertMenu(self.act_recover, self.m_recent)
         m_import = m_file.addMenu("&Import")
         self.act_import_tracks.setText("&Tracks…")
         # act_calib (File → Import → Calibration…) is created with the 3D actions and inserted there
@@ -2193,6 +2199,7 @@ class MainWindow(QMainWindow):
         self.act_open.setEnabled(not tracking)
         self.act_open_folder.setEnabled(not tracking)
         self.act_open_proj.setEnabled(not tracking)
+        self.m_recent.setEnabled(not tracking)
         # recovering replaces the project on screen: never in the middle of a run
         for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks,
                   self.act_recover):
@@ -10345,6 +10352,7 @@ class MainWindow(QMainWindow):
             self.project.dirty = False
         recovery.discard(self._project_id)
         self._recovery_sig = None
+        self._remember_project(path, self._project_id)        # (G205) File → Open Recent
         extra = (f" ({self.project.n_views} cameras)" if self.project.n_views > 1 else "")
         what = ""
         if stats is not None:
@@ -10767,6 +10775,45 @@ class MainWindow(QMainWindow):
         if settled is not None:
             self._open_project_from_path(path, discard=settled == "discard")
 
+    # ------------------------------------------------ recent projects (G205)
+
+    def _remember_project(self, path, pid: str | None) -> None:
+        """Put the project at `path` on top of File → Open Recent: once it has opened or been saved."""
+        if path is not None:
+            st = self._settings()
+            recent.store(st, recent.touch(recent.load(st), path, pid))
+
+    def _refresh_recent_menu(self) -> None:
+        """File → Open Recent, rebuilt as it opens: each project by name (its full path as the tooltip), one
+        no longer where it was marked "(not found)", then Clear List."""
+        m = self.m_recent
+        m.clear()
+        items = recent.load(self._settings())
+        found = recent.exists_quick([it["path"] for it in items])
+        for it in items:
+            gone = found.get(it["path"]) is False
+            a = m.addAction(it["name"].replace("&", "&&") + ("  (not found)" if gone else ""))
+            a.setToolTip(str(Path(it["path"])) + ("\nNot found there: click to locate it" if gone else ""))
+            a.triggered.connect(lambda _=False, it=it: self._open_recent(it))
+        if not items:
+            m.addAction("No recent projects").setEnabled(False)
+        m.addSeparator()
+        clear = m.addAction("&Clear List")
+        clear.setEnabled(bool(items))
+        clear.triggered.connect(self._clear_recent)
+
+    def _clear_recent(self) -> None:
+        recent.clear(self._settings())
+
+    def _open_recent(self, it: dict) -> None:
+        """A recent project chosen (File → Open Recent): opened exactly like Open Project."""
+        if self.state == TRACKING:
+            return
+        path = Path(it["path"])
+        settled = self._settle_unsaved(f"opening {path.name}")     # (G143)
+        if settled is not None:
+            self._open_project_from_path(str(path), discard=settled == "discard")
+
     def _announce_recovery(self) -> None:
         """At start-up: say (without a blocking dialog) that unsaved work is
         waiting, and where to get it back."""
@@ -11027,6 +11074,7 @@ class MainWindow(QMainWindow):
         self.project_path = plan.file_path
         self._keep_single_file = False
         self._project_id, self._saved_at, self._recovery_sig = plan.pid, plan.saved_at, None
+        self._remember_project(plan.file_path, plan.pid)      # (G205) never-saved recovered work has no path
         self._adopt_project(proj, located=located, infos=infos)
         if plan.unsaved:
             self.project.dirty = True
