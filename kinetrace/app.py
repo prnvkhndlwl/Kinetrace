@@ -10806,13 +10806,59 @@ class MainWindow(QMainWindow):
         recent.clear(self._settings())
 
     def _open_recent(self, it: dict) -> None:
-        """A recent project chosen (File → Open Recent): opened exactly like Open Project."""
+        """A recent project chosen (File → Open Recent): opened exactly like Open Project; one no longer
+        where it was is located first (`_locate_recent`)."""
         if self.state == TRACKING:
             return
         path = Path(it["path"])
+        if not path.exists():
+            path = self._locate_recent(it)
+            if path is None:
+                return
         settled = self._settle_unsaved(f"opening {path.name}")     # (G143)
         if settled is not None:
             self._open_project_from_path(str(path), discard=settled == "discard")
+
+    def _locate_recent(self, it: dict) -> Path | None:
+        """A recent project that is not where it was: say where it was looked for, then Locate… (a picker in
+        the nearest folder still there; the project picked takes over the entry) or Remove from List. The
+        project to open, or None."""
+        where = Path(it["path"])
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Project not found")
+        box.setTextFormat(Qt.PlainText)
+        box.setText(f"{where.name} is no longer at\n{where}")
+        box.setInformativeText(
+            "If it is on a drive or a network share that is not connected, connect it and choose it again.\n\n"
+            "If you moved or renamed the project folder, choose Locate… and pick its kinetrace.json: the list "
+            "then remembers the new place.")
+        locate = box.addButton("Locate…", QMessageBox.AcceptRole)
+        drop = box.addButton("Remove from List", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(locate)
+        box.exec()
+        chosen = box.clickedButton()
+        box.deleteLater()
+        st = self._settings()
+        if chosen is drop:
+            recent.store(st, recent.remove(recent.load(st), where))
+            return None
+        if chosen is not locate:
+            return None
+        start = recent.nearest_folder(where)
+        path, _ = QFileDialog.getOpenFileName(self, f"Locate {where.name} — in its folder, choose kinetrace.json",
+                                              str(start) if start is not None else self._start_folder(),
+                                              f"Kinetrace project (kinetrace.json *{PROJECT_SUFFIX})")
+        if not path:
+            return None
+        root = projectfile.project_root(path)
+        try:
+            pid = projectfile.read_meta(root).get("project_id")
+        except Exception:      # noqa: BLE001 - opening it says what is wrong with it
+            pid = None
+        recent.store(st, recent.touch(recent.remove(recent.load(st), where), root, pid))
+        return root
 
     def _announce_recovery(self) -> None:
         """At start-up: say (without a blocking dialog) that unsaved work is

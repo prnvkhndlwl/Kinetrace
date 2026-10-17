@@ -248,8 +248,59 @@ def gui_menu():
     close(w)
 
 
+def gui_moved():
+    print("[3] a project that was moved or renamed")
+    moved = os.path.join(OUT, "moved", "first renamed.kinetrace")
+    os.makedirs(os.path.dirname(moved), exist_ok=True)
+    shutil.move(P1, moved)                  # the user moves the project folder in Explorer / Finder
+    w = window()
+    ents = menu_entries(w)
+    check("first.kinetrace  (not found)" in ents, "its entry says (not found)", f"{list(ents)}")
+    ASK.update(button="Remove from List", boxes=[])
+    ents["first.kinetrace  (not found)"].trigger()
+    pump(0.2)
+    check(len(ASK["boxes"]) == 1 and ASK["boxes"][0][0] == "Project not found"
+          and str(recent.Path(P1)) in ASK["boxes"][0][1], "clicking it says where it was looked for",
+          f"{ASK['boxes']}")
+    check(listed(w) == [] and w.project is None, "Remove from List drops it and opens nothing")
+
+    w._remember_project(P1, None)           # listed again at its old place
+    ASK.update(button="Locate…", open=os.path.join(moved, "kinetrace.json"), boxes=[])
+    menu_entries(w)["first.kinetrace  (not found)"].trigger()
+    settle(w, moved)
+    check(w.project_path is not None and os.path.normcase(str(w.project_path.resolve()))
+          == os.path.normcase(os.path.abspath(moved)), "Locate... opened it at its new place", f"{w.project_path}")
+    check(listed(w) == [posix(moved)], "the list holds it ONCE, at the new place", f"{listed(w)}")
+    check("first renamed.kinetrace" in menu_entries(w), "and the menu shows its new name")
+    close(w)
+
+    # moved again, then opened with Open Project (no Locate): the entry follows it by its project id
+    moved2 = os.path.join(OUT, "elsewhere", "first.kinetrace")
+    os.makedirs(os.path.dirname(moved2), exist_ok=True)
+    shutil.move(moved, moved2)
+    w = window()
+    ASK.update(button=None, open=os.path.join(moved2, "kinetrace.json"))
+    w.act_open_proj.trigger()
+    settle(w, moved2)
+    check(listed(w) == [posix(moved2)], "a moved project opened with Open Project updates its one entry",
+          f"{listed(w)}")
+    close(w)
+
+    # a COPY of the folder is another project to the user: both are listed
+    copy = os.path.join(OUT, "elsewhere", "first copy.kinetrace")
+    shutil.copytree(moved2, copy)
+    w = window()
+    ASK["open"] = os.path.join(copy, "kinetrace.json")
+    w.act_open_proj.trigger()
+    settle(w, copy)
+    check(listed(w) == [posix(copy), posix(moved2)], "a copied folder gets its own entry; the original keeps its own",
+          f"{listed(w)}")
+    close(w)
+
+
 unit()
 gui_menu()
+gui_moved()
 
 if FAILS:
     print(f"verify_recent FAILED ({len(FAILS)}): " + "; ".join(FAILS))
