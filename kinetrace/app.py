@@ -4881,9 +4881,16 @@ class MainWindow(QMainWindow):
         self._lock = ({"want": {p.active}, "frames": {}}
                       if multi and self._sync_mode == "all" and not continuous
                       and self.seek is not None and self.state != TRACKING else None)
+        # (I306) a frame already in the cache needs no decoder: it goes up now, not when the
+        # scrubbing thread -- perhaps busy filling the window -- gets to the request
+        hit = self.cache.get(idx) if self.cache is not None and self.state != TRACKING else None
         if self._lock is not None:
             self._lock_timer.start()
-        elif self.cache is not None and self.cache.get(idx) is None:
+            if hit is not None:
+                self._lock["frames"][p.active] = hit      # shown with the other cameras (G24)
+        elif hit is not None:
+            self._show_active_frame(hit, body=False)      # `_refresh_body_view` follows below
+        elif self.cache is not None:
             # instant preview from cache while the real frame decodes, veiled: it is
             # another frame under this frame's markers (G204)
             near = self.cache.nearest(idx)
@@ -4900,6 +4907,21 @@ class MainWindow(QMainWindow):
         self._refresh_view3d()
         self._refresh_body_view()
 
+    def _show_active_frame(self, rgb: np.ndarray, body: bool = True) -> None:
+        """The working camera's frame at the playhead goes up (from the cache in `_goto`, or from
+        the scrubbing thread). The same array twice (a cache hit, then the thread's reply: the
+        cache's own object) is drawn once -- twice would also make the difference filter compare
+        the frame with itself."""
+        if not self.canvas.shows(rgb):
+            self.canvas.set_frame(rgb)
+        self.canvas.set_preview(False)           # the real frame: no stand-in any more (G204)
+        if self._first_frame_token is not None:
+            self._first_frame_arrived()          # the open is over: the loading card goes
+        if body:
+            # the side-by-side window shows the same instant, and the
+            # decoded frame only exists here -- a seek is what fills it
+            self._refresh_body_view()
+
     def _on_seek_frame(self, view: int, idx: int, rgb: np.ndarray):
         if self.project is None or not (0 <= view < len(self._views)):
             return
@@ -4910,13 +4932,7 @@ class MainWindow(QMainWindow):
                     lock["frames"][view] = rgb        # goes up with the other cameras (G24)
                     self._try_lockstep()
                     return
-                self.canvas.set_frame(rgb)
-                self.canvas.set_preview(False)           # the real frame: no stand-in any more (G204)
-                if self._first_frame_token is not None:
-                    self._first_frame_arrived()          # the open is over: the loading card goes
-                # the side-by-side window shows the same instant, and the
-                # decoded frame only exists here -- a seek is what fills it
-                self._refresh_body_view()
+                self._show_active_frame(rgb)
             return
         # a companion view: only the frame we last asked it for (a scrub leaves
         # older replies in flight, and they would show the wrong instant)

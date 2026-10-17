@@ -842,6 +842,12 @@ class VideoCanvas(QGraphicsView):
         k = int(np.argmin(d))
         return k if d[k] <= 12 / scale else None
 
+    def shows(self, rgb: np.ndarray) -> bool:
+        """This very array is the picture on screen now (I306: a cache hit and the decoder's
+        reply for it are the same object; drawing it twice would make the difference filter
+        compare the frame with itself)."""
+        return self._raw_rgb is rgb and not self._pixitem.pixmap().isNull()
+
     def set_frame(self, rgb: np.ndarray) -> None:
         """Display a frame. May be lower-res than native (e.g. the tracking
         working resolution): it is scaled to fill the native scene rect, so

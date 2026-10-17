@@ -329,6 +329,8 @@ def step(key, n):
         start = win.current
         QTest.keyClick(win, key)
         pump(lambda: win.current != start and win._lock is None, 10, "a step")
+        hit = win.cache.get(win.current)
+        assert hit is not None and win.canvas.shows(hit), "the working camera shows its frame from the cache"
         settle(max(1.2, 3 * STEP_GAP_S))        # a lone step; the idle fill runs
 
 
