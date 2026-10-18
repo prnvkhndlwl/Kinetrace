@@ -9772,11 +9772,13 @@ class MainWindow(QMainWindow):
             return
         self._on_select(pid)
 
-    def _missing_3d(self, rec, k, t: int) -> list[tuple[str, str]]:
-        """(G206) [(landmark, why it has no 3D at reference instant t)] in plain words, for every landmark some
-        camera has here that the 3D result `rec` (row k) has no position for. A landmark no camera has here is
-        not listed (nothing to explain: it is simply not tracked at this instant)."""
+    def _missing_3d(self, rec, k, t: int) -> list[tuple[str, str, str]]:
+        """(G206) [(landmark, why it has no 3D at reference instant t in plain words, the same in a few words
+        for the legend (G208))], for every landmark some camera has here that the 3D result `rec` (row k) has no
+        position for. A landmark no camera has here is not listed (nothing to explain: it is simply not
+        tracked at this instant)."""
         from kinetrace.calib import sampled_views
+        from kinetrace.view3d import cam_tag
         p = self.project
         cal = p.calibration
         if cal is None or cal.n_usable(p.n_views) < 2:
@@ -9792,15 +9794,18 @@ class MainWindow(QMainWindow):
             if not views and not half:
                 continue
             cams = [p.name(v) for v in views]
-            parts = []
+            parts, short = [], []
             if len(views) >= 2:
                 parts.append(f"{', '.join(cams)} have it here, but their rays give no point")
+                short.append("rays do not meet")
             elif views:
                 parts.append(f"only {cams[0]} has it here; 3D needs 2 cameras")
+                short.append(f"only {cam_tag(views[0])}")
             for v, (f_has, f_lacks) in half.items():
                 parts.append(f"{p.name(v)} has it on its frame {f_has} but not on {f_lacks}, and this instant falls "
                              "between the two (its offset is fractional)")
-            out.append((nm, "; ".join(parts)))
+                short.append(f"{cam_tag(v)}: no frame {f_lacks}")
+            out.append((nm, "; ".join(parts), ", ".join(short)))
         return out
 
     def _live_window(self, rec, t: int, half: int):
@@ -12615,6 +12620,7 @@ class MainWindow(QMainWindow):
             scene.cameras = np.array([p.calibration.camera(v).center() for v in views]).reshape(-1, 3)
             scene.camera_names = [p.name(v) for v in views]
             scene.cam_centres = {v: scene.cameras[i] for i, v in enumerate(views)}      # (G207) the rays' ends
+            scene.camera_views = list(views)                                            # (G208) the legend
         s = self.session
         if s is not None and self.selected is not None and 0 <= self.selected < s.n_points:
             scene.selected = s.points[self.selected].name
@@ -12630,7 +12636,17 @@ class MainWindow(QMainWindow):
         scene.calib = cp[2] if (cp is not None and cp[0] is cal and cp[1] == self._calib_key()) else None
         if scene.unit == "" and cal is not None:
             scene.unit = cal.unit
-        scene.missing = self._missing_3d(r, r.index(t) if r is not None else None, t)     # (G206)
+        kt = r.index(t) if r is not None else None
+        scene.missing = self._missing_3d(r, kt, t)                                          # (G206)
+        # (G208) each landmark's state at the instant, for the legend: its cameras and verdict, or why none
+        why = {nm: sh for nm, _, sh in scene.missing}
+        scene.status = []
+        for j, nm in enumerate(scene.names):
+            if kt is not None and np.isfinite(r.xyz[kt, j]).all():
+                vd = scene.verdicts[j] if j < len(scene.verdicts) else ""
+                scene.status.append((f"{int(r.n_cams[kt, j])} cams" + (f" · {vd}" if vd else ""), vd))
+            else:
+                scene.status.append((why.get(nm, "not here"), "poor" if nm in why else ""))
         self.view3d.set_scene(scene, info)
         made = cp is not None and cp[0] is cal and cp[1] == self._calib_key()     # (a failed one: not again)
         if scene.calib is None and not made and self.view3d._calib_on():

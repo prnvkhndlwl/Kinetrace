@@ -386,9 +386,38 @@ if cmb is not None:
     nk = [by.get(("neck", c)) for c in range(3)]
     check(all(r_ is not None and r_["verdict"] == "good" for r_ in nk), "the exact neck's rays are good",
           str([None if r_ is None else (r_["verdict"], round(r_["err"], 3)) for r_ in nk]))
+    # (G208) on the figure each ray's camera end carries the short tag only; the legend has the name and the error
     labs = [t_ for _, _, t_ in v._hits.get("labels", [])]
-    check(any(t_.startswith("camC") and "px" in t_ for t_ in labs), "a ray is labelled with its camera and px error",
-          str(labs[:12]))
+    check("C3" in labs and not any(t_.startswith("camC") for t_ in labs if "px" in t_ and not t_.startswith("C3")),
+          "the figure tags each ray's camera (C3), without its long name", str(labs[:16]))
+    leg = v._hits.get("legend") or {}
+    left = leg.get("left") or []
+    check(any(t_.startswith("C3  camC") and t_.endswith(f"{hc['err']:.1f} px") for t_ in left) if hc else False,
+          "the legend's camera column names C3 = camC with its ray error", str(left))
+    right = leg.get("right") or []
+    check(any(t_.startswith("nose") and "only C1" in t_ for t_ in right) and any(t_.startswith("neck") and "3 cams" in t_
+                                                                                  for t_ in right),
+          "the legend's landmark column gives each one's state (3 cams / only C1)", str(right))
+    # L: the legend sits in the strips beside the scene; the scene is framed exactly as without it
+    from kinetrace import view3d as _v3  # noqa: E402
+    W_, H_ = 1400, 700
+    sc = v.scene
+    a_ = _v3.render_scene(sc, (W_, H_), v.azimuth, v.elevation, v.zoom, legend=False)
+    b_ = _v3.render_scene(sc, (W_, H_), v.azimuth, v.elevation, v.zoom, legend=True)
+    lw_, rw_, panel_ = _v3.legend_layout((W_, H_), 1.0)
+    mid = slice(int(lw_) + 2, int(W_ - rw_) - 2)
+    check(not panel_ and np.array_equal(a_[:, mid], b_[:, mid]),
+          "the legend leaves the scene's part of the picture as it is (wide window: side strips)")
+    diff = np.abs(a_.astype(int) - b_).sum(axis=2) > 30
+    check(diff[:, :int(lw_)].any() and diff[:, int(W_ - rw_):].any(), "the legend is drawn in both side strips")
+    hits_ = {}
+    _v3.render_scene(sc, (W_, H_), v.azimuth, v.elevation, v.zoom, rays="all", legend=True, hits=hits_)
+    check(hits_["rays"] and all(lw_ - 1 <= ry["start"][0] <= W_ - rw_ + 1 for ry in hits_["rays"]),
+          "every ray stops at the legend's columns")
+    _, _, panel_n = _v3.legend_layout((700, 700), 1.0)
+    check(panel_n, "a square window gets the legend on a panel")
+    # the rays are 1 px wide now (owner: "reduce the line weight by .5")
+    check(_v3._px(1.0, 1.0) == 1, "(setup) a 1 px line")
     # R3: zoomed far in, the cameras are off the picture: rays are clipped, labelled at the edge, no error
     for z in (50.0, 0.05):
         v.zoom = z
@@ -410,8 +439,10 @@ if cmb is not None:
     pump(0.3)
     names_drawn = {ry["name"] for ry in (v._hits.get("rays") or [])}
     check(names_drawn == {"head"}, "selecting another landmark in LAYERS moves the rays to it", str(names_drawn))
-    # R5: the saved picture has them, in both backgrounds
-    for light in (False, True):
+    # R5: the saved picture has them, in both backgrounds (the choice is remembered in the suites' shared
+    # settings file: put back as found, or the next suite draws on the light one)
+    light_was = v.chk_light.isChecked()
+    for light in (False, True, light_was):
         if v.chk_light.isChecked() != light:
             QTest.mouseClick(v.chk_light, Qt.LeftButton)
             pump(0.2)

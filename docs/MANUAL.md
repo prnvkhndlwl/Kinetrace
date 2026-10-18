@@ -2097,10 +2097,14 @@ five pages and explains each one:
    cameras are solved (the timing checks go on meanwhile); **Show in 3D**
    brings it back if you close it. It is a picture you can turn before you
    use the calibration: each camera as a small pyramid where it stands, pointing where it
-   looks, its whole **field of view** (as Blender draws a camera: the picture's
-   edges, the lens bend included, out to a flat plane past the wand; its four
-   sides are filled in the camera's colour, faintly, so where several cameras'
-   fields overlap the picture looks denser), and every wand position the
+   looks, its **field of view** for the cameras you pick in **Fields of view ▾**
+   (none at first; *Show in 3D* picks all): the picture's edges, the lens bend
+   included, inside the box around the 3D points (around the wand when there
+   are none). Its sides are filled faintly in the camera's colour, so where
+   several cameras' fields overlap the picture looks denser, and outlined
+   where they meet the box. A wide lens's field of view has curved sides and
+   reaches farthest at its corners; that is what a wide lens sees, not an
+   error. And every wand position the
    calibration used as two small dots joined by a thin line, coloured by
    how well the cameras agree on it: **green** good, **yellow** ok, **orange**
    poor, **red** (a slightly bigger dot) a click the fit set aside. Zoom in
@@ -2109,9 +2113,11 @@ five pages and explains each one:
    least that many cameras see — where 3D is possible, and where it is well
    determined; it is drawn over the fields of view — and the line above the picture says how much of the wand
    cloud lies inside it, with a verdict (90 % or more good, 70 % ok, less
-   poor). **Cameras ▾** chooses which cameras are drawn and counted: untick
-   some to see what the others cover together. Each layer (wand points,
-   camera pyramids, fields of view, covered space) has its own tick. Hand
+   poor). **Cameras ▾** chooses which cameras' pyramids are drawn and which
+   are counted: untick some to see what the others cover together. Each layer
+   (wand points, camera pyramids, fields of view, covered space) has its own
+   control. On the picture each camera is tagged by its number (**C7**); the
+   legend beside the picture gives its full name. Hand
    check: the pyramids should sit where your cameras stand and point into
    the volume; a camera's field-of-view corner edge passes through what that
    camera shows at that corner of its picture. A camera with no lens
@@ -2392,14 +2398,20 @@ Four steps, in this order:
    which selects it in the main window too) or for every landmark (*Rays:
    all*). Each line is coloured by how far that camera's own point lies from
    the 3D point when projected back into it, against the residual bands below:
-   green good, yellow ok, red poor. It is labelled at the camera end with the
-   camera's name and that distance in pixels (*Rays: all*: once per camera,
-   its worst). A camera far outside the picture gets its line cut at the edge,
-   labelled there. Hand check: two rays should meet at the dot. A red ray says
+   green good, yellow ok, red poor. Each line is tagged at the camera end with
+   the camera's number (**C7**); a camera far outside the picture gets its line
+   cut at the edge, tagged there. Hand check: two rays should meet at the dot. A red ray says
    to look at that camera first (a wrong click or track, or its timing). With
    three cameras, though, one bad camera also pulls the point away from the
    other two, so their rays turn yellow or red too: the reddest ray is the
    likeliest culprit, not a proof. Save picture… keeps the rays.
+   **The legend** uses the space beside the picture: on the left the cameras
+   (their colour, number, full name and, with Rays, the error of their ray in
+   its verdict's colour - the worst one with *Rays: all*), on the right the
+   landmarks (their colour, name, and how many cameras made the point with its
+   verdict, or why it has none here, e.g. "only C3"). On the picture itself
+   only the landmark names, the camera numbers and the grid's numbers stay.
+   In a narrow window the legend lies on a light panel over the picture.
    Each landmark has its own soft colour; a **yellow ring** around a dot means
    its cameras agree only roughly there (ok), a **red ring** that they
    disagree (poor) — the same verdict the epipolar guides give, and the line

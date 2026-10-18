@@ -261,10 +261,11 @@ def sec_e():
         v._render()
         assert not np.array_equal(two, v.last_image), "Covered by >= 3 draws the same as >= 2"
         assert "2+" in v.info.text() or "cameras see" in v.info.text(), v.info.text()
-        # (owner 2026-10-12) the Cameras menu: two cameras unticked -> their fields of view go, the covered
-        # space is counted from the three others
-        QTest.mouseClick(v.chk_fov, Qt.LeftButton, pos=QPoint(4, v.chk_fov.height() // 2))
+        # (owner 2026-10-12) the Cameras menu: two cameras unticked -> the covered space is counted from the
+        # three others; (G209) the fields of view have their own menu: Fields of view > All cameras
+        fov_menu_entry(v, "All cameras").trigger()
         pump(0.1)
+        assert v._fov_views() == {int(a.data()) for a in v.fov_actions}, v._fov_views()
         v._render()
         before = v.last_image.copy()
         every = [int(a.data()) for a in v.cam_actions]     # the calibrated cameras (4: cam3 saw no wand)
@@ -365,6 +366,11 @@ def sec_f():
           "Covered tick is counted OK")
 
 
+def fov_menu_entry(v, label):
+    """(G209) An entry of the 3D window's Fields of view menu (its click = `trigger`, as the Cameras menu's)."""
+    return next(a for a in v.fov_menu.actions() if a.text() == label)
+
+
 def _click_tick(cb):
     QTest.mouseClick(cb, Qt.LeftButton, pos=QPoint(4, cb.height() // 2))
     pump(0.1)
@@ -396,10 +402,11 @@ def sec_g():
         v = pg.view3d
         pic = v.scene.calib
         # only the wand points: the pyramids and fields of view ticked off by the user's clicks
-        for cb in (v.chk_pyr, v.chk_fov):
-            if cb.isChecked():
-                _click_tick(cb)
-        assert v.chk_calib.isChecked() and not v.chk_pyr.isChecked() and not v.chk_fov.isChecked()
+        if v.chk_pyr.isChecked():
+            _click_tick(v.chk_pyr)
+        fov_menu_entry(v, "No camera").trigger()                    # (G209) Fields of view > No camera
+        pump(0.1)
+        assert v.chk_calib.isChecked() and not v.chk_pyr.isChecked() and not v._fov_on()
         from PySide6.QtCore import QPointF
         from PySide6.QtGui import QWheelEvent
         c = QPointF(v.width() / 2, v.height() / 2)
@@ -432,27 +439,26 @@ def sec_g():
         scene = float(np.linalg.norm(allp.max(axis=0) - allp.min(axis=0)))
         frac = pic.cams[0].pose.depth / scene
         assert abs(frac - 0.03) < 1e-9, f"pose pyramid depth {frac:.4f} of the scene, want 0.03"
-        # only the fields of view, of one camera (Cameras menu), the view reset (double-click): a pixel well
-        # inside exactly one of its sides is 10 % that camera's colour
+        # only the fields of view, of one camera (G209: the Fields of view menu), the view reset (double-click):
+        # a pixel well inside exactly one of its sides is 10 % that camera's colour
         _click_tick(v.chk_calib)
-        _click_tick(v.chk_fov)
-        assert v.chk_fov.isChecked() and not v.chk_calib.isChecked() and not v.chk_pyr.isChecked()
+        v.fov_actions[0].trigger()                                   # Fields of view > the first camera
+        pump(0.1)
+        assert v._fov_views() == {int(v.fov_actions[0].data())} and not v.chk_calib.isChecked() \
+            and not v.chk_pyr.isChecked(), v._fov_views()
         QTest.mouseDClick(v, Qt.LeftButton,                          # the window takes it (as the wheel)
                           pos=v.canvas.mapTo(v, QPoint(v.canvas.width() // 2, v.canvas.height() // 2)))
         pump(0.1)
         assert abs(v.zoom - 1.0) < 1e-9, v.zoom
-        for a in v.cam_actions[1:]:                                  # Cameras > every camera but the first, off
-            a.trigger()
-        pump(0.2)
-        assert v.scene.calib_views == {int(v.cam_actions[0].data())}, v.scene.calib_views
         v._render()
         img = v.last_image
         H_, W_ = img.shape[:2]
         to_screen, _, _ = v3.screen_transform(v.scene, (W_, H_), v.azimuth, v.elevation, v.zoom, tuple(v.pan), 2,
                                               v.chk_cams.isChecked(), True)
         polys = []                                                   # (camera k, side, screen polygon)
+        lo_, hi_ = pic.box(0.25)                                     # (G209) no 3D result: the wand cloud's box
         for kc, cd in enumerate(pic.cams):
-            if cd.view not in v.scene.calib_views:
+            if cd.view not in v.scene.fov_views:
                 continue
             f = cd.fov
             side = _side_of(f.raw, ws.W, ws.H)
@@ -461,9 +467,18 @@ def sec_g():
                 b = f.border[side == s]
                 if len(b) < 2:
                     continue
-                scr = np.vstack([cs[None], to_screen(b)[0]])
+                cut = v3.clip_to_box(np.vstack([cd.centre[None], b]), lo_, hi_)       # (G209) cut to the box
+                if len(cut) < 3:
+                    continue
+                scr = to_screen(cut)[0]
                 if np.isfinite(scr).all():
                     polys.append((kc, s, np.round(scr).astype(np.int32)))
+        # (G209) every field-of-view pixel lies inside the box's outline on screen
+        corners = np.array([[x, y, z] for x in (lo_[0], hi_[0]) for y in (lo_[1], hi_[1]) for z in (lo_[2], hi_[2])])
+        hull = cv2.convexHull(np.round(to_screen(corners)[0]).astype(np.float32))
+        outside = [q for q in v._hits.get("fov", []) for pt in q
+                   if cv2.pointPolygonTest(hull, (float(pt[0]), float(pt[1])), True) < -2]
+        assert v._hits.get("fov") and not outside, f"{len(outside)} field-of-view corners outside the box"
         masks = []
         for kc, s, scr in polys:
             m = np.zeros((H_, W_), np.uint8)
