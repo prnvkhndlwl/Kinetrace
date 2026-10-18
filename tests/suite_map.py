@@ -57,6 +57,8 @@ MAP = [
     ([K + "app.py"], ["verify_wand_subset", "verify_wand_sync_gui"]),
     # (I305) the automatic 3D result follows every 2D gesture; the saved result's format
     ([K + f for f in ("app.py", "projectfile.py", "session.py")], ["verify_auto3d"]),
+    # (I309, G206, G207) the 3D window during a run, why a point has no 3D, the camera rays
+    ([K + f for f in ("app.py", "view3d.py", "calib.py")], ["verify_live3d"]),
     ([K + "threads.py"], ["verify_sweep_fixes", "verify_review_infra", "verify_review_tracking", "verify_review_ui",
                            "verify_review_app3", "verify_downloads"]),
     ([K + "tour.py", K + "demo.py"], ["verify_tour", "verify_ui_focus", "verify_keys_follow"]),
