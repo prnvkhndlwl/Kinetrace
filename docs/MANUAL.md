@@ -2377,7 +2377,29 @@ Four steps, in this order:
    project saved before this version may hold an older result: press Ctrl+3
    once. The **3D view** window opens (**3D → Show 3D View**, **Ctrl+5**,
    opens and closes it later): drag to turn it, wheel to zoom, middle-drag or
-   Shift+drag to pan, double-click to reset. It follows the frame you are on.
+   Shift+drag to pan, double-click to reset. It follows the frame you are on,
+   **and a tracking run as it goes**: while you track, the points being
+   tracked appear in 3D frame by frame, with the trail behind them, like the
+   camera views (the full 3D result is brought up to date when the run ends;
+   the numbers are the same). When a landmark has no 3D position at the frame
+   on screen, the line at the top says which one and **why**: only one camera
+   has it there ("only camera 3 has it here; 3D needs 2 cameras"), or a camera
+   has only one of the two frames this instant falls between (fractional
+   offsets, see above). With several, it counts them; hover the line for the
+   list. **Rays** draws, as motion-capture software does, a line from every
+   camera that made a 3D point to that point: for the landmark you selected
+   (*Rays: selected*: in the main window, or click its dot in the 3D window,
+   which selects it in the main window too) or for every landmark (*Rays:
+   all*). Each line is coloured by how far that camera's own point lies from
+   the 3D point when projected back into it, against the residual bands below:
+   green good, yellow ok, red poor. It is labelled at the camera end with the
+   camera's name and that distance in pixels (*Rays: all*: once per camera,
+   its worst). A camera far outside the picture gets its line cut at the edge,
+   labelled there. Hand check: two rays should meet at the dot. A red ray says
+   to look at that camera first (a wrong click or track, or its timing). With
+   three cameras, though, one bad camera also pulls the point away from the
+   other two, so their rays turn yellow or red too: the reddest ray is the
+   likeliest culprit, not a proof. Save picture… keeps the rays.
    Each landmark has its own soft colour; a **yellow ring** around a dot means
    its cameras agree only roughly there (ok), a **red ring** that they
    disagree (poor) — the same verdict the epipolar guides give, and the line
@@ -3979,7 +4001,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Ctrl+3** | reconstruct all the 3D landmarks with the verdict (needs two or more calibrated cameras) and show the 3D view; the result also keeps itself up to date as you click and track |
 | **Ctrl+4** | carve the animal's volume at this frame from the cameras' outlines |
 | **3D → Set World Axes…** | choose the 3D world's origin, +X and +Y from three landmarks of the 3D result (+Z by the right-hand rule) |
-| **Ctrl+5** | show / hide the 3D view (drag to turn it, wheel to zoom, double-click to reset; with a calibration: the wand calibration layers, a click on a wand end goes to its frame) |
+| **Ctrl+5** | show / hide the 3D view (drag to turn it, wheel to zoom, double-click to reset; with a calibration: the wand calibration layers, a click on a wand end goes to its frame; Rays: each camera's line to a 3D point, a click on a dot selects that landmark) |
 | **Ctrl+6** | show / hide the body side-by-side view (drag the pose to turn it round) |
 | **Shift+C** | fix a stale or garbled picture |
 
