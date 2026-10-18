@@ -6663,6 +6663,7 @@ class MainWindow(QMainWindow):
         self._refresh_overlay()
         self._refresh_companions()          # the same landmark is ringed in the other cameras (G22)
         self._update_track_button()
+        self._show_3d_selection()           # (G207)
 
     def _on_point_selection_changed(self):
         """The LAYERS selection changed (a click, Ctrl+click, Ctrl+A, ...): `self.selected` -- the
@@ -6692,6 +6693,7 @@ class MainWindow(QMainWindow):
                 self._refresh_overlay()
                 self._refresh_companions()
         self._update_track_button()
+        self._show_3d_selection()           # (G207)
 
     def _on_layer_current(self, cur, _prev=None):
         """The current LAYERS row moved to a point: it is the one a click on the video places."""
@@ -6705,6 +6707,7 @@ class MainWindow(QMainWindow):
         self._epi_probe = None
         self._refresh_overlay()
         self._refresh_companions()          # the same landmark is ringed in the other cameras
+        self._show_3d_selection()           # (G207)
         s = self.session
         if s is not None and row < s.n_points and not s.tracked[self.current, row]:
             self.statusBar().showMessage(
@@ -9728,6 +9731,47 @@ class MainWindow(QMainWindow):
         self._live3d = {"t0": int(ts[0]), "names": names, "xyz": xyz, "resid": resid, "n": ncams, "err": err}
         self._refresh_view3d()
 
+    def _rays_at(self, rec, k: int) -> list[list[dict]]:
+        """(G207) Per landmark of `rec` at row k: the cameras that made its 3D point (a finite per-camera
+        error), each with its error and its own verdict against ITS picture's bands (`calib.residual_bands`:
+        a 4K camera's pixels are not a 720p camera's)."""
+        from kinetrace.calib import residual_bands
+        p = self.project
+        out = []
+        if rec.per_cam is None:
+            return [[] for _ in rec.names]
+        for j in range(len(rec.names)):
+            lst = []
+            if np.isfinite(rec.xyz[k, j]).all():
+                for v in np.nonzero(np.isfinite(rec.per_cam[k, j]))[0]:
+                    v = int(v)
+                    if v >= p.n_views:
+                        continue
+                    sv = p.sessions[v]
+                    good, usable = residual_bands(sv.width or 1920, sv.height or 0)
+                    e = float(rec.per_cam[k, j, v])
+                    lst.append({"view": v, "camera": p.name(v), "err": e,
+                                "verdict": "good" if e <= good else "ok" if e <= usable else "poor"})
+            out.append(lst)
+        return out
+
+    def _show_3d_selection(self) -> None:
+        """(G207) The 3D window's Rays: selected follow the landmark selected here."""
+        v3, s = self.view3d, self.session
+        if v3 is None or not v3.isVisible():
+            return
+        v3.set_selected(s.points[self.selected].name
+                        if s is not None and self.selected is not None and 0 <= self.selected < s.n_points else None)
+
+    def _select_landmark_3d(self, name: str) -> None:
+        """(G207) A click on a landmark's dot in the 3D window selects that landmark here (one selection)."""
+        s = self.session
+        pid = s.pid_by_name(name) if s is not None else None
+        if pid is None:
+            self.statusBar().showMessage(f"{name} is not a landmark of {self.project.name(self.project.active)}", 5000)
+            return
+        self._on_select(pid)
+
     def _missing_3d(self, rec, k, t: int) -> list[tuple[str, str]]:
         """(G206) [(landmark, why it has no 3D at reference instant t)] in plain words, for every landmark some
         camera has here that the 3D result `rec` (row k) has no position for. A landmark no camera has here is
@@ -12509,6 +12553,7 @@ class MainWindow(QMainWindow):
                 self.view3d = View3D(self)
                 self.view3d.closed.connect(lambda: self.act_view3d.setChecked(False))
                 self.view3d.end_clicked.connect(self._goto_reference)              # (G185)
+                self.view3d.landmark_clicked.connect(self._select_landmark_3d)     # (G207)
                 self.view3d.calib_wanted.connect(lambda: QTimer.singleShot(0, self._make_calib_picture))
             self.view3d.show()
             self._refresh_view3d()
@@ -12553,6 +12598,7 @@ class MainWindow(QMainWindow):
                     verdicts.append(cell_verdict(float(res[j]), int(r.n_cams[k, j]), self._residual_bands(views))
                                     if views else "")
                 scene.verdicts = verdicts
+                scene.rays = self._rays_at(r, k)                                # (G207)
                 counts = [(w, verdicts.count(w)) for w in ("good", "ok", "poor") if verdicts.count(w)]
                 if counts:
                     info += " · " + ", ".join(f"{n} {w}" for w, n in counts)
@@ -12568,6 +12614,10 @@ class MainWindow(QMainWindow):
             views = [v for v in p.calibration.views() if v < p.n_views]      # (I273) calibrated cameras
             scene.cameras = np.array([p.calibration.camera(v).center() for v in views]).reshape(-1, 3)
             scene.camera_names = [p.name(v) for v in views]
+            scene.cam_centres = {v: scene.cameras[i] for i, v in enumerate(views)}      # (G207) the rays' ends
+        s = self.session
+        if s is not None and self.selected is not None and 0 <= self.selected < s.n_points:
+            scene.selected = s.points[self.selected].name
         if t in self._hull_cache:
             verts, faces, h = self._hull_cache[t]
             scene.mesh = (verts, faces)

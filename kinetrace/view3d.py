@@ -407,6 +407,11 @@ class Scene3D:
         self.box_points: np.ndarray | None = None
         self.box_extra: np.ndarray | None = None
         self.missing: list[tuple[str, str]] = []    # (G206) (landmark, why it has no 3D at this instant)
+        # (G207) per landmark at the instant: the cameras that made its 3D point, [{"view", "camera" (its name),
+        # "err" (px), "verdict"}]; each calibrated camera's centre by view; the landmark selected in the window
+        self.rays: list[list[dict]] = []
+        self.cam_centres: dict[int, np.ndarray] = {}
+        self.selected: str | None = None
 
     def framing(self, include_cameras: bool, include_calib: bool = False,
                 box: tuple | None = None) -> tuple[np.ndarray, float]:
@@ -756,6 +761,63 @@ def _draw_world(img, scene: Scene3D, to_screen, pal: dict, length: float, unit: 
     return o
 
 
+RAY_MIX = 0.85                 # (G207) a ray: its verdict's colour this much over the background
+
+
+def _draw_rays(img, scene: Scene3D, ps: np.ndarray, to_screen, pal: dict, mode: str, labels: list,
+               px: float) -> list[dict]:
+    """(G207, owner 2026-10-17: rays "from the corresponding cameras that contributed to the point as is shown
+    in ... qualisys") Each 3D point (all, or the selected landmark's) with a ray from every camera that made
+    it, from the camera's centre to the dot, coloured by that camera's own verdict (its error against its
+    picture's bands). The camera end is clipped to the picture (a camera is often metres off screen). Labels
+    at the camera end: "camera 0.8 px" for the selected landmark's rays; with all rays, each camera once
+    with its worst error (one label per ray would pile up at the camera). -> the rays drawn (for picking /
+    tests): {"name", "view", "err", "verdict", "start", "end"} in image pixels."""
+    H, W = img.shape[:2]
+    drawn, labelled = [], {}
+    thick = _px(1.5, px)
+    for j, lst in enumerate(scene.rays):
+        if j >= len(scene.names) or j >= len(ps) or not lst:
+            continue
+        nm = scene.names[j]
+        if mode == "selected" and nm != scene.selected:
+            continue
+        p1 = ps[j]
+        if not np.isfinite(p1).all():
+            continue
+        for ry in lst:
+            c = scene.cam_centres.get(ry["view"])
+            if c is None:
+                continue
+            p0 = to_screen(np.asarray(c, np.float64).reshape(1, 3))[0][0]
+            if not np.isfinite(p0).all():
+                continue
+            a = tuple(int(v) for v in np.clip(np.round(p0), -SCREEN_CLAMP, SCREEN_CLAMP))
+            b = tuple(int(v) for v in np.clip(np.round(p1), -SCREEN_CLAMP, SCREEN_CLAMP))
+            ok, a, b = cv2.clipLine((0, 0, W, H), a, b)
+            if not ok:
+                continue
+            col = _mix(pal["bg"], _bgr(theme.VERDICT.get(ry["verdict"], theme.VERDICT["ok"])), RAY_MIX)
+            cv2.line(img, a, b, col, thick, cv2.LINE_AA)
+            inside = 0 <= p1[0] < W and 0 <= p1[1] < H
+            drawn.append({"name": nm, "view": ry["view"], "err": ry["err"], "verdict": ry["verdict"],
+                          "start": (float(a[0]), float(a[1])),
+                          "end": (float(p1[0]), float(p1[1])) if inside else (float(b[0]), float(b[1]))})
+            cam = ry.get("camera") or f"cam {ry['view'] + 1}"
+            if mode == "selected":
+                labelled[(nm, ry["view"])] = (a, f"{cam} {ry['err']:.1f} px", col)
+            else:
+                prev = labelled.get(ry["view"])
+                if prev is None or ry["err"] > prev[3]:
+                    labelled[ry["view"]] = (a, f"{cam} worst {ry['err']:.1f} px", col, ry["err"])
+    m = 6 * px
+    for a, text, col, *_ in labelled.values():
+        x = float(np.clip(a[0], m, W - m))
+        y = float(np.clip(a[1] - m, 2 * m + LABEL_PX * px, H - m))
+        labels.append((x, y, text, _mix(col, pal["text"], 0.35), TICK_PX, "l" if x < W / 2 else "r"))
+    return drawn
+
+
 def _px(v: float, px: float) -> int:
     """A size of `v` screen pixels at the display's pixel density `px` (at least 1; halves round up, never to
     even - the same at 150 % as at 250 %)."""
@@ -891,7 +953,8 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
                  show_cameras: bool = False, up: int = 2, pan: tuple[float, float] = (0.0, 0.0),
                  show_calib: bool = False, show_fov: bool = False, show_cover: bool = False,
                  hits: dict | None = None, show_pyramids: bool | None = None, px: float = 1.0,
-                 show_grid: bool = False, show_world: bool = False, trail=None, palette: str = "dark") -> np.ndarray:
+                 show_grid: bool = False, show_world: bool = False, trail=None, palette: str = "dark",
+                 rays: str = "off") -> np.ndarray:
     """The 3D window's picture (BGR). The wand calibration layers (G185, G186) are drawn only when asked and
     the scene has a picture: `show_calib` = the wand points (and the scale bar), `show_pyramids` the
     cameras' pose pyramids (None = with the wand points), `show_fov` their fields of view, `show_cover`
@@ -902,7 +965,9 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
     (G201-G203) `show_grid`: the box grid around the whole 3D result (and the view frames it); `show_world`:
     the chosen world's arrows (with `scene.world`); `trail`: None, a number of rows either side, or "all";
     `palette`: "dark" | "light". `hits` also receives "labels" (every text drawn), "grid" (the box),
-    "origin" (the world's origin on screen) and "trail" (the rows drawn)."""
+    "origin" (the world's origin on screen) and "trail" (the rows drawn). (G207) `rays`: "off" | "selected" |
+    "all" - the cameras' rays to each 3D point; `hits` "rays" (`_draw_rays`) and "dots" ((N, 2) each
+    landmark's dot on the picture, NaN where none is drawn)."""
     W, H = size
     pal = PALETTES.get(palette, PALETTES["dark"])
     img = np.full((H, W, 3), pal["bg"], np.uint8)
@@ -963,9 +1028,17 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
         drawn = _draw_trails(img, scene, to_screen, pal, trail, px)
         if hits is not None:
             hits["trail"] = drawn
+    if hits is not None:
+        hits["rays"], hits["dots"] = [], None
     if show_points and scene.points is not None and len(scene.points):
         ps, _ = to_screen(scene.points)
         ok = np.isfinite(scene.points).all(axis=1)
+        if rays in ("selected", "all"):
+            drawn_rays = _draw_rays(img, scene, ps, to_screen, pal, rays, labels, px)
+            if hits is not None:
+                hits["rays"] = drawn_rays
+        if hits is not None:
+            hits["dots"] = np.where((ok & np.isfinite(ps).all(axis=1))[:, None], ps, np.nan)
         for i, j in scene.bones:
             if i < len(ok) and j < len(ok) and ok[i] and ok[j]:
                 cv2.line(img, (int(ps[i, 0]), int(ps[i, 1])), (int(ps[j, 0]), int(ps[j, 1])),
@@ -1039,6 +1112,7 @@ class View3D(QWidget):
 
     closed = Signal()
     end_clicked = Signal(int)
+    landmark_clicked = Signal(str)  # (G207) a click on a landmark's dot: select it in the main window
     calib_wanted = Signal()         # a calibration tick was switched on and there is no picture yet
 
     def __init__(self, parent=None):
@@ -1075,6 +1149,14 @@ class View3D(QWidget):
         self.cmb_trail.setCurrentIndex(1)
         self.cmb_trail.setToolTip("Each landmark's path in its own colour: the second before and after the frame on "
                                   "screen (fading), or the whole 3D result")
+        # (G207) the cameras' rays to each 3D point, as motion-capture software draws them
+        self.cmb_rays = QComboBox()
+        self.cmb_rays.addItems(["No rays", "Rays: selected", "Rays: all"])
+        self.cmb_rays.setToolTip("Draw a line from each camera that made a 3D point to that point: for the landmark "
+                                 "selected (in the main window, or by a click on its dot here), or for every landmark. "
+                                 "Each line is coloured by how well that camera agrees with the point: green good, "
+                                 "yellow ok, red poor. A red line is the camera to check (a wrong click or track, or "
+                                 "its timing).")
         self.chk_light = QCheckBox("Light background")
         self.chk_light.setToolTip("A white figure for a paper or a slide; remembered")
         self.chk_light.setChecked(_light_preference())
@@ -1083,6 +1165,8 @@ class View3D(QWidget):
             top.addWidget(c)
         self.cmb_trail.currentIndexChanged.connect(lambda _=0: self.request_render())
         top.addWidget(self.cmb_trail)
+        self.cmb_rays.currentIndexChanged.connect(lambda _=0: (self._show_info(), self.request_render()))
+        top.addWidget(self.cmb_rays)
         self.chk_light.toggled.connect(self._light_toggled)
         top.addWidget(self.chk_light)
         self.btn_save = QPushButton("Save picture…")
@@ -1171,6 +1255,18 @@ class View3D(QWidget):
     def _trail(self):
         i = self.cmb_trail.currentIndex()
         return None if i == 0 else ("all" if i == 2 else max(1, int(self.scene.trail_frames)))
+
+    def _rays(self) -> str:
+        return ("off", "selected", "all")[max(0, self.cmb_rays.currentIndex())]
+
+    def set_selected(self, name: str | None) -> None:
+        """(G207) The landmark selected in the main window: its rays under Rays: selected."""
+        if name == self.scene.selected:
+            return
+        self.scene.selected = name
+        if self._rays() == "selected":
+            self._show_info()
+            self.request_render()
 
     # ---- data
     def set_scene(self, scene: Scene3D, info: str = "") -> None:
@@ -1334,6 +1430,13 @@ class View3D(QWidget):
             else:
                 txt += f" · {len(miss)} landmarks without 3D here (hover for why)"
             tips.append("No 3D position at this instant:\n" + "\n".join(f"  {nm}: {why}" for nm, why in miss))
+        if self._rays() == "selected":      # (G207) say why no ray is drawn
+            sel = self.scene.selected
+            if sel is None:
+                txt += " · rays: select a landmark (here or in the main window)"
+            elif not any(nm == sel and j < len(self.scene.rays) and self.scene.rays[j]
+                         for j, nm in enumerate(self.scene.names)):
+                txt += f" · rays: {sel} has no 3D point here"
         if pic is not None and self._calib_on():
             lines = list(pic.lines)
             if not self.chk_cover.isChecked():
@@ -1344,19 +1447,20 @@ class View3D(QWidget):
         self.info.setToolTip("\n\n".join(tips))
         self.info.setText(txt)
 
-    def end_screen_points(self) -> np.ndarray | None:
-        """The wand ends' (P, 2) positions on the canvas in the last picture, in screen (logical) pixels - the
-        picture itself is drawn at the display's pixel density (G187) - NaN where not drawn."""
-        es = self._hits.get("ends")
+    def end_screen_points(self, what: str = "ends") -> np.ndarray | None:
+        """The wand ends' (P, 2) positions on the canvas in the last picture (`what` "dots": the landmarks'
+        dots, G207), in screen (logical) pixels - the picture itself is drawn at the display's pixel density
+        (G187) - NaN where not drawn."""
+        es = self._hits.get(what)
         if es is None or self.last_image is None:
             return None
         dpr = self._last_dpr
         h, w = self.last_image.shape[:2]
         ox, oy = (self.canvas.width() - w / dpr) / 2.0, (self.canvas.height() - h / dpr) / 2.0
-        return es / dpr + np.array([ox, oy])
+        return np.asarray(es, np.float64) / dpr + np.array([ox, oy])
 
-    def _pick(self, x: float, y: float, radius: float = 6.0) -> int | None:
-        pts = self.end_screen_points()
+    def _pick(self, x: float, y: float, radius: float = 6.0, what: str = "ends") -> int | None:
+        pts = self.end_screen_points(what)
         if pts is None or not len(pts):
             return None
         d = np.hypot(pts[:, 0] - x, pts[:, 1] - y)
@@ -1390,6 +1494,10 @@ class View3D(QWidget):
                     pic = self.scene.calib
                     if k is not None and pic is not None and k < len(pic.end_frame):
                         self.end_clicked.emit(int(pic.end_frame[k]))
+                    else:                   # (G207) a landmark's dot: it becomes the selected landmark
+                        j = self._pick(ev.position().x(), ev.position().y(), radius=8.0, what="dots")
+                        if j is not None and j < len(self.scene.names):
+                            self.landmark_clicked.emit(self.scene.names[j])
         return super().eventFilter(obj, ev)
 
 
@@ -1410,7 +1518,7 @@ class View3D(QWidget):
                            show_cover=self.chk_cover.isChecked(), hits=hits,
                            show_pyramids=self.chk_pyr.isChecked(), px=dpr,
                            show_grid=self.chk_grid.isChecked(), show_world=self.chk_world.isChecked(),
-                           trail=self._trail(), palette=self._palette())
+                           trail=self._trail(), palette=self._palette(), rays=self._rays())
         self._hits = hits
         self._last_dpr = dpr
         self.last_image = img
@@ -1431,7 +1539,8 @@ class View3D(QWidget):
                                show_calib=self.chk_calib.isChecked(), show_fov=self.chk_fov.isChecked(),
                                show_cover=self.chk_cover.isChecked(), show_pyramids=self.chk_pyr.isChecked(),
                                px=float(scale), show_grid=self.chk_grid.isChecked(),
-                               show_world=self.chk_world.isChecked(), trail=self._trail(), palette=self._palette())
+                               show_world=self.chk_world.isChecked(), trail=self._trail(), palette=self._palette(),
+                               rays=self._rays())
         if not cv2.imwrite(path, img):
             raise OSError(f"the picture could not be written to {path}")
 

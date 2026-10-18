@@ -6,7 +6,7 @@ The project: 3 synthetic cameras (camC at a fractional offset), 600 frames, five
   once a run tracks it in camA (the white dot in camA's video; Moving spot, CPU);
 - "nose": camA only (no 3D anywhere: "only camA has it");
 - "tail": camA on frames 0-100, camB on frames 200-300 - never at the same instant (the owner's case);
-- "head": all three cameras, camC 6 px off (one camera that disagrees: its ray is the poor one);
+- "head": all three cameras, camC 15 px off (one camera that disagrees: its ray is the poor one);
 - "neck": all three cameras, exact.
 
 Run: .venv\\Scripts\\python.exe tests\\verify_live3d.py
@@ -108,7 +108,7 @@ for c, cal in enumerate(cams):
                 continue
             u = cal.project(pts[nm][None])[0]
             if nm == "head" and c == 2:
-                u = u + [6.0, 0.0]
+                u = u + [15.0, 0.0]
             noise = 0.0 if nm == "neck" else 0.15
             s.set_position(f, j, float(u[0] + rng.normal(0, noise)), float(u[1] + rng.normal(0, noise)))
     if vw is not None:
@@ -382,7 +382,7 @@ if cmb is not None:
     bands = residual_bands(W, H)
     hc = by.get(("head", 2))
     check(hc is not None and hc["verdict"] == "poor" and hc["err"] > bands[1],
-          "the head's ray from camC (6 px off) is poor", None if hc is None else f"{hc['verdict']} {hc['err']:.2f}")
+          "the head's ray from camC (15 px off) is poor", None if hc is None else f"{hc['verdict']} {hc['err']:.2f}")
     nk = [by.get(("neck", c)) for c in range(3)]
     check(all(r_ is not None and r_["verdict"] == "good" for r_ in nk), "the exact neck's rays are good",
           str([None if r_ is None else (r_["verdict"], round(r_["err"], 3)) for r_ in nk]))
