@@ -2406,8 +2406,13 @@ Four steps, in this order:
    other two, so their rays turn yellow or red too: the reddest ray is the
    likeliest culprit, not a proof. Save picture… keeps the rays.
    **The legend** uses the space beside the picture: on the left the cameras
-   (their colour, number, full name and, with Rays, the error of their ray in
-   its verdict's colour - the worst one with *Rays: all*), on the right the
+   (their colour, number, full name and, with Rays, right after the name the
+   error of each of that camera's rays in its verdict's colour: one number per
+   landmark, in the order the line above them names the landmarks in their own
+   colours - so a camera that sees both wand balls reads e.g. 1.5 · 5.7 px; with
+   more than three landmarks, the worst one and its landmark. The px is how far
+   the 3D point, seen from that camera, lands from the camera's own click or
+   track), on the right the
    landmarks (their colour, name, and how many cameras made the point with its
    verdict, or why it has none here, e.g. "only C3"). On the picture itself
    only the landmark names, the camera numbers and the grid's numbers stay.

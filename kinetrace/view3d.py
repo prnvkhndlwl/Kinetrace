@@ -524,17 +524,22 @@ def _mix(a, b, t: float) -> tuple:
 
 def _draw_labels(img: np.ndarray, labels: list, px: float) -> np.ndarray:
     """Text drawn last, anti-aliased in the application's sans font (QPainter on the picture's own pixels, so
-    Save PNG keeps it). labels: (x, y, text, BGR, size in screen px, align "l" / "c" / "r"); y = the baseline.
-    Without a Qt application (a script): OpenCV's font."""
+    Save PNG keeps it). labels: (x, y, text, BGR, size in screen px, align "l" / "c" / "r" / "+"); y = the
+    baseline; "+" (G208) starts where the previous label ended, `x` being the gap (pieces of one line in
+    different colours). Without a Qt application (a script): OpenCV's font."""
     if not labels:
         return img
     from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter
     from PySide6.QtCore import QPointF
     buf = np.ascontiguousarray(img)
     if QGuiApplication.instance() is None:
+        end = 0.0
         for x, y, text, col, size, align in labels:
-            cv2.putText(buf, text, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, size / 24.0 * px, col, _px(1, px),
-                        cv2.LINE_AA)
+            fs = size / 24.0 * px
+            tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, _px(1, px))[0][0]
+            x0 = end + x if align == "+" else (x if align == "l" else (x - tw / 2.0 if align == "c" else x - tw))
+            cv2.putText(buf, text, (int(x0), int(y)), cv2.FONT_HERSHEY_SIMPLEX, fs, col, _px(1, px), cv2.LINE_AA)
+            end = x0 + tw
         return buf
     h, w = buf.shape[:2]
     qi = QImage(buf.data, w, h, 3 * w, QImage.Format_BGR888)
@@ -542,13 +547,18 @@ def _draw_labels(img: np.ndarray, labels: list, px: float) -> np.ndarray:
     pa.setRenderHint(QPainter.TextAntialiasing, True)
     pa.setRenderHint(QPainter.Antialiasing, True)
     font = QFont()
+    end = 0.0
     for x, y, text, col, size, align in labels:
         font.setPixelSize(max(6, int(round(size * px))))
         pa.setFont(font)
         pa.setPen(QColor(int(col[2]), int(col[1]), int(col[0])))
         tw = pa.fontMetrics().horizontalAdvance(text)
-        dx = 0.0 if align == "l" else (-tw / 2.0 if align == "c" else -float(tw))
-        pa.drawText(QPointF(float(x) + dx, float(y)), text)
+        if align == "+":
+            x0 = end + float(x)
+        else:
+            x0 = float(x) + (0.0 if align == "l" else (-tw / 2.0 if align == "c" else -float(tw)))
+        pa.drawText(QPointF(x0, float(y)), text)
+        end = x0 + tw
     pa.end()
     return buf
 
@@ -767,7 +777,8 @@ def _draw_world(img, scene: Scene3D, to_screen, pal: dict, length: float, unit: 
     return o
 
 
-RAY_MIX = 0.85                 # (G207) a ray: its verdict's colour this much over the background
+RAY_MIX = 0.6                  # (G207, G208: "thinner like optic rays") its verdict's colour this much over the
+                               # background, half a screen pixel wide (a 1 px line at 100 %, faint)
 LEGEND_MIN_PX = 200            # (G208) a side strip narrower than this (screen px) gets the legend on a panel
 LEGEND_ROW_PX = 17
 
@@ -789,7 +800,7 @@ def _draw_rays(img, scene: Scene3D, ps: np.ndarray, to_screen, pal: dict, mode: 
     H, W = img.shape[:2]
     x0, x1 = (0, W) if xr is None else (int(xr[0]), int(xr[1]))
     drawn, tagged = [], {}
-    thick = _px(1.0, px)                    # (G208, owner: "reduce the line weight by .5")
+    thick = _px(0.5, px)                    # (G208, owner: "make the camera rays thinner like optic rays")
     for j, lst in enumerate(scene.rays):
         if j >= len(scene.names) or j >= len(ps) or not lst:
             continue
@@ -846,37 +857,84 @@ def _legend_text(text: str, width: float, px: float) -> str:
     return text if len(text) <= n else text[:n - 1] + "…"
 
 
+LEGEND_PER_LANDMARK = 3        # (G208) with up to this many landmarks' rays, a camera lists each one's error
+
+
 def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_drawn: list, mode: str) -> dict:
     """(G208, owner 2026-10-18: "there is a lot of white space on either side, can that be used for text/legend
-    instead") Left: the cameras (their colour - the one their field of view is drawn in -, the tag the figure
-    shows, the full name, and with rays the error of that camera's ray, of the worst one with Rays: all, in
-    its verdict's colour). Right: the landmarks (their colour, name and state at the instant - how many
-    cameras, its verdict, or why it has no 3D). -> {"left": [texts], "right": [texts]} (tests)."""
+    instead") Left: the cameras - their colour (the one their field of view is drawn in), the tag the figure
+    shows, the full name and, with rays, right after the name the error of each of that camera's rays in its
+    verdict's colour: one number per landmark (in the order the header names them in their own colours) when
+    the rays of up to LEGEND_PER_LANDMARK landmarks are drawn, else the worst one and its landmark; a footer
+    says what the number is. Right: the landmarks - colour, name, how many cameras made the point and its
+    verdict, or why there is none here. -> {"left": [line texts], "right": [line texts]} (tests)."""
     H, W = img.shape[:2]
     lw, rw, panel = legend_layout((W, H), px)
-    row, pad = LEGEND_ROW_PX * px, 10 * px
-    out = {"left": [], "right": []}
-    err = {}
+    row, pad, gap = LEGEND_ROW_PX * px, 10 * px, 6 * px
+    vc = {k: _mix(_bgr(c), pal["text"], 0.25) for k, c in theme.VERDICT.items()}
+    lm_col = {nm: LANDMARK_COLOURS[j % len(LANDMARK_COLOURS)] for j, nm in enumerate(scene.names)}
+    ray_names = [nm for nm in scene.names if any(ry["name"] == nm for ry in rays_drawn)]
+    each = 0 < len(ray_names) <= LEGEND_PER_LANDMARK
+    errs = {}                                       # view -> {landmark: (err, verdict)}
     for ry in rays_drawn:
-        if ry["view"] not in err or ry["err"] > err[ry["view"]][0]:
-            err[ry["view"]] = (ry["err"], ry["verdict"])
-    cams = [(v, scene.camera_names[i] if i < len(scene.camera_names) else "", CAM_COLOURS[i % len(CAM_COLOURS)])
-            for i, v in enumerate(scene.camera_views)]
-    lms = [(j, nm) for j, nm in enumerate(scene.names)]
-    max_rows = max(1, int((H - 2 * pad) / row) - 1)
+        errs.setdefault(ry["view"], {})[ry["name"]] = (ry["err"], ry["verdict"])
 
-    def column(x0, width, title, entries):
+    def est(text):                                  # the width a text takes (an estimate: measured when drawn)
+        return len(text) * 0.56 * TICK_PX * px
+
+    def cam_parts(v):
+        e = errs.get(v)
+        if not e:
+            return []
+        if each:
+            out = []
+            for i, nm in enumerate(ray_names):
+                if i:
+                    out.append((" · ", pal["dim"]))
+                out.append((f"{e[nm][0]:.1f}", vc.get(e[nm][1], pal["dim"])) if nm in e else ("–", pal["dim"]))
+            return out + [(" px", pal["dim"])]
+        nm = max(e, key=lambda k: e[k][0])
+        return [(f"{e[nm][0]:.1f} px", vc.get(e[nm][1], pal["dim"])), (f" ({nm})", pal["dim"])]
+
+    cams = [(("box", CAM_COLOURS[i % len(CAM_COLOURS)]),
+             f"{cam_tag(v)}  {scene.camera_names[i] if i < len(scene.camera_names) else ''}", cam_parts(v))
+            for i, v in enumerate(scene.camera_views)]
+    head_l = [[("Cameras", pal["dim"])]]
+    foot_l = []
+    if rays_drawn:
+        if each:
+            line = [("ray error in px, for ", pal["dim"])]
+            for i, nm in enumerate(ray_names):
+                if i:
+                    line.append((" · ", pal["dim"]))
+                line.append((nm, _mix(lm_col[nm], pal["text"], 0.2)))
+            head_l.append(line)
+        else:
+            head_l.append([("ray error in px: the worst of each camera's rays", pal["dim"])])
+        foot_l = ["px: how far the 3D point, seen from that camera,", "lands from the camera's own point (green good,",
+                  "yellow ok, red poor; a ray's colour says the same)"]
+    lms = [(("dot", LANDMARK_COLOURS[j % len(LANDMARK_COLOURS)]), nm,
+            [(scene.status[j][0], vc.get(scene.status[j][1], pal["dim"]))] if j < len(scene.status) else [])
+           for j, nm in enumerate(scene.names)]
+
+    def column(x0, width, heads, entries, foots):
         if not entries:
             return []
-        shown = entries[:max_rows] if len(entries) <= max_rows else entries[:max_rows - 1]
-        h = (len(shown) + 1 + (len(shown) < len(entries))) * row + pad
+        room_rows = max(1, int((H - 2 * pad) / row) - len(heads) - len(foots))
+        shown = entries if len(entries) <= room_rows else entries[:room_rows - 1]
+        n = len(heads) + len(shown) + (len(shown) < len(entries)) + len(foots)
         if panel:
-            _blend_poly(img, np.array([[x0, 0], [x0 + width, 0], [x0 + width, h + pad], [x0, h + pad]], np.int32),
-                        pal["bg"], 0.88)
+            h = n * row + 2 * pad
+            _blend_poly(img, np.array([[x0, 0], [x0 + width, 0], [x0 + width, h], [x0, h]], np.int32), pal["bg"], 0.88)
         y = pad + row * 0.75
-        labels.append((x0 + pad, y, title, pal["dim"], TICK_PX, "l"))
-        texts = [title]
-        for sw, main, side, side_col in shown:
+        texts = []
+        for k, parts in enumerate(heads):
+            if k:
+                y += row
+            labels.append((x0 + pad, y, parts[0][0], parts[0][1], TICK_PX, "l"))
+            labels.extend((0.0, y, t, c, TICK_PX, "+") for t, c in parts[1:])
+            texts.append("".join(t for t, _ in parts))
+        for sw, main, parts in shown:
             y += row
             cy = int(round(y - row * 0.3))
             if sw[0] == "box":
@@ -884,27 +942,23 @@ def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_d
                 cv2.rectangle(img, (int(x0 + pad), cy - s_), (int(x0 + pad) + 2 * s_, cy + s_), sw[1], -1)
             else:
                 cv2.circle(img, (int(x0 + pad + _px(4, px)), cy), _px(4, px), sw[1], -1, cv2.LINE_AA)
-            tx = x0 + pad + 14 * px
-            room = width - 2 * pad - 14 * px - (len(side) * 0.56 * TICK_PX * px + 6 * px if side else 0)
+            room = width - 2 * pad - 14 * px - (sum(est(t) for t, _ in parts) + gap if parts else 0)
             t = _legend_text(main, room, px)
-            labels.append((tx, y, t, pal["text"], TICK_PX, "l"))
-            if side:
-                labels.append((x0 + width - pad, y, side, side_col, TICK_PX, "r"))
-            texts.append(t + (f"  {side}" if side else ""))
+            labels.append((x0 + pad + 14 * px, y, t, pal["text"], TICK_PX, "l"))
+            for i, (pt, pc) in enumerate(parts):            # (G208) right after the name, not at the far edge
+                labels.append((gap if i == 0 else 0.0, y, pt, pc, TICK_PX, "+"))
+            texts.append(t + ("  " + "".join(pt for pt, _ in parts) if parts else ""))
         if len(shown) < len(entries):
             y += row
             labels.append((x0 + pad, y, f"+ {len(entries) - len(shown)} more", pal["dim"], TICK_PX, "l"))
+        for ft in foots:
+            y += row
+            labels.append((x0 + pad, y, _legend_text(ft, width - 2 * pad, px), pal["dim"], TICK_PX, "l"))
+            texts.append(ft)
         return texts
 
-    vc = {k: _mix(_bgr(c), pal["text"], 0.25) for k, c in theme.VERDICT.items()}
-    out["left"] = column(0.0, lw, "Cameras", [
-        (("box", col), f"{cam_tag(v)}  {nm}", f"{err[v][0]:.1f} px" if v in err else "",
-         vc.get(err[v][1], pal["dim"]) if v in err else pal["dim"]) for v, nm, col in cams])
-    out["right"] = column(W - rw, rw, "Landmarks", [
-        (("dot", LANDMARK_COLOURS[j % len(LANDMARK_COLOURS)]), nm,
-         scene.status[j][0] if j < len(scene.status) else "",
-         vc.get(scene.status[j][1], pal["dim"]) if j < len(scene.status) else pal["dim"]) for j, nm in lms])
-    return out
+    return {"left": column(0.0, lw, head_l, cams, foot_l),
+            "right": column(W - rw, rw, [[("Landmarks", pal["dim"])]], lms, [])}
 
 
 def _px(v: float, px: float) -> int:

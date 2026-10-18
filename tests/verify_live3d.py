@@ -392,8 +392,16 @@ if cmb is not None:
           "the figure tags each ray's camera (C3), without its long name", str(labs[:16]))
     leg = v._hits.get("legend") or {}
     left = leg.get("left") or []
-    check(any(t_.startswith("C3  camC") and t_.endswith(f"{hc['err']:.1f} px") for t_ in left) if hc else False,
-          "the legend's camera column names C3 = camC with its ray error", str(left))
+    # (G208 round 2) one number per landmark right after the name, in the order the header names them
+    drawn_nm = [nm for nm in v.scene.names if any(ry["name"] == nm for ry in rays)]
+    head = next((t_ for t_ in left if t_.startswith("ray error in px, for ")), "")
+    check(head == "ray error in px, for " + " · ".join(drawn_nm), "the legend says what the numbers are and for "
+          "which landmark each one is", f"{head!r} vs {drawn_nm}")
+    c3 = next((t_ for t_ in left if t_.startswith("C3  camC")), "")
+    nums = c3.split("  ")[-1].removesuffix(" px").split(" · ")
+    want_nums = [f"{by[(nm, 2)]['err']:.1f}" if (nm, 2) in by else "–" for nm in drawn_nm]
+    check(nums == want_nums, "camC's row gives its error for each landmark's ray, in that order", f"{c3!r} vs {want_nums}")
+    check(any(t_.startswith("px: how far") for t_ in left), "the legend says what a ray's px means")
     right = leg.get("right") or []
     check(any(t_.startswith("nose") and "only C1" in t_ for t_ in right) and any(t_.startswith("neck") and "3 cams" in t_
                                                                                   for t_ in right),
@@ -459,6 +467,17 @@ if cmb is not None:
         cmb.blockSignals(False)
         check(img is not None and img0 is not None and int((np.abs(img.astype(int) - img0).sum(axis=2) > 30).sum()) > 200,
               f"Save picture keeps the rays ({'light' if light else 'dark'} background)")
+
+    # for the owner's hand check: Rays: all on a wide window (the legend in the side strips)
+    cmb.blockSignals(True)
+    cmb.setCurrentIndex(2)
+    cmb.blockSignals(False)
+    v.resize(1400, 760)
+    pump(0.3)
+    v.save_png(os.path.join(SCRATCH, "live3d_rays_all_wide.png"), scale=1.0)
+    cmb.blockSignals(True)
+    cmb.setCurrentIndex(1)
+    cmb.blockSignals(False)
 
 # ---- [S] one selection: a click on a dot in 3D selects that landmark in the main window --------------
 print("[S] a click on a 3D dot selects that landmark in LAYERS")
