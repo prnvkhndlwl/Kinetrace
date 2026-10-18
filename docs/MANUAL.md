@@ -2393,10 +2393,12 @@ Four steps, in this order:
    has only one of the two frames this instant falls between (fractional
    offsets, see above). With several, it counts them; hover the line for the
    list. **Rays** draws, as motion-capture software does, a line from every
-   camera that made a 3D point to that point: for the landmark you selected
-   (*Rays: selected*: in the main window, or click its dot in the 3D window,
-   which selects it in the main window too) or for every landmark (*Rays:
-   all*). Each line is coloured by how far that camera's own point lies from
+   camera that made a 3D point to that point, for the landmarks you tick in
+   the **Rays ▾** menu (one tick per landmark; *All landmarks* / *None*). A
+   click on a landmark's dot, or on its row in the legend, ticks or unticks
+   it there (a ring around its dot in the legend shows it is on). *Follow the
+   main window's selection* adds the landmark selected in the main window, so
+   the rays follow you while you click points in the cameras. Each line is coloured by how far that camera's own point lies from
    the 3D point when projected back into it, against the residual bands below:
    green good, yellow ok, red poor. Each line is tagged at the camera end with
    the camera's number (**C7**); a camera far outside the picture gets its line
@@ -4018,7 +4020,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Ctrl+3** | reconstruct all the 3D landmarks with the verdict (needs two or more calibrated cameras) and show the 3D view; the result also keeps itself up to date as you click and track |
 | **Ctrl+4** | carve the animal's volume at this frame from the cameras' outlines |
 | **3D → Set World Axes…** | choose the 3D world's origin, +X and +Y from three landmarks of the 3D result (+Z by the right-hand rule) |
-| **Ctrl+5** | show / hide the 3D view (drag to turn it, wheel to zoom, double-click to reset; with a calibration: the wand calibration layers, a click on a wand end goes to its frame; Rays: each camera's line to a 3D point, a click on a dot selects that landmark) |
+| **Ctrl+5** | show / hide the 3D view (drag to turn it, wheel to zoom, double-click to reset; with a calibration: the wand calibration layers, a click on a wand end goes to its frame; Rays ▾: each camera's line to a 3D point, a click on a dot or its legend row turns its rays on / off) |
 | **Ctrl+6** | show / hide the body side-by-side view (drag the pose to turn it round) |
 | **Shift+C** | fix a stale or garbled picture |
 

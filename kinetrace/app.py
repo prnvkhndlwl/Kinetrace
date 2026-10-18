@@ -9763,15 +9763,6 @@ class MainWindow(QMainWindow):
         v3.set_selected(s.points[self.selected].name
                         if s is not None and self.selected is not None and 0 <= self.selected < s.n_points else None)
 
-    def _select_landmark_3d(self, name: str) -> None:
-        """(G207) A click on a landmark's dot in the 3D window selects that landmark here (one selection)."""
-        s = self.session
-        pid = s.pid_by_name(name) if s is not None else None
-        if pid is None:
-            self.statusBar().showMessage(f"{name} is not a landmark of {self.project.name(self.project.active)}", 5000)
-            return
-        self._on_select(pid)
-
     def _missing_3d(self, rec, k, t: int) -> list[tuple[str, str, str]]:
         """(G206) [(landmark, why it has no 3D at reference instant t in plain words, the same in a few words
         for the legend (G208))], for every landmark some camera has here that the 3D result `rec` (row k) has no
@@ -12558,7 +12549,6 @@ class MainWindow(QMainWindow):
                 self.view3d = View3D(self)
                 self.view3d.closed.connect(lambda: self.act_view3d.setChecked(False))
                 self.view3d.end_clicked.connect(self._goto_reference)              # (G185)
-                self.view3d.landmark_clicked.connect(self._select_landmark_3d)     # (G207)
                 self.view3d.calib_wanted.connect(lambda: QTimer.singleShot(0, self._make_calib_picture))
             self.view3d.show()
             self._refresh_view3d()

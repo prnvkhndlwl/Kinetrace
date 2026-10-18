@@ -163,6 +163,11 @@ def goto_ref(t_ref):
     pump(0.3)
 
 
+def menu_entry(menu, label):
+    """An entry of a tool button's menu (its click = `trigger`)."""
+    return next(a for a in menu.actions() if a.text() == label)
+
+
 def pick_combo(cmb, index):
     """Choose an entry the way the user does: click the box, arrow to the entry, Enter."""
     QTest.mouseClick(cmb, Qt.LeftButton)
@@ -359,12 +364,18 @@ check("camC has it on its frame 397 but not on 398" in txt and "only camA" in tx
 # ---- [R] the camera rays (G207) --------------------------------------------------------------------
 print("[R] Rays: each 3D point with the rays of the cameras that made it (G207)")
 goto_ref(150)
-cmb = getattr(v, "cmb_rays", None)
-check(cmb is not None, "the 3D window has a Rays control")
+cmb = getattr(v, "btn_rays", None)
+check(cmb is not None, "the 3D window has a Rays menu")
 if cmb is not None:
-    check(cmb.currentIndex() == 0 and v._hits.get("rays") in (None, []), "no rays by default")
-    pick_combo(cmb, 2)                                           # Rays: all
+    check(not v._rays() and v._hits.get("rays") in (None, []), "no rays by default")
+    # (G210) the menu: a tick per landmark of the scene, All / None, Follow the main window's selection
+    entries = [a.text() for a in v.rays_menu.actions() if a.text()]
+    check(entries == ["All landmarks", "None", "Follow the main window's selection"] + list(v.scene.names),
+          "the Rays menu lists All / None / Follow and every landmark", str(entries))
+    menu_entry(v.rays_menu, "All landmarks").trigger()          # Rays > All landmarks
     pump(0.3)
+    check(v.btn_rays.text().startswith(f"Rays ({len(v.scene.names)})"), "the button counts the ticked landmarks",
+          v.btn_rays.text())
     rays = v._hits.get("rays") or []
     rec = p.reconstruction
     k = rec.index(win._reference_instant())
@@ -436,17 +447,25 @@ if cmb is not None:
         check(inside, f"at zoom {z:g} every ray's camera end is on the picture (clipped)")
     QTest.mouseDClick(v.canvas, Qt.LeftButton)                  # the view back to its start
     pump(0.2)
-    # R4: Rays: selected draws only the selected landmark's rays
-    pick_combo(cmb, 1)
+    # R4: one landmark ticked in the menu draws its rays only; (G210) Follow adds the main window's selection
+    menu_entry(v.rays_menu, "None").trigger()
+    pump(0.2)
+    check(not v._rays() and not (v._hits.get("rays") or []), "Rays > None: no rays")
+    menu_entry(v.rays_menu, "hip").trigger()
+    pump(0.3)
+    names_drawn = {ry["name"] for ry in (v._hits.get("rays") or [])}
+    check(names_drawn == {"hip"}, "one landmark ticked in the menu: only its rays", str(names_drawn))
+    menu_entry(v.rays_menu, "hip").trigger()                   # untick
+    menu_entry(v.rays_menu, "Follow the main window's selection").trigger()
     win.activateWindow()
     select_point("neck")
     pump(0.3)
     names_drawn = {ry["name"] for ry in (v._hits.get("rays") or [])}
-    check(names_drawn == {"neck"}, "Rays: selected draws the selected landmark's rays only", str(names_drawn))
+    check(names_drawn == {"neck"}, "Follow: the landmark selected in the main window gets its rays", str(names_drawn))
     select_point("head")
     pump(0.3)
     names_drawn = {ry["name"] for ry in (v._hits.get("rays") or [])}
-    check(names_drawn == {"head"}, "selecting another landmark in LAYERS moves the rays to it", str(names_drawn))
+    check(names_drawn == {"head"}, "selecting another landmark in LAYERS moves the followed rays to it", str(names_drawn))
     # R5: the saved picture has them, in both backgrounds (the choice is remembered in the suites' shared
     # settings file: put back as found, or the next suite draws on the light one)
     light_was = v.chk_light.isChecked()
@@ -457,45 +476,62 @@ if cmb is not None:
         png = os.path.join(SCRATCH, f"live3d_rays_{'light' if light else 'dark'}.png")
         v.save_png(png, scale=2.0)
         img = cv2.imread(png)
-        cmb.blockSignals(True)
-        cmb.setCurrentIndex(0)
-        cmb.blockSignals(False)
+        v._ray_follow = False
         v.save_png(png + ".norays.png", scale=2.0)
         img0 = cv2.imread(png + ".norays.png")
-        cmb.blockSignals(True)
-        cmb.setCurrentIndex(1)
-        cmb.blockSignals(False)
+        v._ray_follow = True
         check(img is not None and img0 is not None and int((np.abs(img.astype(int) - img0).sum(axis=2) > 30).sum()) > 200,
               f"Save picture keeps the rays ({'light' if light else 'dark'} background)")
 
-    # for the owner's hand check: Rays: all on a wide window (the legend in the side strips)
-    cmb.blockSignals(True)
-    cmb.setCurrentIndex(2)
-    cmb.blockSignals(False)
+    # for the owner's hand check: every landmark's rays on a wide window (the legend in the side strips)
+    menu_entry(v.rays_menu, "Follow the main window's selection").trigger()    # off
+    menu_entry(v.rays_menu, "All landmarks").trigger()
     v.resize(1400, 760)
     pump(0.3)
     v.save_png(os.path.join(SCRATCH, "live3d_rays_all_wide.png"), scale=1.0)
-    cmb.blockSignals(True)
-    cmb.setCurrentIndex(1)
-    cmb.blockSignals(False)
+    menu_entry(v.rays_menu, "None").trigger()
+    pump(0.2)
 
-# ---- [S] one selection: a click on a dot in 3D selects that landmark in the main window --------------
-print("[S] a click on a 3D dot selects that landmark in LAYERS")
-v._render()
-dots = v._hits.get("dots")
-rec = p.reconstruction
-j = list(v.scene.names).index("neck") if "neck" in v.scene.names else None
-if dots is not None and j is not None and np.isfinite(dots[j]).all():
+# ---- [S] (G210) a click on a landmark's dot or its legend row: its rays on / off -------------------------
+print("[S] a click on a 3D dot or a legend row toggles that landmark's rays")
+
+
+def canvas_point(img_xy):
     dpr = v._last_dpr
     hh, ww = v.last_image.shape[:2]
     ox, oy = (v.canvas.width() - ww / dpr) / 2.0, (v.canvas.height() - hh / dpr) / 2.0
-    at = QPoint(int(round(dots[j][0] / dpr + ox)), int(round(dots[j][1] / dpr + oy)))
-    QTest.mouseClick(v.canvas, Qt.LeftButton, Qt.NoModifier, at)
+    return QPoint(int(round(img_xy[0] / dpr + ox)), int(round(img_xy[1] / dpr + oy)))
+
+
+v._render()
+dots = v._hits.get("dots")
+j = list(v.scene.names).index("neck") if "neck" in v.scene.names else None
+sel_before = win.selected
+if dots is not None and j is not None and np.isfinite(dots[j]).all():
+    QTest.mouseClick(v.canvas, Qt.LeftButton, Qt.NoModifier, canvas_point(dots[j]))
     pump(0.3)
-    check(win.selected == win.session.pid_by_name("neck") and win._selected_pids() == [win.session.pid_by_name("neck")],
-          "the click on the neck's dot selected the neck in LAYERS", f"selected {win.selected}")
+    check(v._rays() == {"neck"} and {ry["name"] for ry in (v._hits.get("rays") or [])} == {"neck"}
+          and menu_entry(v.rays_menu, "neck").isChecked(),
+          "a click on the neck's dot ticks its rays (and its menu entry)", str(v._rays()))
+    check(win.selected == sel_before, "... and leaves the main window's selection as it was")
+    v._render()
+    QTest.mouseClick(v.canvas, Qt.LeftButton, Qt.NoModifier, canvas_point(v._hits["dots"][j]))
+    pump(0.3)
+    check(not v._rays(), "a second click on the dot unticks them", str(v._rays()))
 else:
     check(False, "(setup) the neck's dot is on the picture")
+v._render()
+rows = (v._hits.get("legend") or {}).get("rows") or []
+row = next((r_ for r_ in rows if r_[0] == "head"), None)
+if row is not None:
+    QTest.mouseClick(v.canvas, Qt.LeftButton, Qt.NoModifier, canvas_point(((row[1] + row[3]) / 2, (row[2] + row[4]) / 2)))
+    pump(0.3)
+    check(v._rays() == {"head"} and menu_entry(v.rays_menu, "head").isChecked(),
+          "a click on the head's legend row ticks its rays", str(v._rays()))
+    right = (v._hits.get("legend") or {}).get("right") or []
+    check(any(t_.startswith("click a landmark") for t_ in right), "the legend says a click toggles a landmark's rays")
+else:
+    check(False, "(setup) the legend has a row for the head", str(rows))
 
 win._dev_probe.wait(15000)
 win.project.dirty = False

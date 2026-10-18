@@ -788,7 +788,19 @@ def cam_tag(view: int) -> str:
     return f"C{int(view) + 1}"
 
 
-def _draw_rays(img, scene: Scene3D, ps: np.ndarray, to_screen, pal: dict, mode: str, labels: list,
+def ray_names(scene: Scene3D, rays) -> set:
+    """(G210) The landmarks whose rays are drawn: `rays` = a collection of names, or "off" / "selected" (the
+    scene's selected landmark) / "all"."""
+    if rays is None or rays == "off":
+        return set()
+    if rays == "all":
+        return set(scene.names)
+    if rays == "selected":
+        return {scene.selected} if scene.selected else set()
+    return set(rays)
+
+
+def _draw_rays(img, scene: Scene3D, ps: np.ndarray, to_screen, pal: dict, wanted: set, labels: list,
                px: float, xr: tuple | None = None) -> list[dict]:
     """(G207, owner 2026-10-17: rays "from the corresponding cameras that contributed to the point as is shown
     in ... qualisys") Each 3D point (all, or the selected landmark's) with a ray from every camera that made
@@ -805,7 +817,7 @@ def _draw_rays(img, scene: Scene3D, ps: np.ndarray, to_screen, pal: dict, mode: 
         if j >= len(scene.names) or j >= len(ps) or not lst:
             continue
         nm = scene.names[j]
-        if mode == "selected" and nm != scene.selected:
+        if nm not in wanted:
             continue
         p1 = ps[j]
         if not np.isfinite(p1).all():
@@ -860,14 +872,17 @@ def _legend_text(text: str, width: float, px: float) -> str:
 LEGEND_PER_LANDMARK = 3        # (G208) with up to this many landmarks' rays, a camera lists each one's error
 
 
-def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_drawn: list, mode: str) -> dict:
+def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_drawn: list,
+                 wanted: set = frozenset()) -> dict:
     """(G208, owner 2026-10-18: "there is a lot of white space on either side, can that be used for text/legend
     instead") Left: the cameras - their colour (the one their field of view is drawn in), the tag the figure
     shows, the full name and, with rays, right after the name the error of each of that camera's rays in its
     verdict's colour: one number per landmark (in the order the header names them in their own colours) when
     the rays of up to LEGEND_PER_LANDMARK landmarks are drawn, else the worst one and its landmark; a footer
     says what the number is. Right: the landmarks - colour, name, how many cameras made the point and its
-    verdict, or why there is none here. -> {"left": [line texts], "right": [line texts]} (tests)."""
+    verdict, or why there is none here; (G210) a ring around the dot of each landmark whose rays are on, and
+    a click on a row toggles them. -> {"left": [line texts], "right": [line texts], "rows": [(landmark, x0, y0,
+    x1, y1) in image pixels]}."""
     H, W = img.shape[:2]
     lw, rw, panel = legend_layout((W, H), px)
     row, pad, gap = LEGEND_ROW_PX * px, 10 * px, 6 * px
@@ -913,9 +928,10 @@ def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_d
             head_l.append([("ray error in px: the worst of each camera's rays", pal["dim"])])
         foot_l = ["px: how far the 3D point, seen from that camera,", "lands from the camera's own point (green good,",
                   "yellow ok, red poor; a ray's colour says the same)"]
-    lms = [(("dot", LANDMARK_COLOURS[j % len(LANDMARK_COLOURS)]), nm,
+    lms = [(("dot", LANDMARK_COLOURS[j % len(LANDMARK_COLOURS)], nm in wanted), nm,
             [(scene.status[j][0], vc.get(scene.status[j][1], pal["dim"]))] if j < len(scene.status) else [])
            for j, nm in enumerate(scene.names)]
+    rows = []
 
     def column(x0, width, heads, entries, foots):
         if not entries:
@@ -942,6 +958,10 @@ def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_d
                 cv2.rectangle(img, (int(x0 + pad), cy - s_), (int(x0 + pad) + 2 * s_, cy + s_), sw[1], -1)
             else:
                 cv2.circle(img, (int(x0 + pad + _px(4, px)), cy), _px(4, px), sw[1], -1, cv2.LINE_AA)
+                if sw[2]:                                   # (G210) its rays are on
+                    cv2.circle(img, (int(x0 + pad + _px(4, px)), cy), _px(6.5, px), pal["text"], _px(1, px),
+                               cv2.LINE_AA)
+                rows.append((main, x0, y - row * 0.8, x0 + width, y + row * 0.2))
             room = width - 2 * pad - 14 * px - (sum(est(t) for t, _ in parts) + gap if parts else 0)
             t = _legend_text(main, room, px)
             labels.append((x0 + pad + 14 * px, y, t, pal["text"], TICK_PX, "l"))
@@ -957,8 +977,9 @@ def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_d
             texts.append(ft)
         return texts
 
+    right_foot = ["click a landmark: its rays on / off"] if scene.rays else []
     return {"left": column(0.0, lw, head_l, cams, foot_l),
-            "right": column(W - rw, rw, [[("Landmarks", pal["dim"])]], lms, [])}
+            "right": column(W - rw, rw, [[("Landmarks", pal["dim"])]], lms, right_foot), "rows": rows}
 
 
 def _px(v: float, px: float) -> int:
@@ -1135,7 +1156,8 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
     the chosen world's arrows (with `scene.world`); `trail`: None, a number of rows either side, or "all";
     `palette`: "dark" | "light". `hits` also receives "labels" (every text drawn), "grid" (the box),
     "origin" (the world's origin on screen) and "trail" (the rows drawn). (G207) `rays`: "off" | "selected" |
-    "all" - the cameras' rays to each 3D point; `hits` "rays" (`_draw_rays`) and "dots" ((N, 2) each
+    "all" or (G210) a set of landmark names - the cameras' rays to each 3D point; `hits` "rays" (`_draw_rays`)
+    and "dots" ((N, 2) each
     landmark's dot on the picture, NaN where none is drawn). (G208) `legend`: the cameras and the landmarks in
     the strips beside the scene (`_draw_legend`; `hits` "legend")."""
     W, H = size
@@ -1207,9 +1229,10 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
     if show_points and scene.points is not None and len(scene.points):
         ps, _ = to_screen(scene.points)
         ok = np.isfinite(scene.points).all(axis=1)
-        if rays in ("selected", "all"):
+        wanted = ray_names(scene, rays)
+        if wanted:
             lw, rw, _ = legend_layout((W, H), px)
-            drawn_rays = _draw_rays(img, scene, ps, to_screen, pal, rays, labels, px,
+            drawn_rays = _draw_rays(img, scene, ps, to_screen, pal, wanted, labels, px,
                                     (lw, W - rw) if legend else None)          # (G208) clear of the legend
             if hits is not None:
                 hits["rays"] = drawn_rays
@@ -1243,7 +1266,7 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
         if hits is not None:
             hits["origin"] = o
     if legend and (scene.camera_views or scene.names):
-        leg = _draw_legend(img, scene, pal, labels, px, drawn_rays, rays)
+        leg = _draw_legend(img, scene, pal, labels, px, drawn_rays, ray_names(scene, rays))
         if hits is not None:
             hits["legend"] = leg
     if hits is not None:
@@ -1292,7 +1315,6 @@ class View3D(QWidget):
 
     closed = Signal()
     end_clicked = Signal(int)
-    landmark_clicked = Signal(str)  # (G207) a click on a landmark's dot: select it in the main window
     calib_wanted = Signal()         # a calibration tick was switched on and there is no picture yet
 
     def __init__(self, parent=None):
@@ -1329,14 +1351,23 @@ class View3D(QWidget):
         self.cmb_trail.setCurrentIndex(1)
         self.cmb_trail.setToolTip("Each landmark's path in its own colour: the second before and after the frame on "
                                   "screen (fading), or the whole 3D result")
-        # (G207) the cameras' rays to each 3D point, as motion-capture software draws them
-        self.cmb_rays = QComboBox()
-        self.cmb_rays.addItems(["No rays", "Rays: selected", "Rays: all"])
-        self.cmb_rays.setToolTip("Draw a line from each camera that made a 3D point to that point: for the landmark "
-                                 "selected (in the main window, or by a click on its dot here), or for every landmark. "
-                                 "Each line is coloured by how well that camera agrees with the point: green good, "
-                                 "yellow ok, red poor. A red line is the camera to check (a wrong click or track, or "
-                                 "its timing).")
+        # (G207) the cameras' rays to each 3D point, as motion-capture software draws them; (G210, owner
+        # 2026-10-18) for the landmarks ticked in this menu, and the main window's selected one if followed
+        from PySide6.QtWidgets import QMenu as _QMenu, QToolButton as _QToolButton
+        self.btn_rays = _QToolButton()
+        self.btn_rays.setPopupMode(_QToolButton.InstantPopup)
+        self.btn_rays.setToolTip("Draw a line from each camera that made a 3D point to that point, for the landmarks "
+                                 "ticked here (or click a landmark in the legend, or its dot), and for the one "
+                                 "selected in the main window if you tick Follow. Each line is coloured by how well "
+                                 "that camera agrees with the point: green good, yellow ok, red poor. A red line is "
+                                 "the camera to check (a wrong click or track, or its timing).")
+        self.rays_menu = _QMenu(self)
+        self.btn_rays.setMenu(self.rays_menu)
+        self.ray_actions: list = []
+        self._ray_pick: set = set()         # the landmarks ticked (by name, kept while the window is open)
+        self._ray_follow = False            # also the main window's selected landmark
+        self._ray_menu_names: list = []
+        self._fill_rays_menu()
         self.chk_light = QCheckBox("Light background")
         self.chk_light.setToolTip("A white figure for a paper or a slide; remembered")
         self.chk_light.setChecked(_light_preference())
@@ -1345,8 +1376,7 @@ class View3D(QWidget):
             top.addWidget(c)
         self.cmb_trail.currentIndexChanged.connect(lambda _=0: self.request_render())
         top.addWidget(self.cmb_trail)
-        self.cmb_rays.currentIndexChanged.connect(lambda _=0: (self._show_info(), self.request_render()))
-        top.addWidget(self.cmb_rays)
+        top.addWidget(self.btn_rays)
         self.chk_light.toggled.connect(self._light_toggled)
         top.addWidget(self.chk_light)
         self.btn_save = QPushButton("Save picture…")
@@ -1446,15 +1476,76 @@ class View3D(QWidget):
         i = self.cmb_trail.currentIndex()
         return None if i == 0 else ("all" if i == 2 else max(1, int(self.scene.trail_frames)))
 
-    def _rays(self) -> str:
-        return ("off", "selected", "all")[max(0, self.cmb_rays.currentIndex())]
+    def _rays(self) -> set:
+        """(G210) The landmarks whose rays are drawn: the ticked ones, and the selected one when followed."""
+        out = {nm for nm in self._ray_pick if nm in self.scene.names}
+        if self._ray_follow and self.scene.selected:
+            out.add(self.scene.selected)
+        return out
+
+    def _fill_rays_menu(self) -> None:
+        """(G210) The Rays menu for the scene's landmarks: All / None, Follow the main window's selection, a tick
+        per landmark (kept by name)."""
+        names = list(self.scene.names) if self.scene is not None else []
+        self._ray_menu_names = names
+        self.rays_menu.clear()
+        self.ray_actions = []
+        for label, on in (("All landmarks", True), ("None", False)):
+            a = self.rays_menu.addAction(label)
+            a.triggered.connect(lambda _=False, on=on: self._set_rays_all(on))
+        self.act_ray_follow = self.rays_menu.addAction("Follow the main window's selection")
+        self.act_ray_follow.setCheckable(True)
+        self.act_ray_follow.setChecked(self._ray_follow)
+        self.act_ray_follow.toggled.connect(self._ray_follow_toggled)
+        self.rays_menu.addSeparator()
+        for nm in names:
+            a = self.rays_menu.addAction(nm)
+            a.setCheckable(True)
+            a.setChecked(nm in self._ray_pick)
+            a.setData(nm)
+            a.toggled.connect(lambda on, nm=nm: self._ray_ticked(nm, on))
+            self.ray_actions.append(a)
+        self._rays_label()
+
+    def _rays_label(self) -> None:
+        n = len({nm for nm in self._ray_pick if nm in self._ray_menu_names})
+        what = " + ".join(([str(n)] if n else []) + (["selected"] if self._ray_follow else []))
+        self.btn_rays.setText(f"Rays ({what}) ▾" if what else "Rays ▾")
+
+    def _rays_changed(self) -> None:
+        self._rays_label()
+        self._show_info()
+        self.request_render()
+
+    def _ray_ticked(self, name: str, on: bool) -> None:
+        (self._ray_pick.add if on else self._ray_pick.discard)(name)
+        self._rays_changed()
+
+    def _set_rays_all(self, on: bool) -> None:
+        self._ray_pick = set(self._ray_menu_names) if on else set()
+        for a in self.ray_actions:
+            a.blockSignals(True)
+            a.setChecked(on)
+            a.blockSignals(False)
+        self._rays_changed()
+
+    def _ray_follow_toggled(self, on: bool) -> None:
+        self._ray_follow = bool(on)
+        self._rays_changed()
+
+    def toggle_rays(self, name: str) -> None:
+        """(G210) A click on a landmark's legend row or dot: its rays on / off (its tick in the menu)."""
+        for a in self.ray_actions:
+            if a.data() == name:
+                a.setChecked(not a.isChecked())         # -> _ray_ticked
+                return
 
     def set_selected(self, name: str | None) -> None:
-        """(G207) The landmark selected in the main window: its rays under Rays: selected."""
+        """(G207) The landmark selected in the main window: its rays when Follow is ticked."""
         if name == self.scene.selected:
             return
         self.scene.selected = name
-        if self._rays() == "selected":
+        if self._ray_follow:
             self._show_info()
             self.request_render()
 
@@ -1465,6 +1556,8 @@ class View3D(QWidget):
         scene.cover_n = self.scene.cover_n if self.scene is not None else scene.cover_n
         self.scene = scene
         self._base_info = info
+        if list(scene.names) != self._ray_menu_names:        # (G210) the landmarks changed: the menu follows
+            self._fill_rays_menu()
         self.chk_world.setEnabled(bool(scene.world))          # (G201) greyed until Set World Axes
         if scene.calib is not old:
             self._picture_changed()
@@ -1668,10 +1761,10 @@ class View3D(QWidget):
             txt += (f" · no 3D here: {miss[0][0]}" if len(miss) == 1 else
                     f" · {len(miss)} landmarks without 3D here")
             tips.append("No 3D position at this instant:\n" + "\n".join(f"  {nm}: {why}" for nm, why, *_ in miss))
-        if self._rays() == "selected":      # (G207) say why no ray is drawn
+        if self._ray_follow:                # (G207, G210) say why the followed landmark has no ray
             sel = self.scene.selected
             if sel is None:
-                txt += " · rays: select a landmark (here or in the main window)"
+                txt += " · rays: no landmark selected in the main window"
             elif not any(nm == sel and j < len(self.scene.rays) and self.scene.rays[j]
                          for j, nm in enumerate(self.scene.names)):
                 txt += f" · rays: {sel} has no 3D point here"
@@ -1696,6 +1789,20 @@ class View3D(QWidget):
         h, w = self.last_image.shape[:2]
         ox, oy = (self.canvas.width() - w / dpr) / 2.0, (self.canvas.height() - h / dpr) / 2.0
         return np.asarray(es, np.float64) / dpr + np.array([ox, oy])
+
+    def _legend_row_at(self, x: float, y: float) -> str | None:
+        """(G210) The landmark whose legend row is under the canvas point (x, y), if any."""
+        leg = self._hits.get("legend") or {}
+        if not leg.get("rows") or self.last_image is None:
+            return None
+        dpr = self._last_dpr
+        h, w = self.last_image.shape[:2]
+        ix = (x - (self.canvas.width() - w / dpr) / 2.0) * dpr
+        iy = (y - (self.canvas.height() - h / dpr) / 2.0) * dpr
+        for nm, x0, y0, x1, y1 in leg["rows"]:
+            if x0 <= ix <= x1 and y0 <= iy <= y1:
+                return nm
+        return None
 
     def _pick(self, x: float, y: float, radius: float = 6.0, what: str = "ends") -> int | None:
         pts = self.end_screen_points(what)
@@ -1732,10 +1839,13 @@ class View3D(QWidget):
                     pic = self.scene.calib
                     if k is not None and pic is not None and k < len(pic.end_frame):
                         self.end_clicked.emit(int(pic.end_frame[k]))
-                    else:                   # (G207) a landmark's dot: it becomes the selected landmark
-                        j = self._pick(ev.position().x(), ev.position().y(), radius=8.0, what="dots")
-                        if j is not None and j < len(self.scene.names):
-                            self.landmark_clicked.emit(self.scene.names[j])
+                    else:                   # (G210) a landmark's legend row or dot: its rays on / off
+                        nm = self._legend_row_at(ev.position().x(), ev.position().y())
+                        if nm is None:
+                            j = self._pick(ev.position().x(), ev.position().y(), radius=8.0, what="dots")
+                            nm = self.scene.names[j] if j is not None and j < len(self.scene.names) else None
+                        if nm is not None:
+                            self.toggle_rays(nm)
         return super().eventFilter(obj, ev)
 
 
