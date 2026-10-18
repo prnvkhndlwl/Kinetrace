@@ -748,6 +748,41 @@ def g133_shift_c_other_cameras():
     close(w)
 
 
+# ================================================================== I308
+@section
+def i308_closed_window_never_autosaves():
+    # A closed window lives on until the garbage collector frees it; its 30 s autosave tick wrote back the work
+    # the user had just discarded, and the next open of that video offered it (the G133 flake above).
+    w = window(A)
+    QTest.keyClick(w, Qt.Key_N)
+    click(w, 160, 120)
+    check("I308 a point placed with N + click makes unsaved work", w.session.n_points == 1 and w.project.dirty,
+          (w.session.n_points, w.project.dirty))
+    w._autosave_timer.setInterval(100)             # the 30 s tick, sooner
+    close(w)                                       # Discard
+    pump(1.0)
+    check("I308 the closed window's autosave timer is stopped", not w._autosave_timer.isActive())
+    check("I308 no recovery copy of the discarded work appears after the close", recovery.for_video(A) is None,
+          recovery.for_video(A))
+    forget(A)
+    # (b) Ctrl+S during a run asks for a save once the run is over (I265); a Discard close must cancel it, or the
+    # poll saves the discarded work on the closed window when the run ends
+    w = window(A)
+    QTest.keyClick(w, Qt.Key_N)
+    click(w, 160, 120)
+    w._run_in_progress = lambda: True              # a run is going (no model in this suite)
+    app.setActiveWindow(w)
+    QTest.keyClick(w, Qt.Key_S, Qt.ControlModifier)
+    check("I308 Ctrl+S during a run waits for the run to end", w._save_after_run)
+    saves = []
+    w._save_project = lambda: saves.append(1) or False
+    close(w)                                       # Discard
+    w._run_in_progress = lambda: False             # the run ends
+    pump(1.0)
+    check("I308 the closed window does not save the discarded work once the run ends", not saves, len(saves))
+    forget(A)
+
+
 # ================================================================== G134
 @section
 def g134_veil_does_not_carry():

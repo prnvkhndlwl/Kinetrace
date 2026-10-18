@@ -13420,10 +13420,10 @@ class MainWindow(QMainWindow):
                 ev.ignore()
                 return
         elif answer == QMessageBox.Discard:
-            self._finish_writer()
-            recovery.discard(self._project_id)
+            self._leave_project(discard=True)       # (I308) signed as handled: no later autosave writes it back
         else:
             self._leave_project()
+        self._save_after_run = False                # (I308) a Ctrl+S waiting for the run's end (I265) dies here
         self._sync3d_timer.stop()            # (I305) closing for good (Cancel above keeps it running)
         self._finish_writer()
         if self._exports_worker is not None and self._exports_worker.isRunning():
@@ -13433,8 +13433,10 @@ class MainWindow(QMainWindow):
         # tears Qt down, or Qt aborts ("QThread: Destroyed while thread is
         # still running" = exit 0xC0000409 on Windows). Only the working
         # camera's decoder used to be stopped here.
+        # (I308) the autosave too: a closed window lives on until the garbage collector frees it, and its
+        # 30 s tick wrote the work just discarded back to recovery (and started a writer thread on it)
         for timer in (self._render_timer, self._play_timer,
-                      self._lock_timer):
+                      self._lock_timer, self._autosave_timer):
             if timer is not None:
                 timer.stop()
         self._fc_stop()                      # (I266) a frame check stops between frames
