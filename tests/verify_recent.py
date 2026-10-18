@@ -114,7 +114,8 @@ def unit():
 
     # round trip through the stored JSON: this OS's own path style, spaces and a non-ASCII folder name
     st = FakeSettings()
-    native = r"D:\data\fish\trial 1.kinetrace" if os.name == "nt" else "/home/lab/data/trial 1.kinetrace"
+    # (the PR check refuses any added /home/<name> but runner / someone: a sample path uses "someone")
+    native = r"D:\data\study\trial 1.kinetrace" if os.name == "nt" else "/home/someone/data/trial 1.kinetrace"
     keep = [recent.entry(native, "n1"), recent.entry(os.path.join(OUT, "Données ñ", "t2.kinetrace"), "u1")]
     check(recent.store(st, keep), "stored")
     check(all("\\" not in it["path"] for it in recent.json.loads(st.d[recent.KEY])),
