@@ -406,6 +406,7 @@ class Scene3D:
         # points (`box_extra`, small)
         self.box_points: np.ndarray | None = None
         self.box_extra: np.ndarray | None = None
+        self.missing: list[tuple[str, str]] = []    # (G206) (landmark, why it has no 3D at this instant)
 
     def framing(self, include_cameras: bool, include_calib: bool = False,
                 box: tuple | None = None) -> tuple[np.ndarray, float]:
@@ -1325,13 +1326,22 @@ class View3D(QWidget):
     def _show_info(self) -> None:
         pic = self.scene.calib
         txt = self._base_info
+        tips = []
+        miss = self.scene.missing
+        if miss:                            # (G206) which landmark has no 3D here, and why
+            if len(miss) == 1:
+                txt += f" · no 3D here: {miss[0][0]} ({miss[0][1]})"
+            else:
+                txt += f" · {len(miss)} landmarks without 3D here (hover for why)"
+            tips.append("No 3D position at this instant:\n" + "\n".join(f"  {nm}: {why}" for nm, why in miss))
         if pic is not None and self._calib_on():
             lines = list(pic.lines)
             if not self.chk_cover.isChecked():
                 lines = [ln for ln in lines if not ln.startswith("The wand cloud lies")]
             if lines:
                 txt = (txt + "  ·  " if txt else "") + "  ".join(lines)
-            self.info.setToolTip("\n".join(pic.lines))
+            tips.append("\n".join(pic.lines))
+        self.info.setToolTip("\n\n".join(tips))
         self.info.setText(txt)
 
     def end_screen_points(self) -> np.ndarray | None:

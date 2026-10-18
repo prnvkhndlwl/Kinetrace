@@ -9728,6 +9728,37 @@ class MainWindow(QMainWindow):
         self._live3d = {"t0": int(ts[0]), "names": names, "xyz": xyz, "resid": resid, "n": ncams, "err": err}
         self._refresh_view3d()
 
+    def _missing_3d(self, rec, k, t: int) -> list[tuple[str, str]]:
+        """(G206) [(landmark, why it has no 3D at reference instant t)] in plain words, for every landmark some
+        camera has here that the 3D result `rec` (row k) has no position for. A landmark no camera has here is
+        not listed (nothing to explain: it is simply not tracked at this instant)."""
+        from kinetrace.calib import sampled_views
+        p = self.project
+        cal = p.calibration
+        if cal is None or cal.n_usable(p.n_views) < 2:
+            return []
+        solved = set()
+        if rec is not None and k is not None:
+            solved = {nm for j, nm in enumerate(rec.names) if np.isfinite(rec.xyz[k, j]).all()}
+        out = []
+        for nm in landmark_names(p.sessions):
+            if nm in solved:
+                continue
+            views, half = sampled_views(p.sessions, cal, p.rates, p.offsets, nm, t)
+            if not views and not half:
+                continue
+            cams = [p.name(v) for v in views]
+            parts = []
+            if len(views) >= 2:
+                parts.append(f"{', '.join(cams)} have it here, but their rays give no point")
+            elif views:
+                parts.append(f"only {cams[0]} has it here; 3D needs 2 cameras")
+            for v, (f_has, f_lacks) in half.items():
+                parts.append(f"{p.name(v)} has it on its frame {f_has} but not on {f_lacks}, and this instant falls "
+                             "between the two (its offset is fractional)")
+            out.append((nm, "; ".join(parts)))
+        return out
+
     def _live_window(self, rec, t: int, half: int):
         """(I309) The 3D result the 3D window draws during a run: the project's result over the instants
         t - half .. t + half, with the run's live cells put in by name (a small copy, never the whole result,
@@ -12549,6 +12580,7 @@ class MainWindow(QMainWindow):
         scene.calib = cp[2] if (cp is not None and cp[0] is cal and cp[1] == self._calib_key()) else None
         if scene.unit == "" and cal is not None:
             scene.unit = cal.unit
+        scene.missing = self._missing_3d(r, r.index(t) if r is not None else None, t)     # (G206)
         self.view3d.set_scene(scene, info)
         made = cp is not None and cp[0] is cal and cp[1] == self._calib_key()     # (a failed one: not again)
         if scene.calib is None and not made and self.view3d._calib_on():

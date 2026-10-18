@@ -313,7 +313,14 @@ win.project = Project(bsess, [f"B{c}" for c in range(BC)], boffs)
 t_ = time.perf_counter()
 win._live_window(brec, t_now, 240)
 merge = time.perf_counter() - t_
+win.project.calibration = bcal
+t_ = time.perf_counter()
+miss_big = win._missing_3d(None, None, t_now)           # the worst case: all 20 landmarks without 3D
+dt_miss = time.perf_counter() - t_
 win._live3d, win.project = _keep
+check(len(miss_big) == BN and dt_miss < 0.01,
+      f"the reasons for 20 landmarks x 10 cameras take {dt_miss * 1000:.1f} ms per frame change (< 10 ms)",
+      f"{len(miss_big)} reasons")
 check(best + merge < 0.015, f"one live update on 10 cameras x 40,000 frames x 20 landmarks (5 tracked, 1 s trail): "
       f"{(best + merge) * 1000:.1f} ms (< 15 ms)", f"triangulate {best * 1000:.1f} ms, merge {merge * 1000:.1f} ms")
 del bsess, brec
@@ -331,6 +338,23 @@ check("tail" in txt and "camB" in txt, "the tail at reference 250: only camB has
 goto_ref(5)
 txt = v.info.text() + " " + v.info.toolTip()
 check("head" not in txt and "neck" not in txt, "landmarks with 3D are not listed as missing", txt)
+# J4: ONE click of the nose in camC (offset -2.4: reference 400 falls between its frames 397 and 398) - the
+# known pitfall of a single click at a fractional offset, said in words
+win._set_active_view(2)
+pump(0.3)
+select_point("nose")
+win._goto(397, force=True)
+pump(0.3)
+u = cams[2].project(world_at(397 - OFF[2])["nose"][None])[0]
+QTest.mouseClick(win.canvas.viewport(), Qt.LeftButton, Qt.NoModifier,
+                 win.canvas.mapFromScene(__import__("PySide6.QtCore", fromlist=["QPointF"]).QPointF(float(u[0]), float(u[1]))))
+pump(0.5)
+win._set_active_view(0)
+pump(0.3)
+goto_ref(400)
+txt = v.info.text() + " " + v.info.toolTip()
+check("camC has it on its frame 397 but not on 398" in txt and "only camA" in txt,
+      "a single click at a fractional offset: the reason names the frame it lacks", txt)
 
 # ---- [R] the camera rays (G207) --------------------------------------------------------------------
 print("[R] Rays: each 3D point with the rays of the cameras that made it (G207)")
