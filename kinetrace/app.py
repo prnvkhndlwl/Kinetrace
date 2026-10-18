@@ -104,6 +104,11 @@ LOCKSTEP_MS = 300
 SYNC3D_MS = 300
 SYNC3D_BLOCK = 256
 SYNC3D_BG_CELLS = 20_000
+# (I309) the 3D window during a Track run: how often the run's landmarks are triangulated for it (display only,
+# never the project's 3D result), and at most how many cells one update computes (the trail behind the
+# instant shrinks to fit; the instant itself is always computed)
+LIVE3D_MS = 100
+LIVE3D_MAX_CELLS = 20_000
 _SYNC3D_K = np.array([0x9E3779B97F4A7C15, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9], np.uint64)
 _SYNC3D_W = (np.random.RandomState(305).randint(1, 2 ** 62, SYNC3D_BLOCK, dtype=np.int64).astype(np.uint64)
              * np.uint64(2) + np.uint64(1))                      # odd: a changed cell always changes its block
@@ -899,6 +904,8 @@ class MainWindow(QMainWindow):
         self._sync3d = None
         self._sync3d_busy = False
         self._sync3d_rebuild_open = False        # the project being opened is a recovery copy
+        self._live3d = None                      # (I309) the run's landmarks in 3D, for the 3D window only
+        self._live3d_at = 0.0
         self._sync3d_timer = QTimer(self, interval=SYNC3D_MS, timerType=Qt.CoarseTimer)
         self._sync3d_timer.timeout.connect(self._sync_3d)
         self._sync3d_timer.start()
@@ -9667,6 +9674,91 @@ class MainWindow(QMainWindow):
         self.spin.setValue(idx)
         self.spin.blockSignals(False)
         self._update_frame_label()
+        self._live_3d()                         # (I309) the 3D window follows the run too
+
+    def _run_landmark_names(self) -> list[str]:
+        """(I309) The names of the landmarks the run in progress tracks: the working camera's and, in a
+        simultaneous every-camera run, each other camera's."""
+        p, s = self.project, self.session
+        out = []
+        if s is not None:
+            out += [s.points[q].name for q in (getattr(self, "_track_pids", None) or []) if 0 <= q < s.n_points]
+        for v, run in (self._side or {}).items():
+            if p is not None and v < p.n_views:
+                sv = p.sessions[v]
+                out += [sv.points[q].name for q in (getattr(run, "pids", None) or []) if 0 <= q < sv.n_points]
+        return list(dict.fromkeys(out))
+
+    def _live_3d(self) -> None:
+        """(I309, owner 2026-10-17: "I want the 3D view to also show the tracked points in 3D") While a Track
+        run goes, the 3D window shows the run's landmarks at the instant on screen and along the trail behind
+        it, at most every LIVE3D_MS. The project's own 3D result is made once the Track press is over
+        (`_sync_3d`, I305): this is a display overlay, computed by `calib.triangulate_cells` - the cells
+        `reconstruct` gives for the same data - and never saved. Only the run's landmarks: the others do
+        not change during it. Nothing at all while the 3D window is closed."""
+        v3, p = self.view3d, self.project
+        if v3 is None or not v3.isVisible() or p is None or not self._run_in_progress():
+            return
+        now = time.perf_counter()
+        if now - self._live3d_at < LIVE3D_MS / 1000.0:
+            return
+        self._live3d_at = now
+        cal = p.calibration
+        names = self._run_landmark_names()
+        if cal is None or cal.n_usable(p.n_views) < 2 or not names:
+            return
+        from kinetrace.calib import triangulate_cells
+        t = self._reference_instant()
+        back = int(v3.scene.trail_frames or 0) if v3._trail() is not None else 0
+        back = max(0, min(back, LIVE3D_MAX_CELLS // len(names) - 1))
+        ts = np.arange(t - back, t + 1)
+        C = p.n_views
+        xyz = np.full((len(ts), len(names), 3), np.nan)
+        resid = np.full((len(ts), len(names)), np.nan)
+        ncams = np.zeros((len(ts), len(names)), np.int32)
+        err = np.full((len(ts), len(names), C), np.nan, np.float32)
+        sess, rates, offs = list(p.sessions), list(p.rates), list(p.offsets)
+        try:
+            for k, nm in enumerate(names):
+                x, r, n, e, _ = triangulate_cells(sess, cal, rates, offs, nm, ts)
+                xyz[:, k], resid[:, k], ncams[:, k], err[:, k] = x[:, 0], r[:, 0], n[:, 0], e[:, 0]
+        except Exception as e:      # noqa: BLE001 - the 3D window only; said, never a crash of the run
+            self.statusBar().showMessage(_plain_error(e, "The 3D window could not follow the run"), 5000)
+            return
+        self._live3d = {"t0": int(ts[0]), "names": names, "xyz": xyz, "resid": resid, "n": ncams, "err": err}
+        self._refresh_view3d()
+
+    def _live_window(self, rec, t: int, half: int):
+        """(I309) The 3D result the 3D window draws during a run: the project's result over the instants
+        t - half .. t + half, with the run's live cells put in by name (a small copy, never the whole result,
+        never the project's). -> a calib.Reconstruction of that window."""
+        from kinetrace.calib import Reconstruction
+        lv = self._live3d
+        a, b = int(t) - half, int(t) + half
+        names = list(rec.names) if rec is not None else []
+        names += [nm for nm in lv["names"] if nm not in names]
+        T, N, C = b - a + 1, len(names), self.project.n_views
+        xyz = np.full((T, N, 3), np.nan)
+        resid = np.full((T, N), np.nan)
+        ncams = np.zeros((T, N), np.int32)
+        err = np.full((T, N, C), np.nan, np.float32)
+        col = {nm: j for j, nm in enumerate(names)}
+        for src, t0, nms, sx, sr, sn, se in (
+                ((rec, rec.t0, rec.names, rec.xyz, rec.residual, rec.n_cams, rec.per_cam) if rec is not None else
+                 (None,) * 7),
+                (lv, lv["t0"], lv["names"], lv["xyz"], lv["resid"], lv["n"], lv["err"])):
+            if src is None:
+                continue
+            lo, hi = max(a, int(t0)), min(b, int(t0) + sx.shape[0] - 1)
+            if lo > hi:
+                continue
+            for jo, nm in enumerate(nms):
+                j = col[nm]
+                d, s_ = slice(lo - a, hi - a + 1), slice(lo - int(t0), hi - int(t0) + 1)
+                xyz[d, j], resid[d, j], ncams[d, j] = sx[s_, jo], sr[s_, jo], sn[s_, jo]
+                if se is not None and se.ndim == 3 and se.shape[2] == C:
+                    err[d, j] = se[s_, jo]
+        return Reconstruction(a, names, xyz, resid, ncams, rec.unit if rec is not None else "", err)
 
     def _on_autopaused(self, frame: int, pid: int):
         self._autopause_info = (frame, pid)
@@ -12252,6 +12344,9 @@ class MainWindow(QMainWindow):
         p = self.project
         if p is None or self._sync3d_busy or self._run_in_progress() or self._loading:
             return
+        if self._live3d is not None:             # (I309) the Track press is over: the window shows the result
+            self._live3d = None
+            self._refresh_view3d()
         if not force and (self._busy_stack or QApplication.activeModalWidget() is not None):
             return
         st = self._sync3d
@@ -12398,6 +12493,14 @@ class MainWindow(QMainWindow):
         r = p.reconstruction
         t = self._reference_instant()       # (G107) the one rounding rule: the hull cache is keyed by it
         info = f"reference frame {t}"
+        # (G203) a trail spans 1 s either side at the reference camera's rate
+        scene.trail_frames = max(1, int(round(p.sessions[0].fps or 30.0))) if p.sessions else 30
+        if self._live3d is not None and self._run_in_progress():
+            # (I309) during a run: the instants around the one on screen, with the run's live cells; the grid's
+            # box stays the one of the whole result (and grows if the run goes beyond it)
+            scene.box_points = r.xyz if r is not None else None
+            r = self._live_window(r, t, scene.trail_frames)
+            scene.box_extra = self._live3d["xyz"]
         if r is not None:
             from kinetrace.calib import cell_verdict
             scene.points_all = r.xyz
@@ -12428,9 +12531,8 @@ class MainWindow(QMainWindow):
                            (p.session.bone_names() if s else [])
                            if a in idx and b in idx]
             scene.unit = r.unit
-        # (G203) a trail spans 1 s either side at the reference camera's rate; (G201) the chosen world
-        scene.trail_frames = max(1, int(round(p.sessions[0].fps or 30.0))) if p.sessions else 30
-        scene.world = p.calibration.world if p.calibration is not None else None
+        # (G201) the chosen world
+        scene.world =p.calibration.world if p.calibration is not None else None
         if p.calibration is not None:
             views = [v for v in p.calibration.views() if v < p.n_views]      # (I273) calibrated cameras
             scene.cameras = np.array([p.calibration.camera(v).center() for v in views]).reshape(-1, 3)

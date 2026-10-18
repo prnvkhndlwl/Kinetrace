@@ -257,14 +257,66 @@ if _orig_live is not None:
 goto_ref(300)
 select_point("hip")
 QTest.keyClick(win, Qt.Key_T)
-wait(lambda: win.state == TRACKING, 10)
-pump(0.3)
+wait(lambda: win.state == TRACKING and win._live3d is not None, 10)
+running = win.state == TRACKING and win._live3d is not None
+f_x = win.current
 t_x = time.time()
 QTest.keyClick(win, Qt.Key_X)
 paused = wait(lambda: win.state == READY, 5)
 dt_x = time.time() - t_x
-check(paused and dt_x < 1.0, f"X pauses a run with the 3D window open in {dt_x:.2f} s (< 1 s)")
+check(running and paused and dt_x < 1.0 and win.current < N_FR - 1,
+      f"X pauses a live run with the 3D window open in {dt_x:.2f} s (< 1 s)",
+      f"running {running}, paused {paused}, X at frame {f_x}, stopped at {win.current}")
 pump(0.5)
+print(f"     ({len(ticks)} live updates during the first run)")
+
+# I3: what one live update costs on a big rig: 10 cameras x 40,000 frames of 4K x 20 landmarks, a run tracking
+# 5 of them, the trail 1 s at 240 fps behind the instant - the same calls `_live_3d` / `_live_window` make
+from kinetrace.calib import Reconstruction, triangulate_cells  # noqa: E402
+BW, BH, BT, BN, BC = 3840, 2160, 40_000, 20, 10
+Kb = np.array([[2800.0, 0, BW / 2], [0, 2800.0, BH / 2], [0, 0, 1]])
+bcams = []
+for k in range(BC):
+    a = 2 * np.pi * k / BC
+    Rb, tb = look_at(np.array([3.0 * np.cos(a), 3.0 * np.sin(a), 1.0 + 0.1 * k]))
+    bcams.append(CameraCalibration(dlt_from_camera(Kb, Rb, tb), BW, BH, NoUndistort(), pixel_origin=0.0))
+bcal = Calibration(bcams, unit="m", source="synthetic")
+bsess = []
+tf = np.arange(BT, dtype=np.float64)
+for c in range(BC):
+    bs = TrackingSession(os.path.join(SCRATCH, f"live3d_big_{c}.mp4"), BT, 240.0, BW, BH)
+    for j in range(BN):
+        bs.add_landmark(f"m{j}")
+    for j in range(BN):
+        X = np.stack([0.2 * np.cos(tf * 0.001 + j), 0.2 * np.sin(tf * 0.001 + j), 0.00001 * tf], 1)
+        bs.tracks[:, j] = bcams[c].project(X).astype(np.float32)
+    bs.tracked[:] = True
+    bsess.append(bs)
+brates, boffs = [1.0] * BC, [0.0] + [0.3 * c for c in range(1, BC)]
+t_now, back = 20_000, 240
+run_names = [f"m{j}" for j in range(5)]
+ts = np.arange(t_now - back, t_now + 1)
+best = float("inf")
+for _ in range(3):
+    t_ = time.perf_counter()
+    for nm in run_names:
+        triangulate_cells(bsess, bcal, brates, boffs, nm, ts)
+    best = min(best, time.perf_counter() - t_)
+# the window merge, on a whole-length result of the 20 landmarks
+brec = Reconstruction(0, [f"m{j}" for j in range(BN)], np.zeros((BT, BN, 3)), np.zeros((BT, BN)),
+                      np.full((BT, BN), BC, np.int32), "m", np.zeros((BT, BN, BC), np.float32))
+_keep = (win._live3d, win.project)
+win._live3d = {"t0": int(ts[0]), "names": run_names, "xyz": np.zeros((len(ts), 5, 3)),
+               "resid": np.zeros((len(ts), 5)), "n": np.zeros((len(ts), 5), np.int32),
+               "err": np.zeros((len(ts), 5, BC), np.float32)}
+win.project = Project(bsess, [f"B{c}" for c in range(BC)], boffs)
+t_ = time.perf_counter()
+win._live_window(brec, t_now, 240)
+merge = time.perf_counter() - t_
+win._live3d, win.project = _keep
+check(best + merge < 0.015, f"one live update on 10 cameras x 40,000 frames x 20 landmarks (5 tracked, 1 s trail): "
+      f"{(best + merge) * 1000:.1f} ms (< 15 ms)", f"triangulate {best * 1000:.1f} ms, merge {merge * 1000:.1f} ms")
+del bsess, brec
 
 # ---- [J] why a landmark has no 3D here (G206) ------------------------------------------------------
 print("[J] a landmark without 3D at the instant: which, and why (G206)")

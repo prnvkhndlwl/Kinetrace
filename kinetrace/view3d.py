@@ -401,6 +401,11 @@ class Scene3D:
         self.trail_frames = 0
         self.verdicts: list[str] = []   # per landmark at the instant: good / ok / poor / "" (cell_verdict)
         self.world: dict | None = None  # (G201) Calibration.world: the origin / +X / +Y landmarks' names
+        # (I309) during a run `points_all` is a window around the instant: the grid's box is the one of the whole
+        # result (`box_points`, the same array between runs, so its box is cached) widened by the run's live
+        # points (`box_extra`, small)
+        self.box_points: np.ndarray | None = None
+        self.box_extra: np.ndarray | None = None
 
     def framing(self, include_cameras: bool, include_calib: bool = False,
                 box: tuple | None = None) -> tuple[np.ndarray, float]:
@@ -548,6 +553,22 @@ def _grid_box_cached(points, extra=()) -> tuple | None:
     box = grid_box(points, extra)
     _GRID_CACHE[:] = [points, key, box]
     return box
+
+
+def _scene_box(scene: "Scene3D", world_on: bool) -> tuple | None:
+    """The grid's box: `grid_box` of the whole 3D result (cached), widened by the run's live points (I309)."""
+    extra = [np.zeros(3)] if world_on else []
+    src = scene.box_points if scene.box_points is not None else scene.points_all
+    box = _grid_box_cached(src, extra) if src is not None else None
+    if scene.box_extra is None:
+        return box
+    live = np.asarray(scene.box_extra, np.float64).reshape(-1, 3)
+    live = live[np.isfinite(live).all(axis=1)]
+    if not len(live):
+        return box
+    if box is not None and (live >= box[0]).all() and (live <= box[1]).all():
+        return box                                  # inside the box: it stays as it is
+    return grid_box(None, ([box[0], box[1]] if box is not None else []) + [live] + extra)
 
 
 def grid_box(points, extra=()) -> tuple | None:
@@ -887,8 +908,7 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
     pyr = show_calib if show_pyramids is None else show_pyramids
     calib_on = (show_calib or pyr or show_fov or show_cover) and scene.calib is not None
     world_on = bool(show_world and scene.world)
-    box = (_grid_box_cached(scene.points_all, [np.zeros(3)] if world_on else ())
-           if (show_grid and scene.points_all is not None) else None)
+    box = _scene_box(scene, world_on) if show_grid else None
     to_screen, R, scale = screen_transform(scene, size, azimuth, elevation, zoom,
                                            (pan[0] * px, pan[1] * px), up, show_cameras, calib_on,
                                            None if calib_on else box)
