@@ -8,6 +8,7 @@ still draw in well under a second, and the view only redraws on demand.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import cv2
@@ -492,6 +493,7 @@ def _nice_length(x: float) -> float:
 
 
 FOV_SIDE_ALPHA = 0.10          # (G187, owner 2026-10-12) each field-of-view side: 10 % of its camera's colour
+FOV_WALL_ALPHA = 0.18          # (G209) a box wall's cells a picked camera sees: this much of its colour
 
 # (G202, owner 2026-10-16: "make the figures and vis look clean and publication ready with pastel shades") one
 # palette per background, BGR. The dark background is the one the window always had (the wand layers' colours
@@ -873,7 +875,7 @@ LEGEND_PER_LANDMARK = 3        # (G208) with up to this many landmarks' rays, a 
 
 
 def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_drawn: list,
-                 wanted: set = frozenset()) -> dict:
+                 wanted: set = frozenset(), fov_seen: dict | None = None) -> dict:
     """(G208, owner 2026-10-18: "there is a lot of white space on either side, can that be used for text/legend
     instead") Left: the cameras - their colour (the one their field of view is drawn in), the tag the figure
     shows, the full name and, with rays, right after the name the error of each of that camera's rays in its
@@ -898,9 +900,17 @@ def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_d
         return len(text) * 0.56 * TICK_PX * px
 
     def cam_parts(v):
+        out = fov_parts(v)
         e = errs.get(v)
         if not e:
-            return []
+            return out
+        return ray_parts(v, e) + ([("  ", pal["dim"])] + out if out else [])
+
+    def fov_parts(v):                               # (G209) its field of view is drawn: how much of the box it sees
+        f = (fov_seen or {}).get(v)
+        return [] if f is None else [(f"{100 * f:.0f} %", pal["dim"])]
+
+    def ray_parts(v, e):
         if each:
             out = []
             for i, nm in enumerate(ray_names):
@@ -915,6 +925,8 @@ def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_d
              f"{cam_tag(v)}  {scene.camera_names[i] if i < len(scene.camera_names) else ''}", cam_parts(v))
             for i, v in enumerate(scene.camera_views)]
     head_l = [[("Cameras", pal["dim"])]]
+    if fov_seen:
+        head_l.append([("field of view: % of the box it sees", pal["dim"])])
     foot_l = []
     if rays_drawn:
         if each:
@@ -977,7 +989,7 @@ def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_d
             texts.append(ft)
         return texts
 
-    right_foot = ["click a landmark: its rays on / off"] if scene.rays else []
+    right_foot = ["click one: rays on / off"] if scene.rays else []
     return {"left": column(0.0, lw, head_l, cams, foot_l),
             "right": column(W - rw, rw, [[("Landmarks", pal["dim"])]], lms, right_foot), "rows": rows}
 
@@ -1047,6 +1059,48 @@ def _fov_sides(cd, to_screen, box=None) -> list:
     return out
 
 
+FOV_CELLS = 24                 # (G209) each box wall is checked in this many x this many cells per camera
+_FOOT_CACHE: dict = {}         # (id(picture), view, box) -> {(axis, side): (cells' corners (M, 4, 3), seen (M,))}
+
+
+def _wall_cells(lo, hi, axis: int, side: int, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """The n x n cells of the box wall at `axis` = lo / hi (`side` 0 / 1): (corners (n*n, 4, 3), centres)."""
+    u, w = [a for a in range(3) if a != axis]
+    g = np.linspace(0.0, 1.0, n + 1)
+    a0, a1 = np.meshgrid(g[:-1], g[:-1], indexing="ij")
+    b0, b1 = a0 + 1.0 / n, a1 + 1.0 / n
+    corners = np.zeros((n * n, 4, 3))
+    for k, (pu, pw) in enumerate(((a0, a1), (b0, a1), (b0, b1), (a0, b1))):
+        corners[:, k, u] = lo[u] + pu.ravel() * (hi[u] - lo[u])
+        corners[:, k, w] = lo[w] + pw.ravel() * (hi[w] - lo[w])
+        corners[:, k, axis] = hi[axis] if side else lo[axis]
+    return corners, corners.mean(axis=1)
+
+
+def _footprint(pic, cd, lo, hi) -> dict:
+    """(G209) Which cells of the box's six walls camera `cd` sees (calibview.camera_sees), cached: the box and
+    the picture change rarely, the view on every drag."""
+    key = (id(pic), int(cd.view), tuple(np.round(lo, 9)), tuple(np.round(hi, 9)))
+    got = _FOOT_CACHE.get(key)
+    if got is not None:
+        return got
+    from kinetrace.calib import working_probe
+    from kinetrace.calibview import camera_sees
+    cal = pic.cal
+    cam = cal.camera(cd.view) if cal is not None else None
+    out = {}
+    if cam is not None:
+        probe = working_probe(cal)
+        for axis in range(3):
+            for side in (0, 1):
+                corners, centres = _wall_cells(np.asarray(lo, float), np.asarray(hi, float), axis, side, FOV_CELLS)
+                out[(axis, side)] = (corners, camera_sees(cam, centres, probe))
+    if len(_FOOT_CACHE) > 64:
+        _FOOT_CACHE.clear()
+    _FOOT_CACHE[key] = out
+    return out
+
+
 def _blend_poly(img, poly: np.ndarray, colour, alpha: float) -> None:
     """Fill `poly` at `alpha` over `img`, in place, inside the polygon's own box only."""
     H, W = img.shape[:2]
@@ -1062,7 +1116,7 @@ def _blend_poly(img, poly: np.ndarray, colour, alpha: float) -> None:
 
 def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool, show_pyramids: bool,
                 show_fov: bool, show_cover: bool, hits: dict | None, px: float = 1.0,
-                labels: list | None = None, fov_box=None) -> np.ndarray:
+                labels: list | None = None, fov_box=None, fov_seen: dict | None = None) -> np.ndarray:
     """(G185, G186, G187) the fields of view's translucent sides, the covered space (translucent, over them),
     the fields of view's edges, the cameras' pose pyramids, the wand lines and ends, and the scale bar. Every
     fixed size is in screen pixels times `px` (the display's pixel density). Text goes into `labels` (drawn
@@ -1072,11 +1126,32 @@ def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool
     H, W = img.shape[:2]
     faces = []
     if show_fov:
-        # (G209) the cameras picked in the Fields of view menu, each cut to the working volume's box
+        # (G209) the cameras picked in the Fields of view menu, each cut to the working volume's box: on the
+        # box's three back walls (the grid's) the cells the camera sees, in its colour - a camera that sees the
+        # whole box tints them all, which its cut side walls alone would not show (they pass outside the box)
+        walls = back_walls(R)
         for k, cd in enumerate(pic.cams):
             if scene.fov_views is not None and cd.view not in scene.fov_views:
                 continue
             col = CAM_COLOURS[k % len(CAM_COLOURS)]
+            if fov_box is not None:
+                fp = _footprint(pic, cd, fov_box[0], fov_box[1])
+                if fov_seen is not None and fp:              # (G209) for the legend: how much of the box it sees
+                    fov_seen[cd.view] = float(np.mean(np.concatenate([sn for _, sn in fp.values()])))
+                quads = []
+                for axis in range(3):
+                    corners, seen = fp.get((axis, int(walls[axis])), (None, None))
+                    if corners is None or not seen.any():
+                        continue
+                    scr = to_screen(corners[seen].reshape(-1, 3))[0].reshape(-1, 4, 2)
+                    quads += list(_to_int_px(scr))
+                if quads:
+                    mask = np.zeros(img.shape[:2], np.uint8)
+                    cv2.fillPoly(mask, quads, 1)
+                    m = mask.astype(bool)
+                    img[m] = (img[m] * (1.0 - FOV_WALL_ALPHA) + np.array(col, float) * FOV_WALL_ALPHA).astype(np.uint8)
+                    if hits is not None:
+                        hits.setdefault("fov_walls", {})[cd.view] = int(m.sum())
             faces += [(d, poly, col) for d, poly in _fov_sides(cd, to_screen, fov_box)]
         for d, poly, col in sorted(faces, key=lambda f: f[0]):          # far ones first
             _blend_poly(img, poly, col, FOV_SIDE_ALPHA)
@@ -1165,12 +1240,16 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
     img = np.full((H, W, 3), pal["bg"], np.uint8)
     pyr = show_calib if show_pyramids is None else show_pyramids
     calib_on = (show_calib or pyr or show_fov or show_cover) and scene.calib is not None
+    # (G209) the view frames the wand cloud and the cameras for the layers that reach them; fields of view alone
+    # are cut to the 3D points' box, so with points the view keeps framing those
+    frame_calib = calib_on and (show_calib or pyr or show_cover or scene.points_all is None)
     world_on = bool(show_world and scene.world)
     box = _scene_box(scene, world_on) if show_grid else None
     to_screen, R, scale = screen_transform(scene, size, azimuth, elevation, zoom,
-                                           (pan[0] * px, pan[1] * px), up, show_cameras, calib_on,
-                                           None if calib_on else box)
+                                           (pan[0] * px, pan[1] * px), up, show_cameras, frame_calib,
+                                           None if frame_calib else box)
     t1 = _px(1, px)                                                  # a 1 px line
+    fov_seen: dict = {}                                              # (G209) view -> share of the box it sees
     labels: list = []
     unit = scene.unit or (scene.calib.unit if scene.calib is not None else "")
     if box is not None:
@@ -1207,9 +1286,14 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
             cv2.fillConvexPoly(img, tri[k], c, lineType=cv2.LINE_AA)
     if calib_on:
         # (G209) the fields of view end at the grid's box (the 3D result's), else at the wand cloud's
-        fov_box = box[:2] if box is not None else scene.calib.box(0.25)
+        if box is None and scene.points_all is not None:
+            box = _scene_box(scene, world_on)          # (review) the points' box with the grid off too
+            fov_box = box[:2] if box is not None else scene.calib.box(0.25)
+            box = None
+        else:
+            fov_box = box[:2] if box is not None else scene.calib.box(0.25)
         img = _draw_calib(img, scene, to_screen, R, scale, show_calib, pyr, show_fov, show_cover, hits, px, labels,
-                          fov_box)
+                          fov_box, fov_seen)
     if show_cameras and not calib_on and scene.cameras is not None and len(scene.cameras):
         cs, _ = to_screen(scene.cameras)
         m = 50 * px
@@ -1266,7 +1350,7 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
         if hits is not None:
             hits["origin"] = o
     if legend and (scene.camera_views or scene.names):
-        leg = _draw_legend(img, scene, pal, labels, px, drawn_rays, ray_names(scene, rays))
+        leg = _draw_legend(img, scene, pal, labels, px, drawn_rays, ray_names(scene, rays), fov_seen)
         if hits is not None:
             hits["legend"] = leg
     if hits is not None:
@@ -1413,6 +1497,7 @@ class View3D(QWidget):
         self.btn_fov.setMenu(self.fov_menu)
         self.fov_actions: list = []
         self._fov_pick: set = set()             # the views picked, kept across new pictures of the calibration
+        self._fov_menu_cams: list = []          # (view, name) the menu lists
         self.chk_cover = QCheckBox("Covered by ≥")
         self.chk_cover.setToolTip("The space at least this many of the chosen cameras see: where 3D is possible "
                                   "(2) and well determined (3 or more)")
@@ -1452,6 +1537,7 @@ class View3D(QWidget):
         self._timer.setInterval(15)
         self._timer.timeout.connect(self._render)
         self.last_image: np.ndarray | None = None
+        self.last_render_s = 0.0
         self._last_dpr = 1.0            # the pixel density last_image was drawn at (G187)
         self._hits: dict = {}
         self._cover_threads: list = []          # every worker until it has finished (see _start_coverage)
@@ -1558,6 +1644,8 @@ class View3D(QWidget):
         self._base_info = info
         if list(scene.names) != self._ray_menu_names:        # (G210) the landmarks changed: the menu follows
             self._fill_rays_menu()
+        if scene.calib is old and self._fov_cams() != self._fov_menu_cams:     # (G209) the cameras changed
+            self._fill_fov_menu()
         self.chk_world.setEnabled(bool(scene.world))          # (G201) greyed until Set World Axes
         if scene.calib is not old:
             self._picture_changed()
@@ -1592,7 +1680,8 @@ class View3D(QWidget):
 
     # ---- (G209) the Fields of view menu
     def _fov_views(self) -> set:
-        return {int(a.data()) for a in self.fov_actions if a.isChecked()}
+        """The picked cameras the menu lists (the pick itself is kept even while a camera is not listed)."""
+        return {v for v in self._fov_pick if any(v == c for c, _ in self._fov_menu_cams)}
 
     def _fov_on(self) -> bool:
         return bool(self._fov_views())
@@ -1601,21 +1690,31 @@ class View3D(QWidget):
         n = len(self._fov_views())
         self.btn_fov.setText(f"Fields of view ({n}) ▾" if n else "Fields of view ▾")
 
-    def _fill_fov_menu(self) -> None:
+    def _fov_cams(self) -> list:
+        """(view, name) of the cameras a field of view can be drawn for: the picture's, else the calibrated
+        cameras of the scene (review: without a picture the menu was empty, so nothing could ask for one)."""
         pic = self.scene.calib
+        if pic is not None:
+            return [(int(cd.view), cd.name) for cd in pic.cams]
+        return [(int(v), self.scene.camera_names[i] if i < len(self.scene.camera_names) else "")
+                for i, v in enumerate(self.scene.camera_views)]
+
+    def _fill_fov_menu(self) -> None:
+        cams = self._fov_cams()
+        self._fov_menu_cams = cams
         self.fov_menu.clear()
         self.fov_actions = []
-        if pic is not None:
+        if cams:
             for label, on in (("All cameras", True), ("No camera", False)):
                 a = self.fov_menu.addAction(label)
                 a.triggered.connect(lambda _=False, on=on: self._set_fov_all(on))
             self.fov_menu.addSeparator()
-            for cd in pic.cams:
-                a = self.fov_menu.addAction(f"{cam_tag(cd.view)}  {cd.name}")
+            for v, nm in cams:
+                a = self.fov_menu.addAction(f"{cam_tag(v)}  {nm}")
                 a.setCheckable(True)
-                a.setChecked(cd.view in self._fov_pick)
-                a.setData(cd.view)
-                a.toggled.connect(lambda _=False: self._fov_changed())
+                a.setChecked(v in self._fov_pick)
+                a.setData(v)
+                a.toggled.connect(lambda on, v=v: self._fov_ticked(v, on))
                 self.fov_actions.append(a)
         self._fov_label()
 
@@ -1624,15 +1723,15 @@ class View3D(QWidget):
             a.blockSignals(True)
             a.setChecked(on)
             a.blockSignals(False)
-        self._fov_pick = self._fov_views()
+        self._fov_pick = {v for v, _ in self._fov_menu_cams} if on else set()
         self._fov_label()
         if not quiet:
             self._calib_ticked()
 
-    def _fov_changed(self) -> None:
-        self._fov_pick = self._fov_views()
+    def _fov_ticked(self, view: int, on: bool) -> None:
+        (self._fov_pick.add if on else self._fov_pick.discard)(int(view))
         self._fov_label()
-        self._calib_ticked()
+        self._calib_ticked()                  # asks for the picture when there is none yet
 
     def _picture_changed(self) -> None:
         """A new picture: its cameras in the Cameras menu (all chosen), the covered space to count again."""
@@ -1860,6 +1959,7 @@ class View3D(QWidget):
         h = max(64, self.canvas.height())
         hits: dict = {}
         self.scene.fov_views = self._fov_views()
+        t0 = time.perf_counter()
         img = render_scene(self.scene, (int(round(w * dpr)), int(round(h * dpr))), self.azimuth, self.elevation,
                            self.zoom, self.chk_mesh.isChecked(), self.chk_points.isChecked(),
                            self.chk_cams.isChecked(), pan=tuple(self.pan),
@@ -1868,6 +1968,7 @@ class View3D(QWidget):
                            show_pyramids=self.chk_pyr.isChecked(), px=dpr,
                            show_grid=self.chk_grid.isChecked(), show_world=self.chk_world.isChecked(),
                            trail=self._trail(), palette=self._palette(), rays=self._rays(), legend=True)
+        self.last_render_s = time.perf_counter() - t0       # (I309) the live updates' time budget reads it
         self._hits = hits
         self._last_dpr = dpr
         self.last_image = img

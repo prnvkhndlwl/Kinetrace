@@ -109,6 +109,15 @@ SYNC3D_BG_CELLS = 20_000
 # instant shrinks to fit; the instant itself is always computed)
 LIVE3D_MS = 100
 LIVE3D_MAX_CELLS = 20_000
+LIVE3D_SHARE = 0.15            # ... and live updates (with their redraw) take at most this share of the window's time
+
+
+def live3d_interval(cost_s: float, render_s: float) -> float:
+    """(I309, review) Seconds until the next live 3D update: LIVE3D_MS at least, and long enough that the last
+    one (its triangulation `cost_s` + the 3D window's redraw `render_s`) is at most LIVE3D_SHARE of the time - on
+    a big rig (20 landmarks tracked x 10 cameras x 40k frames: ~45 ms + the redraw) the 3D window then updates a
+    few times a second instead of taking the camera views' time."""
+    return max(LIVE3D_MS / 1000.0, (max(cost_s, 0.0) + max(render_s, 0.0)) / LIVE3D_SHARE)
 _SYNC3D_K = np.array([0x9E3779B97F4A7C15, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9], np.uint64)
 _SYNC3D_W = (np.random.RandomState(305).randint(1, 2 ** 62, SYNC3D_BLOCK, dtype=np.int64).astype(np.uint64)
              * np.uint64(2) + np.uint64(1))                      # odd: a changed cell always changes its block
@@ -905,7 +914,7 @@ class MainWindow(QMainWindow):
         self._sync3d_busy = False
         self._sync3d_rebuild_open = False        # the project being opened is a recovery copy
         self._live3d = None                      # (I309) the run's landmarks in 3D, for the 3D window only
-        self._live3d_at = 0.0
+        self._live3d_next = 0.0                  # (I309) not before this perf_counter() time (live3d_interval)
         self._sync3d_timer = QTimer(self, interval=SYNC3D_MS, timerType=Qt.CoarseTimer)
         self._sync3d_timer.timeout.connect(self._sync_3d)
         self._sync3d_timer.start()
@@ -4584,6 +4593,7 @@ class MainWindow(QMainWindow):
 
     def _teardown_video(self):
         self._fc_stop()                     # (I266) the frame checks of the video that is going
+        self._live3d = None                 # (I309) a run's overlay belongs to the project that is going
         for th in (self._body_worker, self._body_video):
             if th is not None and th.isRunning():
                 th.request_cancel()
@@ -9692,7 +9702,7 @@ class MainWindow(QMainWindow):
                 out += [sv.points[q].name for q in (getattr(run, "pids", None) or []) if 0 <= q < sv.n_points]
         return list(dict.fromkeys(out))
 
-    def _live_3d(self) -> None:
+    def _live_3d(self, force: bool = False) -> None:
         """(I309, owner 2026-10-17: "I want the 3D view to also show the tracked points in 3D") While a Track
         run goes, the 3D window shows the run's landmarks at the instant on screen and along the trail behind
         it, at most every LIVE3D_MS. The project's own 3D result is made once the Track press is over
@@ -9700,12 +9710,12 @@ class MainWindow(QMainWindow):
         `reconstruct` gives for the same data - and never saved. Only the run's landmarks: the others do
         not change during it. Nothing at all while the 3D window is closed."""
         v3, p = self.view3d, self.project
-        if v3 is None or not v3.isVisible() or p is None or not self._run_in_progress():
+        if v3 is None or not v3.isVisible() or p is None or not (force or self._run_in_progress()):
             return
         now = time.perf_counter()
-        if now - self._live3d_at < LIVE3D_MS / 1000.0:
+        if now < self._live3d_next and not force:
             return
-        self._live3d_at = now
+        self._live3d_next = now + LIVE3D_MS / 1000.0
         cal = p.calibration
         names = self._run_landmark_names()
         if cal is None or cal.n_usable(p.n_views) < 2 or not names:
@@ -9730,6 +9740,8 @@ class MainWindow(QMainWindow):
             return
         self._live3d = {"t0": int(ts[0]), "names": names, "xyz": xyz, "resid": resid, "n": ncams, "err": err}
         self._refresh_view3d()
+        # (review) the next one when this one (and the window's last redraw) fits the share of the time
+        self._live3d_next = now + live3d_interval(time.perf_counter() - now, getattr(v3, "last_render_s", 0.0))
 
     def _rays_at(self, rec, k: int) -> list[list[dict]]:
         """(G207) Per landmark of `rec` at row k: the cameras that made its 3D point (a finite per-camera
@@ -9777,6 +9789,7 @@ class MainWindow(QMainWindow):
         solved = set()
         if rec is not None and k is not None:
             solved = {nm for j, nm in enumerate(rec.names) if np.isfinite(rec.xyz[k, j]).all()}
+        stale = self._sync3d_behind()
         out = []
         for nm in landmark_names(p.sessions):
             if nm in solved:
@@ -9787,15 +9800,31 @@ class MainWindow(QMainWindow):
             cams = [p.name(v) for v in views]
             parts, short = [], []
             if len(views) >= 2:
-                parts.append(f"{', '.join(cams)} have it here, but their rays give no point")
-                short.append("rays do not meet")
+                # (review) with two or more samples the triangulation solves: an empty cell means the result is
+                # not the tracks' (imported, or none yet) or has not caught up with the data yet
+                if rec is None or rec.source != "tracks":
+                    parts.append(f"{', '.join(cams)} have it here, but the 3D result is "
+                                 + ("not made yet" if rec is None else "an imported one")
+                                 + ": 3D → Reconstruct 3D Landmarks (Ctrl+3) makes it from the tracks")
+                    short.append("Ctrl+3")
+                elif stale:
+                    parts.append(f"{', '.join(cams)} have it here; the 3D result is being brought up to date")
+                    short.append("updating")
+                else:
+                    parts.append(f"{', '.join(cams)} have it here, but their rays give no point")
+                    short.append("rays do not meet")
             elif views:
                 parts.append(f"only {cams[0]} has it here; 3D needs 2 cameras")
                 short.append(f"only {cam_tag(views[0])}")
             for v, (f_has, f_lacks) in half.items():
-                parts.append(f"{p.name(v)} has it on its frame {f_has} but not on {f_lacks}, and this instant falls "
-                             "between the two (its offset is fractional)")
-                short.append(f"{cam_tag(v)}: no frame {f_lacks}")
+                if 0 <= f_lacks < p.sessions[v].n_frames:
+                    parts.append(f"{p.name(v)} has it on its frame {f_has} but not on {f_lacks}, and this instant "
+                                 "falls between the two (its offset is fractional)")
+                    short.append(f"{cam_tag(v)}: no frame {f_lacks}")
+                else:                            # (review) the instant lies just past the video's first / last frame
+                    parts.append(f"this instant falls just outside {p.name(v)}'s video (between its frame {f_has} and "
+                                 "the video's end; its offset is fractional)")
+                    short.append(f"{cam_tag(v)}: outside its video")
             out.append((nm, "; ".join(parts), ", ".join(short)))
         return out
 
@@ -9855,6 +9884,8 @@ class MainWindow(QMainWindow):
         _quiet_close(self._model_dialog)
         self._model_dialog = None
         self._end_run_cleanup()
+        if self._live3d is not None:            # (I309, review) the run's last frames too, until its result is made
+            self._live_3d(force=True)
         self._budget_key = None                 # (I306) the windows `_launch_run` set to none come back
         self._rebudget_caches()
         self.act_undo.setEnabled(self._undo_snap is not None)
@@ -12415,9 +12446,6 @@ class MainWindow(QMainWindow):
         p = self.project
         if p is None or self._sync3d_busy or self._run_in_progress() or self._loading:
             return
-        if self._live3d is not None:             # (I309) the Track press is over: the window shows the result
-            self._live3d = None
-            self._refresh_view3d()
         if not force and (self._busy_stack or QApplication.activeModalWidget() is not None):
             return
         st = self._sync3d
@@ -12427,8 +12455,10 @@ class MainWindow(QMainWindow):
         key = self._sync3d_key()
         vers = [s.data_version for s in p.sessions]
         if key == st["key"] and vers == st["ver"] and not st.get("stale"):
+            self._drop_live3d()                  # (I309) the result stands for the data: the run's overlay goes
             return                               # nothing moved since the last look
         if not self._sync3d_ready():
+            self._drop_live3d()
             if key != st["key"] or vers != st["ver"] or st["dig"] is not None:
                 self._sync3d_seed(digests=False)
             return
@@ -12467,8 +12497,29 @@ class MainWindow(QMainWindow):
             st["ver"] = vers                     # the data moved somewhere 3D does not read (a mask, a colour)
             for v, dg in digs.items():
                 st["dig"][v] = dg
+            self._drop_live3d()
             return
         self._sync3d_run(changed, n_cells, digs=digs, force=force)
+
+    def _sync3d_behind(self) -> bool:
+        """(I305, review) The project's 3D result does not yet stand for the 2D data on screen: a run is going,
+        an update is running or waits for its tick, or the data / calibration / timing moved since it was made.
+        Cheap (versions and the key only): asked on every frame change."""
+        p, st = self.project, self._sync3d
+        if p is None:
+            return False
+        if self._run_in_progress() or self._sync3d_busy or self._live3d is not None:
+            return True
+        return (st is None or st["proj"]() is not p or st.get("stale") or st["key"] != self._sync3d_key()
+                or st["ver"] != [s.data_version for s in p.sessions])
+
+    def _drop_live3d(self) -> None:
+        """(I309) The run's live overlay is no longer needed (the project's 3D result stands for the data, or
+        could not be made): the 3D window shows the result. Kept until then (review): dropping it when the
+        Track press ended showed the result from BEFORE the run for as long as the update took."""
+        if self._live3d is not None:
+            self._live3d = None
+            self._refresh_view3d()
 
     def _sync3d_run(self, changed: dict | None, n_cells: int = 0, digs: dict | None = None,
                     force: bool = False) -> None:
@@ -12506,12 +12557,14 @@ class MainWindow(QMainWindow):
                 else:
                     self._sync3d_seed(digests=False)
                 self.statusBar().showMessage(_plain_error(e, "The 3D landmarks could not be updated"), 8000)
+                self._drop_live3d()
                 return
             finally:
                 self._sync3d_busy = False
         if self.project is not p:
             return                               # the project was closed meanwhile
         p.reconstruction = new
+        self._live3d = None                      # (I309) the result has caught up with the run: the overlay goes
         if changed is None or st is None or st["dig"] is None:
             self._sync3d_seed()
         else:                                    # only the cameras that changed are fingerprinted again
@@ -12566,9 +12619,10 @@ class MainWindow(QMainWindow):
         info = f"reference frame {t}"
         # (G203) a trail spans 1 s either side at the reference camera's rate
         scene.trail_frames = max(1, int(round(p.sessions[0].fps or 30.0))) if p.sessions else 30
-        if self._live3d is not None and self._run_in_progress():
-            # (I309) during a run: the instants around the one on screen, with the run's live cells; the grid's
-            # box stays the one of the whole result (and grows if the run goes beyond it)
+        if self._live3d is not None:
+            # (I309) during a run (and until the project's result has caught up with it): the instants around
+            # the one on screen, with the run's live cells; the grid's box stays the one of the whole result
+            # (and grows if the run goes beyond it)
             scene.box_points = r.xyz if r is not None else None
             r = self._live_window(r, t, scene.trail_frames)
             scene.box_extra = self._live3d["xyz"]
@@ -12604,7 +12658,7 @@ class MainWindow(QMainWindow):
                            if a in idx and b in idx]
             scene.unit = r.unit
         # (G201) the chosen world
-        scene.world =p.calibration.world if p.calibration is not None else None
+        scene.world = p.calibration.world if p.calibration is not None else None
         if p.calibration is not None:
             views = [v for v in p.calibration.views() if v < p.n_views]      # (I273) calibrated cameras
             scene.cameras = np.array([p.calibration.camera(v).center() for v in views]).reshape(-1, 3)
@@ -12636,7 +12690,8 @@ class MainWindow(QMainWindow):
                 vd = scene.verdicts[j] if j < len(scene.verdicts) else ""
                 scene.status.append((f"{int(r.n_cams[kt, j])} cams" + (f" · {vd}" if vd else ""), vd))
             else:
-                scene.status.append((why.get(nm, "not here"), "poor" if nm in why else ""))
+                sh = why.get(nm, "not here")
+                scene.status.append((sh, "poor" if nm in why and sh not in ("updating", "Ctrl+3") else ""))
         self.view3d.set_scene(scene, info)
         made = cp is not None and cp[0] is cal and cp[1] == self._calib_key()     # (a failed one: not again)
         if scene.calib is None and not made and self.view3d._calib_on():

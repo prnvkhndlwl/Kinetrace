@@ -93,25 +93,34 @@ def seen_by(cal: Calibration, X: np.ndarray, probe=None, reach: dict | None = No
     probe = working_probe(cal) if probe is None else probe
     out = np.zeros(len(X), np.int16)
     for v in cal.views():
-        cam = cal.camera(v)
-        front = in_front(cam.coefs, X, front_sign(cam.coefs, probe))
-        if reach is not None and v in reach:
-            c0, ax, dep = reach[v]
-            front &= (X - c0) @ ax <= dep
-        idx = np.nonzero(front)[0]
-        if not len(idx):
-            continue
-        uv = cam.project(X[idx])
-        inside = (np.isfinite(uv).all(axis=1) & (uv[:, 0] >= -0.5) & (uv[:, 0] <= cam.width - 0.5)
-                  & (uv[:, 1] >= -0.5) & (uv[:, 1] <= cam.height - 0.5))
-        if cam.has_lens_correction and inside.any():
-            j = np.nonzero(inside)[0]
-            q = cam.to_calib_frame(uv[j])
-            tol = round_trip_tol(cam.width)
-            good = np.isfinite(q).all(axis=1)
-            good[good] &= np.linalg.norm(q[good] - dlt_project(cam.coefs, X[idx[j[good]]]), axis=1) < tol
-            inside[j] = good
-        out[idx[inside]] += 1
+        out += camera_sees(cal.camera(v), X, probe, None if reach is None else reach.get(v))
+    return out
+
+
+def camera_sees(cam: CameraCalibration, X: np.ndarray, probe, reach: tuple | None = None) -> np.ndarray:
+    """(N,) bool: `cam` sees each world point - in front of it, inside its picture through its lens model, where
+    that model round-trips (`seen_by`'s rule for one camera; G209: the box walls a field of view covers).
+    `reach` (centre, axis, depth): only up to that far plane."""
+    X = np.asarray(X, np.float64).reshape(-1, 3)
+    out = np.zeros(len(X), bool)
+    front = in_front(cam.coefs, X, front_sign(cam.coefs, probe))
+    if reach is not None:
+        c0, ax, dep = reach
+        front &= (X - c0) @ ax <= dep
+    idx = np.nonzero(front)[0]
+    if not len(idx):
+        return out
+    uv = cam.project(X[idx])
+    inside = (np.isfinite(uv).all(axis=1) & (uv[:, 0] >= -0.5) & (uv[:, 0] <= cam.width - 0.5)
+              & (uv[:, 1] >= -0.5) & (uv[:, 1] <= cam.height - 0.5))
+    if cam.has_lens_correction and inside.any():
+        j = np.nonzero(inside)[0]
+        q = cam.to_calib_frame(uv[j])
+        tol = round_trip_tol(cam.width)
+        good = np.isfinite(q).all(axis=1)
+        good[good] &= np.linalg.norm(q[good] - dlt_project(cam.coefs, X[idx[j[good]]]), axis=1) < tol
+        inside[j] = good
+    out[idx[inside]] = True
     return out
 
 

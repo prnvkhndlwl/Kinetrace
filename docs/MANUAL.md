@@ -2100,9 +2100,11 @@ five pages and explains each one:
    looks, its **field of view** for the cameras you pick in **Fields of view ▾**
    (none at first; *Show in 3D* picks all): the picture's edges, the lens bend
    included, inside the box around the 3D points (around the wand when there
-   are none). Its sides are filled faintly in the camera's colour, so where
-   several cameras' fields overlap the picture looks denser, and outlined
-   where they meet the box. A wide lens's field of view has curved sides and
+   are none). The box walls the camera sees are tinted in its colour (a camera
+   that sees the whole box tints all three), its sides are filled faintly where
+   they cross the box and outlined there, and the legend says how much of the
+   box each picked camera sees ("100 %": the whole working volume is in its
+   picture). A wide lens's field of view has curved sides and
    reaches farthest at its corners; that is what a wide lens sees, not an
    error. And every wand position the
    calibration used as two small dots joined by a thin line, coloured by
@@ -2387,12 +2389,16 @@ Four steps, in this order:
    **and a tracking run as it goes**: while you track, the points being
    tracked appear in 3D frame by frame, with the trail behind them, like the
    camera views (the full 3D result is brought up to date when the run ends;
-   the numbers are the same). When a landmark has no 3D position at the frame
-   on screen, the line at the top says which one and **why**: only one camera
+   the numbers are the same). On a big rig with many points tracked the 3D
+   window updates a few times a second instead of ten, so the camera views keep
+   their speed, and the trail shows the last second only until the run ends. When a landmark has no 3D position at the frame
+   on screen, the line at the top names it, and its row in the legend (and the
+   line's tooltip, in full) says **why**: only one camera
    has it there ("only camera 3 has it here; 3D needs 2 cameras"), or a camera
    has only one of the two frames this instant falls between (fractional
-   offsets, see above). With several, it counts them; hover the line for the
-   list. **Rays** draws, as motion-capture software does, a line from every
+   offsets, see above), or the 3D result is still being brought up to date
+   (right after a run or a click) or was imported (press Ctrl+3). With
+   several, it counts them; hover the line for the list. **Rays** draws, as motion-capture software does, a line from every
    camera that made a 3D point to that point, for the landmarks you tick in
    the **Rays ▾** menu (one tick per landmark; *All landmarks* / *None*). A
    click on a landmark's dot, or on its row in the legend, ticks or unticks

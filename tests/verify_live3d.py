@@ -235,6 +235,21 @@ during = [(t, fin) for st, t, fin in seen if st == TRACKING]
 live_dots = [t for t, fin in during if fin and t > 12]
 check(len(live_dots) >= 3, "during the run the 3D window shows the hip's dot at the instant being tracked",
       f"{len(during)} redraws during the run, {len(live_dots)} with the hip's dot past frame 12")
+first_run = next((i for i, (st, _, _) in enumerate(seen) if st == TRACKING), len(seen))
+pump(1.0)                                     # the run's 3D result: what every redraw after the run must show
+_fin = reconstruct(p.sessions, p.calibration, p.rates, p.offsets, win._t_range_3d())
+_jh = _fin.names.index("hip")
+
+
+def _has_hip(t):
+    k_ = _fin.index(t)
+    return k_ is not None and bool(np.isfinite(_fin.xyz[k_, _jh]).all())
+
+
+after = [(t, fin) for st, t, fin in seen[first_run:] if st != TRACKING and t > 12]
+check(after and all(fin == _has_hip(t) for t, fin in after) and any(fin for _, fin in after),
+      "after the run, until its 3D result is made, the 3D window shows the run's points as the result will (review)",
+      f"{[(t, fin, _has_hip(t)) for t, fin in after]}")
 v.set_scene = _orig_set_scene
 
 # I2: every live update = what Ctrl+3 computes from the same 2D data, at those instants, bit for bit
@@ -328,6 +343,32 @@ check(len(miss_big) == BN and dt_miss < 0.01,
       f"{len(miss_big)} reasons")
 check(best + merge < 0.015, f"one live update on 10 cameras x 40,000 frames x 20 landmarks (5 tracked, 1 s trail): "
       f"{(best + merge) * 1000:.1f} ms (< 15 ms)", f"triangulate {best * 1000:.1f} ms, merge {merge * 1000:.1f} ms")
+# (review) all 20 tracked (Track all), and the 3D window's redraw of that scene: the updates space themselves so
+# both together take at most LIVE3D_SHARE of the window's time
+from kinetrace import app as _app_mod  # noqa: E402
+from kinetrace import view3d as _v3b  # noqa: E402
+best20 = float("inf")
+for _ in range(2):
+    t_ = time.perf_counter()
+    for j in range(BN):
+        triangulate_cells(bsess, bcal, brates, boffs, f"m{j}", ts)
+    best20 = min(best20, time.perf_counter() - t_)
+sc_ = _v3b.Scene3D()
+sc_.points_all = np.cumsum(np.random.RandomState(1).normal(0, 0.002, (2 * back + 1, BN, 3)), axis=0)
+sc_.names = [f"m{j}" for j in range(BN)]
+sc_.t_index = back
+sc_.points = sc_.points_all[back]
+sc_.trail_frames = back
+t_ = time.perf_counter()
+_v3b.render_scene(sc_, (1400, 800), 35, 25, show_grid=True, trail=back, legend=True)
+render20 = time.perf_counter() - t_
+gap = _app_mod.live3d_interval(best20, render20)
+share = (best20 + render20) / gap
+print(f"     (20 tracked: triangulate {best20 * 1000:.0f} ms + redraw {render20 * 1000:.0f} ms -> one update every "
+      f"{gap * 1000:.0f} ms)")
+check(share <= _app_mod.LIVE3D_SHARE + 1e-9 and _app_mod.live3d_interval(0.001, 0.002) == _app_mod.LIVE3D_MS / 1000,
+      f"live updates take at most {_app_mod.LIVE3D_SHARE:.0%} of the window's time ({share:.0%} with 20 tracked), "
+      "and come every 100 ms when cheap")
 del bsess, brec
 
 # ---- [J] why a landmark has no 3D here (G206) ------------------------------------------------------
@@ -339,6 +380,22 @@ check("tail" in txt and "camA" in txt, "the tail at reference 50: only camA has 
 goto_ref(250)                                   # camB's tail stretch (local 253) - camA's frame 250 has none
 txt = v.info.text() + " " + v.info.toolTip()
 check("tail" in txt and "camB" in txt, "the tail at reference 250: only camB has it", txt)
+# J5 (review): a landmark in 2+ cameras that an IMPORTED result lacks: "Ctrl+3", never "rays do not meet"
+from kinetrace.calib import Reconstruction as _Rec  # noqa: E402
+_full = p.reconstruction
+j_hip = _full.names.index("hip")
+_imp = _Rec(_full.t0, list(_full.names), _full.xyz.copy(), _full.residual.copy(), _full.n_cams.copy(), _full.unit,
+            _full.per_cam.copy(), "imported")
+_imp.xyz[:, j_hip] = np.nan
+p.reconstruction = _imp
+goto_ref(40)
+txt = v.info.toolTip()
+right = (v._hits.get("legend") or {}).get("right") or []
+check("imported" in txt and "Ctrl+3" in txt and not any("rays do not meet" in t_ for t_ in right)
+      and any(t_.startswith("hip") and "Ctrl+3" in t_ for t_ in right),
+      "an imported result without the hip: the reason says Ctrl+3, not 'rays do not meet'", f"{txt!r} {right}")
+p.reconstruction = _full
+pump(1.0)
 # J3: where every landmark that is anywhere has 3D, no reason is given for it
 goto_ref(5)
 txt = v.info.text() + " " + v.info.toolTip()
@@ -360,6 +417,50 @@ goto_ref(400)
 txt = v.info.text() + " " + v.info.toolTip()
 check("camC has it on its frame 397 but not on 398" in txt and "only camA" in txt,
       "a single click at a fractional offset: the reason names the frame it lacks", txt)
+
+# ---- [F] (review) the Fields of view menu before any calibration picture, and across a retime --------------
+print("[F] the Fields of view menu lists the cameras before any picture; a pick survives a retime (G209)")
+goto_ref(150)
+check(v.scene.calib is None and len(v.fov_actions) == 3,
+      "with no calibration layer on, the Fields of view menu already lists the 3 cameras",
+      f"picture {v.scene.calib is not None}, {len(v.fov_actions)} entries")
+if v.fov_actions:
+    v.fov_actions[0].trigger()                                   # Fields of view > C1
+    check(wait(lambda: v.scene.calib is not None, 30), "picking one makes the calibration picture")
+    v._render()
+    check(bool(v._hits.get("fov_walls")), "... and the box walls it sees are tinted in its colour",
+          str(v._hits.get("fov_walls")))
+    left = (v._hits.get("legend") or {}).get("left") or []
+    check("field of view: % of the box it sees" in left and any(t_.startswith("C1  camA") and t_.endswith(" %")
+                                                                 for t_ in left),
+          "the legend says how much of the box the picked camera sees", str(left))
+    pic0 = v.scene.calib
+    v.fov_actions[1].trigger()                                   # C2 too: two picked, for the owner's picture
+    pump(0.3)
+    v.save_png(os.path.join(SCRATCH, "live3d_fov.png"), scale=2.0)
+    v.fov_actions[1].trigger()
+    pump(0.2)
+    win._refresh_cameras()
+    pump(0.2)
+    row = win.cameras._rows[1]
+    if not row.expanded():
+        QTest.mouseClick(row.btn_expand, Qt.LeftButton)
+        pump(0.2)
+    off0 = p.offsets[1]
+    row.spin.setFocus()
+    QTest.keyClick(row.spin, Qt.Key_Up)                          # camB's offset one step: a new picture is due
+    pump(0.2)
+    check(p.offsets[1] != off0, "(setup) the arrow moved camB's offset")
+    ok_ = wait(lambda: v.scene.calib is not None and v.scene.calib is not pic0, 30)
+    v._render()
+    check(ok_ and v._fov_views() == {int(v.fov_actions[0].data())} and bool(v._hits.get("fov_walls")),
+          "after the retime a new picture comes and the picked field of view is drawn again",
+          f"new picture {ok_}, picked {v._fov_views()}")
+    QTest.keyClick(row.spin, Qt.Key_Down)                        # back to the offset it had
+    pump(0.2)
+    row.spin.clearFocus()
+    menu_entry(v.fov_menu, "No camera").trigger()
+    pump(1.5)                                                    # the rebuild after the offset went back
 
 # ---- [R] the camera rays (G207) --------------------------------------------------------------------
 print("[R] Rays: each 3D point with the rays of the cameras that made it (G207)")
@@ -529,7 +630,7 @@ if row is not None:
     check(v._rays() == {"head"} and menu_entry(v.rays_menu, "head").isChecked(),
           "a click on the head's legend row ticks its rays", str(v._rays()))
     right = (v._hits.get("legend") or {}).get("right") or []
-    check(any(t_.startswith("click a landmark") for t_ in right), "the legend says a click toggles a landmark's rays")
+    check(any(t_.startswith("click one: rays on / off") for t_ in right), "the legend says a click toggles a landmark's rays")
 else:
     check(False, "(setup) the legend has a row for the head", str(rows))
 

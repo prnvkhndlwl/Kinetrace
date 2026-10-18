@@ -451,6 +451,11 @@ def sec_g():
         pump(0.1)
         assert abs(v.zoom - 1.0) < 1e-9, v.zoom
         v._render()
+        assert v._hits.get("fov_walls"), "(G209) the box walls the camera sees are tinted"
+        _wall = v3.FOV_WALL_ALPHA
+        v3.FOV_WALL_ALPHA = 0.0                  # the sides' own blend, without the walls' tint under them
+        v._render()
+        v3.FOV_WALL_ALPHA = _wall
         img = v.last_image
         H_, W_ = img.shape[:2]
         to_screen, _, _ = v3.screen_transform(v.scene, (W_, H_), v.azimuth, v.elevation, v.zoom, tuple(v.pan), 2,
