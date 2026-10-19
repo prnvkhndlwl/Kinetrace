@@ -1785,6 +1785,55 @@ def reference_span(f_lo: int, f_hi: int, rate: float, offset: float) -> tuple[in
     return lo, hi
 
 
+def triangulate_cells(sessions: list, calib: Calibration, rates: list[float], offsets: list[float], name: str,
+                      t: np.ndarray):
+    """(I305, I309) One landmark's 3D cells at the reference instants `t`: reads only the local frames those
+    instants sample in each view (both neighbours), through the same `_Prepared.samples` / `triangulate` as
+    `reconstruct`, so each cell is the same bits as in the full call. -> xyz (T, 1, 3), residual (T, 1),
+    n_cams (T, 1), per-camera error (T, 1, C), and `has` (T, C) bool: which views had a sample at each
+    instant (G206: why a cell is empty)."""
+    rows = []                           # each view's local frames these instants read (both neighbours)
+    for v, s in enumerate(sessions):
+        f0 = np.floor(local_frame(t, rates[v], offsets[v])).astype(np.int64)
+        r = np.unique(np.concatenate([f0, f0 + 1]))
+        rows.append(r[(r >= 0) & (r < s.n_frames)])
+    prep = _Prepared.one_landmark(sessions, calib, name, rows)
+    uv = prep.samples(rates, offsets, t)
+    x, r, n, e = prep.triangulate(uv)
+    return x, r, n, e, np.isfinite(uv[:, 0]).all(axis=-1)
+
+
+def sampled_views(sessions: list, calib: Calibration, rates: list[float], offsets: list[float], name: str,
+                  t: float) -> tuple[list[int], dict]:
+    """(G206) Why landmark `name` has or lacks a 3D position at reference instant `t`, for the 3D window's
+    words (no number comes from here): `sample_tracks_at`'s rule on the column `_Prepared.one_landmark`
+    reads, without building it. -> (the calibrated views that give it a sample at t, {view: (the frame it
+    has, the frame it lacks)} for a view with only one of the two frames a fractional instant falls between
+    - a gap is never bridged)."""
+    cams = calib.padded(len(sessions))
+    views, half = [], {}
+    for v, s in enumerate(sessions):
+        j = {q.name: k for k, q in enumerate(s.points)}.get(name)          # the column one_landmark reads
+        if cams[v] is None or j is None:
+            continue
+
+        def has(f, s=s, j=j):
+            return (0 <= f < s.n_frames and bool(s.exportable_at(f, j))
+                    and bool(np.isfinite(s.tracks[f, j]).all()))
+        x = float(local_frame(t, rates[v], offsets[v]))
+        f0 = int(np.floor(x))
+        if x - f0 < 1e-9:
+            if has(f0):
+                views.append(v)
+            continue
+        h0, h1 = has(f0), has(f0 + 1)
+        if h0 and h1:
+            views.append(v)
+        elif h0 or h1:
+            half[v] = (f0, f0 + 1) if h0 else (f0 + 1, f0)
+    return views, half
+
+
 def update_reconstruction(rec: "Reconstruction | None", sessions: list, calib: Calibration, rates: list[float],
                           offsets: list[float], t_range: tuple[int, int],
                           changed: dict[str, list[tuple[int, int]]]) -> Reconstruction:
@@ -1832,13 +1881,7 @@ def update_reconstruction(rec: "Reconstruction | None", sessions: list, calib: C
         if not need.any():
             continue
         t = t0 + np.nonzero(need)[0]
-        rows = []                       # each view's local frames these instants read (both neighbours)
-        for v, s in enumerate(sessions):
-            f0 = np.floor(local_frame(t, rates[v], offsets[v])).astype(np.int64)
-            r = np.unique(np.concatenate([f0, f0 + 1]))
-            rows.append(r[(r >= 0) & (r < s.n_frames)])
-        prep = _Prepared.one_landmark(sessions, calib, nm, rows)
-        x, r, n, e = prep.triangulate(prep.samples(rates, offsets, t))
+        x, r, n, e, _ = triangulate_cells(sessions, calib, rates, offsets, nm, t)
         rows = t - t0
         xyz[rows, k] = x[:, 0]
         resid[rows, k] = r[:, 0]

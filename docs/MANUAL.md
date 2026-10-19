@@ -2097,10 +2097,16 @@ five pages and explains each one:
    cameras are solved (the timing checks go on meanwhile); **Show in 3D**
    brings it back if you close it. It is a picture you can turn before you
    use the calibration: each camera as a small pyramid where it stands, pointing where it
-   looks, its whole **field of view** (as Blender draws a camera: the picture's
-   edges, the lens bend included, out to a flat plane past the wand; its four
-   sides are filled in the camera's colour, faintly, so where several cameras'
-   fields overlap the picture looks denser), and every wand position the
+   looks, its **field of view** for the cameras you pick in **Fields of view ▾**
+   (none at first; *Show in 3D* picks all): the picture's edges, the lens bend
+   included, inside the box around the 3D points (around the wand when there
+   are none). The box walls the camera sees are tinted in its colour (a camera
+   that sees the whole box tints all three), its sides are filled faintly where
+   they cross the box and outlined there, and the legend says how much of the
+   box each picked camera sees ("100 %": the whole working volume is in its
+   picture). A wide lens's field of view has curved sides and
+   reaches farthest at its corners; that is what a wide lens sees, not an
+   error. And every wand position the
    calibration used as two small dots joined by a thin line, coloured by
    how well the cameras agree on it: **green** good, **yellow** ok, **orange**
    poor, **red** (a slightly bigger dot) a click the fit set aside. Zoom in
@@ -2109,9 +2115,11 @@ five pages and explains each one:
    least that many cameras see — where 3D is possible, and where it is well
    determined; it is drawn over the fields of view — and the line above the picture says how much of the wand
    cloud lies inside it, with a verdict (90 % or more good, 70 % ok, less
-   poor). **Cameras ▾** chooses which cameras are drawn and counted: untick
-   some to see what the others cover together. Each layer (wand points,
-   camera pyramids, fields of view, covered space) has its own tick. Hand
+   poor). **Cameras ▾** chooses which cameras' pyramids are drawn and which
+   are counted: untick some to see what the others cover together. Each layer
+   (wand points, camera pyramids, fields of view, covered space) has its own
+   control. On the picture each camera is tagged by its number (**C7**); the
+   legend beside the picture gives its full name. Hand
    check: the pyramids should sit where your cameras stand and point into
    the volume; a camera's field-of-view corner edge passes through what that
    camera shows at that corner of its picture. A camera with no lens
@@ -2377,7 +2385,46 @@ Four steps, in this order:
    project saved before this version may hold an older result: press Ctrl+3
    once. The **3D view** window opens (**3D → Show 3D View**, **Ctrl+5**,
    opens and closes it later): drag to turn it, wheel to zoom, middle-drag or
-   Shift+drag to pan, double-click to reset. It follows the frame you are on.
+   Shift+drag to pan, double-click to reset. It follows the frame you are on,
+   **and a tracking run as it goes**: while you track, the points being
+   tracked appear in 3D frame by frame, with the trail behind them, like the
+   camera views (the full 3D result is brought up to date when the run ends;
+   the numbers are the same). On a big rig with many points tracked the 3D
+   window updates a few times a second instead of ten, so the camera views keep
+   their speed, and the trail shows the last second only until the run ends. When a landmark has no 3D position at the frame
+   on screen, the line at the top names it, and its row in the legend (and the
+   line's tooltip, in full) says **why**: only one camera
+   has it there ("only camera 3 has it here; 3D needs 2 cameras"), or a camera
+   has only one of the two frames this instant falls between (fractional
+   offsets, see above), or the 3D result is still being brought up to date
+   (right after a run or a click) or was imported (press Ctrl+3). With
+   several, it counts them; hover the line for the list. **Rays** draws, as motion-capture software does, a line from every
+   camera that made a 3D point to that point, for the landmarks you tick in
+   the **Rays ▾** menu (one tick per landmark; *All landmarks* / *None*). A
+   click on a landmark's dot, or on its row in the legend, ticks or unticks
+   it there (a ring around its dot in the legend shows it is on). *Follow the
+   main window's selection* adds the landmark selected in the main window, so
+   the rays follow you while you click points in the cameras. Each line is coloured by how far that camera's own point lies from
+   the 3D point when projected back into it, against the residual bands below:
+   green good, yellow ok, red poor. Each line is tagged at the camera end with
+   the camera's number (**C7**); a camera far outside the picture gets its line
+   cut at the edge, tagged there. Hand check: two rays should meet at the dot. A red ray says
+   to look at that camera first (a wrong click or track, or its timing). With
+   three cameras, though, one bad camera also pulls the point away from the
+   other two, so their rays turn yellow or red too: the reddest ray is the
+   likeliest culprit, not a proof. Save picture… keeps the rays.
+   **The legend** uses the space beside the picture: on the left the cameras
+   (their colour, number, full name and, with Rays, right after the name the
+   error of each of that camera's rays in its verdict's colour: one number per
+   landmark, in the order the line above them names the landmarks in their own
+   colours - so a camera that sees both wand balls reads e.g. 1.5 · 5.7 px; with
+   more than three landmarks, the worst one and its landmark. The px is how far
+   the 3D point, seen from that camera, lands from the camera's own click or
+   track), on the right the
+   landmarks (their colour, name, and how many cameras made the point with its
+   verdict, or why it has none here, e.g. "only C3"). On the picture itself
+   only the landmark names, the camera numbers and the grid's numbers stay.
+   In a narrow window the legend lies on a light panel over the picture.
    Each landmark has its own soft colour; a **yellow ring** around a dot means
    its cameras agree only roughly there (ok), a **red ring** that they
    disagree (poor) — the same verdict the epipolar guides give, and the line
@@ -3979,7 +4026,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Ctrl+3** | reconstruct all the 3D landmarks with the verdict (needs two or more calibrated cameras) and show the 3D view; the result also keeps itself up to date as you click and track |
 | **Ctrl+4** | carve the animal's volume at this frame from the cameras' outlines |
 | **3D → Set World Axes…** | choose the 3D world's origin, +X and +Y from three landmarks of the 3D result (+Z by the right-hand rule) |
-| **Ctrl+5** | show / hide the 3D view (drag to turn it, wheel to zoom, double-click to reset; with a calibration: the wand calibration layers, a click on a wand end goes to its frame) |
+| **Ctrl+5** | show / hide the 3D view (drag to turn it, wheel to zoom, double-click to reset; with a calibration: the wand calibration layers, a click on a wand end goes to its frame; Rays ▾: each camera's line to a 3D point, a click on a dot or its legend row turns its rays on / off) |
 | **Ctrl+6** | show / hide the body side-by-side view (drag the pose to turn it round) |
 | **Shift+C** | fix a stale or garbled picture |
 

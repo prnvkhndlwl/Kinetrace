@@ -8,6 +8,7 @@ still draw in well under a second, and the view only redraws on demand.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import cv2
@@ -401,6 +402,23 @@ class Scene3D:
         self.trail_frames = 0
         self.verdicts: list[str] = []   # per landmark at the instant: good / ok / poor / "" (cell_verdict)
         self.world: dict | None = None  # (G201) Calibration.world: the origin / +X / +Y landmarks' names
+        # (I309) during a run `points_all` is a window around the instant: the grid's box is the one of the whole
+        # result (`box_points`, the same array between runs, so its box is cached) widened by the run's live
+        # points (`box_extra`, small)
+        self.box_points: np.ndarray | None = None
+        self.box_extra: np.ndarray | None = None
+        self.missing: list[tuple[str, str]] = []    # (G206) (landmark, why it has no 3D at this instant)
+        # (G207) per landmark at the instant: the cameras that made its 3D point, [{"view", "camera" (its name),
+        # "err" (px), "verdict"}]; each calibrated camera's centre by view; the landmark selected in the window
+        self.rays: list[list[dict]] = []
+        self.cam_centres: dict[int, np.ndarray] = {}
+        self.selected: str | None = None
+        # (G208) the legend: the view of each entry of `cameras` / `camera_names`, and per landmark its state at
+        # the instant as (short text, verdict) - "2 cams", "only C3 has it"; (G209) the cameras whose field of
+        # view is drawn (None = every one)
+        self.camera_views: list[int] = []
+        self.status: list[tuple[str, str]] = []
+        self.fov_views: set | None = None
 
     def framing(self, include_cameras: bool, include_calib: bool = False,
                 box: tuple | None = None) -> tuple[np.ndarray, float]:
@@ -475,6 +493,7 @@ def _nice_length(x: float) -> float:
 
 
 FOV_SIDE_ALPHA = 0.10          # (G187, owner 2026-10-12) each field-of-view side: 10 % of its camera's colour
+FOV_WALL_ALPHA = 0.18          # (G209) a box wall's cells a picked camera sees: this much of its colour
 
 # (G202, owner 2026-10-16: "make the figures and vis look clean and publication ready with pastel shades") one
 # palette per background, BGR. The dark background is the one the window always had (the wand layers' colours
@@ -507,17 +526,22 @@ def _mix(a, b, t: float) -> tuple:
 
 def _draw_labels(img: np.ndarray, labels: list, px: float) -> np.ndarray:
     """Text drawn last, anti-aliased in the application's sans font (QPainter on the picture's own pixels, so
-    Save PNG keeps it). labels: (x, y, text, BGR, size in screen px, align "l" / "c" / "r"); y = the baseline.
-    Without a Qt application (a script): OpenCV's font."""
+    Save PNG keeps it). labels: (x, y, text, BGR, size in screen px, align "l" / "c" / "r" / "+"); y = the
+    baseline; "+" (G208) starts where the previous label ended, `x` being the gap (pieces of one line in
+    different colours). Without a Qt application (a script): OpenCV's font."""
     if not labels:
         return img
     from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter
     from PySide6.QtCore import QPointF
     buf = np.ascontiguousarray(img)
     if QGuiApplication.instance() is None:
+        end = 0.0
         for x, y, text, col, size, align in labels:
-            cv2.putText(buf, text, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, size / 24.0 * px, col, _px(1, px),
-                        cv2.LINE_AA)
+            fs = size / 24.0 * px
+            tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, _px(1, px))[0][0]
+            x0 = end + x if align == "+" else (x if align == "l" else (x - tw / 2.0 if align == "c" else x - tw))
+            cv2.putText(buf, text, (int(x0), int(y)), cv2.FONT_HERSHEY_SIMPLEX, fs, col, _px(1, px), cv2.LINE_AA)
+            end = x0 + tw
         return buf
     h, w = buf.shape[:2]
     qi = QImage(buf.data, w, h, 3 * w, QImage.Format_BGR888)
@@ -525,13 +549,18 @@ def _draw_labels(img: np.ndarray, labels: list, px: float) -> np.ndarray:
     pa.setRenderHint(QPainter.TextAntialiasing, True)
     pa.setRenderHint(QPainter.Antialiasing, True)
     font = QFont()
+    end = 0.0
     for x, y, text, col, size, align in labels:
         font.setPixelSize(max(6, int(round(size * px))))
         pa.setFont(font)
         pa.setPen(QColor(int(col[2]), int(col[1]), int(col[0])))
         tw = pa.fontMetrics().horizontalAdvance(text)
-        dx = 0.0 if align == "l" else (-tw / 2.0 if align == "c" else -float(tw))
-        pa.drawText(QPointF(float(x) + dx, float(y)), text)
+        if align == "+":
+            x0 = end + float(x)
+        else:
+            x0 = float(x) + (0.0 if align == "l" else (-tw / 2.0 if align == "c" else -float(tw)))
+        pa.drawText(QPointF(x0, float(y)), text)
+        end = x0 + tw
     pa.end()
     return buf
 
@@ -548,6 +577,22 @@ def _grid_box_cached(points, extra=()) -> tuple | None:
     box = grid_box(points, extra)
     _GRID_CACHE[:] = [points, key, box]
     return box
+
+
+def _scene_box(scene: "Scene3D", world_on: bool) -> tuple | None:
+    """The grid's box: `grid_box` of the whole 3D result (cached), widened by the run's live points (I309)."""
+    extra = [np.zeros(3)] if world_on else []
+    src = scene.box_points if scene.box_points is not None else scene.points_all
+    box = _grid_box_cached(src, extra) if src is not None else None
+    if scene.box_extra is None:
+        return box
+    live = np.asarray(scene.box_extra, np.float64).reshape(-1, 3)
+    live = live[np.isfinite(live).all(axis=1)]
+    if not len(live):
+        return box
+    if box is not None and (live >= box[0]).all() and (live <= box[1]).all():
+        return box                                  # inside the box: it stays as it is
+    return grid_box(None, ([box[0], box[1]] if box is not None else []) + [live] + extra)
 
 
 def grid_box(points, extra=()) -> tuple | None:
@@ -734,6 +779,221 @@ def _draw_world(img, scene: Scene3D, to_screen, pal: dict, length: float, unit: 
     return o
 
 
+RAY_MIX = 0.6                  # (G207, G208: "thinner like optic rays") its verdict's colour this much over the
+                               # background, half a screen pixel wide (a 1 px line at 100 %, faint)
+LEGEND_MIN_PX = 200            # (G208) a side strip narrower than this (screen px) gets the legend on a panel
+LEGEND_ROW_PX = 17
+
+
+def cam_tag(view: int) -> str:
+    """(G208) A camera's short name on the figure ("C7" = the 7th camera); the legend gives its full name."""
+    return f"C{int(view) + 1}"
+
+
+def ray_names(scene: Scene3D, rays) -> set:
+    """(G210) The landmarks whose rays are drawn: `rays` = a collection of names, or "off" / "selected" (the
+    scene's selected landmark) / "all"."""
+    if rays is None or rays == "off":
+        return set()
+    if rays == "all":
+        return set(scene.names)
+    if rays == "selected":
+        return {scene.selected} if scene.selected else set()
+    return set(rays)
+
+
+def _draw_rays(img, scene: Scene3D, ps: np.ndarray, to_screen, pal: dict, wanted: set, labels: list,
+               px: float, xr: tuple | None = None) -> list[dict]:
+    """(G207, owner 2026-10-17: rays "from the corresponding cameras that contributed to the point as is shown
+    in ... qualisys") Each 3D point (all, or the selected landmark's) with a ray from every camera that made
+    it, from the camera's centre to the dot, coloured by that camera's own verdict (its error against its
+    picture's bands). The camera end is clipped to the scene's part of the picture (`xr` = its x range: the
+    legend's strips are kept clear; a camera is often metres off screen) and tagged there with the camera's
+    short name, once per camera (G208: its full name and the error are in the legend). -> the rays drawn (for
+    picking, the legend, tests): {"name", "view", "err", "verdict", "start", "end"} in image pixels."""
+    H, W = img.shape[:2]
+    x0, x1 = (0, W) if xr is None else (int(xr[0]), int(xr[1]))
+    drawn, tagged = [], {}
+    thick = _px(0.5, px)                    # (G208, owner: "make the camera rays thinner like optic rays")
+    for j, lst in enumerate(scene.rays):
+        if j >= len(scene.names) or j >= len(ps) or not lst:
+            continue
+        nm = scene.names[j]
+        if nm not in wanted:
+            continue
+        p1 = ps[j]
+        if not np.isfinite(p1).all():
+            continue
+        for ry in lst:
+            c = scene.cam_centres.get(ry["view"])
+            if c is None:
+                continue
+            p0 = to_screen(np.asarray(c, np.float64).reshape(1, 3))[0][0]
+            if not np.isfinite(p0).all():
+                continue
+            a = tuple(int(v) for v in np.clip(np.round(p0), -SCREEN_CLAMP, SCREEN_CLAMP))
+            b = tuple(int(v) for v in np.clip(np.round(p1), -SCREEN_CLAMP, SCREEN_CLAMP))
+            ok, a, b = cv2.clipLine((x0, 0, x1 - x0, H), a, b)
+            if not ok:
+                continue
+            col = _mix(pal["bg"], _bgr(theme.VERDICT.get(ry["verdict"], theme.VERDICT["ok"])), RAY_MIX)
+            cv2.line(img, a, b, col, thick, cv2.LINE_AA)
+            inside = x0 <= p1[0] < x1 and 0 <= p1[1] < H
+            drawn.append({"name": nm, "view": ry["view"], "err": ry["err"], "verdict": ry["verdict"],
+                          "start": (float(a[0]), float(a[1])),
+                          "end": (float(p1[0]), float(p1[1])) if inside else (float(b[0]), float(b[1]))})
+            tagged.setdefault(ry["view"], (a, col))
+    m = 6 * px
+    for view, (a, col) in tagged.items():
+        x = float(np.clip(a[0], x0 + m, x1 - m))
+        y = float(np.clip(a[1] - m, 2 * m + LABEL_PX * px, H - m))
+        labels.append((x, y, cam_tag(view), _mix(col, pal["text"], 0.35), TICK_PX, "l" if x < (x0 + x1) / 2 else "r"))
+    return drawn
+
+
+def legend_layout(size: tuple[int, int], px: float) -> tuple[float, float, bool]:
+    """(G208) (left column's width, right column's width, on a panel): the legend takes the strips beside the
+    square the scene is framed in (`screen_transform` scales by the picture's SHORT side, so on a wide window
+    these are empty); a strip narrower than LEGEND_MIN_PX gets a fixed-width column drawn on a translucent
+    panel over the scene instead."""
+    W, H = size
+    strip = (W - H) / 2.0
+    want = LEGEND_MIN_PX * px
+    if strip >= want:
+        return strip, strip, False
+    w = min(want, W * 0.32)
+    return w, w, True
+
+
+def _legend_text(text: str, width: float, px: float) -> str:
+    """`text` cut to about `width` pixels of TICK_PX text (an estimate: the font is measured only when drawn)."""
+    n = max(4, int(width / (0.56 * TICK_PX * px)))
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+LEGEND_PER_LANDMARK = 3        # (G208) with up to this many landmarks' rays, a camera lists each one's error
+
+
+def _draw_legend(img, scene: Scene3D, pal: dict, labels: list, px: float, rays_drawn: list,
+                 wanted: set = frozenset(), fov_seen: dict | None = None) -> dict:
+    """(G208, owner 2026-10-18: "there is a lot of white space on either side, can that be used for text/legend
+    instead") Left: the cameras - their colour (the one their field of view is drawn in), the tag the figure
+    shows, the full name and, with rays, right after the name the error of each of that camera's rays in its
+    verdict's colour: one number per landmark (in the order the header names them in their own colours) when
+    the rays of up to LEGEND_PER_LANDMARK landmarks are drawn, else the worst one and its landmark; a footer
+    says what the number is. Right: the landmarks - colour, name, how many cameras made the point and its
+    verdict, or why there is none here; (G210) a ring around the dot of each landmark whose rays are on, and
+    a click on a row toggles them. -> {"left": [line texts], "right": [line texts], "rows": [(landmark, x0, y0,
+    x1, y1) in image pixels]}."""
+    H, W = img.shape[:2]
+    lw, rw, panel = legend_layout((W, H), px)
+    row, pad, gap = LEGEND_ROW_PX * px, 10 * px, 6 * px
+    vc = {k: _mix(_bgr(c), pal["text"], 0.25) for k, c in theme.VERDICT.items()}
+    lm_col = {nm: LANDMARK_COLOURS[j % len(LANDMARK_COLOURS)] for j, nm in enumerate(scene.names)}
+    ray_names = [nm for nm in scene.names if any(ry["name"] == nm for ry in rays_drawn)]
+    each = 0 < len(ray_names) <= LEGEND_PER_LANDMARK
+    errs = {}                                       # view -> {landmark: (err, verdict)}
+    for ry in rays_drawn:
+        errs.setdefault(ry["view"], {})[ry["name"]] = (ry["err"], ry["verdict"])
+
+    def est(text):                                  # the width a text takes (an estimate: measured when drawn)
+        return len(text) * 0.56 * TICK_PX * px
+
+    def cam_parts(v):
+        out = fov_parts(v)
+        e = errs.get(v)
+        if not e:
+            return out
+        return ray_parts(v, e) + ([("  ", pal["dim"])] + out if out else [])
+
+    def fov_parts(v):                               # (G209) its field of view is drawn: how much of the box it sees
+        f = (fov_seen or {}).get(v)
+        return [] if f is None else [(f"{100 * f:.0f} %", pal["dim"])]
+
+    def ray_parts(v, e):
+        if each:
+            out = []
+            for i, nm in enumerate(ray_names):
+                if i:
+                    out.append((" · ", pal["dim"]))
+                out.append((f"{e[nm][0]:.1f}", vc.get(e[nm][1], pal["dim"])) if nm in e else ("–", pal["dim"]))
+            return out + [(" px", pal["dim"])]
+        nm = max(e, key=lambda k: e[k][0])
+        return [(f"{e[nm][0]:.1f} px", vc.get(e[nm][1], pal["dim"])), (f" ({nm})", pal["dim"])]
+
+    cams = [(("box", CAM_COLOURS[i % len(CAM_COLOURS)]),
+             f"{cam_tag(v)}  {scene.camera_names[i] if i < len(scene.camera_names) else ''}", cam_parts(v))
+            for i, v in enumerate(scene.camera_views)]
+    head_l = [[("Cameras", pal["dim"])]]
+    if fov_seen:
+        head_l.append([("field of view: % of the box it sees", pal["dim"])])
+    foot_l = []
+    if rays_drawn:
+        if each:
+            line = [("ray error in px, for ", pal["dim"])]
+            for i, nm in enumerate(ray_names):
+                if i:
+                    line.append((" · ", pal["dim"]))
+                line.append((nm, _mix(lm_col[nm], pal["text"], 0.2)))
+            head_l.append(line)
+        else:
+            head_l.append([("ray error in px: the worst of each camera's rays", pal["dim"])])
+        foot_l = ["px: how far the 3D point, seen from that camera,", "lands from the camera's own point (green good,",
+                  "yellow ok, red poor; a ray's colour says the same)"]
+    lms = [(("dot", LANDMARK_COLOURS[j % len(LANDMARK_COLOURS)], nm in wanted), nm,
+            [(scene.status[j][0], vc.get(scene.status[j][1], pal["dim"]))] if j < len(scene.status) else [])
+           for j, nm in enumerate(scene.names)]
+    rows = []
+
+    def column(x0, width, heads, entries, foots):
+        if not entries:
+            return []
+        room_rows = max(1, int((H - 2 * pad) / row) - len(heads) - len(foots))
+        shown = entries if len(entries) <= room_rows else entries[:room_rows - 1]
+        n = len(heads) + len(shown) + (len(shown) < len(entries)) + len(foots)
+        if panel:
+            h = n * row + 2 * pad
+            _blend_poly(img, np.array([[x0, 0], [x0 + width, 0], [x0 + width, h], [x0, h]], np.int32), pal["bg"], 0.88)
+        y = pad + row * 0.75
+        texts = []
+        for k, parts in enumerate(heads):
+            if k:
+                y += row
+            labels.append((x0 + pad, y, parts[0][0], parts[0][1], TICK_PX, "l"))
+            labels.extend((0.0, y, t, c, TICK_PX, "+") for t, c in parts[1:])
+            texts.append("".join(t for t, _ in parts))
+        for sw, main, parts in shown:
+            y += row
+            cy = int(round(y - row * 0.3))
+            if sw[0] == "box":
+                s_ = _px(4, px)
+                cv2.rectangle(img, (int(x0 + pad), cy - s_), (int(x0 + pad) + 2 * s_, cy + s_), sw[1], -1)
+            else:
+                cv2.circle(img, (int(x0 + pad + _px(4, px)), cy), _px(4, px), sw[1], -1, cv2.LINE_AA)
+                if sw[2]:                                   # (G210) its rays are on
+                    cv2.circle(img, (int(x0 + pad + _px(4, px)), cy), _px(6.5, px), pal["text"], _px(1, px),
+                               cv2.LINE_AA)
+                rows.append((main, x0, y - row * 0.8, x0 + width, y + row * 0.2))
+            room = width - 2 * pad - 14 * px - (sum(est(t) for t, _ in parts) + gap if parts else 0)
+            t = _legend_text(main, room, px)
+            labels.append((x0 + pad + 14 * px, y, t, pal["text"], TICK_PX, "l"))
+            for i, (pt, pc) in enumerate(parts):            # (G208) right after the name, not at the far edge
+                labels.append((gap if i == 0 else 0.0, y, pt, pc, TICK_PX, "+"))
+            texts.append(t + ("  " + "".join(pt for pt, _ in parts) if parts else ""))
+        if len(shown) < len(entries):
+            y += row
+            labels.append((x0 + pad, y, f"+ {len(entries) - len(shown)} more", pal["dim"], TICK_PX, "l"))
+        for ft in foots:
+            y += row
+            labels.append((x0 + pad, y, _legend_text(ft, width - 2 * pad, px), pal["dim"], TICK_PX, "l"))
+            texts.append(ft)
+        return texts
+
+    right_foot = ["click one: rays on / off"] if scene.rays else []
+    return {"left": column(0.0, lw, head_l, cams, foot_l),
+            "right": column(W - rw, rw, [[("Landmarks", pal["dim"])]], lms, right_foot), "rows": rows}
+
+
 def _px(v: float, px: float) -> int:
     """A size of `v` screen pixels at the display's pixel density `px` (at least 1; halves round up, never to
     even - the same at 150 % as at 250 %)."""
@@ -753,10 +1013,31 @@ def _draw_poly(img, scr: np.ndarray, colour, closed: bool, thickness: int = 1) -
         cv2.polylines(img, [_to_int_px(scr[ok])], closed, colour, thickness, cv2.LINE_AA)
 
 
-def _fov_sides(cd, to_screen) -> list:
+def clip_to_box(poly: np.ndarray, lo, hi) -> np.ndarray:
+    """(G209) The part of a 3D polygon (K, 3) inside the box lo..hi (Sutherland-Hodgman against its six
+    faces) -> (M, 3), empty when nothing is inside."""
+    out = np.asarray(poly, np.float64).reshape(-1, 3)
+    for ax in range(3):
+        for bound, sign in ((float(lo[ax]), 1.0), (float(hi[ax]), -1.0)):
+            if not len(out):
+                return out
+            d = sign * (out[:, ax] - bound)                  # >= 0 inside
+            nxt, dn = np.roll(out, -1, axis=0), np.roll(d, -1)
+            res = []
+            for p_, q_, dp, dq in zip(out, nxt, d, dn):
+                if dp >= 0:
+                    res.append(p_)
+                if (dp >= 0) != (dq >= 0):
+                    res.append(p_ + (dp / (dp - dq)) * (q_ - p_))
+            out = np.array(res, np.float64).reshape(-1, 3)
+    return out
+
+
+def _fov_sides(cd, to_screen, box=None) -> list:
     """(G187) The four sides of one camera's field of view as (mean depth, (K, 2) int32 screen polygon): the
     camera centre, the border points of that side (the lens bend kept) and the next side's first point, so
-    the corner closes."""
+    the corner closes. (G209) `box` (lo, hi): each side cut to it first - the part of the field of view inside
+    the working volume, not wedges reaching far past it."""
     f = cd.fov
     if f is None or f.side is None or not len(f.border):
         return []
@@ -768,9 +1049,55 @@ def _fov_sides(cd, to_screen) -> list:
             continue
         nxt = next((firsts[(s + j) % 4] for j in range(1, 4) if (s + j) % 4 in firsts), None)
         poly = np.vstack([f.centre[None], pts] + ([nxt[None]] if nxt is not None else []))
+        if box is not None:
+            poly = clip_to_box(poly, box[0], box[1])
+            if len(poly) < 3:
+                continue
         scr, depth = to_screen(poly)
         if len(scr) >= 3 and np.isfinite(scr).all():
             out.append((float(depth.mean()), _to_int_px(scr)))
+    return out
+
+
+FOV_CELLS = 24                 # (G209) each box wall is checked in this many x this many cells per camera
+_FOOT_CACHE: dict = {}         # (id(picture), view, box) -> {(axis, side): (cells' corners (M, 4, 3), seen (M,))}
+
+
+def _wall_cells(lo, hi, axis: int, side: int, n: int) -> tuple[np.ndarray, np.ndarray]:
+    """The n x n cells of the box wall at `axis` = lo / hi (`side` 0 / 1): (corners (n*n, 4, 3), centres)."""
+    u, w = [a for a in range(3) if a != axis]
+    g = np.linspace(0.0, 1.0, n + 1)
+    a0, a1 = np.meshgrid(g[:-1], g[:-1], indexing="ij")
+    b0, b1 = a0 + 1.0 / n, a1 + 1.0 / n
+    corners = np.zeros((n * n, 4, 3))
+    for k, (pu, pw) in enumerate(((a0, a1), (b0, a1), (b0, b1), (a0, b1))):
+        corners[:, k, u] = lo[u] + pu.ravel() * (hi[u] - lo[u])
+        corners[:, k, w] = lo[w] + pw.ravel() * (hi[w] - lo[w])
+        corners[:, k, axis] = hi[axis] if side else lo[axis]
+    return corners, corners.mean(axis=1)
+
+
+def _footprint(pic, cd, lo, hi) -> dict:
+    """(G209) Which cells of the box's six walls camera `cd` sees (calibview.camera_sees), cached: the box and
+    the picture change rarely, the view on every drag."""
+    key = (id(pic), int(cd.view), tuple(np.round(lo, 9)), tuple(np.round(hi, 9)))
+    got = _FOOT_CACHE.get(key)
+    if got is not None:
+        return got
+    from kinetrace.calib import working_probe
+    from kinetrace.calibview import camera_sees
+    cal = pic.cal
+    cam = cal.camera(cd.view) if cal is not None else None
+    out = {}
+    if cam is not None:
+        probe = working_probe(cal)
+        for axis in range(3):
+            for side in (0, 1):
+                corners, centres = _wall_cells(np.asarray(lo, float), np.asarray(hi, float), axis, side, FOV_CELLS)
+                out[(axis, side)] = (corners, camera_sees(cam, centres, probe))
+    if len(_FOOT_CACHE) > 64:
+        _FOOT_CACHE.clear()
+    _FOOT_CACHE[key] = out
     return out
 
 
@@ -789,7 +1116,7 @@ def _blend_poly(img, poly: np.ndarray, colour, alpha: float) -> None:
 
 def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool, show_pyramids: bool,
                 show_fov: bool, show_cover: bool, hits: dict | None, px: float = 1.0,
-                labels: list | None = None) -> np.ndarray:
+                labels: list | None = None, fov_box=None, fov_seen: dict | None = None) -> np.ndarray:
     """(G185, G186, G187) the fields of view's translucent sides, the covered space (translucent, over them),
     the fields of view's edges, the cameras' pose pyramids, the wand lines and ends, and the scale bar. Every
     fixed size is in screen pixels times `px` (the display's pixel density). Text goes into `labels` (drawn
@@ -797,15 +1124,41 @@ def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool
     pic = scene.calib
     labels = [] if labels is None else labels
     H, W = img.shape[:2]
+    faces = []
     if show_fov:
-        faces = []
+        # (G209) the cameras picked in the Fields of view menu, each cut to the working volume's box: on the
+        # box's three back walls (the grid's) the cells the camera sees, in its colour - a camera that sees the
+        # whole box tints them all, which its cut side walls alone would not show (they pass outside the box)
+        walls = back_walls(R)
         for k, cd in enumerate(pic.cams):
-            if scene.calib_views is not None and cd.view not in scene.calib_views:
+            if scene.fov_views is not None and cd.view not in scene.fov_views:
                 continue
             col = CAM_COLOURS[k % len(CAM_COLOURS)]
-            faces += [(d, poly, col) for d, poly in _fov_sides(cd, to_screen)]
+            if fov_box is not None:
+                fp = _footprint(pic, cd, fov_box[0], fov_box[1])
+                if fov_seen is not None and fp:              # (G209) for the legend: how much of the box it sees
+                    fov_seen[cd.view] = float(np.mean(np.concatenate([sn for _, sn in fp.values()])))
+                quads = []
+                for axis in range(3):
+                    corners, seen = fp.get((axis, int(walls[axis])), (None, None))
+                    if corners is None or not seen.any():
+                        continue
+                    scr = to_screen(corners[seen].reshape(-1, 3))[0].reshape(-1, 4, 2)
+                    quads += list(_to_int_px(scr))
+                if quads:
+                    mask = np.zeros(img.shape[:2], np.uint8)
+                    cv2.fillPoly(mask, quads, 1)
+                    m = mask.astype(bool)
+                    img[m] = (img[m] * (1.0 - FOV_WALL_ALPHA) + np.array(col, float) * FOV_WALL_ALPHA).astype(np.uint8)
+                    if hits is not None:
+                        hits.setdefault("fov_walls", {})[cd.view] = int(m.sum())
+            faces += [(d, poly, col) for d, poly in _fov_sides(cd, to_screen, fov_box)]
         for d, poly, col in sorted(faces, key=lambda f: f[0]):          # far ones first
             _blend_poly(img, poly, col, FOV_SIDE_ALPHA)
+        for d, poly, col in faces:                                      # the cut sides' outlines
+            cv2.polylines(img, [poly], True, tuple(int(0.55 * v) for v in col), _px(1, px), cv2.LINE_AA)
+        if hits is not None:
+            hits["fov"] = [poly for _, poly, _ in faces]
     if show_cover and pic.cover.get(scene.cover_n) is not None and len(pic.cover[scene.cover_n][1]):
         verts, faces = pic.cover[scene.cover_n]
         scr, depth = to_screen(verts)
@@ -824,18 +1177,14 @@ def _draw_calib(img, scene: Scene3D, to_screen, R, scale: float, show_ends: bool
         if scene.calib_views is not None and cd.view not in scene.calib_views:
             continue
         col = CAM_COLOURS[k % len(CAM_COLOURS)]
-        dim = tuple(int(0.55 * v) for v in col)
-        if show_fov and cd.fov is not None and len(cd.fov.border):
-            _draw_poly(img, to_screen(cd.fov.border)[0], dim, True, _px(1, px))
-            for c0, c1 in cd.fov.rays:
-                _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], dim, False, _px(1, px))
         if show_pyramids and cd.pose is not None and len(cd.pose.border):
             _draw_poly(img, to_screen(cd.pose.border)[0], col, True, _px(1, px))            # (G187) 1 px
             for c0, c1 in cd.pose.rays:
                 _draw_poly(img, to_screen(np.vstack([c0, c1]))[0], col, False, _px(1, px))
         cs = to_screen(cd.centre)[0][0]
-        if (show_pyramids or show_fov) and np.isfinite(cs).all():
-            labels.append((cs[0] + 8 * px, cs[1] - 6 * px, cd.name, col, LABEL_PX, "l"))
+        shown = show_pyramids or (show_fov and (scene.fov_views is None or cd.view in scene.fov_views))
+        if shown and np.isfinite(cs).all():
+            labels.append((cs[0] + 8 * px, cs[1] - 6 * px, cam_tag(cd.view), col, LABEL_PX, "l"))     # (G208)
     es, _ = to_screen(pic.ends)
     if hits is not None:
         hits["ends"] = es if show_ends else None
@@ -869,7 +1218,8 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
                  show_cameras: bool = False, up: int = 2, pan: tuple[float, float] = (0.0, 0.0),
                  show_calib: bool = False, show_fov: bool = False, show_cover: bool = False,
                  hits: dict | None = None, show_pyramids: bool | None = None, px: float = 1.0,
-                 show_grid: bool = False, show_world: bool = False, trail=None, palette: str = "dark") -> np.ndarray:
+                 show_grid: bool = False, show_world: bool = False, trail=None, palette: str = "dark",
+                 rays: str = "off", legend: bool = False) -> np.ndarray:
     """The 3D window's picture (BGR). The wand calibration layers (G185, G186) are drawn only when asked and
     the scene has a picture: `show_calib` = the wand points (and the scale bar), `show_pyramids` the
     cameras' pose pyramids (None = with the wand points), `show_fov` their fields of view, `show_cover`
@@ -880,19 +1230,26 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
     (G201-G203) `show_grid`: the box grid around the whole 3D result (and the view frames it); `show_world`:
     the chosen world's arrows (with `scene.world`); `trail`: None, a number of rows either side, or "all";
     `palette`: "dark" | "light". `hits` also receives "labels" (every text drawn), "grid" (the box),
-    "origin" (the world's origin on screen) and "trail" (the rows drawn)."""
+    "origin" (the world's origin on screen) and "trail" (the rows drawn). (G207) `rays`: "off" | "selected" |
+    "all" or (G210) a set of landmark names - the cameras' rays to each 3D point; `hits` "rays" (`_draw_rays`)
+    and "dots" ((N, 2) each
+    landmark's dot on the picture, NaN where none is drawn). (G208) `legend`: the cameras and the landmarks in
+    the strips beside the scene (`_draw_legend`; `hits` "legend")."""
     W, H = size
     pal = PALETTES.get(palette, PALETTES["dark"])
     img = np.full((H, W, 3), pal["bg"], np.uint8)
     pyr = show_calib if show_pyramids is None else show_pyramids
     calib_on = (show_calib or pyr or show_fov or show_cover) and scene.calib is not None
+    # (G209) the view frames the wand cloud and the cameras for the layers that reach them; fields of view alone
+    # are cut to the 3D points' box, so with points the view keeps framing those
+    frame_calib = calib_on and (show_calib or pyr or show_cover or scene.points_all is None)
     world_on = bool(show_world and scene.world)
-    box = (_grid_box_cached(scene.points_all, [np.zeros(3)] if world_on else ())
-           if (show_grid and scene.points_all is not None) else None)
+    box = _scene_box(scene, world_on) if show_grid else None
     to_screen, R, scale = screen_transform(scene, size, azimuth, elevation, zoom,
-                                           (pan[0] * px, pan[1] * px), up, show_cameras, calib_on,
-                                           None if calib_on else box)
+                                           (pan[0] * px, pan[1] * px), up, show_cameras, frame_calib,
+                                           None if frame_calib else box)
     t1 = _px(1, px)                                                  # a 1 px line
+    fov_seen: dict = {}                                              # (G209) view -> share of the box it sees
     labels: list = []
     unit = scene.unit or (scene.calib.unit if scene.calib is not None else "")
     if box is not None:
@@ -928,7 +1285,15 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
             c = (base * shade[k]).astype(int).tolist()
             cv2.fillConvexPoly(img, tri[k], c, lineType=cv2.LINE_AA)
     if calib_on:
-        img = _draw_calib(img, scene, to_screen, R, scale, show_calib, pyr, show_fov, show_cover, hits, px, labels)
+        # (G209) the fields of view end at the grid's box (the 3D result's), else at the wand cloud's
+        if box is None and scene.points_all is not None:
+            box = _scene_box(scene, world_on)          # (review) the points' box with the grid off too
+            fov_box = box[:2] if box is not None else scene.calib.box(0.25)
+            box = None
+        else:
+            fov_box = box[:2] if box is not None else scene.calib.box(0.25)
+        img = _draw_calib(img, scene, to_screen, R, scale, show_calib, pyr, show_fov, show_cover, hits, px, labels,
+                          fov_box, fov_seen)
     if show_cameras and not calib_on and scene.cameras is not None and len(scene.cameras):
         cs, _ = to_screen(scene.cameras)
         m = 50 * px
@@ -936,15 +1301,27 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
             if np.isfinite(x) and np.isfinite(y) and -m < x < W + m and -m < y < H + m:
                 cv2.drawMarker(img, (int(x), int(y)), (80, 120, 255), cv2.MARKER_TRIANGLE_UP, _px(14, px),
                                _px(2, px), cv2.LINE_AA)
-                nm = scene.camera_names[k] if k < len(scene.camera_names) else f"cam {k + 1}"
-                labels.append((x + 8 * px, y + 4 * px, nm, (120, 150, 255), LABEL_PX, "l"))
+                v = scene.camera_views[k] if k < len(scene.camera_views) else k
+                labels.append((x + 8 * px, y + 4 * px, cam_tag(v), (120, 150, 255), LABEL_PX, "l"))    # (G208)
     if show_points:
         drawn = _draw_trails(img, scene, to_screen, pal, trail, px)
         if hits is not None:
             hits["trail"] = drawn
+    drawn_rays: list = []
+    if hits is not None:
+        hits["rays"], hits["dots"] = [], None
     if show_points and scene.points is not None and len(scene.points):
         ps, _ = to_screen(scene.points)
         ok = np.isfinite(scene.points).all(axis=1)
+        wanted = ray_names(scene, rays)
+        if wanted:
+            lw, rw, _ = legend_layout((W, H), px)
+            drawn_rays = _draw_rays(img, scene, ps, to_screen, pal, wanted, labels, px,
+                                    (lw, W - rw) if legend else None)          # (G208) clear of the legend
+            if hits is not None:
+                hits["rays"] = drawn_rays
+        if hits is not None:
+            hits["dots"] = np.where((ok & np.isfinite(ps).all(axis=1))[:, None], ps, np.nan)
         for i, j in scene.bones:
             if i < len(ok) and j < len(ok) and ok[i] and ok[j]:
                 cv2.line(img, (int(ps[i, 0]), int(ps[i, 1])), (int(ps[j, 0]), int(ps[j, 1])),
@@ -972,6 +1349,10 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
         o = _draw_world(img, scene, to_screen, pal, _nice_length(0.3 * span), unit, labels, px)
         if hits is not None:
             hits["origin"] = o
+    if legend and (scene.camera_views or scene.names):
+        leg = _draw_legend(img, scene, pal, labels, px, drawn_rays, ray_names(scene, rays), fov_seen)
+        if hits is not None:
+            hits["legend"] = leg
     if hits is not None:
         hits["labels"] = [(x, y, t) for x, y, t, *_ in labels]
     return _draw_labels(img, labels, px)
@@ -1054,6 +1435,23 @@ class View3D(QWidget):
         self.cmb_trail.setCurrentIndex(1)
         self.cmb_trail.setToolTip("Each landmark's path in its own colour: the second before and after the frame on "
                                   "screen (fading), or the whole 3D result")
+        # (G207) the cameras' rays to each 3D point, as motion-capture software draws them; (G210, owner
+        # 2026-10-18) for the landmarks ticked in this menu, and the main window's selected one if followed
+        from PySide6.QtWidgets import QMenu as _QMenu, QToolButton as _QToolButton
+        self.btn_rays = _QToolButton()
+        self.btn_rays.setPopupMode(_QToolButton.InstantPopup)
+        self.btn_rays.setToolTip("Draw a line from each camera that made a 3D point to that point, for the landmarks "
+                                 "ticked here (or click a landmark in the legend, or its dot), and for the one "
+                                 "selected in the main window if you tick Follow. Each line is coloured by how well "
+                                 "that camera agrees with the point: green good, yellow ok, red poor. A red line is "
+                                 "the camera to check (a wrong click or track, or its timing).")
+        self.rays_menu = _QMenu(self)
+        self.btn_rays.setMenu(self.rays_menu)
+        self.ray_actions: list = []
+        self._ray_pick: set = set()         # the landmarks ticked (by name, kept while the window is open)
+        self._ray_follow = False            # also the main window's selected landmark
+        self._ray_menu_names: list = []
+        self._fill_rays_menu()
         self.chk_light = QCheckBox("Light background")
         self.chk_light.setToolTip("A white figure for a paper or a slide; remembered")
         self.chk_light.setChecked(_light_preference())
@@ -1062,6 +1460,7 @@ class View3D(QWidget):
             top.addWidget(c)
         self.cmb_trail.currentIndexChanged.connect(lambda _=0: self.request_render())
         top.addWidget(self.cmb_trail)
+        top.addWidget(self.btn_rays)
         self.chk_light.toggled.connect(self._light_toggled)
         top.addWidget(self.chk_light)
         self.btn_save = QPushButton("Save picture…")
@@ -1085,29 +1484,40 @@ class View3D(QWidget):
                                   "tracks, disagreeing). Hover one for its frame; click it to go there.")
         self.chk_pyr = QCheckBox("Camera pyramids")
         self.chk_pyr.setToolTip("Where each camera stands and which way it looks")
-        self.chk_fov = QCheckBox("Fields of view")
-        self.chk_fov.setToolTip("Each camera's whole field of view, its lens included, to a flat far plane past "
-                                "the wand: four translucent sides in the camera's colour (denser where fields "
-                                "overlap)")
+        from PySide6.QtWidgets import QMenu, QToolButton
+        # (G209, owner 2026-10-18) the fields of view of the cameras picked here (none at first): ten at once
+        # are a tangle; each is cut to the working volume's box
+        self.btn_fov = QToolButton()
+        self.btn_fov.setPopupMode(QToolButton.InstantPopup)
+        self.btn_fov.setToolTip("Pick the cameras whose field of view is drawn: what each one sees, its lens "
+                                "included, inside the box around the 3D points (the wand's space without them): "
+                                "translucent sides in the camera's colour, denser where fields overlap. Pick one "
+                                "or two to check a camera's framing.")
+        self.fov_menu = QMenu(self)
+        self.btn_fov.setMenu(self.fov_menu)
+        self.fov_actions: list = []
+        self._fov_pick: set = set()             # the views picked, kept across new pictures of the calibration
+        self._fov_menu_cams: list = []          # (view, name) the menu lists
         self.chk_cover = QCheckBox("Covered by ≥")
         self.chk_cover.setToolTip("The space at least this many of the chosen cameras see: where 3D is possible "
                                   "(2) and well determined (3 or more)")
         self.cmb_cover = QComboBox()
-        from PySide6.QtWidgets import QMenu, QToolButton
+        self.cmb_cover.setSizeAdjustPolicy(QComboBox.AdjustToContents)    # (G209) "2 cameras", not "2 came"
         self.btn_cams = QToolButton()
         self.btn_cams.setText("Cameras ▾")
         self.btn_cams.setPopupMode(QToolButton.InstantPopup)
-        self.btn_cams.setToolTip("Choose the cameras whose pyramid and field of view are drawn, and that the "
-                                 "covered space is counted from")
+        self.btn_cams.setToolTip("Choose the cameras whose pyramid is drawn, and that the covered space is "
+                                 "counted from")
         self.cams_menu = QMenu(self)
         self.btn_cams.setMenu(self.cams_menu)
         self.cam_actions: list = []
-        for w in (self.chk_calib, self.chk_pyr, self.chk_fov, self.chk_cover, self.cmb_cover, self.btn_cams):
+        self._fov_label()
+        for w in (self.chk_calib, self.chk_pyr, self.btn_fov, self.chk_cover, self.cmb_cover, self.btn_cams):
             cr.addWidget(w)
         cr.addStretch(1)
         self.calib_row.setVisible(False)
         lay.addWidget(self.calib_row)
-        for c in (self.chk_calib, self.chk_pyr, self.chk_fov, self.chk_cover):
+        for c in (self.chk_calib, self.chk_pyr, self.chk_cover):
             c.toggled.connect(self._calib_ticked)
         self.cmb_cover.currentIndexChanged.connect(self._cover_n_changed)
         self.canvas = QLabel()
@@ -1127,6 +1537,7 @@ class View3D(QWidget):
         self._timer.setInterval(15)
         self._timer.timeout.connect(self._render)
         self.last_image: np.ndarray | None = None
+        self.last_render_s = 0.0
         self._last_dpr = 1.0            # the pixel density last_image was drawn at (G187)
         self._hits: dict = {}
         self._cover_threads: list = []          # every worker until it has finished (see _start_coverage)
@@ -1151,6 +1562,79 @@ class View3D(QWidget):
         i = self.cmb_trail.currentIndex()
         return None if i == 0 else ("all" if i == 2 else max(1, int(self.scene.trail_frames)))
 
+    def _rays(self) -> set:
+        """(G210) The landmarks whose rays are drawn: the ticked ones, and the selected one when followed."""
+        out = {nm for nm in self._ray_pick if nm in self.scene.names}
+        if self._ray_follow and self.scene.selected:
+            out.add(self.scene.selected)
+        return out
+
+    def _fill_rays_menu(self) -> None:
+        """(G210) The Rays menu for the scene's landmarks: All / None, Follow the main window's selection, a tick
+        per landmark (kept by name)."""
+        names = list(self.scene.names) if self.scene is not None else []
+        self._ray_menu_names = names
+        self.rays_menu.clear()
+        self.ray_actions = []
+        for label, on in (("All landmarks", True), ("None", False)):
+            a = self.rays_menu.addAction(label)
+            a.triggered.connect(lambda _=False, on=on: self._set_rays_all(on))
+        self.act_ray_follow = self.rays_menu.addAction("Follow the main window's selection")
+        self.act_ray_follow.setCheckable(True)
+        self.act_ray_follow.setChecked(self._ray_follow)
+        self.act_ray_follow.toggled.connect(self._ray_follow_toggled)
+        self.rays_menu.addSeparator()
+        for nm in names:
+            a = self.rays_menu.addAction(nm)
+            a.setCheckable(True)
+            a.setChecked(nm in self._ray_pick)
+            a.setData(nm)
+            a.toggled.connect(lambda on, nm=nm: self._ray_ticked(nm, on))
+            self.ray_actions.append(a)
+        self._rays_label()
+
+    def _rays_label(self) -> None:
+        n = len({nm for nm in self._ray_pick if nm in self._ray_menu_names})
+        what = " + ".join(([str(n)] if n else []) + (["selected"] if self._ray_follow else []))
+        self.btn_rays.setText(f"Rays ({what}) ▾" if what else "Rays ▾")
+
+    def _rays_changed(self) -> None:
+        self._rays_label()
+        self._show_info()
+        self.request_render()
+
+    def _ray_ticked(self, name: str, on: bool) -> None:
+        (self._ray_pick.add if on else self._ray_pick.discard)(name)
+        self._rays_changed()
+
+    def _set_rays_all(self, on: bool) -> None:
+        self._ray_pick = set(self._ray_menu_names) if on else set()
+        for a in self.ray_actions:
+            a.blockSignals(True)
+            a.setChecked(on)
+            a.blockSignals(False)
+        self._rays_changed()
+
+    def _ray_follow_toggled(self, on: bool) -> None:
+        self._ray_follow = bool(on)
+        self._rays_changed()
+
+    def toggle_rays(self, name: str) -> None:
+        """(G210) A click on a landmark's legend row or dot: its rays on / off (its tick in the menu)."""
+        for a in self.ray_actions:
+            if a.data() == name:
+                a.setChecked(not a.isChecked())         # -> _ray_ticked
+                return
+
+    def set_selected(self, name: str | None) -> None:
+        """(G207) The landmark selected in the main window: its rays when Follow is ticked."""
+        if name == self.scene.selected:
+            return
+        self.scene.selected = name
+        if self._ray_follow:
+            self._show_info()
+            self.request_render()
+
     # ---- data
     def set_scene(self, scene: Scene3D, info: str = "") -> None:
         old = self.scene.calib if self.scene is not None else None
@@ -1158,6 +1642,10 @@ class View3D(QWidget):
         scene.cover_n = self.scene.cover_n if self.scene is not None else scene.cover_n
         self.scene = scene
         self._base_info = info
+        if list(scene.names) != self._ray_menu_names:        # (G210) the landmarks changed: the menu follows
+            self._fill_rays_menu()
+        if scene.calib is old and self._fov_cams() != self._fov_menu_cams:     # (G209) the cameras changed
+            self._fill_fov_menu()
         self.chk_world.setEnabled(bool(scene.world))          # (G201) greyed until Set World Axes
         if scene.calib is not old:
             self._picture_changed()
@@ -1177,15 +1665,73 @@ class View3D(QWidget):
         self.calib_row.setVisible(True)
         self.scene.calib = picture
         self._picture_changed()
-        boxes = {"points": self.chk_calib, "pyramids": self.chk_pyr, "fov": self.chk_fov, "cover": self.chk_cover}
+        boxes = {"points": self.chk_calib, "pyramids": self.chk_pyr, "cover": self.chk_cover}
         for k in ticks:
+            if k == "fov":                    # asked for by name (the wand wizard's Show in 3D): every camera
+                self._set_fov_all(True, quiet=True)
+                continue
             boxes[k].blockSignals(True)
             boxes[k].setChecked(True)
             boxes[k].blockSignals(False)
         self._calib_ticked()                  # counts the covered space when that tick is on
 
     def _calib_on(self) -> bool:
-        return any(c.isChecked() for c in (self.chk_calib, self.chk_pyr, self.chk_fov, self.chk_cover))
+        return self._fov_on() or any(c.isChecked() for c in (self.chk_calib, self.chk_pyr, self.chk_cover))
+
+    # ---- (G209) the Fields of view menu
+    def _fov_views(self) -> set:
+        """The picked cameras the menu lists (the pick itself is kept even while a camera is not listed)."""
+        return {v for v in self._fov_pick if any(v == c for c, _ in self._fov_menu_cams)}
+
+    def _fov_on(self) -> bool:
+        return bool(self._fov_views())
+
+    def _fov_label(self) -> None:
+        n = len(self._fov_views())
+        self.btn_fov.setText(f"Fields of view ({n}) ▾" if n else "Fields of view ▾")
+
+    def _fov_cams(self) -> list:
+        """(view, name) of the cameras a field of view can be drawn for: the picture's, else the calibrated
+        cameras of the scene (review: without a picture the menu was empty, so nothing could ask for one)."""
+        pic = self.scene.calib
+        if pic is not None:
+            return [(int(cd.view), cd.name) for cd in pic.cams]
+        return [(int(v), self.scene.camera_names[i] if i < len(self.scene.camera_names) else "")
+                for i, v in enumerate(self.scene.camera_views)]
+
+    def _fill_fov_menu(self) -> None:
+        cams = self._fov_cams()
+        self._fov_menu_cams = cams
+        self.fov_menu.clear()
+        self.fov_actions = []
+        if cams:
+            for label, on in (("All cameras", True), ("No camera", False)):
+                a = self.fov_menu.addAction(label)
+                a.triggered.connect(lambda _=False, on=on: self._set_fov_all(on))
+            self.fov_menu.addSeparator()
+            for v, nm in cams:
+                a = self.fov_menu.addAction(f"{cam_tag(v)}  {nm}")
+                a.setCheckable(True)
+                a.setChecked(v in self._fov_pick)
+                a.setData(v)
+                a.toggled.connect(lambda on, v=v: self._fov_ticked(v, on))
+                self.fov_actions.append(a)
+        self._fov_label()
+
+    def _set_fov_all(self, on: bool, quiet: bool = False) -> None:
+        for a in self.fov_actions:
+            a.blockSignals(True)
+            a.setChecked(on)
+            a.blockSignals(False)
+        self._fov_pick = {v for v, _ in self._fov_menu_cams} if on else set()
+        self._fov_label()
+        if not quiet:
+            self._calib_ticked()
+
+    def _fov_ticked(self, view: int, on: bool) -> None:
+        (self._fov_pick.add if on else self._fov_pick.discard)(int(view))
+        self._fov_label()
+        self._calib_ticked()                  # asks for the picture when there is none yet
 
     def _picture_changed(self) -> None:
         """A new picture: its cameras in the Cameras menu (all chosen), the covered space to count again."""
@@ -1197,6 +1743,7 @@ class View3D(QWidget):
         self._hits = {}                 # the last render's ends belong to the old picture
         if pic is None:
             self.scene.calib_views = None
+            self._fill_fov_menu()
             return
         for label, on in (("All cameras", True), ("No camera", False)):
             a = self.cams_menu.addAction(label)
@@ -1211,6 +1758,7 @@ class View3D(QWidget):
             self.cam_actions.append(a)
         self.scene.calib_views = None
         self._fill_cover_combo()
+        self._fill_fov_menu()
 
     def _set_all_cams(self, on: bool) -> None:
         for a in self.cam_actions:
@@ -1305,28 +1853,58 @@ class View3D(QWidget):
     def _show_info(self) -> None:
         pic = self.scene.calib
         txt = self._base_info
+        tips = []
+        miss = self.scene.missing
+        if miss:                            # (G206) which landmark has no 3D here, and why
+            # (G208) the line stays short: the legend gives each one's state, the tooltip the whole reason
+            txt += (f" · no 3D here: {miss[0][0]}" if len(miss) == 1 else
+                    f" · {len(miss)} landmarks without 3D here")
+            tips.append("No 3D position at this instant:\n" + "\n".join(f"  {nm}: {why}" for nm, why, *_ in miss))
+        if self._ray_follow:                # (G207, G210) say why the followed landmark has no ray
+            sel = self.scene.selected
+            if sel is None:
+                txt += " · rays: no landmark selected in the main window"
+            elif not any(nm == sel and j < len(self.scene.rays) and self.scene.rays[j]
+                         for j, nm in enumerate(self.scene.names)):
+                txt += f" · rays: {sel} has no 3D point here"
         if pic is not None and self._calib_on():
             lines = list(pic.lines)
             if not self.chk_cover.isChecked():
                 lines = [ln for ln in lines if not ln.startswith("The wand cloud lies")]
             if lines:
                 txt = (txt + "  ·  " if txt else "") + "  ".join(lines)
-            self.info.setToolTip("\n".join(pic.lines))
+            tips.append("\n".join(pic.lines))
+        self.info.setToolTip("\n\n".join(tips))
         self.info.setText(txt)
 
-    def end_screen_points(self) -> np.ndarray | None:
-        """The wand ends' (P, 2) positions on the canvas in the last picture, in screen (logical) pixels - the
-        picture itself is drawn at the display's pixel density (G187) - NaN where not drawn."""
-        es = self._hits.get("ends")
+    def end_screen_points(self, what: str = "ends") -> np.ndarray | None:
+        """The wand ends' (P, 2) positions on the canvas in the last picture (`what` "dots": the landmarks'
+        dots, G207), in screen (logical) pixels - the picture itself is drawn at the display's pixel density
+        (G187) - NaN where not drawn."""
+        es = self._hits.get(what)
         if es is None or self.last_image is None:
             return None
         dpr = self._last_dpr
         h, w = self.last_image.shape[:2]
         ox, oy = (self.canvas.width() - w / dpr) / 2.0, (self.canvas.height() - h / dpr) / 2.0
-        return es / dpr + np.array([ox, oy])
+        return np.asarray(es, np.float64) / dpr + np.array([ox, oy])
 
-    def _pick(self, x: float, y: float, radius: float = 6.0) -> int | None:
-        pts = self.end_screen_points()
+    def _legend_row_at(self, x: float, y: float) -> str | None:
+        """(G210) The landmark whose legend row is under the canvas point (x, y), if any."""
+        leg = self._hits.get("legend") or {}
+        if not leg.get("rows") or self.last_image is None:
+            return None
+        dpr = self._last_dpr
+        h, w = self.last_image.shape[:2]
+        ix = (x - (self.canvas.width() - w / dpr) / 2.0) * dpr
+        iy = (y - (self.canvas.height() - h / dpr) / 2.0) * dpr
+        for nm, x0, y0, x1, y1 in leg["rows"]:
+            if x0 <= ix <= x1 and y0 <= iy <= y1:
+                return nm
+        return None
+
+    def _pick(self, x: float, y: float, radius: float = 6.0, what: str = "ends") -> int | None:
+        pts = self.end_screen_points(what)
         if pts is None or not len(pts):
             return None
         d = np.hypot(pts[:, 0] - x, pts[:, 1] - y)
@@ -1360,6 +1938,13 @@ class View3D(QWidget):
                     pic = self.scene.calib
                     if k is not None and pic is not None and k < len(pic.end_frame):
                         self.end_clicked.emit(int(pic.end_frame[k]))
+                    else:                   # (G210) a landmark's legend row or dot: its rays on / off
+                        nm = self._legend_row_at(ev.position().x(), ev.position().y())
+                        if nm is None:
+                            j = self._pick(ev.position().x(), ev.position().y(), radius=8.0, what="dots")
+                            nm = self.scene.names[j] if j is not None and j < len(self.scene.names) else None
+                        if nm is not None:
+                            self.toggle_rays(nm)
         return super().eventFilter(obj, ev)
 
 
@@ -1373,14 +1958,17 @@ class View3D(QWidget):
         w = max(64, self.canvas.width())
         h = max(64, self.canvas.height())
         hits: dict = {}
+        self.scene.fov_views = self._fov_views()
+        t0 = time.perf_counter()
         img = render_scene(self.scene, (int(round(w * dpr)), int(round(h * dpr))), self.azimuth, self.elevation,
                            self.zoom, self.chk_mesh.isChecked(), self.chk_points.isChecked(),
                            self.chk_cams.isChecked(), pan=tuple(self.pan),
-                           show_calib=self.chk_calib.isChecked(), show_fov=self.chk_fov.isChecked(),
+                           show_calib=self.chk_calib.isChecked(), show_fov=self._fov_on(),
                            show_cover=self.chk_cover.isChecked(), hits=hits,
                            show_pyramids=self.chk_pyr.isChecked(), px=dpr,
                            show_grid=self.chk_grid.isChecked(), show_world=self.chk_world.isChecked(),
-                           trail=self._trail(), palette=self._palette())
+                           trail=self._trail(), palette=self._palette(), rays=self._rays(), legend=True)
+        self.last_render_s = time.perf_counter() - t0       # (I309) the live updates' time budget reads it
         self._hits = hits
         self._last_dpr = dpr
         self.last_image = img
@@ -1395,13 +1983,15 @@ class View3D(QWidget):
             img = self.last_image
         else:
             w, h = max(64, self.canvas.width()), max(64, self.canvas.height())
+            self.scene.fov_views = self._fov_views()
             img = render_scene(self.scene, (int(round(w * scale)), int(round(h * scale))), self.azimuth,
                                self.elevation, self.zoom, self.chk_mesh.isChecked(), self.chk_points.isChecked(),
                                self.chk_cams.isChecked(), pan=tuple(self.pan),
-                               show_calib=self.chk_calib.isChecked(), show_fov=self.chk_fov.isChecked(),
+                               show_calib=self.chk_calib.isChecked(), show_fov=self._fov_on(),
                                show_cover=self.chk_cover.isChecked(), show_pyramids=self.chk_pyr.isChecked(),
                                px=float(scale), show_grid=self.chk_grid.isChecked(),
-                               show_world=self.chk_world.isChecked(), trail=self._trail(), palette=self._palette())
+                               show_world=self.chk_world.isChecked(), trail=self._trail(), palette=self._palette(),
+                               rays=self._rays(), legend=True)
         if not cv2.imwrite(path, img):
             raise OSError(f"the picture could not be written to {path}")
 
