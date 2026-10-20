@@ -2295,9 +2295,11 @@ Four steps, in this order:
    where each camera stands and how it sees: the `.kcal.json` written by the
    wand wizard, or a file from the calibration software you already use —
    DLTdv, easyWand or Argus produce a small `…dltCoefs.csv` (one column per
-   camera). If you calibrated in DLTdv8 and saved the project in MATLAB's
-   ordinary (v7) format, choose the `…dvProject.mat` instead — it also carries
-   the lens correction for GoPro-style cameras, which the plain CSV does not. In
+   camera). If you calibrated in DLTdv8, choose its `…dvProject.mat` instead —
+   it also carries the lens correction for GoPro-style cameras, which the plain
+   CSV does not. (To bring in the whole DLTdv8 project — videos, timing and
+   every click too — use **File → Import → DLTdv Project…**, described in
+   chapter 12, instead of these four steps.) In
    the dialog, tell the program which column belongs to which camera and how the
    calibration counted pixels. A `dltCoefs.csv` and an easyWand file do not say,
    so the choice starts empty and **OK stays grey until you pick one**:
@@ -3017,6 +3019,49 @@ on a clap or flash you synced on, the clap lands on the same frame of the video
 in every tile.
 
 ---
+
+### Bringing in a whole DLTdv8 project
+
+If you digitised in **DLTdv8**, **File → Import → DLTdv Project…** turns the
+project file DLTdv8 saves (`…_dvProject.mat`) into a new Kinetrace project in
+one step: its videos as cameras (in DLTdv's order, the first is the clock), each
+camera's frame offset and frame rate, the calibration with each camera's lens
+correction, and every point you clicked, under DLTdv's point names (older DLTdv8
+versions keep no names: the points are called pt1, pt2, …). The `.mat` is only
+read, never changed, and nothing is saved until you choose **File → Save Project
+As…**.
+
+* **Where the videos are.** The project remembers where the videos were on the
+  computer that made it. Kinetrace looks there, beside the `.mat`, and in the
+  folder above it — in each also inside a folder named like the camera's own
+  (a GoPro rig's `cam1/GX010001.MP4`, `cam2/GX010001.MP4`), and it never gives two
+  cameras the same file; if a video is still missing it asks once for the folder
+  that holds it. Without the first camera's video nothing is imported (it is the
+  clock). Another missing camera, or a video whose picture size is not the one
+  the project was clicked on, is named and you are asked whether to go on
+  without it.
+* **Do the clicks sit on the right pictures?** A DLTdv project numbers frames
+  the way the MATLAB that opened it read the video, and newer MATLAB versions
+  number some videos (GoPro files among them) differently — so the clicks of a
+  camera can sit whole frames away from the picture they were made on. Kinetrace
+  checks every camera: it looks at what is under the clicks at DLTdv's frame
+  numbers and at nearby frames, and gives a verdict — **fits** (good), **another
+  frame fits clearly better**, **cannot tell** (the clicked points barely move) or
+  **unclear**. Only "clearly better" makes an offer: a window shows one click at
+  DLTdv's frame and at the better one, side by side, with the click marked —
+  that is your hand check: the cross should sit on the animal. Tick the offer
+  and that camera's clicks **and** its offset move together, so the 3D is the
+  same either way; only the pictures under the clicks change. **Cancel** imports
+  nothing. Cancel on the "Checking that the clicks sit on the right pictures"
+  card skips the check and keeps DLTdv's numbers.
+* **The report** lists every camera (where its video was found, offset, frame
+  rate, lens, clicks, the frame check), the points, and the **3D check**:
+  Kinetrace's 3D from your clicks compared with the 3D DLTdv stored, with a
+  verdict (good means the same 3D, as it should be) and one frame and point to
+  check by hand in both programs.
+* After that it is an ordinary project: scrub, correct a click, track on from
+  your clicks, export. **File → Import → Calibration…** still reads only the
+  calibration of a `…_dvProject.mat`, for a project you built yourself.
 
 ### Bringing tracks in from another program
 
@@ -4036,6 +4081,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 |---|---|
 | **Ctrl+O** / **Ctrl+Shift+O** | open a video / a project |
 | **File → Open Folder of Videos…** | several cameras in one folder: tick which to import, put them in camera order (camera 1 = the reference) |
+| **File → Import → DLTdv Project…** | a DLTdv8 `…_dvProject.mat` as a new project: videos, offsets, calibration and lenses, every click, with a frame check and a 3D check ([section 12](#bringing-in-a-whole-dltdv8-project)) |
 | **File → Check Video Frames on This Computer…** | does this computer show the same picture at each frame number as the one that made the project? (it also checks by itself on opening) |
 | **Ctrl+S** / **Ctrl+Shift+S** | save the project / save it under a new name (Ctrl+S during a run: saved as soon as the run stops) |
 | **Ctrl+Q** | quit (File → Quit); asks first when there are unsaved changes |

@@ -40,7 +40,7 @@ from kinetrace.view3d import CalibrationDialog, Scene3D, View3D
 from kinetrace.calib import landmark_names, reference_span
 from kinetrace.canvas import (ZOOM_STEP as CANVAS_ZOOM_STEP,
                                   TRAIL_FRAMES, TRAIL_MAX, DISPLAY_FILTERS, REGION_SHAPES)
-from kinetrace.project import MAX_VIEWS, REFERENCE_VIEW, Project
+from kinetrace.project import MAX_VIEWS, REFERENCE_VIEW, Project, half_up
 from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_token,
                                      model_is_cached as seg_is_cached, preferred_backend,
                                      save_token, working_size)
@@ -226,7 +226,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>View → Other cameras</td><td><b>Sync all views</b> (the default: every camera follows the playhead; a single step shows every camera's new picture at once) · <b>Active view only</b> (Ctrl+Shift+2, or untick <i>Sync all</i> in the CAMERAS panel: only the working camera reads its video; the others stay on the picture they last showed, veiled, until you tick Sync all again or click one to work in it — its guides still come from the others' tracks) ·<b>Only the working camera</b> (Ctrl+2: the others are hidden and stop decoding)</td></tr>
 <tr><td class=k>eye / title bar</td><td>the <b>eye</b> on a camera's line in CAMERAS shows / hides its view (hidden = not decoded; the others get the room); <b>drag a view's title bar</b> onto another view to move it there (only the screen changes, the cameras keep their numbers); right-click a title bar: hide it, show every camera, views back in camera order. <b>▶</b> on a camera's line opens its controls (Align here, offset, frame rate). With Track ▾ → Every camera, a <b>hidden camera is tracked too</b>, without being drawn: Track says "(n hidden)" and a warning names them</td></tr>
 <tr><td class=k>Ctrl+E</td><td><b>ALL CAMERAS — DLTdv8 xypts</b> writes one file for 3D reconstruction: row k = frame k of the reference camera (from 0), every camera sampled through its offset, landmarks matched across cameras <i>by name</i>, NaN where a camera has no data; top-left origin, first pixel = 1</td></tr>
-<tr><td class=k>3D menu</td><td><b>Cameras Overview</b> · <b>Sync ▸</b> <b>Sync Cameras (Sound / Motion)</b> (whole-frame offsets from the sound tracks or the pictures, with a noise filter), <b>Estimate Sub-frame Offsets</b> (fractional sync from the tracks) · <b>Calibrate ▸</b> <b>Calibrate a Lens (checkerboard)</b> (how a wide-angle lens bends the picture; opens with or without a video — with nothing open, save the lens file and attach it later), <b>Load a Lens Profile for Cameras</b>, <b>Calibrate Cameras with a Wand</b> · <b>Reconstruct 3D Landmarks</b> · <b>Re-track Disagreeing Stretches</b> (a camera's landmark put back on the other cameras' rays and re-tracked, before / after verdict) · <b>Carve Volume</b> · <b>Show 3D View</b>. A calibration comes in through File → Import → Calibration (a Kinetrace .kcal.json, DLT coefficients from DLTdv / easyWand / Argus, K + R/t, or a DLTdv8 project with its lens undistortion); calibrations, lens profiles and meshes go out through File → Export. Entries that need more (a video, a second camera, a calibration) open anyway and say what is missing</td></tr>
+<tr><td class=k>3D menu</td><td><b>Cameras Overview</b> · <b>Sync ▸</b> <b>Sync Cameras (Sound / Motion)</b> (whole-frame offsets from the sound tracks or the pictures, with a noise filter), <b>Estimate Sub-frame Offsets</b> (fractional sync from the tracks) · <b>Calibrate ▸</b> <b>Calibrate a Lens (checkerboard)</b> (how a wide-angle lens bends the picture; opens with or without a video — with nothing open, save the lens file and attach it later), <b>Load a Lens Profile for Cameras</b>, <b>Calibrate Cameras with a Wand</b> · <b>Reconstruct 3D Landmarks</b> · <b>Re-track Disagreeing Stretches</b> (a camera's landmark put back on the other cameras' rays and re-tracked, before / after verdict) · <b>Carve Volume</b> · <b>Show 3D View</b>. A calibration comes in through File → Import → Calibration (a Kinetrace .kcal.json, DLT coefficients from DLTdv / easyWand / Argus, K + R/t, or a DLTdv8 project with its lens undistortion), a whole DLTdv8 project (videos, timing, calibration, clicks) through File → Import → DLTdv Project; calibrations, lens profiles and meshes go out through File → Export. Entries that need more (a video, a second camera, a calibration) open anyway and say what is missing</td></tr>
 <tr><td class=k>Ctrl+3</td><td>reconstruct all the 3D landmarks (matched by name across cameras) with the verdict and open the 3D view; the result also keeps itself up to date</td></tr>
 <tr><td class=k>Ctrl+4</td><td>carve the volume hull at this frame from every camera's silhouette</td></tr>
 <tr><td class=k>Ctrl+5</td><td>show / hide the 3D view (drag to orbit, wheel to zoom, middle-drag to pan, double-click to reset; with a calibration: the wand calibration layers - wand points, camera pyramids, fields of view, covered space - and a click on a wand end goes to its frame)</td></tr>
@@ -828,6 +828,7 @@ class MainWindow(QMainWindow):
         self._recovery_sig = None
         self._camera_entries: list = []
         self._project_dir: Path | None = None
+        self._save_as_hint: Path | None = None   # (G211) the name Save As proposes for an unsaved import
         self._after_open = None          # (video path, job): runs once that video has opened
         self._tour = None                # (G183) the interface tour while it is up (tour.TourOverlay)
         self._demo_maker = None          # (G183) the thread making the tour's demo video
@@ -1617,6 +1618,12 @@ class MainWindow(QMainWindow):
         self.act_import_offsets = QAction("Camera &Offsets…", self, triggered=self._import_offsets)
         self.act_import_offsets.setToolTip("Each camera's frame offset and frame rate from a CSV "
                                            "(camera, name, offset, rate), matched by camera name")
+        # (G211) a whole DLTdv8 project becomes a new project: videos, timing, calibration and lenses, clicks
+        self.act_import_dltdv = QAction("&DLTdv Project…", self, triggered=lambda: self._import_dltdv_project())
+        self.act_import_dltdv.setToolTip("A DLTdv8 project (…_dvProject.mat) as a new Kinetrace project: its videos, "
+                                         "offsets and frame rates, calibration and lens profiles, and every "
+                                         "clicked point; checks that the clicks sit on the right pictures and "
+                                         "that the 3D matches DLTdv's")
         self.act_import_masks = QAction("&Silhouettes (mask images)…", self, triggered=self._import_masks)
         self.act_import_masks.setToolTip("A folder of black / white mask images named with their frame number "
                                          "(mask_000012.png), from another segmentation tool")
@@ -1633,6 +1640,8 @@ class MainWindow(QMainWindow):
         self.act_import_tracks.setText("&Tracks…")
         # act_calib (File → Import → Calibration…) is created with the 3D actions and inserted there
         self._m_import = m_import
+        m_import.addAction(self.act_import_dltdv)         # a whole project first, then what goes into one
+        m_import.addSeparator()
         for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks):
             m_import.addAction(a)
         # (G188) every export in one submenu, File → Export, mirroring Import; the 3D and Body exports are
@@ -2256,7 +2265,7 @@ class MainWindow(QMainWindow):
         self.m_recent.setEnabled(not tracking)
         # recovering replaces the project on screen: never in the middle of a run
         for a in (self.act_import_tracks, self.act_import_xyz, self.act_import_offsets, self.act_import_masks,
-                  self.act_recover):
+                  self.act_import_dltdv, self.act_recover):
             a.setEnabled(not tracking)
         self.act_undo.setEnabled(has_video and not tracking and self._undo_snap is not None)
         self.act_mark_event.setEnabled(has_video and not tracking)
@@ -3479,9 +3488,13 @@ class MainWindow(QMainWindow):
             if settled is not None:
                 self._import_folder(paths, save_to, discard=settled == "discard")
 
-    def _import_folder(self, paths: list[str], save_to: str | None = None, discard: bool = False) -> None:
+    def _import_folder(self, paths: list[str], save_to: str | None = None, discard: bool = False,
+                       infos: dict | None = None, toast: bool = True, offer_recovery: bool = True) -> None:
         """Open `paths[0]` (the base camera) as a new project, add the others, name
-        every camera after its file, and save to `save_to` when given."""
+        every camera after its file, and save to `save_to` when given. `infos`: the
+        videos already probed ({path: VideoInfo}, File > Import > DLTdv Project);
+        `toast` False: the caller says what comes next; `offer_recovery`: see
+        `_attach_video`."""
         if not paths or self.state == TRACKING:
             return
         base = paths[0]
@@ -3493,7 +3506,8 @@ class MainWindow(QMainWindow):
         # with the loading card counting them -- then the project is built
         tok = self._busy_push(f"Opening {n} camera{'s' if n != 1 else ''} from {folder}", "", n,
                               self._open_hint(base, "cameras"))
-        infos = self._probe_many(paths, f"Opening {n} camera{'s' if n != 1 else ''} from {folder}")
+        if infos is None:
+            infos = self._probe_many(paths, f"Opening {n} camera{'s' if n != 1 else ''} from {folder}")
         binfo = infos.get(str(base))
         if isinstance(binfo, str):
             self._busy_pop(tok)
@@ -3505,7 +3519,7 @@ class MainWindow(QMainWindow):
         self._busy_set_cancel(tok, None)
         self._busy_step("Building the project: the timeline, every camera's view and the first pictures…")
         try:
-            self._attach_video(binfo, discard=discard)
+            self._attach_video(binfo, discard=discard, offer_recovery=offer_recovery)
             p = self.project
             names = camera_names(paths)                 # unique, even for cam1/GX01.MP4 ... cam8/GX01.MP4 (I223)
             p.names[0] = names[0] or p.names[0]
@@ -3531,6 +3545,8 @@ class MainWindow(QMainWindow):
             raise
         self._hand_over_first_picture(tok)
         missed = len(rest) - len(added)
+        if not toast:
+            return
         self.toast.show_message(
             f"Opened {1 + len(added)} camera(s) from {folder}; the base (reference) camera is "
             f"<b>{p.name(0)}</b>." + (f" {missed} could not be added." if missed else "") + saved
@@ -3612,10 +3628,13 @@ class MainWindow(QMainWindow):
         else:
             self._busy_pop(tok)
 
-    def _attach_video(self, info: VideoInfo, then=None, discard: bool = False):
+    def _attach_video(self, info: VideoInfo, then=None, discard: bool = False, offer_recovery: bool = True):
         """Open `info` as a brand-new single-camera project (extra cameras are
         added afterwards with `_add_video_dialog`). `discard`: drop the replaced
-        project's unsaved work instead of keeping it in recovery (G143)."""
+        project's unsaved work instead of keeping it in recovery (G143).
+        `offer_recovery` False: a project being BUILT (File > Import > DLTdv
+        Project) is not offered an earlier session's unsaved work on this video
+        (it would be mixed into the import); that work stays in File > Recover."""
         # Track ▾ is usable with no video open (G34): what was chosen there carries
         # into this first video instead of snapping back to the defaults
         chosen = None if self.project is not None else {
@@ -3623,6 +3642,7 @@ class MainWindow(QMainWindow):
             "point_backend": self._point_backend}
         self._leave_project(discard)   # unsaved work -> recovery (or dropped, G143), where the user was -> view sidecar
         self._teardown_video()
+        self._save_as_hint = None                # a new project: an earlier import's name is not its name
         self._gopro_said = set()                 # (G145) a new project: its GoPro notes are new
         self._gopro_soon()
         self._epi_probe = None
@@ -3648,7 +3668,7 @@ class MainWindow(QMainWindow):
             self._keep_single_file = False
             self._project_id, self._saved_at, self._recovery_sig = projectfile.new_id(), None, None
             self._camera_entries, self._project_dir, self._video_dirs = [], None, []
-            earlier = recovery.for_video(info.path)
+            earlier = recovery.for_video(info.path) if offer_recovery else None
             if earlier is not None:
                 self._offer_video_recovery(earlier)
         else:
@@ -10757,7 +10777,7 @@ class MainWindow(QMainWindow):
     def _save_project_as(self) -> bool:
         if self.session is None:
             return False
-        base = self.project_path or (Path(self.info.path) if self.info else None)
+        base = self.project_path or self._save_as_hint or (Path(self.info.path) if self.info else None)
         start = str(base.with_suffix(PROJECT_SUFFIX)) if base else ""
         path, _ = QFileDialog.getSaveFileName(self, "Save project (a folder of this name is made)", start,
                                               f"Kinetrace project folder (*{PROJECT_SUFFIX})")
@@ -10882,6 +10902,174 @@ class MainWindow(QMainWindow):
                 self._open_video(vpath)
             return
         self._apply_imported(imp, path)
+
+    def _import_dltdv_project(self, path: str | None = None) -> None:
+        """File → Import → DLTdv Project (I310, G211): a DLTdv8 `…_dvProject.mat` becomes a NEW, unsaved
+        project. In order: the file is read (off the GUI thread); its videos are found by name (where it says,
+        beside it, its parent folder, else ONE folder the user picks); each is probed and its picture size
+        checked against DLTdv's; every camera's clicks are checked against its pictures (`clickshift`; Cancel
+        skips it); a clearly better whole-frame shift is OFFERED with the pictures (`ClickShiftDialog`); only
+        then is the project built: the cameras, DLTdv's timing (plus any shift taken: clicks and offset move
+        together), the calibration with its lenses, the clicks as hand clicks; finally Kinetrace's 3D is
+        compared with DLTdv's own and everything is reported. Nothing is written anywhere; nothing changes
+        before the build, so any refusal or Cancel leaves the project on screen as it was."""
+        from kinetrace import clickshift, dltdvimport, dltdvproject
+        from kinetrace.calib import reconstruct
+        if self.state == TRACKING:
+            return
+        title = "Import a DLTdv project"
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Import a DLTdv8 project", self._start_folder(),
+                                                  "DLTdv8 project (*dvProject.mat *.mat);;All files (*)")
+            if not path:
+                return
+        name = Path(path).name
+        try:
+            dv = self._in_background("Reading the DLTdv project", lambda: dltdvproject.read(path), detail=name)
+        except Exception as e:  # noqa: BLE001 - (G142) a failed READ in words, the traceback logged
+            self._read_failed("Cannot import this DLTdv project", e, "The DLTdv project", dltdvproject.DLTdvImportError)
+            return
+        # (the stored paths may be on a network share that takes seconds to answer: off the GUI thread)
+        found = self._in_background("Looking for the project's videos", lambda: dltdvproject.find_videos(dv))
+        if any(f is None for f in found):
+            lost = [dv.video_files[c] for c, f in enumerate(found) if f is None]
+            folder = QFileDialog.getExistingDirectory(
+                self, f"Where are the videos? ({', '.join(lost)})", str(Path(path).parent))
+            if folder:
+                found = self._in_background("Looking for the project's videos",
+                                            lambda: dltdvproject.find_videos(dv, folder))
+        if found[0] is None:
+            QMessageBox.warning(self, title, f"Camera 1's video, {dv.video_files[0]}, was not found (not where the "
+                                "project says, beside it, in its parent folder or in the folder chosen). Camera 1 "
+                                "is the project's clock, so nothing was imported: put the videos beside the "
+                                ".mat and import again.")
+            return
+        present = [c for c in range(dv.n_videos) if found[c] is not None]
+        infos = self._probe_many([found[c] for c in present], f"Reading {name}'s videos")
+        left_out: dict[int, str] = {c: "its video was not found" for c in range(dv.n_videos) if found[c] is None}
+        for c in present:
+            info = infos.get(str(found[c]))
+            if not isinstance(info, VideoInfo):
+                left_out[c] = f"its video could not be read ({info})"
+            elif tuple(dv.sizes[c]) != (0, 0) and (info.width, info.height) != tuple(int(x) for x in dv.sizes[c]):
+                left_out[c] = (f"the project's pictures are {dv.sizes[c][0]} x {dv.sizes[c][1]} but "
+                               f"{Path(found[c]).name} is {info.width} x {info.height}: not the video it was "
+                               "clicked on")
+        if any(isinstance(infos.get(str(found[c])), str) and infos[str(found[c])] == "cancelled" for c in present):
+            self.statusBar().showMessage("Import cancelled — nothing was changed", 5000)
+            return
+        if 0 in left_out:
+            QMessageBox.warning(self, title, f"Camera 1 ({dv.video_files[0]}) cannot be used: {left_out[0]}. "
+                                "Camera 1 is the project's clock, so nothing was imported.")
+            return
+        if left_out:
+            text = "\n".join(f"• video {c + 1} ({dv.video_files[c]}): {r}" for c, r in sorted(left_out.items()))
+            if QMessageBox.question(self, title, f"These cameras cannot be imported:\n\n{text}\n\nImport the "
+                                    "others without them (their clicks and calibration are left out)?",
+                                    QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+                return
+        kept = [c for c in range(dv.n_videos) if c not in left_out]
+        if len(kept) > MAX_VIEWS:
+            QMessageBox.warning(self, title, f"{name} has {len(kept)} videos; a Kinetrace project holds at most "
+                                f"{MAX_VIEWS} cameras, so nothing was imported.")
+            return
+        settled = self._settle_unsaved(f"importing {name}")                # (G143)
+        if settled is None:
+            return
+
+        def check(report, cancelled):
+            out = []
+            for i, c in enumerate(kept):
+                info = infos[str(found[c])]
+                if cancelled():
+                    return None                       # Cancel = the whole check skipped, nothing half-offered
+                if dv.n_clicks(c) == 0:
+                    out.append(None)
+                    continue
+                try:
+                    out.append(clickshift.check_camera(
+                        found[c], *dv.check_inputs(c), info.fps, n_frames=info.n_frames, should_cancel=cancelled,
+                        progress=lambda a, b, i=i, c=c: report(
+                            f"Camera {i + 1} of {len(kept)} ({dv.video_files[c]}): frame {a} of {b}", a, b)))
+                except Exception as e:  # noqa: BLE001 - one unreadable camera is "cannot tell", said
+                    out.append(clickshift.ClickFit("cannot", reason=_plain_error(e, "its video could not be read")))
+            return None if cancelled() else out
+        fits = self._in_background("Checking that the clicks sit on the right pictures", check,
+                                   detail="Cancel skips the check (DLTdv's frame numbers are kept)",
+                                   progress=True, cancellable=True)
+        skipped = fits is None
+        if skipped:
+            fits = [None] * len(kept)
+        shifts = [0] * len(kept)
+        if any(f is not None and f.offer is not None for f in fits):
+            dlg = dltdvimport.ClickShiftDialog(self, [dv.video_files[c] for c in kept], fits)
+            accepted = dlg.exec() == QDialog.Accepted
+            shifts = dlg.shifts()
+            dlg.deleteLater()
+            if not accepted:
+                self.statusBar().showMessage("Import cancelled — nothing was changed", 5000)
+                return
+        # ---- the build: a new project with these cameras, nothing of the old one carried over
+        paths = [found[c] for c in kept]
+        self._import_folder(paths, None, discard=settled == "discard",
+                            infos={str(found[c]): infos[str(found[c])] for c in kept}, toast=False,
+                            offer_recovery=False)
+        p = self.project
+        if p is None or p.n_views != len(kept) or any(
+                Path(s.video_path).resolve() != Path(x).resolve() for s, x in zip(p.sessions, paths)):
+            QMessageBox.warning(self, title, "Not every camera could be opened, so the clicks were not imported "
+                                "(they would land on the wrong cameras). The cameras that opened are on screen.")
+            return
+        rates, offs = dv.timing(kept, shifts)
+        for i in range(1, len(kept)):
+            p.set_rate(i, rates[i])
+            p.set_offset(i, offs[i])
+        cal = dv.calibration()
+        cams = [cal.camera(c) for c in kept]
+        n_cal = sum(c is not None for c in cams)
+        if n_cal >= 2:
+            p.calibration = cal.with_cameras(cams).to_internal()
+            cal_note = (f"Calibration: DLTdv's DLT for {n_cal} of {len(kept)} cameras, "
+                        f"{sum(c is not None and c.has_lens_correction for c in cams)} with its lens profile, "
+                        "converted once to Kinetrace's pixels (0-based).")
+        else:
+            cal_note = (f"No calibration: DLTdv has DLT coefficients for {n_cal} of these cameras (3D needs two).")
+        imp, maps = dv.imported(kept, shifts)
+        for s in p.sessions:                    # every point in every camera, in DLTdv's order (one landmark list)
+            for nm in dv.point_names:
+                s.add_landmark(nm)
+        applied = [trackio.apply(p.sessions[i], imp, camera=i, frame_of_row=maps[i]) for i in range(len(kept))]
+        self._share_landmarks(undoable=False)
+        self._undo_snap = None                             # a new project: Discard / not saving is the way back
+        p.dirty = True
+        self._wand_result = (None, None)
+        self._retimed(False, True, "the DLTdv project was imported")
+        self._refresh_point_list()
+        self._refresh_overlay()
+        self._update_frame_label()
+        self._apply_state()
+        if p.calibration is not None:
+            self._guides_on()
+        self._save_as_hint = Path(paths[0]).parent / (dv.name + PROJECT_SUFFIX)
+        # ---- Kinetrace's 3D against DLTdv's own
+        cmp = {"n": 0, "why": "fewer than two calibrated cameras"}
+        if p.calibration is not None:
+            t = np.atleast_1d(half_up(dv.local_frames(kept[0], shifts[0])))
+            key = {trackio.name_key(n): n for s in p.sessions for n in (pt.name for pt in s.points)}
+            try:
+                cmp = self._in_background(
+                    "Comparing the 3D with DLTdv's", lambda: dltdvproject.compare_3d(
+                        dv, reconstruct(p.sessions, p.calibration, p.rates, p.offsets,
+                                        (max(0, int(t.min())), max(0, int(t.max())))), kept, shifts,
+                        name_of=lambda n: key.get(trackio.name_key(n), n)))
+            except Exception as e:  # noqa: BLE001 - the import stands; the check says it could not run
+                cmp = {"n": 0, "why": _plain_error(e, "the 3D could not be computed")}
+        html = dltdvimport.report_html(dv, kept, found, shifts, fits, left_out, applied, cmp, cal_note,
+                                       list(p.offsets), skipped)
+        dlg = dltdvimport.ImportReportDialog(self, f"Imported {name}", html)
+        dlg.exec()
+        dlg.deleteLater()
+        self.statusBar().showMessage(f"Imported {name}: a new project, not saved yet", 8000)
 
     def _import_points3d(self):
         """File -> Import -> 3D Points: another program's 3D landmarks become

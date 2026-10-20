@@ -54,7 +54,7 @@ ALLTRACKER_SHA = downloads.CODE["alltracker"].commit
 ALLTRACKER_DIR = str(downloads.CODE["alltracker"].dest)
 MARKER = os.path.join(sys.prefix, "kinetrace-install.json")
 # what a working environment must be able to import (checked in a fresh process)
-IMPORTS = "import PySide6.QtWidgets, cv2, numpy, scipy, torch, torchvision, transformers, PIL, imageio_ffmpeg"
+IMPORTS = "import PySide6.QtWidgets, cv2, numpy, scipy, torch, torchvision, transformers, PIL, imageio_ffmpeg, h5py"
 
 
 AGAIN = ("run the launcher again: what is already installed is kept and the install goes on from "

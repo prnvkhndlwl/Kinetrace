@@ -83,7 +83,8 @@ first session.
 
 **DeepLabCut** · **SLEAP** · **DLTdv8** · **Anipose** · **easyWand / Argus** ·
 **MATLAB** · **Blender** · plain **CSV** — tracks, calibrations and 3D points in
-and out ([details](https://github.com/prnvkhndlwl/Kinetrace/wiki/Working-with-Other-Programs)).
+and out, and a whole DLTdv8 project (videos, timing, calibration, clicks) in one
+step ([details](https://github.com/prnvkhndlwl/Kinetrace/wiki/Working-with-Other-Programs)).
 
 ## How accurate?
 

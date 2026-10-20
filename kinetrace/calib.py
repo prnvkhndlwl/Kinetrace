@@ -640,9 +640,17 @@ class Calibration:
 
     @staticmethod
     def load_dltdv_project(path: str | Path) -> "Calibration":
-        """A DLTdv8 `*_dvProject.mat` saved as MATLAB v7 (not v7.3/HDF5): the
-        DLT coefficients, image sizes and the per-camera LWM undistortion
-        control points that DLTdv keeps in its MCOS object store."""
+        """A DLTdv8 `*_dvProject.mat`: the DLT coefficients, image sizes and the
+        per-camera LWM undistortion control points that DLTdv keeps in its MCOS
+        object store. MATLAB v7 is read here; v7.3 (HDF5, how DLTdv8 saves) by
+        `dltdvproject` (I310)."""
+        try:
+            import h5py
+            if h5py.is_hdf5(str(path)):
+                from kinetrace import dltdvproject
+                return dltdvproject.read(path).calibration()
+        except ImportError:                     # scipy's own sentence below names the missing reader
+            pass
         from scipy.io import loadmat
         from scipy.io.matlab._mio5 import MatFile5Reader
         import io
@@ -685,8 +693,9 @@ class Calibration:
                     cam.undistort = NoUndistort()
                 notes.append(f"The project's lens undistortion could not be read ({type(e).__name__}: {e}), so "
                              "every camera would be used as filmed -- pixels of error at the edges of a "
-                             "GoPro-style lens. Re-save the project from DLTdv8 as MATLAB v7, or import the "
-                             "cameras' lens profiles another way before trusting the 3D.")
+                             "GoPro-style lens. Save the project again from DLTdv8 (its own MATLAB v7.3 "
+                             "format is read in full), or import the cameras' lens profiles another way "
+                             "before trusting the 3D.")
         cal = Calibration(cams, source=Path(path).name)
         cal.notes = notes
         return cal
