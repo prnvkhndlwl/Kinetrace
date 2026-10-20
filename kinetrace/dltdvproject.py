@@ -9,7 +9,10 @@ re-saved by hand, v7 (read with scipy). Both forms give the same `DLTdvProject`:
   200 rows.
 * `data.dltpts` / `dltres`: DLTdv's own 3D and residual per row, used only as a CHECK of Kinetrace's 3D.
 * `data.dltcoef` (11 x V), `movsizes` (h, w per video), `movFrameRates`, `movFrameRateRatios`, `pointNames`
-  (DLTdv 8.5+; older ones are numbered pt1..ptN), `camd` (one LWM lens profile per video, a MATLAB object).
+  (DLTdv 8.5+; older ones are numbered pt1..ptN), `camd` (one LWM lens profile per video, a MATLAB object) and
+  `camud` (I313: what DLTdv REALLY undistorts clicks with -- a closed model; the LWM, camud's outputs on a grid,
+  is only its drawing direction). `calib.match_dltdv_lenses` gets camud's model back from camd's control points
+  (exact, or the LWM run backwards as an approximation, said in `notes`).
 * `video.files` (the clicking machine's paths), `video.offset` (frames, as text).
 * `data.offset` (rows x videos): the offset in force when each row was clicked. On every real project seen, a
   row clicked in a camera carries that camera's `video.offset`; any that does not is counted in `notes`.
@@ -29,7 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
-from kinetrace.calib import Calibration, CameraCalibration, LWMUndistort, NoUndistort
+from kinetrace.calib import Calibration, CameraCalibration, LWMUndistort, NoUndistort, match_dltdv_lenses
 from kinetrace.project import half_up
 
 MAX_BYTES = 2 * 1024 ** 3          # the dense block of clicked rows (rows x points x videos x 2 x 8 bytes)
@@ -56,9 +59,10 @@ class DLTdvProject:
     xy: np.ndarray                     # (R, P, V, 2) DLTdv pixels (1-based); NaN = not clicked
     xyz: np.ndarray                    # (R, P, 3) DLTdv's own 3D; NaN where none
     res: np.ndarray                    # (R, P) DLTdv's residual; NaN where none
-    lenses: list                       # (V,) LWMUndistort in DLTdv pixels, or NoUndistort
+    lenses: list                       # (V,) DLTdvUndistort / LWMUndistort in DLTdv pixels, or NoUndistort
     lens_names: list[str]              # (V,) the profile each video names ("" = none)
     notes: list[str] = field(default_factory=list)
+    lens_functions: list[str] = field(default_factory=list)   # (V,) camud's MATLAB function (v7.3; a hint only)
 
     @property
     def n_videos(self) -> int:
@@ -428,6 +432,23 @@ def _lenses_v73(f, d, V: int, name: str) -> tuple[list, list[str]]:
             f"way before trusting the 3D."]
 
 
+def _camud_functions(f, d, V: int) -> list[str]:
+    """(I313) The MATLAB function each camera's camud runs (a maketform('custom') struct's inverse_fcn), or "".
+    Shown in the report as a hint; the lens model is decided by the control points, never by this name."""
+    import h5py
+    out = []
+    try:
+        for ref in np.asarray(d["camud"][()]).flatten(order="F")[:V] if "camud" in d else []:
+            g = f[ref]
+            fh = g.get("inverse_fcn") if isinstance(g, h5py.Group) else None
+            fh = fh.get("function_handle") if isinstance(fh, h5py.Group) else None
+            fn = fh.get("function") if isinstance(fh, h5py.Group) else None
+            out.append(_char(fn) if isinstance(fn, h5py.Dataset) else "")
+    except Exception:  # noqa: BLE001 - only a hint
+        out = []
+    return (out + [""] * V)[:V]
+
+
 def _read_v73(path) -> DLTdvProject:
     import h5py
     name = Path(path).name
@@ -454,8 +475,14 @@ def _read_v73(path) -> DLTdvProject:
         empty = (np.zeros(0, int), np.zeros(0, int), np.zeros(0))
         coef = _num(d.get("dltcoef"), np.zeros((V, 11))).T                     # MATLAB (11, V)
         sizes = _num(d.get("movsizes"), np.zeros((2, V))).T                    # MATLAB (V, 2): h, w
+        # (I313) DLTdv undistorted the clicks with its own model (camud), not with the stored LWM
+        hw = np.atleast_2d(sizes).reshape(-1, 2)
+        lenses, approx = match_dltdv_lenses(lenses, [(int(hw[c, 1]), int(hw[c, 0])) if c < len(hw) else (0, 0)
+                                                     for c in range(len(lenses))])
+        if approx:
+            notes.append(approx)
         version = float(_num(ud.get("DLTdv_version")).ravel()[0])
-        return _finish(path, version, names, stored, _num(d.get("movFrameRates")).ravel(),
+        dv = _finish(path, version, names, stored, _num(d.get("movFrameRates")).ravel(),
                        _num(d.get("movFrameRateRatios"), np.ones(V)).ravel(), sizes,
                        _cell(f, v["offset"]) if "offset" in v else ["0"] * V, coef.reshape(11, -1) if coef.size else coef,
                        shape, coo_xy,
@@ -465,6 +492,8 @@ def _read_v73(path) -> DLTdvProject:
                        lenses,
                        [_lens_name(s) for s in _cell(f, v["undistortString"])] if "undistortString" in v
                        else [""] * V, notes)
+        dv.lens_functions = _camud_functions(f, d, V)
+        return dv
 
 
 # -------------------------------------------------------------------- videos and the 3D check

@@ -232,6 +232,7 @@ def lens_content() -> dict:
     k = content()
     R, P, V = N_ROWS, len(POINTS), 3
     xy = k["xypts"].reshape(R, P, V, 2).copy()
+    xy = np.round(xy * 256.0) / 256.0                  # every click float32-exact (a track is float32)
     for c, fn in LENS_MODELS.items():
         ok = np.isfinite(xy[:, :, c, 0])
         xy[ok, c] = _raw_for(fn, xy[ok, c])

@@ -267,7 +267,11 @@ class CalibrationDialog(QDialog):
             parts.append("This file does not record picture sizes: match the columns by the order your "
                          "calibration software listed the cameras.")
         notes = list(getattr(cal, "notes", []) or [])
-        if "lwm" in und:
+        if "dltdv" in und:
+            parts.append("DLTdv's own lens undistortion was found and will be applied exactly as DLTdv applies it"
+                         + (" (a camera's profile matches no DLTdv model: it is approximated, see below)."
+                            if "lwm" in und else "."))
+        elif "lwm" in und:
             parts.append("Lens undistortion (MATLAB local weighted mean) was found and will be applied.")
         elif "opencv" in und:
             parts.append("OpenCV lens coefficients were found and will be applied.")

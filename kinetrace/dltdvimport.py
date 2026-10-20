@@ -151,6 +151,19 @@ def verdict_3d(cmp: dict) -> str:
                "its video)." if cmp.get("missing") else ""))
 
 
+def lens_words(dv, c: int) -> str:
+    """(I313) Camera c's lens in the report: DLTdv's own model (exact), its LWM run backwards (an approximation;
+    camud's MATLAB function named as a hint), or none."""
+    und = dv.lenses[c]
+    kind = getattr(und, "kind", "none")
+    if kind == "dltdv":
+        return {"ocam": "fisheye, exact as DLTdv", "brown3": "lens profile, exact as DLTdv"}[und.model]
+    if kind == "lwm":
+        fn = dv.lens_functions[c] if c < len(dv.lens_functions) else ""
+        return "LWM, approximate" + (f" (camud: {fn})" if fn else "")
+    return "as filmed"
+
+
 def report_html(dv, kept: list[int], found: list, shifts: list[int], fits: list, left_out: dict,
                 applied: list[dict], cmp: dict, cal_note: str, offsets: list[float] | None = None,
                 skipped: bool = False) -> str:
@@ -161,8 +174,8 @@ def report_html(dv, kept: list[int], found: list, shifts: list[int], fits: list,
     rows = []
     for i, c in enumerate(kept):
         fit = fits[i] if i < len(fits) else None
-        lens = type(dv.lenses[c]).__name__ == "LWMUndistort"
-        check = (("skipped (Cancel)" if skipped else "not checked (no clicks)") if fit is None else
+        lens = lens_words(dv, c)
+        check =(("skipped (Cancel)" if skipped else "not checked (no clicks)") if fit is None else
                  {"fits": "fits DLTdv's frames (good)", "better": f"better {fit.best:+d}",
                   "cannot": "cannot tell", "unclear": f"unclear (best {fit.best:+d})"}[fit.verdict])
         if shifts[i]:
@@ -172,7 +185,7 @@ def report_html(dv, kept: list[int], found: list, shifts: list[int], fits: list,
         rows.append(f"<tr><td>{i + 1}</td><td>{escape(dv.video_files[c])}</td>"
                     f"<td>{escape(str(Path(found[c]).parent))}</td><td>{dv.offsets[c]:g}</td>"
                     f"<td>{'' if offsets is None else f'{offsets[i]:g}'}</td>"
-                    f"<td>{dv.ratios[c]:g}</td><td>{'LWM profile' if lens else 'as filmed'}</td>"
+                    f"<td>{dv.ratios[c]:g}</td><td>{escape(lens)}</td>"
                     f"<td>{dv.n_clicks(c)}</td><td>{escape(check)}</td></tr>")
     out = [f"<h3>{escape(Path(dv.path).name)}</h3>",
            f"<p>DLTdv {dv.version:g}; {len(dv.point_names)} point(s) in {dv.n_videos} video(s); "
