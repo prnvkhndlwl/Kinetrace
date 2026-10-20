@@ -10967,6 +10967,10 @@ class MainWindow(QMainWindow):
                                     QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
                 return
         kept = [c for c in range(dv.n_videos) if c not in left_out]
+        if len(kept) > MAX_VIEWS:
+            QMessageBox.warning(self, title, f"{name} has {len(kept)} videos; a Kinetrace project holds at most "
+                                f"{MAX_VIEWS} cameras, so nothing was imported.")
+            return
         settled = self._settle_unsaved(f"importing {name}")                # (G143)
         if settled is None:
             return
@@ -11014,7 +11018,7 @@ class MainWindow(QMainWindow):
             p.set_rate(i, rates[i])
             p.set_offset(i, offs[i])
         cal = dv.calibration()
-        cams = [cal.cameras[c] for c in kept]
+        cams = [cal.camera(c) for c in kept]
         n_cal = sum(c is not None for c in cams)
         if n_cal >= 2:
             p.calibration = cal.with_cameras(cams).to_internal()

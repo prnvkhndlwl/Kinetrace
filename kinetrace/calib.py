@@ -693,8 +693,9 @@ class Calibration:
                     cam.undistort = NoUndistort()
                 notes.append(f"The project's lens undistortion could not be read ({type(e).__name__}: {e}), so "
                              "every camera would be used as filmed -- pixels of error at the edges of a "
-                             "GoPro-style lens. Re-save the project from DLTdv8 as MATLAB v7, or import the "
-                             "cameras' lens profiles another way before trusting the 3D.")
+                             "GoPro-style lens. Save the project again from DLTdv8 (its own MATLAB v7.3 "
+                             "format is read in full), or import the cameras' lens profiles another way "
+                             "before trusting the 3D.")
         cal = Calibration(cams, source=Path(path).name)
         cal.notes = notes
         return cal
