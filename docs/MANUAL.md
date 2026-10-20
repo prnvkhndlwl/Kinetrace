@@ -3033,8 +3033,10 @@ As…**.
 
 * **Where the videos are.** The project remembers where the videos were on the
   computer that made it. Kinetrace looks there, beside the `.mat`, and in the
-  folder above it; if a video is still missing it asks once for the folder that
-  holds it. Without the first camera's video nothing is imported (it is the
+  folder above it — in each also inside a folder named like the camera's own
+  (a GoPro rig's `cam1/GX010001.MP4`, `cam2/GX010001.MP4`), and it never gives two
+  cameras the same file; if a video is still missing it asks once for the folder
+  that holds it. Without the first camera's video nothing is imported (it is the
   clock). Another missing camera, or a video whose picture size is not the one
   the project was clicked on, is named and you are asked whether to go on
   without it.
