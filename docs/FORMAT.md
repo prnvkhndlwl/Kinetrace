@@ -248,8 +248,11 @@ project opens and saved 0-based. The dltCoefs.csv export adds the 1 back.
 `dltdv`: DLTdv's own undistortion of a camera -- `model` `ocam` (the GoPro
 fisheye: OCamCalib's `ss`, `xc`, `yc`, `c`, `d`, `e`, re-projected by a pinhole at
 focal `width` / 4 about the picture centre) or `brown3` (a DLTdv camera profile:
-`f`, `cx`, `cy` and `k` = k1 k2 p1 p2 k3, inverted by exactly three fixed-point
-steps, as DLTdv does), its `params` in the DLTdv file's pixels, `offset` (the
+`cx`, `cy` and `k` = k1 k2 p1 p2 k3, inverted by exactly three fixed-point steps,
+as DLTdv does; `f` is set to the picture width and `k` scaled to it, because the
+stored points fix only k / f^n -- the same map as the profile, other numbers; a
+profile with two focal lengths matches no model), its `params` in the DLTdv
+file's pixels (both found from the stored map's points), `offset` (the
 pixels added before the model and taken off after: 1 for a DLTdv file read
 into Kinetrace's 0-based pixels), and `lwm`, the local weighted mean DLTdv
 stored, used for the other direction (raw-picture drawing). A lens kind the

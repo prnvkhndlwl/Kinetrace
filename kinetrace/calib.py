@@ -206,10 +206,11 @@ class LWMUndistort:
     map is undefined (NaN) — exactly MATLAB's behaviour.
 
     `raw_pts` are the distorted (as-filmed) control points, `und_pts` their
-    undistorted positions. `undistort` maps raw -> undistorted (what DLTdv's
-    ``camud.inverse_fcn`` does to every click); `distort` is the same
-    construction fitted the other way round, used to look silhouettes up in
-    the raw frame from a DLT projection."""
+    undistorted positions. `distort` (und -> raw) IS MATLAB's own map (DLTdv's
+    `camd`, `transformPointsInverse`; equal to 1.9e-9 px). `undistort` (raw ->
+    und) is the same construction fitted the other way round, which MATLAB
+    never computes: only an APPROXIMATION of what DLTdv does to a click (DLTdv
+    uses its `camud`, a closed model; see `DLTdvUndistort`, I313)."""
     kind = "lwm"
 
     def __init__(self, raw_pts: np.ndarray, und_pts: np.ndarray, n_neighbours: int = 12):
@@ -321,9 +322,14 @@ class DLTdvUndistort:
     off after: 0 in the file's frame, the file's `pixel_origin` once the camera is internal (0-based)."""
     kind = "dltdv"
 
+    PARAMS = {"ocam": {"ss", "xc", "yc", "c", "d", "e", "width", "height"}, "brown3": {"f", "cx", "cy", "k"}}
+
     def __init__(self, model: str, params: dict, lwm: LWMUndistort, offset: float = 0.0):
         if model not in _DLTDV_MODELS:
             raise ValueError(f"unknown DLTdv lens model '{model}'")
+        if set(params) != self.PARAMS[model] or not isinstance(lwm, LWMUndistort):
+            raise ValueError(f"a damaged DLTdv lens ('{model}' needs {', '.join(sorted(self.PARAMS[model]))} and "
+                             f"its stored LWM; it has {', '.join(sorted(params)) or 'nothing'})")
         self.model = model
         self.params = {k: (np.asarray(v, np.float64) if np.ndim(v) else float(v)) for k, v in params.items()}
         self.lwm = lwm
@@ -348,69 +354,86 @@ class DLTdvUndistort:
                 "lwm": self.lwm.to_json()}
 
 
-def _fit_ocam(raw: np.ndarray, und: np.ndarray, width: float, height: float):
-    """OCam parameters from (raw, undistorted) pairs. ss is LINEAR once the affine part is fixed (z (u - W/2) =
-    -(W/4) m1 and z (v - H/2) = -(W/4) m0), so only xc, yc, c, d, e are searched (variable projection), from a
-    few starts about the picture centre. Returns (params, max error px)."""
+_FIT_SEARCH_POINTS = 120       # control points the multi-start search uses (the gate itself uses all of them)
+_FIT_SEARCH_MISS_PX = 1e-4     # a search this far off on its subsample is not DLTdv's model (exact ones: ~1e-11)
+
+
+def _fit_from_starts(make_res, n: int, starts: list, x_scale: list) -> np.ndarray | None:
+    """Least squares from every start on an even subsample of the n control points -- cheap, so a profile no
+    model makes is turned down in about a second, not tens of seconds (match_dltdv_lens also runs on the GUI
+    thread from the calibration dialog) -- then the best start refined on ALL of them. A model that is DLTdv's
+    is exact on the subsample too, so a search that ends further than `_FIT_SEARCH_MISS_PX` off is None (no
+    refinement). `make_res(idx)` = the residual function over the points `idx`."""
     from scipy.optimize import least_squares
-    W, H = float(width), float(height)
-    q = W / 4.0                                         # rho in units of W/4 keeps the columns O(1)
-    pr = np.vstack([raw[:, 1], raw[:, 0]])
-    du, dv = und[:, 0] - W / 2, und[:, 1] - H / 2
-
-    def ss_for(a):
-        m = np.linalg.inv(np.array([[a[2], a[3]], [a[4], 1.0]])) @ (pr - np.array([[a[0]], [a[1]]]))
-        rho = np.sqrt(m[0] ** 2 + m[1] ** 2) / q
-        B = np.column_stack([np.ones_like(rho), rho ** 2, rho ** 3, rho ** 4])
-        s = np.linalg.lstsq(np.vstack([B * du[:, None], B * dv[:, None]]),
-                            np.r_[-q * m[1], -q * m[0]], rcond=None)[0]
-        return np.array([s[0], 0.0, s[1] / q ** 2, s[2] / q ** 3, s[3] / q ** 4])
-
-    def params(a):
-        return dict(ss=ss_for(a), xc=a[0], yc=a[1], c=a[2], d=a[3], e=a[4], width=W, height=H)
-
-    def res(a):
-        r = (_ocam_undistort(raw, **params(a)) - und).ravel()
-        return np.where(np.isfinite(r), r, 1e6)
-
+    kw = dict(xtol=1e-15, ftol=1e-15, gtol=1e-15)
+    sub = make_res(np.unique(np.linspace(0, n - 1, min(n, _FIT_SEARCH_POINTS)).astype(int)))
     best = None
-    for dx, dy in ((0, 0), (-0.05, 0), (0.05, 0), (0, -0.05), (0, 0.05), (-0.05, -0.05), (0.05, 0.05)):
-        r = least_squares(res, [H / 2 + dx * H, W / 2 + dy * W, 1.0, 0.0, 0.0], x_scale=[H, W, 0.01, 0.01, 0.01],
-                          xtol=1e-15, ftol=1e-15, gtol=1e-15, max_nfev=3000)
-        r = least_squares(res, r.x, method="lm", xtol=1e-15, ftol=1e-15, gtol=1e-15, max_nfev=3000)
+    for a0 in starts:
+        r = least_squares(sub, a0, x_scale=x_scale, max_nfev=500, **kw)
+        r = least_squares(sub, r.x, method="lm", max_nfev=500, **kw)
         if best is None or r.cost < best.cost:
             best = r
         if np.abs(best.fun).max() < DLTDV_EXACT_PX / 10:
             break
-    prm = params(best.x)
+    if not np.abs(best.fun).max() <= _FIT_SEARCH_MISS_PX:
+        return None
+    return least_squares(make_res(np.arange(n)), best.x, method="lm", max_nfev=1000, **kw).x
+
+
+def _fit_ocam(raw: np.ndarray, und: np.ndarray, width: float, height: float):
+    """OCam parameters from (raw, undistorted) pairs. ss is LINEAR once the affine part is fixed (z (u - W/2) =
+    -(W/4) m1 and z (v - H/2) = -(W/4) m0), so only xc, yc, c, d, e are searched (variable projection), from a
+    few starts about the picture centre. Returns (params, max error px over every point)."""
+    W, H = float(width), float(height)
+    q = W / 4.0                                         # rho in units of W/4 keeps the columns O(1)
+
+    def params(a, idx):
+        m = np.linalg.inv(np.array([[a[2], a[3]], [a[4], 1.0]])) @ (
+            np.vstack([raw[idx, 1], raw[idx, 0]]) - np.array([[a[0]], [a[1]]]))
+        rho = np.sqrt(m[0] ** 2 + m[1] ** 2) / q
+        B = np.column_stack([np.ones_like(rho), rho ** 2, rho ** 3, rho ** 4])
+        du, dv = und[idx, 0] - W / 2, und[idx, 1] - H / 2
+        s = np.linalg.lstsq(np.vstack([B * du[:, None], B * dv[:, None]]),
+                            np.r_[-q * m[1], -q * m[0]], rcond=None)[0]
+        ss = np.array([s[0], 0.0, s[1] / q ** 2, s[2] / q ** 3, s[3] / q ** 4])
+        return dict(ss=ss, xc=a[0], yc=a[1], c=a[2], d=a[3], e=a[4], width=W, height=H)
+
+    def make_res(idx):
+        def res(a):
+            r = (_ocam_undistort(raw[idx], **params(a, idx)) - und[idx]).ravel()
+            return np.where(np.isfinite(r), r, 1e6)
+        return res
+
+    starts = [[H / 2 + dx * H, W / 2 + dy * W, 1.0, 0.0, 0.0]
+              for dx, dy in ((0, 0), (-0.05, 0), (0.05, 0), (0, -0.05), (0, 0.05), (-0.05, -0.05), (0.05, 0.05))]
+    a = _fit_from_starts(make_res, len(raw), starts, [H, W, 0.01, 0.01, 0.01])
+    if a is None:
+        return None, np.inf
+    prm = params(a, np.arange(len(raw)))
     return prm, float(np.nanmax(np.hypot(*(_ocam_undistort(raw, **prm) - und).T)))
 
 
 def _fit_brown3(raw: np.ndarray, und: np.ndarray, width: float, height: float):
     """Bouguet parameters from (raw, undistorted) pairs: f is fixed at the picture width (f alone is not
     identifiable: only k1/f^2, k2/f^4, k3/f^6, p/f are), the centre and k by least squares. Returns
-    (params, max error px)."""
-    from scipy.optimize import least_squares
+    (params, max error px over every point)."""
     W, H = float(width), float(height)
 
     def params(a):
         return dict(f=W, cx=a[0], cy=a[1], k=np.asarray(a[2:7]))
 
-    def res(a):
-        r = (_brown3_undistort(raw, **params(a)) - und).ravel()
-        return np.where(np.isfinite(r), r, 1e6)
+    def make_res(idx):
+        def res(a):
+            r = (_brown3_undistort(raw[idx], **params(a)) - und[idx]).ravel()
+            return np.where(np.isfinite(r), r, 1e6)
+        return res
 
-    best = None
-    for dx, dy in ((0, 0), (-0.05, -0.05), (0.05, 0.05)):
-        r = least_squares(res, [W / 2 + 0.5 + dx * W, H / 2 + 0.5 + dy * H, 0, 0, 0, 0, 0],
-                          x_scale=[W, H, 0.1, 0.01, 1e-3, 1e-3, 1e-3], xtol=1e-15, ftol=1e-15, gtol=1e-15,
-                          max_nfev=3000)
-        r = least_squares(res, r.x, method="lm", xtol=1e-15, ftol=1e-15, gtol=1e-15, max_nfev=3000)
-        if best is None or r.cost < best.cost:
-            best = r
-        if np.abs(best.fun).max() < DLTDV_EXACT_PX / 10:
-            break
-    prm = params(best.x)
+    starts = [[W / 2 + 0.5 + dx * W, H / 2 + 0.5 + dy * H, 0, 0, 0, 0, 0]
+              for dx, dy in ((0, 0), (-0.05, -0.05), (0.05, 0.05))]
+    a = _fit_from_starts(make_res, len(raw), starts, [W, H, 0.1, 0.01, 1e-3, 1e-3, 1e-3])
+    if a is None:
+        return None, np.inf
+    prm = params(a)
     return prm, float(np.nanmax(np.hypot(*(_brown3_undistort(raw, **prm) - und).T)))
 
 

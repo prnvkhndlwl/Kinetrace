@@ -175,7 +175,7 @@ def report_html(dv, kept: list[int], found: list, shifts: list[int], fits: list,
     for i, c in enumerate(kept):
         fit = fits[i] if i < len(fits) else None
         lens = lens_words(dv, c)
-        check =(("skipped (Cancel)" if skipped else "not checked (no clicks)") if fit is None else
+        check = (("skipped (Cancel)" if skipped else "not checked (no clicks)") if fit is None else
                  {"fits": "fits DLTdv's frames (good)", "better": f"better {fit.best:+d}",
                   "cannot": "cannot tell", "unclear": f"unclear (best {fit.best:+d})"}[fit.verdict])
         if shifts[i]:

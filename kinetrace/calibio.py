@@ -599,8 +599,8 @@ def _load_calibration(p: Path, sizes) -> Calibration:
     if low.endswith(".json"):
         try:
             return load_kcal(p)
-        except (ValueError, KeyError, TypeError):
-            pass
+        except NotKcalError:              # (I313) only a file that is NOT a kcal goes on to the other readers; a
+            pass                          # kcal's own error (a newer lens kind, damage) is said as it is
         if "opencv-matrix" in p.read_text(encoding="utf-8", errors="replace")[:20000]:
             return cameras_file()                   # an OpenCV FileStorage JSON
         return Calibration.load_krt(p)              # an OpenCV-style K + R/t JSON
@@ -650,12 +650,20 @@ def write_kcal(path, cal, report: dict | None = None, grav: dict | None = None) 
     Path(path).write_text(json.dumps(calibration_to_kcal(cal, report, grav), indent=1), encoding="utf-8")
 
 
+class NotKcalError(ValueError):
+    """(I313) The file is not a Kinetrace calibration at all (another program's JSON may still be read)."""
+
+
 def load_kcal(path):
-    """`*.kcal.json` -> `calib.Calibration` (cameras in file order; null = not calibrated)."""
+    """`*.kcal.json` -> `calib.Calibration` (cameras in file order; null = not calibrated). NotKcalError for a
+    file that is not one; any other error is the kcal's own and is said as it is."""
     from kinetrace.calib import undistort_from_json
-    d = json.loads(Path(path).read_text(encoding="utf-8"))
-    if "kinetrace_calibration" not in d:
-        raise ValueError(f"{Path(path).name}: not a Kinetrace calibration file")
+    try:
+        d = json.loads(Path(path).read_text(encoding="utf-8"))
+    except ValueError as e:
+        raise NotKcalError(f"{Path(path).name}: not JSON ({e})") from None
+    if not isinstance(d, dict) or "kinetrace_calibration" not in d:
+        raise NotKcalError(f"{Path(path).name}: not a Kinetrace calibration file")
     cams = []
     for c in d.get("cameras", []):
         if c is None:                                           # (I273) not calibrated

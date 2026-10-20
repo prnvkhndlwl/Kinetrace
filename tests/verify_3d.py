@@ -1064,6 +1064,28 @@ try:
     raise AssertionError("an unknown lens kind was read as no lens")
 except ValueError as _e:
     assert "spline9" in str(_e) and "newer" in str(_e)
+# review fixes: a kcal from a newer Kinetrace says "update" (it fell through to the K + R/t reader and said "needs at
+# least two cameras"); a damaged dltdv lens is refused in words when it is read, not as a TypeError during 3D
+from kinetrace import calibio as _calibio  # noqa: E402
+from kinetrace.calib import Calibration as _Cal  # noqa: E402
+_kc = os.path.join(OUT, "i313_newer.kcal.json")
+_calibio.write_kcal(_kc, _Cal([_cf, CameraCalibration(cams[1].coefs, _S.W, _S.H, NoUndistort(), pixel_origin=0.0)]))
+_d = _json.load(open(_kc, encoding="utf-8"))
+assert _d["cameras"][0]["undistort"]["kind"] == "dltdv" and _calibio.load_calibration(_kc).cameras[0].undistort.kind == "dltdv"
+_d["cameras"][0]["undistort"] = {"kind": "spline9"}
+_json.dump(_d, open(_kc, "w", encoding="utf-8"))
+try:
+    _calibio.load_calibration(_kc)
+    raise AssertionError("a kcal with an unknown lens kind was read")
+except _calibio.CalibFormatError as _e:
+    assert "newer" in str(_e) and "i313_newer.kcal.json" in str(_e), str(_e)
+for _bad in ({"kind": "dltdv", "model": "ocam", "params": {"xc": 1}, "lwm": {"kind": "none"}},
+             dict(_cf.undistort.to_json(), lwm={"kind": "none"})):
+    try:
+        undistort_from_json(_bad)
+        raise AssertionError("a damaged dltdv lens was read")
+    except ValueError as _e:
+        assert "damaged" in str(_e), str(_e)
 print("DLTdv lens models OK (I313): brown3 / ocam matched only by their own profiles (the other misses by > 0.1 "
       "px), exact to 1e-9 px, 0-based = file + 1, distort = the LWM bit for bit, json round trip exact, "
       "bottom-left and unknown kinds refused, other LWMs stay LWMs")
