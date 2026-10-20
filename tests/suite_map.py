@@ -84,6 +84,11 @@ MAP = [
     ([K + f for f in ("view3d.py", "calibview.py")], ["verify_wand_sync_gui"]),
     ([K + f for f in ("calibio.py", "trackio.py", "convert.py")], ["verify_interop", "verify_review_data",
                                                                   "verify_wand_subset"]),
+    # (I310, G211) File > Import > DLTdv Project: the reader, the click-shift check, the dialogs, the app wiring,
+    # and the calibration / track writers it goes through
+    ([K + f for f in ("dltdvproject.py", "clickshift.py", "dltdvimport.py")],
+     ["verify_dltdv_project", "verify_interop", "verify_3d"]),
+    ([K + f for f in ("app.py", "calib.py", "calibio.py", "trackio.py", "project.py")], ["verify_dltdv_project"]),
     ([K + f for f in ("wand.py", "wanddata.py", "calibwizard.py", "wandsync.py")],
      ["verify_wand", "verify_wand_gui", "verify_review_calib", "verify_wand_subset", "verify_calib3d",
       # (I271, I300-I304, G199, G200) camera timing from the wand
