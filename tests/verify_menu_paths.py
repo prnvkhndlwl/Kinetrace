@@ -32,7 +32,7 @@ GOLDEN = [
     ("act_open", "Ctrl+O"), ("act_open_folder", ""), ("act_open_proj", "Ctrl+Shift+O"), ("act_recover", ""),
     ("act_save", "Ctrl+S"), ("act_save_as", "Ctrl+Shift+S"),
     ("act_import_tracks", ""), ("act_import_xyz", ""), ("act_import_offsets", ""),
-    ("act_import_masks", ""),
+    ("act_import_masks", ""), ("act_import_dltdv", ""),
     ("act_export", "Ctrl+E"), ("act_exports", ""), ("act_overlay", ""), ("act_export_one", ""),
     ("act_check_frames", ""), ("act_quit", "Ctrl+Q"),
     ("act_undo", "Ctrl+Z"), ("act_select_all", "Ctrl+A"), ("act_note", ""), ("act_hidden", ""),
@@ -63,7 +63,7 @@ GOLDEN = [
     ("act_error_report", ""), ("act_folders", ""), ("act_start_menu", ""), ("text:Keyboard & Mouse Reference…", ""),
     ("act_updates", ""), ("act_about", ""),
 ]
-assert len(GOLDEN) == 82, len(GOLDEN)
+assert len(GOLDEN) == 83, len(GOLDEN)
 
 
 def label(a: QAction) -> str:

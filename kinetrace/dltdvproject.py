@@ -119,10 +119,12 @@ class DLTdvProject:
         """A `trackio.Imported` holding the cameras `views` (in that order) as hand clicks, and per camera the
         function `frame_of_row` that `trackio.apply` needs (row index into `rows` -> 0-based local frame)."""
         from kinetrace.trackio import Imported
-        xy = np.ascontiguousarray(np.moveaxis(self.xy[:, :, views], 2, 0)).astype(np.float32)   # (C, R, P, 2)
+        # DLTdv's first pixel is 1: made 0-based in float64 BEFORE the float32 a session holds, so each value is
+        # float32(x - 1) exactly, never float32(x) - 1 rounded twice
+        xy = (np.ascontiguousarray(np.moveaxis(self.xy[:, :, views], 2, 0)) - 1.0).astype(np.float32)  # (C,R,P,2)
         has = np.isfinite(xy[..., 0])
         imp = Imported("dvproject", list(self.point_names), xy, has.astype(np.float32),
-                       visible=has, manual=has, hidden=np.zeros_like(has), pixel_origin=1.0, flip_y=False,
+                       visible=has, manual=has, hidden=np.zeros_like(has), pixel_origin=0.0, flip_y=False,
                        rows="frames")
         maps = []
         for v, s in zip(views, shifts):

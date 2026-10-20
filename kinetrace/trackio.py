@@ -403,6 +403,12 @@ def _read_kinetrace(path: Path, text: str) -> Imported:
 
 
 # ------------------------------------------------------------------ into a session
+def name_key(name: str) -> str:
+    """The form a file's point name is matched to a landmark in: the form the exporters write a name in (I225)."""
+    from kinetrace.session import _sanitize, formula_safe
+    return _sanitize(formula_safe(name))
+
+
 def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
     """Write camera `camera` of `imp` into `session`. `frame_of_row(r)` = the
     session frame of file row r (None = row r is frame r; a multi-camera
@@ -411,7 +417,7 @@ def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
     skipped, duplicates, sentence}: `cells` counts what was WRITTEN, `skipped`
     names the landmarks the file had data for that are not placed from a file
     (silhouette-derived, ball markers)."""
-    from kinetrace.session import PALETTE, _sanitize, formula_safe, in_frame
+    from kinetrace.session import PALETTE, in_frame
     T, W, H = session.n_frames, session.width, session.height
     xy = imp.xy[camera].astype(np.float64)
     R, N = xy.shape[:2]
@@ -431,8 +437,7 @@ def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
     outside = int((has & in_video[:, None] & ~inside).sum())
     keep = inside & in_video[:, None]
 
-    def key(name: str) -> str:
-        return _sanitize(formula_safe(name))        # the form the exporters write a name in (I225)
+    key = name_key
     index = {key(p.name): i for i, p in enumerate(session.points)}
     claimed: set[int] = set()
     fixed = {i for i, p in enumerate(session.points) if p.derived or p.is_ball}   # never placed from a file

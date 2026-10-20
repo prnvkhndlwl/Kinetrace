@@ -27,7 +27,7 @@ from kinetrace.hull import _view_rotation
 CALIB_FILTER = ("Calibration files (*.json *.csv *.mat *.txt *.toml *.yml *.yaml *.xml);;"
                 "Kinetrace calibration (*.kcal.json);;"
                 "DLTdv / easyWand / Argus DLT coefficients (*.csv);;"
-                "easyWand data (*easyWandData.mat);;DLTdv8 project, MATLAB v7 (*dvProject.mat);;"
+                "easyWand data (*easyWandData.mat);;DLTdv8 project (*dvProject.mat);;"
                 "Anipose calibration (*.toml);;OpenCV cameras (*.yml *.yaml *.xml *.json);;"
                 "MATLAB cameras (*.mat);;OpenCV cameras K + R/t (*.json *.txt);;All files (*)")
 
@@ -147,8 +147,9 @@ class CalibrationDialog(QDialog):
         intro = QLabel(
             "The calibration tells the 3D layer where every camera is. Kinetrace reads the "
             "11-parameter DLT that DLTdv, easyWand and Argus produce: a <i>dltCoefs.csv</i> "
-            "(one column per camera), an <i>easyWandData.mat</i>, or a DLTdv8 project saved "
-            "as MATLAB v7 (which also carries its lens undistortion). Cameras described the "
+            "(one column per camera), an <i>easyWandData.mat</i>, or a DLTdv8 project "
+            "(<i>…_dvProject.mat</i>, which also carries its lens undistortion; to bring in its "
+            "videos and clicks too, use File → Import → DLTdv Project…). Cameras described the "
             "OpenCV way -- a K matrix per camera plus the R / t (or a 4x4 T) between them, as "
             "a JSON or a plain text file -- are converted; the file's origin (usually camera 1) "
             "is moved to a point the cameras look at, because a DLT cannot have a camera at its "

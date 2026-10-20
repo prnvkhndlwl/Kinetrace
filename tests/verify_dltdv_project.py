@@ -186,7 +186,7 @@ except Exception as e:  # noqa: BLE001
 
 # ---- the frame check on its own: +9 on camera 2, nothing on 1 and 3
 for v in range(3):
-    fit = clickshift.check_camera(B["videos"][v], *dltdvproject.check_inputs(d73, v), S.FPS[v])
+    fit = clickshift.check_camera(B["videos"][v], *d73.check_inputs(v), S.FPS[v])
     want = S.PLANTED[v]
     check(fit.best == want and (fit.offer == (want or None)),
           f"frame check camera {v + 1}: best {want:+d}, offer {'+9' if want else 'none'} ({fit.verdict})",
@@ -224,6 +224,7 @@ if p is not None and p.n_views == 3:
         txt = seen["report"][-1].text
         check(re.search(r"3D check: good", txt) is not None, "(f) the report's 3D check is good", txt[:400])
         check("hand check" in txt.lower(), "(f) the report gives a hand check")
+        print("  --- the report ---\n" + txt.encode("ascii", "replace").decode() + "\n  ---")
     check(p.dirty and win.project_path is None, "the new project is unsaved (Save asks where)")
     taken = p
     rec_taken = reconstruct(p.sessions, p.calibration, p.rates, p.offsets, (0, S.N_REF - 1))
@@ -231,7 +232,7 @@ check(sorted(os.listdir(os.path.dirname(B["v73"]))) == listing, "(i) nothing wri
 
 # ---- (e) declining the offer: camera 2 keeps DLTdv's frames, the 3D is the same array
 _offer["take"] = False
-import_by_gesture(B["v7"])
+import_by_gesture(B["v73"])
 p = win.project
 if p is not None and p.n_views == 3:
     check(np.allclose(p.offsets, [0, -4, 4]), "(e) declined: offsets as the project says", p.offsets)
@@ -240,8 +241,15 @@ if p is not None and p.n_views == 3:
     rec = reconstruct(p.sessions, p.calibration, p.rates, p.offsets, (0, S.N_REF - 1))
     check(np.array_equal(rec.xyz, rec_taken.xyz, equal_nan=True),
           "(e) the 3D is the same array whether the shift is taken or not (only the pictures move)")
-    check(isinstance(p.calibration.camera(0).undistort, NoUndistort), "(d) v7 copy: no lens (none in the file)")
 _offer["take"] = True
+
+# ---- the v7 copy through the menu: the same clicks; no lens (scipy cannot write one, so the file has none)
+import_by_gesture(B["v7"])
+p = win.project
+if p is not None and p.n_views == 3:
+    check(all(clicks_at(p, v).keys() == expected(v, S.PLANTED[v]).keys() for v in range(3)),
+          "(b) v7 copy: every camera's clicks at the same frames as the v7.3 copy's")
+    check(isinstance(p.calibration.camera(0).undistort, NoUndistort), "(d) v7 copy: no lens (none in the file)")
 
 # ---- (g) refusals, in words
 n0, prev = len(said), win.project
