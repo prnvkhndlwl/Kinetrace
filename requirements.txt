@@ -10,6 +10,9 @@ opencv-python
 # nothing here imports (Mac install audit)
 PySide6-Essentials
 scipy
+# DLTdv8 projects (File -> Import -> DLTdv Project, and their calibration): DLTdv8
+# saves MATLAB v7.3 files, which are HDF5; scipy reads only v7. Read-only use (BSD).
+h5py
 # Segmentation layer (SAM 2.1 / SAM 3 via Hugging Face transformers, pure Python —
 # no CUDA extension build). Weights download into models/hf on first use.
 transformers>=5.0
