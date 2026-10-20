@@ -38,7 +38,8 @@ import numpy as np
 from kinetrace import projectfile
 
 KINDS = {"dlc": "DeepLabCut CSV", "dltdv": "DLTdv / Argus xypts CSV",
-         "sleap": "SLEAP analysis CSV", "kinetrace": "Kinetrace tracks (tracks.csv, or one landmark's file)"}
+         "sleap": "SLEAP analysis CSV", "kinetrace": "Kinetrace tracks (tracks.csv, or one landmark's file)",
+         "dvproject": "DLTdv8 project"}         # (I310) made by dltdvproject.imported, never read from a CSV
 _XYPTS = re.compile(r"^pt(\d+)_cam(\d+)_([xy])$", re.IGNORECASE)
 
 
