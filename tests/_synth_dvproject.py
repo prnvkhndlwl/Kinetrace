@@ -118,10 +118,14 @@ def clicks() -> np.ndarray:
     return xy
 
 
-def content(sizes: dict | None = None) -> dict:
-    """Everything the project holds, in MATLAB's shapes (before the file layout)."""
+def content(sizes: dict | None = None, names: list | None = None, files: list | None = None,
+            drop: tuple = ()) -> dict:
+    """Everything the project holds, in MATLAB's shapes (before the file layout). `names` / `files` replace the
+    point names / stored video paths; `drop` = (camera, point) pairs with no clicks at all."""
     cams = cameras()
     xy = clicks()
+    for c, k in drop:
+        xy[:, k, c] = np.nan
     R, P, V = N_ROWS, len(POINTS), 3
     xyz = np.full((R, P, 3), np.nan)
     res = np.full((R, P), np.nan)
@@ -142,7 +146,7 @@ def content(sizes: dict | None = None) -> dict:
             "dltcoef": np.stack([cam.coefs_for_origin(1.0) for cam in cams], 1),       # (11, V), 1-based
             "movsizes": np.array(hw, float), "nvid": V, "numpts": P,
             "movFrameRates": np.array(FPS), "movFrameRateRatios": np.array(RATIO, float),
-            "pointNames": list(POINTS), "files": list(STORED),
+            "pointNames": list(names or POINTS), "files": list(files or STORED),
             "video_offset": [str(o) for o in DV_OFFSETS],
             "undistort": ["Undistortion file: lens_a.mat", "Undistortion file: none", "Undistortion file: none"]}
 
@@ -163,9 +167,9 @@ def _sparse(dense: np.ndarray):
     return csc_matrix((dense[r, c], (r, c)), shape=dense.shape)
 
 
-def write_v7(path, sizes: dict | None = None) -> str:
+def write_v7(path, sizes: dict | None = None, **kw) -> str:
     from scipy.io import savemat
-    k = content(sizes)
+    k = content(sizes, **kw)
     obj = lambda xs: np.array(xs, dtype=object)          # noqa: E731 - a MATLAB cell array
     savemat(str(path), {"udExport": {
         "DLTdv_version": 8.5, "saveTime": "2026-01-01 12:00:00",

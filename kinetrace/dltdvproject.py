@@ -245,11 +245,27 @@ def _finish(path, version, names, stored, rates, ratios, sizes_hw, offsets_txt, 
 
 
 def _names(names, P: int, notes: list) -> list[str]:
-    names = [str(n) for n in names]
+    """The points' names, unique the way Kinetrace names landmarks: a name already used (ignoring capitals, as
+    the exporters write it) becomes "name (2)", "name (3)" ... so every camera pairs the same DLTdv point."""
+    from kinetrace.trackio import name_key
+    names = [str(n).strip() for n in names]
     if len(names) != P or not all(names):
         notes.append("the project stores no point names (DLTdv8 before 8.5): the points are numbered pt1, pt2, ...")
         return [f"pt{k + 1}" for k in range(P)]
-    return names
+    out, seen, renamed = [], set(), []
+    for n in names:
+        new, k = n, 1
+        while name_key(new).casefold() in seen:
+            k += 1
+            new = f"{n} ({k})"
+        seen.add(name_key(new).casefold())
+        out.append(new)
+        if new != n:
+            renamed.append(new)
+    if renamed:
+        notes.append(f"{len(renamed)} point name(s) repeat another (capitals ignored) and were numbered: "
+                     + ", ".join(renamed[:6]) + (" ..." if len(renamed) > 6 else ""))
+    return out
 
 
 def _lens_name(s: str) -> str:
@@ -453,22 +469,37 @@ def _read_v73(path) -> DLTdvProject:
 
 # -------------------------------------------------------------------- videos and the 3D check
 
+def _key(p) -> str:
+    import os
+    return os.path.normcase(os.path.abspath(str(p)))
+
+
 def find_videos(dv: DLTdvProject, folder: str | None = None) -> list[str | None]:
-    """Each video, by its base name: where the project says, beside the .mat, in the .mat's parent folder,
-    then in `folder` (the one the user was asked for). None = not found."""
+    """Each video, by its base name: where the project says, then beside the .mat, in the .mat's parent folder
+    and in `folder` (the one the user was asked for) -- in each of those also inside a sub-folder named like
+    the stored path's folder (a GoPro rig's cam1/GX010001.MP4, cam2/GX010001.MP4). Two cameras never get the
+    same file: a candidate another camera already has is skipped (None = not found). Touches the file system
+    (a stored network path can take seconds): call it off the GUI thread."""
     here = Path(dv.path).resolve().parent
     places = [here, here.parent] + ([Path(folder)] if folder else [])
+    taken: set[str] = set()
     out: list[str | None] = []
     for stored, base in zip(dv.stored_files, dv.video_files):
-        hit = None
-        try:
-            if stored and Path(stored).is_file():
-                hit = str(Path(stored))
-        except OSError:
-            hit = None
+        sub = stored.replace("\\", "/").rstrip("/").split("/")[-2:-1]          # the stored folder's name
+        cands = [Path(stored)] if stored else []
         for p in places:
-            if hit is None and (p / base).is_file():
-                hit = str(p / base)
+            cands += [p / sub[0] / base] if sub and sub[0] else []
+            cands.append(p / base)
+        hit = None
+        for c in cands:
+            try:
+                if _key(c) not in taken and c.is_file():
+                    hit = str(c)
+                    break
+            except OSError:
+                continue
+        if hit is not None:
+            taken.add(_key(hit))
         out.append(hit)
     return out
 

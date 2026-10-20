@@ -152,15 +152,17 @@ def verdict_3d(cmp: dict) -> str:
 
 
 def report_html(dv, kept: list[int], found: list, shifts: list[int], fits: list, left_out: dict,
-                applied: list[dict], cmp: dict, cal_note: str) -> str:
+                applied: list[dict], cmp: dict, cal_note: str, offsets: list[float] | None = None,
+                skipped: bool = False) -> str:
     """The report. `kept` = the project's cameras (DLTdv video indices, in order), `applied` the
-    `trackio.apply` summaries per kept camera, `left_out` {video: reason}."""
+    `trackio.apply` summaries per kept camera, `left_out` {video: reason}, `offsets` the project's own
+    offsets (after any shift taken), `skipped` = the user cancelled the frame check."""
     from pathlib import Path
     rows = []
     for i, c in enumerate(kept):
         fit = fits[i] if i < len(fits) else None
         lens = type(dv.lenses[c]).__name__ == "LWMUndistort"
-        check = ("not checked" if fit is None else
+        check = (("skipped (Cancel)" if skipped else "not checked (no clicks)") if fit is None else
                  {"fits": "fits DLTdv's frames (good)", "better": f"better {fit.best:+d}",
                   "cannot": "cannot tell", "unclear": f"unclear (best {fit.best:+d})"}[fit.verdict])
         if shifts[i]:
@@ -169,6 +171,7 @@ def report_html(dv, kept: list[int], found: list, shifts: list[int], fits: list,
             check += "; shift NOT taken"
         rows.append(f"<tr><td>{i + 1}</td><td>{escape(dv.video_files[c])}</td>"
                     f"<td>{escape(str(Path(found[c]).parent))}</td><td>{dv.offsets[c]:g}</td>"
+                    f"<td>{'' if offsets is None else f'{offsets[i]:g}'}</td>"
                     f"<td>{dv.ratios[c]:g}</td><td>{'LWM profile' if lens else 'as filmed'}</td>"
                     f"<td>{dv.n_clicks(c)}</td><td>{escape(check)}</td></tr>")
     out = [f"<h3>{escape(Path(dv.path).name)}</h3>",
@@ -176,7 +179,7 @@ def report_html(dv, kept: list[int], found: list, shifts: list[int], fits: list,
            f"{len(dv.rows)} of its {dv.n_rows:,} rows hold clicks. The .mat is only read, never changed. "
            "This is a NEW, unsaved project: <b>File → Save Project As…</b> keeps it.</p>",
            "<h4>Cameras</h4><table border=1 cellspacing=0 cellpadding=3><tr><th>#</th><th>video</th><th>found in"
-           "</th><th>DLTdv offset</th><th>rate ratio</th><th>lens</th><th>clicks</th><th>frame check</th></tr>"
+           "</th><th>DLTdv offset</th><th>Kinetrace offset</th><th>rate ratio</th><th>lens</th><th>clicks</th><th>frame check</th></tr>"
            + "".join(rows) + "</table>"]
     if left_out:
         out.append("<p><b>Left out:</b> " + "; ".join(f"video {c + 1} ({escape(dv.video_files[c])}): "

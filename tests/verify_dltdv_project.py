@@ -35,13 +35,25 @@ import _synth_dvproject as S
 
 OUT = os.path.join(ROOT, "tests", "out", "dvsynth")
 MISSING = os.path.join(ROOT, "tests", "out", "dvsynth_missing")
-for d in (OUT, MISSING):
+GOPRO = os.path.join(ROOT, "tests", "out", "dvsynth_gopro")       # cam1/clip.mp4, cam2/clip.mp4, cam3/clip.mp4
+ONEFILE = os.path.join(ROOT, "tests", "out", "dvsynth_onefile")   # only cam1/clip.mp4 is here
+for d in (OUT, MISSING, GOPRO, ONEFILE):
     if os.path.isdir(d):
         shutil.rmtree(d)
 B = S.build(OUT)
 os.makedirs(MISSING, exist_ok=True)
 NO_VIDEOS = S.write_v7(os.path.join(MISSING, "lost_dvProject.mat"))
 WRONG_SIZE = S.write_v7(os.path.join(OUT, "size_dvProject.mat"), sizes={1: (1280, 720)})
+RIG = [f"X:/rig/cam{c + 1}/clip.mp4" for c in range(3)]          # a GoPro rig: one file name in every camera folder
+for c in range(3):
+    os.makedirs(os.path.join(GOPRO, f"cam{c + 1}"))
+    shutil.copyfile(B["videos"][c], os.path.join(GOPRO, f"cam{c + 1}", "clip.mp4"))
+os.makedirs(os.path.join(ONEFILE, "cam1"))
+shutil.copyfile(B["videos"][0], os.path.join(ONEFILE, "cam1", "clip.mp4"))
+GOPRO_DV = S.write_v7(os.path.join(GOPRO, "rig_dvProject.mat"), files=RIG)
+ONEFILE_DV = S.write_v7(os.path.join(ONEFILE, "rig_dvProject.mat"), files=RIG)
+# two names that differ only in capitals, and camera 1 never clicked the first of them
+NAMES_DV = S.write_v7(os.path.join(OUT, "names_dvProject.mat"), names=["Head", "head"], drop=((0, 0),))
 NOT_DV = os.path.join(OUT, "other.mat")
 from scipy.io import savemat  # noqa: E402
 savemat(NOT_DV, {"something": np.eye(3)})
@@ -56,13 +68,17 @@ def _box(answer):
     return staticmethod(f)
 
 
-QMessageBox.question = _box(QMessageBox.Yes)
+_answer = {"question": QMessageBox.Yes}
+QMessageBox.question = staticmethod(lambda parent, title, text, *a, **k: (said.append(f"{title}: {text}"),
+                                                                           _answer["question"])[1])
 QMessageBox.warning = _box(QMessageBox.Ok)
 QMessageBox.information = _box(QMessageBox.Ok)
 QMessageBox.critical = _box(QMessageBox.Ok)
 _pick = {"file": "", "dir": ""}
 QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (_pick["file"], ""))
-QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: _pick["dir"])
+_asked = {"dir": 0}
+QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: (_asked.__setitem__("dir", _asked["dir"] + 1),
+                                                                  _pick["dir"])[1])
 
 app = QApplication([])
 from _clean import forget_recovery  # noqa: E402
@@ -211,6 +227,9 @@ if p is not None and p.n_views == 3:
         s = p.sessions[v]
         check(bool(np.all(s.manual[s.tracked])) and bool(np.all(s.confidence[s.tracked] == 1.0)),
               f"(c) camera {v + 1}: clicks are hand clicks")
+        rows = np.flatnonzero(np.isfinite(S.clicks()[:, :, v, 0]).any(axis=1))
+        check(all(p.local_index(v, S.local_frame(0, r, 0)) == S.local_frame(v, r, S.PLANTED[v]) for r in rows),
+              f"(c) camera {v + 1}: local_index(F_1(r)) == F_c(r) for every clicked row")
     cal = p.calibration
     check(cal is not None and cal.is_internal() and isinstance(cal.camera(0).undistort, LWMUndistort),
           "(d) the calibration is internal, camera 1 keeps its LWM lens")
@@ -250,6 +269,43 @@ if p is not None and p.n_views == 3:
     check(all(clicks_at(p, v).keys() == expected(v, S.PLANTED[v]).keys() for v in range(3)),
           "(b) v7 copy: every camera's clicks at the same frames as the v7.3 copy's")
     check(isinstance(p.calibration.camera(0).undistort, NoUndistort), "(d) v7 copy: no lens (none in the file)")
+
+# ---- (j) a GoPro rig: the same file name in every camera's folder, none beside the .mat: each camera finds ITS
+# file in the sub-folder named like its stored folder, without asking (it asked, then refused camera 1)
+_asked["dir"] = 0
+import_by_gesture(GOPRO_DV)
+p = win.project
+check(_asked["dir"] == 0, "(j) a GoPro rig's videos are found in their camera folders without asking", _asked["dir"])
+check(p is not None and [os.path.relpath(s.video_path, GOPRO) for s in p.sessions]
+      == [os.path.join(f"cam{c + 1}", "clip.mp4") for c in range(3)],
+      "(j) each camera gets its own clip.mp4", None if p is None else [s.video_path for s in p.sessions])
+
+# ---- (k) only camera 1's clip.mp4 exists and the user points at its folder: camera 2 / 3 must NOT be given the same
+# file (it built a half project after replacing the one on screen); No to "import without them" changes nothing
+prev, n0 = win.project, len(said)
+_answer["question"] = QMessageBox.No
+import_by_gesture(ONEFILE_DV, folder=os.path.join(ONEFILE, "cam1"))          # the user picks camera 1's folder
+_answer["question"] = QMessageBox.Yes
+check(any("video 2" in m and "not found" in m for m in said[n0:]),
+      "(k) cameras 2 and 3 are named as not found (never camera 1's file again)", said[n0:])
+check(win.project is prev, "(k) ... and No leaves the project on screen as it was")
+
+# ---- (l) "Head" and "head", camera 1 never clicked "Head": every camera has both points in DLTdv's order and the
+# same name means the same DLTdv point in every camera (they were paired the wrong way round)
+import_by_gesture(NAMES_DV)
+p = win.project
+if p is not None and p.n_views == 3:
+    check(all([pt.name for pt in s.points] == ["Head", "head (2)"] for s in p.sessions),
+          "(l) every camera: Head, head (2), in DLTdv's order", [[pt.name for pt in s.points] for s in p.sessions])
+    xy = S.clicks()
+    s0 = p.sessions[0]
+    k2 = [pt.name for pt in s0.points].index("head (2)")
+    want = {int(S.local_frame(0, r)) for r in range(xy.shape[0]) if np.isfinite(xy[r, 1, 0, 0])}
+    check(set(np.flatnonzero(s0.tracked[:, k2]).tolist()) == want and not s0.tracked[:, 1 - k2].any(),
+          "(l) camera 1: its clicks are on 'head (2)' (DLTdv's 2nd point), none on 'Head'")
+    if seen["report"]:
+        check("3D check: good" in seen["report"][-1].text, "(l) the 3D check is good (points paired right)",
+              seen["report"][-1].text[-600:])
 
 # ---- (g) refusals, in words
 n0, prev = len(said), win.project

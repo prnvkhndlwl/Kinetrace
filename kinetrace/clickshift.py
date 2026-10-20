@@ -93,7 +93,7 @@ def _patch(grey: np.ndarray, x: int, y: int, h: int) -> np.ndarray | None:
     H, W = grey.shape[:2]
     if not (0 <= x < W and 0 <= y < H):
         return None
-    return grey[max(0, y - h):y + h + 1, max(0, x - h):x + h + 1]
+    return grey[max(0, y - h):y + h + 1, max(0, x - h):x + h + 1].copy()    # a copy: a view keeps the frame
 
 
 def check_camera(path: str, xy: np.ndarray, frames: np.ndarray, fps: float, n_frames: int | None = None,

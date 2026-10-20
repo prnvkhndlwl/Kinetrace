@@ -10929,13 +10929,15 @@ class MainWindow(QMainWindow):
         except Exception as e:  # noqa: BLE001 - (G142) a failed READ in words, the traceback logged
             self._read_failed("Cannot import this DLTdv project", e, "The DLTdv project", dltdvproject.DLTdvImportError)
             return
-        found = dltdvproject.find_videos(dv)
+        # (the stored paths may be on a network share that takes seconds to answer: off the GUI thread)
+        found = self._in_background("Looking for the project's videos", lambda: dltdvproject.find_videos(dv))
         if any(f is None for f in found):
             lost = [dv.video_files[c] for c, f in enumerate(found) if f is None]
             folder = QFileDialog.getExistingDirectory(
                 self, f"Where are the videos? ({', '.join(lost)})", str(Path(path).parent))
             if folder:
-                found = dltdvproject.find_videos(dv, folder)
+                found = self._in_background("Looking for the project's videos",
+                                            lambda: dltdvproject.find_videos(dv, folder))
         if found[0] is None:
             QMessageBox.warning(self, title, f"Camera 1's video, {dv.video_files[0]}, was not found (not where the "
                                 "project says, beside it, in its parent folder or in the folder chosen). Camera 1 "
@@ -10953,12 +10955,12 @@ class MainWindow(QMainWindow):
                 left_out[c] = (f"the project's pictures are {dv.sizes[c][0]} x {dv.sizes[c][1]} but "
                                f"{Path(found[c]).name} is {info.width} x {info.height}: not the video it was "
                                "clicked on")
+        if any(isinstance(infos.get(str(found[c])), str) and infos[str(found[c])] == "cancelled" for c in present):
+            self.statusBar().showMessage("Import cancelled — nothing was changed", 5000)
+            return
         if 0 in left_out:
             QMessageBox.warning(self, title, f"Camera 1 ({dv.video_files[0]}) cannot be used: {left_out[0]}. "
                                 "Camera 1 is the project's clock, so nothing was imported.")
-            return
-        if any(isinstance(infos.get(str(found[c])), str) and infos[str(found[c])] == "cancelled" for c in present):
-            self.statusBar().showMessage("Import cancelled — nothing was changed", 5000)
             return
         if left_out:
             text = "\n".join(f"• video {c + 1} ({dv.video_files[c]}): {r}" for c, r in sorted(left_out.items()))
@@ -10979,7 +10981,9 @@ class MainWindow(QMainWindow):
             out = []
             for i, c in enumerate(kept):
                 info = infos[str(found[c])]
-                if dv.n_clicks(c) == 0 or cancelled():
+                if cancelled():
+                    return None                       # Cancel = the whole check skipped, nothing half-offered
+                if dv.n_clicks(c) == 0:
                     out.append(None)
                     continue
                 try:
@@ -10988,11 +10992,14 @@ class MainWindow(QMainWindow):
                         progress=lambda a, b, i=i, c=c: report(
                             f"Camera {i + 1} of {len(kept)} ({dv.video_files[c]}): frame {a} of {b}", a, b)))
                 except Exception as e:  # noqa: BLE001 - one unreadable camera is "cannot tell", said
-                    out.append(clickshift.ClickFit("cannot", reason=f"its video could not be read ({e})"))
-            return out
+                    out.append(clickshift.ClickFit("cannot", reason=_plain_error(e, "its video could not be read")))
+            return None if cancelled() else out
         fits = self._in_background("Checking that the clicks sit on the right pictures", check,
                                    detail="Cancel skips the check (DLTdv's frame numbers are kept)",
                                    progress=True, cancellable=True)
+        skipped = fits is None
+        if skipped:
+            fits = [None] * len(kept)
         shifts = [0] * len(kept)
         if any(f is not None and f.offer is not None for f in fits):
             dlg = dltdvimport.ClickShiftDialog(self, [dv.video_files[c] for c in kept], fits)
@@ -11028,6 +11035,9 @@ class MainWindow(QMainWindow):
         else:
             cal_note = (f"No calibration: DLTdv has DLT coefficients for {n_cal} of these cameras (3D needs two).")
         imp, maps = dv.imported(kept, shifts)
+        for s in p.sessions:                    # every point in every camera, in DLTdv's order (one landmark list)
+            for nm in dv.point_names:
+                s.add_landmark(nm)
         applied = [trackio.apply(p.sessions[i], imp, camera=i, frame_of_row=maps[i]) for i in range(len(kept))]
         self._share_landmarks(undoable=False)
         self._undo_snap = None                             # a new project: Discard / not saving is the way back
@@ -11054,7 +11064,8 @@ class MainWindow(QMainWindow):
                         name_of=lambda n: key.get(trackio.name_key(n), n)))
             except Exception as e:  # noqa: BLE001 - the import stands; the check says it could not run
                 cmp = {"n": 0, "why": _plain_error(e, "the 3D could not be computed")}
-        html = dltdvimport.report_html(dv, kept, found, shifts, fits, left_out, applied, cmp, cal_note)
+        html = dltdvimport.report_html(dv, kept, found, shifts, fits, left_out, applied, cmp, cal_note,
+                                       list(p.offsets), skipped)
         dlg = dltdvimport.ImportReportDialog(self, f"Imported {name}", html)
         dlg.exec()
         dlg.deleteLater()
