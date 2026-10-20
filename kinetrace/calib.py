@@ -272,6 +272,187 @@ class _LWMFit:
         return out
 
 
+# (I313) DLTdv's own undistortion. DLTdv8 keeps TWO transforms per camera: `camud` undistorts every click
+# (applyTform -> tforminv) and `camd`, an LWM fitted on camud's outputs, maps undistorted -> raw for drawing
+# (MATLAB runs an LWM in that direction only). Kinetrace reads camd's control points; running that LWM
+# backwards only approximates camud (an LWM is a weighted mean of least-squares polynomials, not an
+# interpolant: ~0.1 mm in 3D on real projects, and undefined past its grid). The camud models in use are
+# closed, so camd's control points -- camud's exact outputs on a grid -- give their parameters back exactly.
+DLTDV_EXACT_PX = 1e-6           # a model is DLTdv's only when it reproduces EVERY control point this closely
+
+
+def _ocam_undistort(p: np.ndarray, ss, xc, yc, c, d, e, width, height) -> np.ndarray:
+    """The GoPro fisheye camud (fisheyeUndistort_v2): Scaramuzza's OCamCalib cam2world -- (row, col) through
+    the affine [[c, d], [e, 1]] about (xc, yc), the ray's z = polynomial ss in the radius -- then a pinhole at
+    focal width / 4 about (width / 2, height / 2). `p` (n, 2) x, y in the file's pixels."""
+    m = np.linalg.inv(np.array([[c, d], [e, 1.0]])) @ (np.vstack([p[:, 1], p[:, 0]]) - np.array([[xc], [yc]]))
+    z = np.polyval(np.asarray(ss, np.float64)[::-1], np.sqrt(m[0] ** 2 + m[1] ** 2))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        s = -width / 4.0 / z
+    return np.column_stack([m[1] * s + width / 2.0, m[0] * s + height / 2.0])
+
+
+def _brown3_undistort(p: np.ndarray, f, cx, cy, k) -> np.ndarray:
+    """A camera profile's camud (create_Tforms.m `undistort_Tform`): the Bouguet / Brown model (k1, k2, p1, p2,
+    k3) inverted by exactly THREE fixed-point iterations, as DLTdv runs it (not converged at a wide lens's
+    edge -- that is what DLTdv's 3D and its calibration were made with)."""
+    k = np.asarray(k, np.float64)
+    uvn = (p - [cx, cy]) / f
+    uvnd = uvn.copy()
+    for _ in range(3):
+        r2 = (uvnd ** 2).sum(1)
+        rad = 1 + k[0] * r2 + k[1] * r2 ** 2 + k[4] * r2 ** 3
+        tx = 2 * k[2] * uvnd[:, 0] * uvnd[:, 1] + k[3] * (r2 + 2 * uvnd[:, 0] ** 2)
+        ty = k[2] * (r2 + 2 * uvnd[:, 1] ** 2) + 2 * k[3] * uvnd[:, 0] * uvnd[:, 1]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            uvnd = (uvn - np.column_stack([tx, ty])) / rad[:, None]
+    return uvnd * f + [cx, cy]
+
+
+_DLTDV_MODELS = {"ocam": _ocam_undistort, "brown3": _brown3_undistort}
+
+
+class DLTdvUndistort:
+    """(I313) A DLTdv camera's own undistortion (`camud`), matched from the control points of the LWM DLTdv
+    stores (`match_dltdv_lens`): model "ocam" (the GoPro fisheye) or "brown3" (a camera profile .txt).
+
+    `undistort` is DLTdv's model, closed form (NaN where it has no value); `distort` is the stored LWM itself,
+    exactly MATLAB's construction and what DLTdv draws with. `offset` = pixels added before the model and taken
+    off after: 0 in the file's frame, the file's `pixel_origin` once the camera is internal (0-based)."""
+    kind = "dltdv"
+
+    def __init__(self, model: str, params: dict, lwm: LWMUndistort, offset: float = 0.0):
+        if model not in _DLTDV_MODELS:
+            raise ValueError(f"unknown DLTdv lens model '{model}'")
+        self.model = model
+        self.params = {k: (np.asarray(v, np.float64) if np.ndim(v) else float(v)) for k, v in params.items()}
+        self.lwm = lwm
+        self.offset = float(offset)
+
+    def undistort(self, pts: np.ndarray) -> np.ndarray:
+        p = np.atleast_2d(np.asarray(pts, np.float64))
+        out = np.full(p.shape, np.nan)
+        ok = np.isfinite(p).all(axis=1)
+        if ok.any():
+            u = _DLTDV_MODELS[self.model](p[ok] + self.offset, **self.params) - self.offset
+            u[~np.isfinite(u).all(axis=1)] = np.nan
+            out[ok] = u
+        return out
+
+    def distort(self, pts: np.ndarray) -> np.ndarray:
+        return self.lwm.distort(pts)
+
+    def to_json(self) -> dict:
+        return {"kind": self.kind, "model": self.model, "offset": self.offset,
+                "params": {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in self.params.items()},
+                "lwm": self.lwm.to_json()}
+
+
+def _fit_ocam(raw: np.ndarray, und: np.ndarray, width: float, height: float):
+    """OCam parameters from (raw, undistorted) pairs. ss is LINEAR once the affine part is fixed (z (u - W/2) =
+    -(W/4) m1 and z (v - H/2) = -(W/4) m0), so only xc, yc, c, d, e are searched (variable projection), from a
+    few starts about the picture centre. Returns (params, max error px)."""
+    from scipy.optimize import least_squares
+    W, H = float(width), float(height)
+    q = W / 4.0                                         # rho in units of W/4 keeps the columns O(1)
+    pr = np.vstack([raw[:, 1], raw[:, 0]])
+    du, dv = und[:, 0] - W / 2, und[:, 1] - H / 2
+
+    def ss_for(a):
+        m = np.linalg.inv(np.array([[a[2], a[3]], [a[4], 1.0]])) @ (pr - np.array([[a[0]], [a[1]]]))
+        rho = np.sqrt(m[0] ** 2 + m[1] ** 2) / q
+        B = np.column_stack([np.ones_like(rho), rho ** 2, rho ** 3, rho ** 4])
+        s = np.linalg.lstsq(np.vstack([B * du[:, None], B * dv[:, None]]),
+                            np.r_[-q * m[1], -q * m[0]], rcond=None)[0]
+        return np.array([s[0], 0.0, s[1] / q ** 2, s[2] / q ** 3, s[3] / q ** 4])
+
+    def params(a):
+        return dict(ss=ss_for(a), xc=a[0], yc=a[1], c=a[2], d=a[3], e=a[4], width=W, height=H)
+
+    def res(a):
+        r = (_ocam_undistort(raw, **params(a)) - und).ravel()
+        return np.where(np.isfinite(r), r, 1e6)
+
+    best = None
+    for dx, dy in ((0, 0), (-0.05, 0), (0.05, 0), (0, -0.05), (0, 0.05), (-0.05, -0.05), (0.05, 0.05)):
+        r = least_squares(res, [H / 2 + dx * H, W / 2 + dy * W, 1.0, 0.0, 0.0], x_scale=[H, W, 0.01, 0.01, 0.01],
+                          xtol=1e-15, ftol=1e-15, gtol=1e-15, max_nfev=3000)
+        r = least_squares(res, r.x, method="lm", xtol=1e-15, ftol=1e-15, gtol=1e-15, max_nfev=3000)
+        if best is None or r.cost < best.cost:
+            best = r
+        if np.abs(best.fun).max() < DLTDV_EXACT_PX / 10:
+            break
+    prm = params(best.x)
+    return prm, float(np.nanmax(np.hypot(*(_ocam_undistort(raw, **prm) - und).T)))
+
+
+def _fit_brown3(raw: np.ndarray, und: np.ndarray, width: float, height: float):
+    """Bouguet parameters from (raw, undistorted) pairs: f is fixed at the picture width (f alone is not
+    identifiable: only k1/f^2, k2/f^4, k3/f^6, p/f are), the centre and k by least squares. Returns
+    (params, max error px)."""
+    from scipy.optimize import least_squares
+    W, H = float(width), float(height)
+
+    def params(a):
+        return dict(f=W, cx=a[0], cy=a[1], k=np.asarray(a[2:7]))
+
+    def res(a):
+        r = (_brown3_undistort(raw, **params(a)) - und).ravel()
+        return np.where(np.isfinite(r), r, 1e6)
+
+    best = None
+    for dx, dy in ((0, 0), (-0.05, -0.05), (0.05, 0.05)):
+        r = least_squares(res, [W / 2 + 0.5 + dx * W, H / 2 + 0.5 + dy * H, 0, 0, 0, 0, 0],
+                          x_scale=[W, H, 0.1, 0.01, 1e-3, 1e-3, 1e-3], xtol=1e-15, ftol=1e-15, gtol=1e-15,
+                          max_nfev=3000)
+        r = least_squares(res, r.x, method="lm", xtol=1e-15, ftol=1e-15, gtol=1e-15, max_nfev=3000)
+        if best is None or r.cost < best.cost:
+            best = r
+        if np.abs(best.fun).max() < DLTDV_EXACT_PX / 10:
+            break
+    prm = params(best.x)
+    return prm, float(np.nanmax(np.hypot(*(_brown3_undistort(raw, **prm) - und).T)))
+
+
+def match_dltdv_lens(lwm: LWMUndistort, width: int, height: int) -> "DLTdvUndistort | None":
+    """(I313) DLTdv's own undistortion for a DLTdv LWM profile (control points in the FILE's pixels): the model
+    whose parameters reproduce EVERY control point within `DLTDV_EXACT_PX`, or None (a profile made some other
+    way, or no picture size): the caller keeps the LWM run backwards and says it is an approximation. The
+    file's samples decide, never a name; a model that is right on ~1,000 control points to 1e-6 px IS that
+    model, and a wrong one misses by pixels."""
+    if not (width and height) or len(lwm.raw_pts) < 12:
+        return None
+    for model, fit in (("ocam", _fit_ocam), ("brown3", _fit_brown3)):
+        try:
+            prm, err = fit(lwm.raw_pts, lwm.und_pts, width, height)
+        except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+            continue
+        if np.isfinite(err) and err <= DLTDV_EXACT_PX:
+            return DLTdvUndistort(model, prm, lwm, 0.0)
+    return None
+
+
+def match_dltdv_lenses(lenses: list, sizes: list) -> tuple[list, str]:
+    """`match_dltdv_lens` over a DLTdv project's cameras (`sizes` = (width, height) each). Returns (the lenses,
+    a sentence naming the cameras whose LWM matched no model, or "")."""
+    out, approx = [], []
+    for c, und in enumerate(lenses):
+        if isinstance(und, LWMUndistort):
+            w, h = sizes[c] if c < len(sizes) else (0, 0)
+            m = match_dltdv_lens(und, int(w), int(h))
+            if m is None:
+                approx.append(c + 1)
+            out.append(m or und)
+        else:
+            out.append(und)
+    note = ("" if not approx else
+            "The lens profile of camera(s) " + ", ".join(map(str, approx)) + " matches neither of DLTdv's lens "
+            "models (a camera profile, the GoPro fisheye), so it is used through its stored LWM run backwards: an "
+            "approximation of what DLTdv did, typically a few hundredths of a pixel (about 0.1 mm in 3D on a "
+            "GoPro rig).")
+    return out, note
+
+
 class OpenCVUndistort:
     """Brown–Conrady / OpenCV model: camera matrix K and distortion
     coefficients (k1, k2, p1, p2[, k3 ...]). Undistorted points are returned
@@ -346,7 +527,14 @@ def undistort_from_json(d: dict):
     if kind == "opencv":
         return OpenCVUndistort(np.asarray(d["K"]), np.asarray(d["dist"]), bool(d.get("fisheye", False)),
                                None if d.get("P") is None else np.asarray(d["P"]))
-    return NoUndistort()
+    if kind == "dltdv":
+        return DLTdvUndistort(str(d["model"]), dict(d["params"]), undistort_from_json(d["lwm"]),
+                              float(d.get("offset", 0.0)))
+    if kind == "none":
+        return NoUndistort()
+    # (I313) never drop a lens unseen: a kind this version does not know would make every 3D point wrong
+    raise ValueError(f"the calibration uses a lens model this Kinetrace does not know ('{kind}'); it was "
+                     "probably made by a newer Kinetrace -- update Kinetrace (Help > Check for Updates)")
 
 
 def _mcos_object_id(e) -> int | None:
@@ -436,9 +624,16 @@ class CameraCalibration:
         A = self.pixel_matrix()
         P = A @ dlt_matrix(self.coefs)
         und = self.undistort
+
+        def moved_lwm(lw):
+            return LWMUndistort(self.from_dlt_pixels(lw.raw_pts), self.from_dlt_pixels(lw.und_pts), lw.n_neighbours)
         if isinstance(und, LWMUndistort):
-            und = LWMUndistort(self.from_dlt_pixels(und.raw_pts), self.from_dlt_pixels(und.und_pts),
-                               und.n_neighbours)
+            und = moved_lwm(und)
+        elif isinstance(und, DLTdvUndistort):
+            if self.y_flip:
+                raise ValueError("a DLTdv lens model with y measured from the bottom edge cannot be used; DLTdv "
+                                 "measures y down from the top")
+            und = DLTdvUndistort(und.model, und.params, moved_lwm(und.lwm), und.offset + self.pixel_origin)
         elif isinstance(und, OpenCVUndistort):
             if self.y_flip:
                 raise ValueError("an OpenCV lens model with y measured from the bottom edge cannot be used; "
@@ -688,6 +883,13 @@ class Calibration:
                                                          int(getattr(tf, "N", 12)))
                 if note:
                     notes.append(note)
+                # (I313) DLTdv undistorted the clicks with its own model, not with this LWM
+                lenses, approx = match_dltdv_lenses([cam.undistort for cam in cams],
+                                                    [(cam.width, cam.height) for cam in cams])
+                for cam, und in zip(cams, lenses):
+                    cam.undistort = und
+                if approx:
+                    notes.append(approx)
             except Exception as e:      # noqa: BLE001 — the DLT still loads; SAY the lenses did not (I102)
                 for cam in cams:
                     cam.undistort = NoUndistort()
