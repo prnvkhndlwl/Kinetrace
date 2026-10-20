@@ -97,7 +97,7 @@ the file).
 ### `kinetrace.json`
 
 ```json
-{"format": "kinetrace-project", "format_version": 3, "app_version": "0.3.0",
+{"format": "kinetrace-project", "format_version": 4, "app_version": "0.3.0",
  "project_id": "5f0c…", "saved_at": "2026-09-29T21:04:11.482113+00:00",
  "cameras": [{"folder": "cam1", "name": "cam1"}], "videos_relative_to": "project"}
 ```
@@ -107,7 +107,9 @@ is matched to it); `saved_at` identifies the save: the moment kinetrace.json
 is replaced is the moment a save counts. `videos_relative_to` = where the
 videos' `relative_path`s start (`project` = the project folder itself;
 `container` = the folder holding a single file). A project whose
-`format_version` is newer than the program is refused with a message. Format 3
+`format_version` is newer than the program is refused with a message. Format 4
+adds the `dltdv` lens kind below (an older Kinetrace refuses such a project
+instead of opening it without its lens). Format 3
 (animal layers) adds `points.csv`'s `animal` column and keeps each animal's
 skeleton in its own `segment.json`; there is no camera-level `skeleton.json`
 any more.
@@ -242,7 +244,19 @@ counted from 1) or counted from the bottom edge is converted once, on import;
 a file written with `pixel_origin` 1 (an older save) is converted when the
 project opens and saved 0-based. The dltCoefs.csv export adds the 1 back.
 `undistort` = the lens correction applied to raw pixels before the DLT
-(`none`, `opencv` with K / dist / optional P, or `lwm` with control points).
+(`none`, `opencv` with K / dist / optional P, `lwm` with control points, or
+`dltdv`: DLTdv's own undistortion of a camera -- `model` `ocam` (the GoPro
+fisheye: OCamCalib's `ss`, `xc`, `yc`, `c`, `d`, `e`, re-projected by a pinhole at
+focal `width` / 4 about the picture centre) or `brown3` (a DLTdv camera profile:
+`cx`, `cy` and `k` = k1 k2 p1 p2 k3, inverted by exactly three fixed-point steps,
+as DLTdv does; `f` is set to the picture width and `k` scaled to it, because the
+stored points fix only k / f^n -- the same map as the profile, other numbers; a
+profile with two focal lengths matches no model), its `params` in the DLTdv
+file's pixels (both found from the stored map's points), `offset` (the
+pixels added before the model and taken off after: 1 for a DLTdv file read
+into Kinetrace's 0-based pixels), and `lwm`, the local weighted mean DLTdv
+stored, used for the other direction (raw-picture drawing). A lens kind the
+program does not know is refused with a message, never read as no lens.
 A camera the calibration does not cover (left out of a wand calibration) is
 `null` in both `cams` and `coefs`, at its place; cameras after the last
 entry are not calibrated either (a camera added after calibrating). 3D uses
@@ -430,8 +444,8 @@ beside them; the DLTdv exports do not. For reference:
 A calibration made by easyWand or DLTdv usually describes a **mirrored**
 (left-handed) world, which the K + R/t formats cannot hold: Kinetrace then
 exports that world mirrored in Z and says so, and 3D points exported beside
-it are mirrored the same way. DLTdv's own lens correction (a local weighted
-mean) is not an OpenCV model: an OpenCV model is fitted to it and its worst
+it are mirrored the same way. DLTdv's own lens correction (its fisheye or
+camera-profile model, or a local weighted mean) is not an OpenCV model: an OpenCV model is fitted to it and its worst
 error is reported.
 
 Sources: aniposelib `cameras.py` and anipose `triangulate.py`

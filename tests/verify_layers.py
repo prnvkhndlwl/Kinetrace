@@ -180,8 +180,8 @@ a.segments[0].shown = False
 projectfile.save(pr, f)
 q, _st, meta = projectfile.read(f)
 qa = q.sessions[0]
-check(projectfile.FORMAT_VERSION == 3 and json.load(open(os.path.join(f, "kinetrace.json")))["format_version"] == 3,
-      "format 3")
+check(projectfile.FORMAT_VERSION >= 3 and json.load(open(os.path.join(f, "kinetrace.json")))["format_version"]
+      == projectfile.FORMAT_VERSION, "format 3 or later (4 = I313's dltdv lens kind)")
 check(qa.segment_names() == ["vampire"] and qa.segments[0].skeleton == a.segments[0].skeleton
       and not qa.segments[0].hold and not qa.segments[0].shown
       and [(p.name, p.segment) for p in qa.points] == [(p.name, p.segment) for p in a.points],

@@ -1019,4 +1019,75 @@ print(f"automatic 3D: {_n_upd} block updates (LWM + OpenCV lenses, fractional of
       "removed landmark and a moving range all equal the full reconstruct bit for bit; a singular cell decides "
       "only itself (I305) OK")
 
+# ---- (I313) DLTdv's own lens models, matched from the control points of the LWM DLTdv stores ----------------
+import json as _json  # noqa: E402
+
+import _synth_dvproject as _S  # noqa: E402  (DLTdv's two camud functions, ported from MATLAB, made-up constants)
+from kinetrace.calib import (DLTdvUndistort, _fit_brown3, _fit_ocam, match_dltdv_lens,  # noqa: E402
+                             undistort_from_json)
+
+_q = np.random.default_rng(11).uniform([1, 1], [_S.W, _S.H], (4000, 2))
+for _c, _fn in _S.LENS_MODELS.items():
+    _uv, _xy = _S.dltdv_control_points(_fn, 7 + _c)
+    _lw = LWMUndistort(_uv, _xy, 15)
+    _m = match_dltdv_lens(_lw, _S.W, _S.H)
+    _want = "brown3" if _fn is _S.brown3 else "ocam"
+    assert isinstance(_m, DLTdvUndistort) and _m.model == _want, (_c, _m and _m.model)
+    assert np.abs(_m.undistort(_q) - _fn(_q)).max() < 1e-9, "the matched model is DLTdv's camud everywhere"
+    _other = (_fit_ocam if _want == "brown3" else _fit_brown3)(_uv, _xy, _S.W, _S.H)[1]
+    assert _other > 0.1, f"the other model must miss a {_want} profile by pixels, not {_other}"
+    # internal (0-based) = the file's model at p + 1, minus 1; the raw-picture direction is today's LWM, bit for bit
+    _cf = CameraCalibration(cams[0].coefs, _S.W, _S.H, _m, pixel_origin=1.0).to_internal()
+    _cl = CameraCalibration(cams[0].coefs, _S.W, _S.H, _lw, pixel_origin=1.0).to_internal()
+    assert isinstance(_cf.undistort, DLTdvUndistort) and _cf.undistort.offset == 1.0
+    assert np.abs(_cf.undistort.undistort(_q) - (_fn(_q + 1.0) - 1.0)).max() < 1e-9
+    assert np.array_equal(_m.distort(_q), _lw.distort(_q), equal_nan=True)
+    assert np.array_equal(_cf.undistort.distort(_q), _cl.undistort.distort(_q), equal_nan=True)
+    # the saved form gives back the same model, bit for bit
+    _back = undistort_from_json(_json.loads(_json.dumps(_cf.undistort.to_json())))
+    assert isinstance(_back, DLTdvUndistort) and _back.model == _want and _back.offset == 1.0
+    assert np.array_equal(_back.undistort(_q), _cf.undistort.undistort(_q), equal_nan=True)
+    assert np.array_equal(_back.distort(_q), _cf.undistort.distort(_q), equal_nan=True)
+    # DLTdv never measures y from the bottom: refused in words
+    try:
+        CameraCalibration(cams[0].coefs, _S.W, _S.H, _m, pixel_origin=1.0, y_flip=True).to_internal()
+        raise AssertionError("a bottom-left DLTdv lens was accepted")
+    except ValueError as _e:
+        assert "bottom" in str(_e)
+# profiles made some other way stay LWMs (run backwards, as before): a radial map and a near-identity bend
+assert match_dltdv_lens(lwm, W, H) is None
+assert match_dltdv_lens(LWMUndistort(*_S.lens_points(), 12), _S.W, _S.H) is None
+assert match_dltdv_lens(LWMUndistort(*_S.dltdv_control_points(_S.ocam, 8)), 0, 0) is None, "no size: no match"
+# a lens kind this version does not know is refused in words, never read as "no lens"
+try:
+    undistort_from_json({"kind": "spline9"})
+    raise AssertionError("an unknown lens kind was read as no lens")
+except ValueError as _e:
+    assert "spline9" in str(_e) and "newer" in str(_e)
+# review fixes: a kcal from a newer Kinetrace says "update" (it fell through to the K + R/t reader and said "needs at
+# least two cameras"); a damaged dltdv lens is refused in words when it is read, not as a TypeError during 3D
+from kinetrace import calibio as _calibio  # noqa: E402
+from kinetrace.calib import Calibration as _Cal  # noqa: E402
+_kc = os.path.join(OUT, "i313_newer.kcal.json")
+_calibio.write_kcal(_kc, _Cal([_cf, CameraCalibration(cams[1].coefs, _S.W, _S.H, NoUndistort(), pixel_origin=0.0)]))
+_d = _json.load(open(_kc, encoding="utf-8"))
+assert _d["cameras"][0]["undistort"]["kind"] == "dltdv" and _calibio.load_calibration(_kc).cameras[0].undistort.kind == "dltdv"
+_d["cameras"][0]["undistort"] = {"kind": "spline9"}
+_json.dump(_d, open(_kc, "w", encoding="utf-8"))
+try:
+    _calibio.load_calibration(_kc)
+    raise AssertionError("a kcal with an unknown lens kind was read")
+except _calibio.CalibFormatError as _e:
+    assert "newer" in str(_e) and "i313_newer.kcal.json" in str(_e), str(_e)
+for _bad in ({"kind": "dltdv", "model": "ocam", "params": {"xc": 1}, "lwm": {"kind": "none"}},
+             dict(_cf.undistort.to_json(), lwm={"kind": "none"})):
+    try:
+        undistort_from_json(_bad)
+        raise AssertionError("a damaged dltdv lens was read")
+    except ValueError as _e:
+        assert "damaged" in str(_e), str(_e)
+print("DLTdv lens models OK (I313): brown3 / ocam matched only by their own profiles (the other misses by > 0.1 "
+      "px), exact to 1e-9 px, 0-based = file + 1, distort = the LWM bit for bit, json round trip exact, "
+      "bottom-left and unknown kinds refused, other LWMs stay LWMs")
+
 print("VERIFY 3D PASSED")

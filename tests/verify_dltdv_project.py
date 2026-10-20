@@ -307,6 +307,57 @@ if p is not None and p.n_views == 3:
         check("3D check: good" in seen["report"][-1].text, "(l) the 3D check is good (points paired right)",
               seen["report"][-1].text[-600:])
 
+# ---- (n) I313: DLTdv undistorts clicks with camud (camera 2: a profile .txt's 3-iteration Bouguet model, camera 3:
+# the GoPro fisheye), never with the LWM it stores. Kinetrace ran that LWM backwards: ~1e-4 of the volume off
+# DLTdv's own 3D. Each camera must get DLTdv's model back from the control points and the 3D must be DLTdv's.
+# The synthetic videos draw the dots where an UNdistorted camera sees them, so this project's raw clicks do not
+# sit on them: the frame check's offers are declined here (DLTdv's frames kept; the frames are (e)'s business).
+_offer["take"] = False
+import_by_gesture(B["lens"])
+_offer["take"] = True
+p = win.project
+if p is not None and p.n_views == 3:
+    und = [p.calibration.camera(v).undistort for v in range(3)]
+    check([getattr(u, "kind", "none") for u in und] == ["none", "dltdv", "dltdv"]
+          and [getattr(u, "model", None) for u in und] == [None, "brown3", "ocam"],
+          "(n) cameras 2 and 3 undistort with DLTdv's own model (brown3, ocam)",
+          [(getattr(u, "kind", "none"), getattr(u, "model", None)) for u in und])
+    dvl = dltdvproject.read(B["lens"])
+    rec = reconstruct(p.sessions, p.calibration, p.rates, p.offsets, (0, S.N_REF - 1))
+    cmp = dltdvproject.compare_3d(dvl, rec, [0, 1, 2], [0, 0, 0])
+    check(cmp.get("n", 0) > 100 and cmp["rel"] <= 1e-9 and cmp.get("missing", 1) == 0,
+          "(n) Kinetrace's 3D is DLTdv's stored 3D (median <= 1e-9 of the volume, none missing)",
+          {k: cmp.get(k) for k in ("n", "median", "rel", "missing")})
+    # ---- (o) the report says which lens each camera got, in words
+    txt = seen["report"][-1].text if seen["report"] else ""
+    print("  --- the lens project's report ---\n" + txt.encode("ascii", "replace").decode() + "\n  ---")
+    check("lens profile, exact as DLTdv" in txt and "fisheye, exact as DLTdv" in txt and "as filmed" in txt,
+          "(o) the report: camera 2 'lens profile, exact as DLTdv', camera 3 'fisheye, exact as DLTdv'", txt[:600])
+    check(dvl.lens_functions == ["", S.LENS_FUNCS[1], S.LENS_FUNCS[2]], "(o) camud's MATLAB function read as a hint",
+          dvl.lens_functions)
+    # ---- (p) Ctrl+S, then the saved project gives back the same models and the same 3D, bit for bit
+    SAVED = os.path.join(OUT, "lens_saved.kinetrace")
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (SAVED, ""))
+    QTest.keyClick(win, Qt.Key_S, Qt.ControlModifier)
+    wait(lambda: os.path.isfile(os.path.join(SAVED, "kinetrace.json")) and not win.project.dirty, 60,
+         "(p) Ctrl+S saves the imported project")
+    from kinetrace.project import Project  # noqa: E402
+    back = Project.load(SAVED)
+    bu = [back.calibration.camera(v).undistort for v in range(3)]
+    same_models = all(getattr(a, "kind", "") == getattr(b, "kind", "") and getattr(a, "model", None)
+                      == getattr(b, "model", None) and getattr(a, "offset", 0) == getattr(b, "offset", 0)
+                      and all(np.array_equal(a.params[k], b.params[k]) for k in getattr(a, "params", {}))
+                      for a, b in zip(und, bu))
+    rb = reconstruct(back.sessions, back.calibration, back.rates, back.offsets, (0, S.N_REF - 1))
+    check(same_models and np.array_equal(rb.xyz, rec.xyz, equal_nan=True),
+          "(p) reopened: every camera's lens model and parameters, and the 3D, are the same bit for bit",
+          [(getattr(b, "kind", ""), getattr(b, "model", None)) for b in bu])
+# ---- (o) a profile no DLTdv model makes (camera 1's near-identity bend) stays the LWM, and says so
+dmain = dltdvproject.read(B["v73"])
+check(isinstance(dmain.lenses[0], LWMUndistort) and dltdvimport.lens_words(dmain, 0) == "LWM, approximate"
+      and any("matches neither" in n for n in dmain.notes),
+      "(o) a profile no DLTdv model makes stays the LWM, called approximate, with a sentence", dmain.notes)
+
 # ---- (g) refusals, in words
 n0, prev = len(said), win.project
 import_by_gesture(NOT_DV)

@@ -63,8 +63,9 @@ from kinetrace.recovery import safe_id  # noqa: F401 - the one project-id rule (
 _log = logging.getLogger("kinetrace.errors")        # the error log keeps what is logged here (crashlog.py)
 
 FORMAT = "kinetrace-project"
-FORMAT_VERSION = 3              # 3 = animal layers (G153: points.csv `animal`, the skeleton per animal); 2 = a
-#                                  folder, one CSV per landmark (I145); 1 = a zip, one tracks.csv per camera
+FORMAT_VERSION = 4              # 4 = the `dltdv` lens kind (I313: an older Kinetrace must refuse the project, not
+#                                  open it without its lens); 3 = animal layers (G153: points.csv `animal`, the
+#                                  skeleton per animal); 2 = a folder, one CSV per landmark (I145); 1 = a zip
 SUFFIX = ".kinetrace"
 
 
