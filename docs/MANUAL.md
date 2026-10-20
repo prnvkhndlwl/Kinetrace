@@ -3054,8 +3054,19 @@ As…**.
   same either way; only the pictures under the clicks change. **Cancel** imports
   nothing. Cancel on the "Checking that the clicks sit on the right pictures"
   card skips the check and keeps DLTdv's numbers.
+* **Lenses.** DLTdv corrects every click with the camera's own lens model — the
+  GoPro fisheye, or the model of a camera profile `.txt` — and stores a second,
+  approximate map beside it (a local weighted mean) only for drawing. Kinetrace
+  finds DLTdv's model again from the points of that stored map and uses it, so
+  the 3D is DLTdv's to a fraction of a micrometre. It only takes a model that
+  reproduces every one of the map's ~1,000 points to a millionth of a pixel; a
+  lens made some other way keeps the stored map, run the other way round, and
+  the report calls it **approximate** (typically a few hundredths of a pixel,
+  about 0.1 mm in 3D on a GoPro rig).
 * **The report** lists every camera (where its video was found, offset, frame
-  rate, lens, clicks, the frame check), the points, and the **3D check**:
+  rate, lens — *fisheye, exact as DLTdv*, *lens profile, exact as DLTdv*, *LWM,
+  approximate* or *as filmed* —, clicks, the frame check), the points, and the
+  **3D check**:
   Kinetrace's 3D from your clicks compared with the 3D DLTdv stored, with a
   verdict (good means the same 3D, as it should be) and one frame and point to
   check by hand in both programs.
