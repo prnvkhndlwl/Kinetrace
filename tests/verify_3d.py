@@ -494,6 +494,58 @@ for _X in (_tgt + [0.1, 0.2, -0.05], _tgt + [-0.3, -0.4, 0.2]):
     _line = epipolar_polyline(pair[0], pair[1], _u0, _pr)
     assert len(_line) >= 2 and np.linalg.norm(closest_on_polyline(_line, _u1) - _u1) < 1.5
 print("epipolar guides without a reconstruction hit on near-parallel / toed-out / mirrored pairs OK (I98)")
+# (I315) the first two cameras' meeting point was checked against those two only: on a rig where it lies
+# BEHIND a third camera (the owner's 10-camera rig: one camera drawn pointing away, Export Calibration
+# refused) that camera's rays were turned backwards. The origin is in front of every camera here.
+from kinetrace.calib import dlt_ray, front_sign  # noqa: E402
+from kinetrace.calibview import seen_by  # noqa: E402
+
+_Kw = np.array([[500.0, 0, W / 2], [0, 500.0, H / 2], [0, 0, 1]])
+
+
+def _probe_rig(meet, third):
+    """Cameras 1 and 2 look at `meet`; camera 3 at `third` looks at the origin."""
+    out = []
+    for _pos, _at in ((np.array([-2.0, -1.0, 0.3]), meet), (np.array([2.0, -1.0, 0.3]), meet), (third, np.zeros(3))):
+        _R, _t = look_at(_pos, np.asarray(_at, np.float64))
+        out.append(CameraCalibration(dlt_from_camera(_Kw, _R, _t), W, H, NoUndistort(), pixel_origin=0.0))
+    return out
+
+
+def _den(cam, X):
+    return float(np.asarray(cam.coefs, np.float64)[8:11] @ X) + 1.0
+
+
+_T = np.array([0.0, 3.0, 0.0])
+_rig3 = _probe_rig(_T, np.array([0.0, 1.5, 0.5]))
+# the premise, so this cannot pass vacuously: one det sign, the meeting point in front of 1-2, behind 3
+_dets = {float(np.sign(np.linalg.det(np.asarray(c.coefs, np.float64)[[0, 1, 2, 4, 5, 6, 8, 9, 10]].reshape(3, 3))))
+         for c in _rig3}
+assert len(_dets) == 1 and _den(_rig3[0], _T) > 0 and _den(_rig3[1], _T) > 0 and _den(_rig3[2], _T) < 0, _dets
+_pr = working_probe(Calibration(_rig3))
+assert _pr is not None and all(_den(c, _pr) > 0 for c in _rig3), \
+    f"the probe {_pr} is behind camera(s) {[k + 1 for k, c in enumerate(_rig3) if _den(c, _pr) <= 0]}"
+_c3 = _rig3[2].center()
+_, _ax3 = dlt_ray(_rig3[2].coefs, np.array([[W / 2.0, H / 2.0]]), _pr)
+_cos3 = float(_ax3[0] @ -_c3 / np.linalg.norm(_c3))
+assert _cos3 > 0.9, f"camera 3 looks away from the origin it faces: cos {_cos3:+.2f}"
+_Xn = np.array([0.1, 0.2, 0.05])
+_uvn = [c.project(_Xn[None])[0] for c in _rig3]
+assert all(0 <= u[0] < W and 0 <= u[1] < H for u in _uvn), _uvn
+_line = epipolar_polyline(_rig3[2], _rig3[0], _uvn[2], _pr)
+_miss = np.linalg.norm(closest_on_polyline(_line, _uvn[0]) - _uvn[0]) if len(_line) >= 2 else np.inf
+assert _miss < 1.5, f"camera 3's guide line in camera 1 misses the point by {_miss:.1f} px"
+_seen = int(seen_by(Calibration(_rig3), _Xn[None])[0])
+assert _seen == 3, f"a point in all three pictures counts as seen by {_seen}"
+# rule (a), the owner's choice: where the meeting point IS in front of every camera it is kept, exactly
+_T2 = np.array([0.0, 0.5, 0.0])
+_rig3b = _probe_rig(_T2, np.array([0.0, -3.0, 1.0]))
+assert all(_den(c, _T2) > 0 for c in _rig3b)
+_pr2 = working_probe(Calibration(_rig3b))
+assert _pr2 is not None and np.linalg.norm(_pr2 - _T2) < 1e-9, _pr2
+assert all(front_sign(c.coefs, _pr2) == 1.0 for c in _rig3b)
+print(f"a meeting point behind a third camera is not the probe: camera 3 faces the origin (cos {_cos3:+.2f}), "
+      f"its guide hits ({_miss:.2f} px), seen by {_seen}; a meeting point in front of all is kept OK (I315)")
 
 # (I132) the line is computed exactly: it runs to the picture's edges, or ends at the
 # vanishing point (infinitely far along the ray) / the epipole (the other camera's

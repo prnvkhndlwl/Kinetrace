@@ -602,7 +602,36 @@ def sec_h():
     print(f"H. {line[8:]}")
 
 
-SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f, sec_g, sec_h]
+def sec_i():
+    """(I315) a rig whose third camera has the first two cameras' meeting point BEHIND it (the owner's
+    10-camera rig): its pose pyramid and field of view point toward the volume, like the others'."""
+    from kinetrace import calibview as cv3
+
+    def look(pos, at):
+        z = at - pos
+        z = z / np.linalg.norm(z)
+        x = np.cross(z, [0, 0, 1.0])
+        x /= np.linalg.norm(x)
+        R = np.stack([x, np.cross(z, x), z])
+        return R, -R @ pos
+    K = np.array([[500.0, 0, 640], [0, 500.0, 360], [0, 0, 1]])
+    T = np.array([0.0, 3.0, 0.0])
+    cams = []
+    for pos, at in ((np.array([-2.0, -1.0, 0.3]), T), (np.array([2.0, -1.0, 0.3]), T),
+                    (np.array([0.0, 1.5, 0.5]), np.zeros(3))):
+        R, t = look(pos, at)
+        cams.append(CameraCalibration(dlt_from_camera(K, R, t), 1280, 720, NoUndistort(), pixel_origin=0.0))
+    cal = Calibration(cams, "m")
+    drawn, _ = cv3._cameras(cal, ["c1", "c2", "c3"], np.zeros((0, 3)), calib.working_probe(cal))
+    for cd in drawn:
+        toward = -cd.centre / np.linalg.norm(cd.centre)
+        for what, f in (("pose pyramid", cd.pose), ("field of view", cd.fov)):
+            cos = float(f.axis @ toward)
+            assert cos > 0.7, f"{cd.name}'s {what} points away from the origin it faces (cos {cos:+.2f})"
+    print("I. a camera that has the first two cameras' meeting point behind it is drawn facing the volume")
+
+
+SECTIONS = [sec_a, sec_b, sec_c, sec_d, sec_e, sec_f, sec_g, sec_h, sec_i]
 
 if __name__ == "__main__":
     if "--h-child" in sys.argv:
