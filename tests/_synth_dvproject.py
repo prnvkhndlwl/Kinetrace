@@ -36,7 +36,7 @@ ROWS = np.arange(20, 120)               # rows (clock frames) with clicks
 N_ROWS = 400                            # the project's row count (DLTdv: the clock video's length or more)
 POINTS = ["head", "tail"]
 VIDEOS = ["cam1_side.mp4", "cam2_top.mp4", "cam3_fast.mp4"]
-STORED = ["C:\\Lab\\rig\\cam1_side.mp4", "/home/lab/rig/cam2_top.mp4", "C:/Lab/rig/cam3_fast.mp4"]  # another machine
+STORED = ["C:\\Lab\\rig\\cam1_side.mp4", "/home/someone/rig/cam2_top.mp4", "C:/Lab/rig/cam3_fast.mp4"]  # another machine
 DOT_R = 7
 
 
