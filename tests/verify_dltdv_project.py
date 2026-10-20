@@ -307,6 +307,24 @@ if p is not None and p.n_views == 3:
         check("3D check: good" in seen["report"][-1].text, "(l) the 3D check is good (points paired right)",
               seen["report"][-1].text[-600:])
 
+# ---- (n) I313: DLTdv undistorts clicks with camud (camera 2: a profile .txt's 3-iteration Bouguet model, camera 3:
+# the GoPro fisheye), never with the LWM it stores. Kinetrace ran that LWM backwards: ~1e-4 of the volume off
+# DLTdv's own 3D. Each camera must get DLTdv's model back from the control points and the 3D must be DLTdv's.
+import_by_gesture(B["lens"])
+p = win.project
+if p is not None and p.n_views == 3:
+    und = [p.calibration.camera(v).undistort for v in range(3)]
+    check([getattr(u, "kind", "none") for u in und] == ["none", "dltdv", "dltdv"]
+          and [getattr(u, "model", None) for u in und] == [None, "brown3", "ocam"],
+          "(n) cameras 2 and 3 undistort with DLTdv's own model (brown3, ocam)",
+          [(getattr(u, "kind", "none"), getattr(u, "model", None)) for u in und])
+    dvl = dltdvproject.read(B["lens"])
+    rec = reconstruct(p.sessions, p.calibration, p.rates, p.offsets, (0, S.N_REF - 1))
+    cmp = dltdvproject.compare_3d(dvl, rec, [0, 1, 2], [0, 0, 0])
+    check(cmp.get("n", 0) > 100 and cmp["rel"] <= 1e-9 and cmp.get("missing", 1) == 0,
+          "(n) Kinetrace's 3D is DLTdv's stored 3D (median <= 1e-9 of the volume, none missing)",
+          {k: cmp.get(k) for k in ("n", "median", "rel", "missing")})
+
 # ---- (g) refusals, in words
 n0, prev = len(said), win.project
 import_by_gesture(NOT_DV)

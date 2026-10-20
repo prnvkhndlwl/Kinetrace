@@ -160,6 +160,93 @@ def lens_points() -> tuple[np.ndarray, np.ndarray]:
     return uv, xy
 
 
+# ---------------------------------------------------------------- DLTdv's own undistortions (I313)
+# DLTdv undistorts every click with the camera's `camud`, NOT with the LWM it stores (`camd`, undistorted -> raw,
+# for drawing only). The two camud functions in use, written here from their MATLAB sources (independently of
+# kinetrace.calib): DLTdv8a_internal/create_Tforms.m `undistort_Tform` (a camera profile .txt: Bouguet, 3 fixed-
+# point iterations) and the GoPro fisheye `fisheyeUndistort_v2` (Scaramuzza's OCamCalib cam2world, then a pinhole
+# at focal width/4 about the picture centre). Every constant below is made up.
+
+BROWN = dict(f=500.0, c=(320.5, 180.5), k=(-0.2, 0.05, 3e-4, -2e-4, 0.0))
+OCAM = dict(ss=(-300.0, 0.0, 8e-4, 1e-7, 5e-10), xc=182.3, yc=318.9, c=1.002, d=-0.001, e=0.0012)
+
+
+def brown3(uv) -> np.ndarray:
+    """create_Tforms.m undistort_Tform with T.tdata = [f f c k 3], line for line (1-based pixels)."""
+    f, c, k = BROWN["f"], np.array(BROWN["c"]), BROWN["k"]
+    uvn = (np.asarray(uv, np.float64) - c) / f
+    uvnd = uvn.copy()
+    for _ in range(3):
+        r2 = (uvnd ** 2).sum(1)
+        rad = 1 + k[0] * r2 + k[1] * r2 ** 2 + k[4] * r2 ** 3
+        tx = 2 * k[2] * uvnd[:, 0] * uvnd[:, 1] + k[3] * (r2 + 2 * uvnd[:, 0] ** 2)
+        ty = k[2] * (r2 + 2 * uvnd[:, 1] ** 2) + 2 * k[3] * uvnd[:, 0] * uvnd[:, 1]
+        uvnd = (uvn - np.column_stack([tx, ty])) / rad[:, None]
+    return uvnd * f + c
+
+
+def ocam(uv) -> np.ndarray:
+    """fisheyeUndistort_v2's arithmetic, line for line (1-based pixels; OCamCalib works in (row, col))."""
+    p = np.asarray(uv, np.float64)
+    m = np.vstack([p[:, 1], p[:, 0]])
+    m = np.linalg.inv(np.array([[OCAM["c"], OCAM["d"]], [OCAM["e"], 1.0]])) @ (m - np.array([[OCAM["xc"]], [OCAM["yc"]]]))
+    M = np.vstack([m[0], m[1], np.polyval(np.array(OCAM["ss"])[::-1], np.sqrt(m[0] ** 2 + m[1] ** 2))])
+    M = M / np.sqrt((M ** 2).sum(0))
+    M = M / M[2] * (-W / 4)
+    return np.column_stack([M[1] + W / 2, M[0] + H / 2])
+
+
+LENS_MODELS = {1: brown3, 2: ocam}               # camera -> its camud in the lens project (camera 1: none)
+LENS_FUNCS = {1: "undistort_Tform", 2: "fisheyeUndistort_v2"}
+
+
+def dltdv_control_points(fn, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """camd's control points the way create_Tforms makes them: a 10-pixel grid, ~1,000 random picks, camud run on
+    them (MATLAB's ceil(n * rand) then unique)."""
+    mx, my = np.meshgrid(np.arange(1, W + 1, 10), np.arange(1, H + 1, 10))
+    cp = np.column_stack([mx.T.ravel(), my.T.ravel()]).astype(np.float64)
+    pick = np.unique(np.ceil(len(cp) * np.random.default_rng(seed).random(1000)).astype(int)) - 1
+    return cp[pick], fn(cp[pick])
+
+
+def _raw_for(fn, target) -> np.ndarray:
+    """The raw pixel whose camud is `target` (Newton, numerical Jacobian), rounded to 1/256 px so a float32 track
+    keeps it exactly."""
+    r = np.asarray(target, np.float64).copy()
+    h = 1e-4
+    for _ in range(40):
+        e = fn(r) - target
+        jx = (fn(r + [h, 0]) - fn(r - [h, 0])) / (2 * h)
+        jy = (fn(r + [0, h]) - fn(r - [0, h])) / (2 * h)
+        det = jx[:, 0] * jy[:, 1] - jy[:, 0] * jx[:, 1]
+        r -= np.column_stack([(jy[:, 1] * e[:, 0] - jy[:, 0] * e[:, 1]) / det,
+                              (-jx[:, 1] * e[:, 0] + jx[:, 0] * e[:, 1]) / det])
+    assert np.abs(fn(r) - target).max() < 1e-8
+    return np.round(r * 256.0) / 256.0
+
+
+def lens_content() -> dict:
+    """The lens project: cameras 2 and 3 carry DLTdv's two camud models; their clicks are what was filmed (raw);
+    DLTdv's stored 3D is DLTdv's rule (camud, then the DLT), not the truth."""
+    from kinetrace.calib import triangulate_batch
+    k = content()
+    R, P, V = N_ROWS, len(POINTS), 3
+    xy = k["xypts"].reshape(R, P, V, 2).copy()
+    for c, fn in LENS_MODELS.items():
+        ok = np.isfinite(xy[:, :, c, 0])
+        xy[ok, c] = _raw_for(fn, xy[ok, c])
+    und = xy.copy()
+    for c, fn in LENS_MODELS.items():
+        ok = np.isfinite(xy[:, :, c, 0])
+        und[ok, c] = fn(xy[ok, c])
+    xyz = triangulate_batch(k["dltcoef"].T, und.reshape(R * P, V, 2))[0].reshape(R, P, 3)
+    both = np.isfinite(xy[..., 0]).sum(axis=2) >= 2
+    xyz[~both] = np.nan
+    k.update(xypts=xy.reshape(R, P * V * 2), dltpts=xyz.reshape(R, P * 3),
+             undistort=["Undistortion file: none", "Undistortion file: lens_b.mat", "Undistortion file: lens_c.txt"])
+    return k
+
+
 def _sparse(dense: np.ndarray):
     """MATLAB sparse: only the finite, non-zero cells are stored (DLTdv's 'not clicked' is an empty cell)."""
     from scipy.sparse import csc_matrix
@@ -230,9 +317,17 @@ class _V73:
         return sg
 
 
-def write_v73(path, sizes: dict | None = None, lens: bool = True) -> str:
+def write_v73(path, sizes: dict | None = None, lens: bool = True, models: bool = False) -> str:
+    """`lens`: camera 1's near-identity LWM (no camud model fits it). `models`: the lens project instead
+    (`lens_content`: cameras 2 and 3 with DLTdv's two camud models, their LWMs made from them, N 15)."""
     import h5py
-    k = content(sizes)
+    k = lens_content() if models else content(sizes)
+    if models:
+        lwms = {c: (dltdv_control_points(fn, 7 + c), 15.0) for c, fn in LENS_MODELS.items()}
+    elif lens:
+        lwms = {0: (lens_points(), 12.0)}
+    else:
+        lwms = {}
     path = str(path)
     if os.path.exists(path):
         os.remove(path)
@@ -251,10 +346,12 @@ def write_v73(path, sizes: dict | None = None, lens: bool = True) -> str:
         w.double(d, "movFrameRates", k["movFrameRates"][:, None])
         w.double(d, "movFrameRateRatios", k["movFrameRateRatios"][:, None])
         w.cell(d, "pointNames", [lambda g, n, s=s: w.char(g, n, s) for s in k["pointNames"]])
-        # lenses: camera 1 references MCOS object 1 (its properties are MCOS cell 1 + 1); the others hold an
-        # empty double, as DLTdv leaves a camera without undistortion
-        def obj_ref(g, n, oid=1):
-            ds = g.create_dataset(n, data=np.array([[0xDD000000, 2, 1, 1, oid, 1]], np.uint32))
+        # lenses: the j-th camera with a lens references MCOS object j (its properties are MCOS cell 1 + j); the
+        # others hold an empty double, as DLTdv leaves a camera without undistortion
+        oid = {c: j + 1 for j, c in enumerate(sorted(lwms))}
+
+        def obj_ref(g, n, c):
+            ds = g.create_dataset(n, data=np.array([[0xDD000000, 2, 1, 1, oid[c], 1]], np.uint32))
             ds.attrs["MATLAB_class"] = np.bytes_(b"images.geotrans.LocalWeightedMeanTransformation2D")
             ds.attrs["MATLAB_object_decode"] = np.int32(3)
             return ds
@@ -264,27 +361,40 @@ def write_v73(path, sizes: dict | None = None, lens: bool = True) -> str:
             ds.attrs["MATLAB_class"] = np.bytes_(b"double")
             ds.attrs["MATLAB_empty"] = np.uint8(1)
             return ds
-        w.cell(d, "camd", [obj_ref if (lens and c == 0) else empty for c in range(3)])
+
+        def camud(g, n, c):
+            """maketform('custom', ...): the struct DLTdv saves, its inverse function named as MATLAB saves a
+            function handle."""
+            sg = w.struct(g, n)
+            fh = w.struct(w.struct(sg, "inverse_fcn"), "function_handle")
+            w.char(fh, "function", LENS_FUNCS[c])
+            w.char(fh, "type", "simple")
+            w.double(sg, "ndims_in", 2.0)
+            w.double(sg, "ndims_out", 2.0)
+            return sg
+        w.cell(d, "camd", [(lambda g, n, c=c: obj_ref(g, n, c)) if c in lwms else empty for c in range(3)])
+        if models:
+            w.cell(d, "camud", [(lambda g, n, c=c: camud(g, n, c)) if c in LENS_MODELS else empty
+                                for c in range(3)])
         v = w.struct(ud, "video")
         w.cell(v, "files", [lambda g, n, s=s: w.char(g, n, s) for s in k["files"]])
         w.cell(v, "offset", [lambda g, n, s=s: w.char(g, n, s) for s in k["video_offset"]])
         w.cell(v, "undistortString", [lambda g, n, s=s: w.char(g, n, s) for s in k["undistort"]])
-        if lens:
-            uv, xy = lens_points()
-
+        if lwms:
             def blob(g, n):
                 ds = g.create_dataset(n, data=np.zeros((1, 64), np.uint8))
                 ds.attrs["MATLAB_class"] = np.bytes_(b"uint8")
                 return ds
 
-            def lwm(g, n):
+            def lwm(g, n, c):
+                (uv, xy), nn = lwms[c]
                 sg = w.struct(g, n)
-                w.double(sg, "N", 12.0)
+                w.double(sg, "N", nn)
                 w.double(sg, "uvPoints", uv)
                 w.double(sg, "xyPoints", xy)
                 return sg
             ss = f.create_group("#subsystem#")
-            w.cell(ss, "MCOS", [blob, empty, lwm])
+            w.cell(ss, "MCOS", [blob, empty] + [(lambda g, n, c=c: lwm(g, n, c)) for c in sorted(lwms)])
             ss["MCOS"].attrs["MATLAB_class"] = np.bytes_(b"FileWrapper__")
     head = b"MATLAB 7.3 MAT-file, Platform: GLNXA64, Created on: Thu Jan  1 12:00:00 2026 HDF5 schema 1.00 ."
     with open(path, "r+b") as fh:
@@ -301,4 +411,5 @@ def build(folder) -> dict:
     vids = build_videos(str(folder))
     return {"videos": vids,
             "v7": write_v7(folder / "synth_v7_dvProject.mat"),
-            "v73": write_v73(folder / "click" / "synth_dvProject.mat")}
+            "v73": write_v73(folder / "click" / "synth_dvProject.mat"),
+            "lens": write_v73(folder / "click" / "synth_lens_dvProject.mat", models=True)}
