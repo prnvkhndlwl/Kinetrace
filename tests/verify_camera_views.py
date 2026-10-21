@@ -716,13 +716,22 @@ for cv in cvs:
 pump(0.2)
 zoomed = [cv.transform().m11() for cv in cvs]
 check(all(z > f * 2 for z, f in zip(zoomed, fitted)), "(setup) every camera zoomed in", (fitted, zoomed))
-grid.set_arrangement(hidden={0})                                    # camera 1 hidden with its eye
+grid.set_arrangement(hidden={0})                                    # camera 1 hidden (as its eye does)
 win.project.dirty = False
 pump(0.3)
 win.canvas.setFocus()
 QTest.keyClick(win.canvas.viewport(), Qt.Key_R, Qt.ShiftModifier)   # the user's key, on the video
 pump(0.3)
 check(all(not cv._user_zoomed for cv in cvs), "Shift+R: every camera is fitted, the hidden one too",
+      [cv._user_zoomed for cv in cvs])
+check("Every camera fitted" in win.statusBar().currentMessage(), "... and the status bar says so",
+      win.statusBar().currentMessage())
+for cv in cvs:
+    cv.zoom_step(4.0)
+win.canvas.clearFocus()
+QTest.keyClick(win, Qt.Key_R, Qt.ShiftModifier)                    # the same key with the window focused
+pump(0.3)
+check(all(not cv._user_zoomed for cv in cvs), "... and from the window too, not only the video",
       [cv._user_zoomed for cv in cvs])
 grid.set_arrangement(hidden=set())
 pump(0.4)

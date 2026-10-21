@@ -4889,9 +4889,9 @@ class MainWindow(QMainWindow):
         elif key == Qt.Key_R and plain:
             self.canvas.fit()
         elif key == Qt.Key_R and shift_only:
-            for cv in self.grid.canvases:           # (G214) every camera, a hidden one refits when shown
-                cv.fit()
-            self.statusBar().showMessage("Every camera fitted", 2000)
+            # (G214) every camera, a hidden one refits when shown; said only when it did more than R
+            if sum(cv.fit() for cv in self.grid.canvases) > 1:
+                self.statusBar().showMessage("Every camera fitted", 2000)
         elif key == Qt.Key_H and plain:
             # the button is disabled without a video: toggling it anyway armed
             # an invisible pan tool that later ate the first clicks (G4)
