@@ -248,6 +248,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>wheel</td><td>zoom the video under the cursor</td></tr>
 <tr><td class=k>&#43; / − &nbsp;(or =)</td><td>zoom the video around the pointer</td></tr>
 <tr><td class=k>R</td><td>reset view (fit the video)</td></tr>
+<tr><td class=k>Shift+R</td><td>reset every camera's view (fit each video; R fits only the working one)</td></tr>
 <tr><td class=k>H (or Pan)</td><td>pan tool: left-drag pans instead of editing (does nothing until a video is open); H, Esc, or picking Add (N) or Segment (S) ends it — only one of Pan / Add / Segment is on at a time. Middle-drag always pans, any time — even while tracking</td></tr>
 <tr><td class=k>Follow</td><td>off by default; when on, keeps the selected point in view while zoomed in — or auto-frames all points when none is selected. R always fits the whole picture</td></tr>
 <tr><td class=k>marker px</td><td>marker size on screen (shrink it to see exact placement)</td></tr>
@@ -4887,6 +4888,10 @@ class MainWindow(QMainWindow):
             self._mark_event()
         elif key == Qt.Key_R and plain:
             self.canvas.fit()
+        elif key == Qt.Key_R and shift_only:
+            for cv in self.grid.canvases:           # (G214) every camera, a hidden one refits when shown
+                cv.fit()
+            self.statusBar().showMessage("Every camera fitted", 2000)
         elif key == Qt.Key_H and plain:
             # the button is disabled without a video: toggling it anyway armed
             # an invisible pan tool that later ate the first clicks (G4)
