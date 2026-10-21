@@ -15,6 +15,8 @@
   [8] G181  M (the user's key on the video): the working camera alone, filling the view area; M again:
             every camera back in the same order, a hidden one still hidden, the same cell sizes; one
             switch with View -> Other cameras -> Only the working camera (Ctrl+2)
+  [9] G214  Shift+R fits the picture in EVERY camera (a hidden one comes back fitted); display only, never
+            unsaved; plain R still fits only the working camera
 
 .venv\\Scripts\\python.exe tests\\verify_camera_views.py
 """
@@ -700,6 +702,45 @@ pump(0.3)
 check(grid.hidden() == {0} and not win.act_solo.isChecked(), "a camera hidden before M stays hidden after it",
       grid.hidden())
 grid.set_arrangement(order=list(range(n_v)), hidden=set())
+
+# ------------------------------------------------------------------ [9] Shift+R
+print("[9] Shift+R: every camera fitted, R: the working one only (G214)")
+pump(0.3)
+cvs = grid.canvases
+for cv in cvs:
+    cv.fit()
+pump(0.2)
+fitted = [cv.transform().m11() for cv in cvs]
+for cv in cvs:
+    cv.zoom_step(4.0)                                              # what + / the wheel do in each tile
+pump(0.2)
+zoomed = [cv.transform().m11() for cv in cvs]
+check(all(z > f * 2 for z, f in zip(zoomed, fitted)), "(setup) every camera zoomed in", (fitted, zoomed))
+grid.set_arrangement(hidden={0})                                    # camera 1 hidden with its eye
+win.project.dirty = False
+pump(0.3)
+win.canvas.setFocus()
+QTest.keyClick(win.canvas.viewport(), Qt.Key_R, Qt.ShiftModifier)   # the user's key, on the video
+pump(0.3)
+check(all(not cv._user_zoomed for cv in cvs), "Shift+R: every camera is fitted, the hidden one too",
+      [cv._user_zoomed for cv in cvs])
+grid.set_arrangement(hidden=set())
+pump(0.4)
+now = [cv.transform().m11() for cv in cvs]
+check(all(n < z * 0.5 for n, z in zip(now, zoomed)), "... and each shows its whole picture (the hidden one once shown)",
+      (zoomed, now))
+check(not win.project.dirty, "... display only: the project stays saved")
+cvs[0].zoom_step(4.0)
+win._set_active_view(1)
+pump(0.3)
+win.canvas.zoom_step(4.0)
+pump(0.2)
+QTest.keyClick(win.canvas.viewport(), Qt.Key_R)
+pump(0.3)
+check(not win.canvas._user_zoomed and cvs[0]._user_zoomed, "plain R still fits only the working camera",
+      [cv._user_zoomed for cv in cvs])
+for cv in cvs:
+    cv.fit()
 
 # ------------------------------------------------------------------ end
 win.project.dirty = False
