@@ -930,11 +930,14 @@ class VideoCanvas(QGraphicsView):
             self._pixitem.setTransform(QTransform())
         self._refresh_loupe()
 
-    def fit(self) -> None:
-        if self._native_size:
-            self.fitInView(QRectF(-0.5, -0.5, *self._native_size), Qt.KeepAspectRatio)
-            self._user_zoomed = False
-            self._refresh_loupe()
+    def fit(self) -> bool:
+        """The whole picture in the view; False when there is no picture to fit."""
+        if not self._native_size:
+            return False
+        self.fitInView(QRectF(-0.5, -0.5, *self._native_size), Qt.KeepAspectRatio)
+        self._user_zoomed = False
+        self._refresh_loupe()
+        return True
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)

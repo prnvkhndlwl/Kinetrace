@@ -447,7 +447,8 @@ Markers are never dragged, and a sideways swipe on a touchpad does not zoom.
 Press **R** (or the fit button in that corner) at any time to fit the whole
 picture back in the window. With
 several cameras the videos share this space as a grid; the one you are working
-in is outlined, and clicking another switches to it (section 10). Short notices
+in is outlined, and clicking another switches to it (section 10). **R** fits only
+the camera you are working in; **Shift+R** fits every camera at once. Short notices
 appear over the video for a few seconds when something needs saying.
 
 **The timeline** underneath is explained fully in [section 8](#8-reading-the-timeline).
@@ -4073,6 +4074,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 |---|---|
 | wheel, **+** / **−**, or the zoom buttons in the picture's lower-right corner | zoom the video (a sideways swipe on a touchpad does not zoom) |
 | **R**, or the fit button in that corner | fit the whole picture back in the window |
+| **Shift+R** | fit the whole picture in every camera at once (**R** fits only the camera you are working in) |
 | **H** (the Pan button) | the tool for looking only: while it is on, a click or a right click on a marker edits nothing. Press **H** again or **Esc** to stop — picking **Point** or **Segment** also stops it. Does nothing until a video is open |
 | middle-drag | pan, at any time — even while tracking |
 | **Shift + +** / **Shift + −**, **Ctrl+wheel** over the timeline, or the three magnifier buttons in the timeline's top-left corner | zoom the timeline's time axis (the last button shows the whole video) |
