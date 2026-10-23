@@ -243,6 +243,9 @@ win.act_pm_spot.trigger()
 pid = select_point("pelvis")
 win._goto(30, force=True)
 pump(0.2)
+# every frame of the synthetic project is a hand click, and a run keeps hand clicks (I320): after frame 30 the
+# pelvis is an earlier run's output here, so this run replaces it
+win.session.manual[31:, pid] = False
 before = win.session.tracks[31:60, pid].copy()
 win.act_track_all.setChecked(False)
 QTest.keyClick(win, Qt.Key_T)

@@ -180,7 +180,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>hold left + move</td><td>pan the view (from a marker too: points are never dragged — a click places them)</td></tr>
 <tr><td class=k>right-click a marker</td><td>clear that point on <b>this frame only</b> and select it (one Ctrl+Z step); with several points selected, a short right click on one of their markers clears all of them on this frame (points only — the silhouettes are not touched)</td></tr>
 <tr><td class=k>hold right on a marker</td><td>(half a second) the point's menu — the same menu as a right click on its name in LAYERS</td></tr>
-<tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing is placed (a notice on the video says so). One Ctrl+Z step. A click on or right beside the ◇ places it exactly there. A landmark derived from the silhouette cannot be placed by hand (right-click → Data source → Track by appearance first)</td></tr>
+<tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing is placed (a notice on the video says so). One Ctrl+Z step. A click on or right beside the ◇ places it exactly there. A landmark derived from the silhouette is placed by hand the same way: the silhouette fills its other frames and keeps your click</td></tr>
 <tr><td class=k>＋ Point</td><td>LAYERS: a named point with no position yet, in the selected animal (else in Scene), selected (and in every camera's list) — then click it on the video</td></tr>
 <tr><td class=k>A</td><td>with a calibration: place the selected point at the <b>◇</b> — where two or more other cameras put it — exactly (one Ctrl+Z step)</td></tr>
 <tr><td class=k>Alt+click</td><td>with a calibration: <b>look here</b> — where this spot can be in the other cameras (a dashed line there, a "?" ring here). Nothing is edited; Esc clears it</td></tr>
@@ -2610,8 +2610,8 @@ class MainWindow(QMainWindow):
                        "what is selected is tracked")
         elif s is None or (n == 0 and not animal_ok):
             if scope and all(0 <= q < s.n_points and s.points[q].derived for q in scope):
-                # silhouette-derived landmarks are never placed by hand: they fill in whenever their
-                # animal's silhouette is tracked (G120, G180)
+                # silhouette-derived landmarks are not TRACKED on their own: they fill in whenever their
+                # animal's silhouette is tracked (G120, G180); a click of the user's on one stays (G218)
                 blocked = ("The selected landmark(s) fill in from their animal's silhouette: select the animal's "
                            "row in LAYERS and Track — they fill in with it"
                            + (f" (its silhouette has no click on frame {self.current}: press S and click the "
@@ -5298,8 +5298,8 @@ class MainWindow(QMainWindow):
         self._hint_small_spot(pid, x, y)
         self.statusBar().showMessage(
             f"Added {s.points[pid].name}{where} at ({x:.0f}, {y:.0f}) on frame {self.current}"
-            + (" — the landmark that was selected is derived from the silhouette and cannot be placed by "
-               "hand, so a NEW point was added" if derived_sel else ""), 6000 if derived_sel else 4000)
+            + (" — N adds a NEW point (the landmark that was selected comes from the silhouette: to place it "
+               "here by hand, click it without N)" if derived_sel else ""), 6000 if derived_sel else 4000)
 
     def _commit_new_point(self, pid: int, x: float | None = None, y: float | None = None,
                           companions: bool = False) -> str:
@@ -6382,21 +6382,22 @@ class MainWindow(QMainWindow):
         if s is None or pid >= s.n_points or self.state != READY:
             return
         meta = s.points[pid]
-        # a switch to a silhouette spec, or away from one, erases the point's
-        # track (set_source clears it): that used to happen silently, with no
-        # undo, and autosave wrote the loss to disk (I45)
+        # a switch to a silhouette spec, or away from one, erases what the other rule made (set_source
+        # clears it): that used to happen silently, with no undo, and autosave wrote the loss to disk (I45);
+        # the hand-placed frames stay (I320) - a ball's clicks are SAM prompts and go with the rest
         will_clear = (bool(spec) and not (meta.source == "silhouette" and meta.spec == spec)) or \
             (not spec and meta.source == "silhouette")
         n_data = int(s.tracked[:, pid].sum())
-        if will_clear and n_data:
-            n_hand = int((s.manual[:, pid] & s.tracked[:, pid]).sum())
+        n_hand = 0 if meta.is_ball else int((s.manual[:, pid] & s.tracked[:, pid]).sum())
+        n_erase = n_data - n_hand
+        if will_clear and n_erase:
             what = (f"derive {meta.name} from the silhouette ({spec})" if spec
                     else f"track {meta.name} by its appearance")
             if QMessageBox.question(
                     self, "Replace this point's track?",
-                    f"To {what}, its current track is erased: {n_data} frame(s)"
-                    + (f", {n_hand} of them placed by hand" if n_hand else "") + ".\n\n"
-                    "Ctrl+Z brings it back. Go ahead?",
+                    f"To {what}, its {n_erase} tracked frame(s) are erased"
+                    + (f"; the {n_hand} hand-placed one(s) are kept" if n_hand else "") + ".\n\n"
+                    "Ctrl+Z brings them back. Go ahead?",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 self._refresh_point_list()
                 return
@@ -6755,7 +6756,8 @@ class MainWindow(QMainWindow):
         if s is not None and row < s.n_points and not s.tracked[self.current, row]:
             self.statusBar().showMessage(
                 (f"{s.points[row].name} is derived from the silhouette: it fills in when you track "
-                 "its animal (it cannot be placed by hand)" if s.points[row].derived else
+                 "its animal - or click it on the video to place it here by hand (the silhouette keeps your "
+                 "click)" if s.points[row].derived else
                  f"{s.points[row].name} has no position on this frame — click on the video "
                  "to place it here and continue the same point"), 6000)
     def _set_undo_point(self, snap, extra: dict | None = None) -> None:
@@ -6804,10 +6806,8 @@ class MainWindow(QMainWindow):
         dragged since G59)."""
         if self.session is None or pid >= self.session.n_points or self.state != READY:
             return
-        if self.session.points[pid].derived:        # the same refusal as a plain click (I69)
-            self._refresh_overlay()
-            self._say_derived(pid, "place")
-            return
+        # (G218) a silhouette-derived landmark is placed by hand too, on this frame: the silhouette fills its
+        # other frames and never overwrites a click (owner 2026-10-20)
         # a Ctrl+click / N-continue is ONE undo step, like a plain click:
         # without it Ctrl+Z threw away the whole previous tracking run (I64)
         self._hand_place(pid, x, y)
@@ -6838,12 +6838,6 @@ class MainWindow(QMainWindow):
         self._refresh_overlay()
         self._update_track_button()
 
-    def _say_derived(self, pid: int, verb: str) -> None:
-        """A landmark derived from the silhouette is not placed by hand (I69): says how to make it one."""
-        self.statusBar().showMessage(
-            f"{self.session.points[pid].name} is derived from the silhouette — to {verb} it by hand, "
-            "right-click it → Data source → Track by appearance", 6000)
-
     def _on_reposition(self, x: float, y: float):
         if self._selected_point() is not None:
             self._on_place(self.selected, x, y)
@@ -6871,9 +6865,6 @@ class MainWindow(QMainWindow):
                 + ", or pick one in LAYERS and click where it is."
                 + (" <b>Alt+click</b> shows where a spot can be in the other cameras." if multi else ""),
                 "info", 7000)
-            return
-        if s.points[pid].derived:
-            self._say_derived(pid, "annotate")
             return
         x, y = self._snap_to_prediction(pid, x, y)
         self._hand_place(pid, x, y)      # Ctrl+Z takes the click back
@@ -7598,7 +7589,7 @@ class MainWindow(QMainWindow):
         a_snap = menu.addAction(
             f"Snap to the other cameras' rays here  ({n_other} camera{'s' if n_other != 1 else ''} see it)"
             if n_other else "Snap to the other cameras' rays here")
-        a_snap.setEnabled(bool(n_other) and not s.points[pid].derived)
+        a_snap.setEnabled(bool(n_other))               # (G218) a silhouette landmark too: a hand placement
         a_snap.setToolTip("Moves this landmark onto the dashed epipolar line(s) drawn from the other cameras' "
                           "positions at this instant (the nearest point with one camera, the crossing with "
                           "two or more; cameras standing in a line give only a line, so check the place along "
@@ -7609,7 +7600,7 @@ class MainWindow(QMainWindow):
         pr = self._prediction(self.project.active, s.points[pid].name, self.current) \
             if self._guides_ready() else None
         a_pred = menu.addAction("Place it where the other cameras put it (◇)   A")
-        a_pred.setEnabled(pr is not None and pr["why"] is None and not s.points[pid].derived)
+        a_pred.setEnabled(pr is not None and pr["why"] is None)
         a_pred.setToolTip(
             "Two or more other cameras have this landmark at this instant: their rays meet in 3D, and the ◇ is "
             "that point seen from this camera. This places the landmark exactly there (hand-placed, one "
@@ -8229,9 +8220,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("A places the selected point at the ◇ — select a point first", 5000)
             return
         name = s.points[pid].name
-        if s.points[pid].derived:
-            self.statusBar().showMessage(f"{name} is derived from the silhouette — it cannot be placed by hand", 5000)
-            return
         pr = self._prediction(self.project.active, name, self.current) if self._guides_ready() else None
         if pr is None:
             n = len(self._observations(name, self.current, self.project.active)) if self._guides_ready() else 0
@@ -8274,7 +8262,7 @@ class MainWindow(QMainWindow):
         more. Flagged hand-placed, one undo step; Track re-seeds from it."""
         from kinetrace import retrack
         s = self.session
-        if s is None or self.state != READY or not (0 <= pid < s.n_points) or s.points[pid].derived:
+        if s is None or self.state != READY or not (0 <= pid < s.n_points):
             return
         p = self.project
         name = s.points[pid].name
@@ -9500,8 +9488,10 @@ class MainWindow(QMainWindow):
         """G58: once per point, when it has been corrected by hand on 5 of the last
         20 frames while AllTracker / CoTracker3 tracks it -- a small spot those trackers lose without a word."""
         s = self.session
-        # a ball marker is not tested (the test refuses it): no hint for it (G102)
-        if s is None or s.points[pid].kind != "point" or s.points[pid].is_ball or self._tracker_of(pid) == "spot":
+        # a ball marker is not tested (the test refuses it): no hint for it (G102); nor a silhouette landmark
+        # (G218: corrected by hand on bad silhouette frames - no point model follows it)
+        if (s is None or s.points[pid].kind != "point" or s.points[pid].is_ball or s.points[pid].derived
+                or self._tracker_of(pid) == "spot"):
             return
         key = ("corr", id(self.project), self.project.active if self.project else 0, s.points[pid].name)
         hist = self._spot_corrections.setdefault(key[1:], [])
