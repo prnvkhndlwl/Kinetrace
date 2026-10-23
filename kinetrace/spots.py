@@ -643,7 +643,10 @@ class SpotRun:
     def resolve(self, rgb: np.ndarray) -> None:
         for t in self.trackers.values():
             t.settings = resolve(t.settings, rgb, t.pos)[0]
-        if any(t.settings.cue == "change" for t in self.trackers.values()):
+        # a spot that joins at a later click decides its cue there: it may need the history too (I316)
+        joiners = [st for p, st in self._settings.items() if p not in self.trackers]
+        if (any(t.settings.cue == "change" for t in self.trackers.values())
+                or any(st.cue in ("auto", "change") for st in joiners)):
             self.history = ChangeHistory()
 
     def prefill(self, get_frame, n_video: int | None = None) -> None:

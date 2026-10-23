@@ -496,11 +496,13 @@ def section_c():
           lambda: s.tracked[22:70, q].all() and np.hypot(*(s.tracks[50, q] - LINE[50])) < 1.5,
           int(s.tracked[:, q].sum()))
     close(win)
-    # c4 (I317): the run followed the glint; the user clicks the real spot at 30
+    # c4 (I317): the run followed the glint; the user clicks the real spot at 30 and 31 (one click alone, with an
+    # identical spot 20 px away, is "ambiguous" by the Moving spot's own rule: click the next frame too)
     win = new_window(VID_GLINT)
     s = win.session
     pid = add_spot_point(win, G)
     click_at(win, HG, *A[HG])
+    click_at(win, HG + 1, *A[HG + 1])
     track_press(win)
     check("(c) after the click on the real spot it follows the real spot, not the glint it was on (I317)",
           lambda: all(np.hypot(*(s.tracks[f, pid] - A[f])) < 2.0 for f in range(HG + 2, HG + 30)),

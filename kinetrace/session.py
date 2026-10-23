@@ -692,6 +692,24 @@ class TrackingSession:
             return np.zeros(0, np.int64)
         return np.nonzero(self.manual[:, pid] & self.tracked[:, pid])[0].astype(np.int64)
 
+    def hand_clicks(self, pid: int, start: int, end: int) -> dict[int, tuple[float, float]]:
+        """(I316) The hand clicks of `pid` in frames [start, end) a tracker can start from: hand-placed,
+        visible, not marked hidden, inside the picture. {frame: (x, y)}."""
+        start, end = max(0, int(start)), min(self.n_frames, int(end))
+        if not (0 <= pid < self.n_points) or end <= start:
+            return {}
+        rows = slice(start, end)
+        ok = (self.manual[rows, pid] & self.tracked[rows, pid] & self.visibility[rows, pid]
+              & ~self.occluded[rows, pid] & in_frame(self.tracks[rows, pid], self.width, self.height))
+        return {int(start + i): (float(self.tracks[start + i, pid, 0]), float(self.tracks[start + i, pid, 1]))
+                for i in np.flatnonzero(ok)}
+
+    def reseed_frames(self, pid: int, start: int, end: int) -> list[int]:
+        """(I316) Where a run from `start` (bounded by `end`, exclusive) starts `pid` again: the last
+        usable click of every stretch of clicks after the start (the one stretch rule, D3)."""
+        from kinetrace.spots import hand_stretches
+        return [st[-1] for st in hand_stretches(self.hand_clicks(pid, start, end)) if st[-1] > start]
+
     def data_frames(self, pid: int) -> np.ndarray:
         """Frames where `pid` has a position at all (ascending int64) — what
         "its first / last frame" means for navigation. Hand-marked hidden

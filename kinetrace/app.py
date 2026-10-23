@@ -595,7 +595,9 @@ class _SideRun(QObject):
     def on_chunk(self, w0, tracks, vis, conf, members, new_frames):
         s = self._session()
         if s is not None:
-            s.write_segment(w0, tracks, vis, self.pids, conf)
+            s.write_segment(w0, tracks, vis, self.pids, conf,                  # (I320) as the working camera
+                            keep_hand=bool(getattr(self.worker, "_kt_keep", False)),
+                            own=getattr(self.worker, "_kt_own", None))
             self.frames.extend(new_frames)
 
     def on_masks(self, summaries):
@@ -799,6 +801,11 @@ class MainWindow(QMainWindow):
         self._hidden_warned = None
         self._user_paused = False
         self._run_hand = None
+        # (I320, G217) what the Track press chose for the data ahead: "keep" (the hand clicks are kept and
+        # Moving spot starts again at them) or "fresh" (today's run exactly); how the running worker writes
+        self._press_choice = "keep"
+        self._run_keep = False
+        self._run_own = None
         self._run_start = 0
         self._recovery_fallback_said = False
         self._gopro_pending = False
@@ -2526,6 +2533,7 @@ class MainWindow(QMainWindow):
         if stops is not None and stops.get(p.active if p is not None else 0) is None:
             return False
         return bool(any(s.tracked[self.current, q] and not s.points[q].derived for q in pids)
+                    or self._spot_joiners(s, pids)                  # (I316) a spot that joins at its click
                     or (carries_seg and any(s.animal_seedable_at(self.current, k) for k in range(s.n_segments))))
 
     def _plan_passes(self, scope, step: bool, every: bool) -> list[list[int]]:
@@ -8774,6 +8782,8 @@ class MainWindow(QMainWindow):
             if fv is None or rt is None or not (0 <= fv < rt.n_frames - (1 if step else 0)):
                 continue
             pids = [q for q in sv.seedable_at(fv) if sv.points[q].name in names]
+            pids += [q for q in self._spot_joiners(sv, [i for i in range(sv.n_points) if sv.points[i].name in names], fv)
+                     if q not in pids]                   # (I316) a spot that joins at its click in this camera
             # the working camera's segmented animals, by name; a held point never brings one (G180: it is
             # kept on that camera's saved silhouettes, `_stored_segments`)
             segs_v = self._seg_list(seg_names, sv) if segment is not False else []
@@ -9143,6 +9153,11 @@ class MainWindow(QMainWindow):
         self.act_undo.setEnabled(False)  # re-enabled when the run ends
 
         from kinetrace.tracker import TrackingWorker        # lazy: imports torch
+        # (I320, G217) the press's choice: keep the hand clicks (the run writes round them and Moving spot
+        # starts again at them) or a Fresh run (today's run exactly: it writes over them, nothing restarts)
+        keep = self._press_choice != "fresh"
+        if not keep:
+            pids = [q for q in pids if s.tracked[self.current, q]]     # no joiners either
         seeds = s.positions_at(self.current)
         pids, ball_pids, spot_specs, backend = self._split_by_tracker(pids, seeds, quiet)
         specs = self._point_specs(pids, seeds)
@@ -9155,18 +9170,33 @@ class MainWindow(QMainWindow):
             self.act_undo.setEnabled(self._undo_snap is not None)       # no run: Ctrl+Z stays what it was
             return
         end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
+        # (I316) each Moving spot point's usable clicks from the start frame on: it starts again at them
+        hand = ({sp.pid: s.hand_clicks(sp.pid, self.current, end) for sp in spot_specs} if keep else None)
         w = TrackingWorker(self.info.path, self.current, None, None,
                            self.cache, end, refine=True,
                            specs=specs,
                            roi=self.btn_roi.isChecked(),
                            autopause=self.btn_autopause.isChecked(),
                            animals=seg.animals, derived=seg.derived,             # (G149) every segment
-                           point_backend=backend, balls=balls, spots=spot_specs)
+                           point_backend=backend, balls=balls, spots=spot_specs,
+                           hand={q: c for q, c in (hand or {}).items() if c} or None)
+        # (I320) how this run's rows are written: round the hand-placed cells (keep), and a spot that joins
+        # at a later click from that click on only - its older data before it stays
+        w._kt_keep = keep
+        joined = {}
+        for sp in (spot_specs if keep else []):
+            if not s.tracked[self.current, sp.pid]:
+                first = s.reseed_frames(sp.pid, self.current, end)
+                if first:
+                    joined[sp.pid] = first[0]
+        w._kt_own = ([(joined[q], end - 1) if q in joined else None for q in w.point_ids] if joined else None)
         # the points hand-placed on the start frame: `write_segment` clears the flag of every row it
         # writes, the start row (the user's click, position kept) included -- restored at the end of
-        # the run (I189)
+        # the run (I189), with its imported mark (I319)
         w._kt_hand = (self.current, [q for q in pids + ball_pids + [sp.pid for sp in spot_specs]
-                                     if s.manual[self.current, q]])
+                                     if s.manual[self.current, q]],
+                      [q for q in pids + ball_pids + [sp.pid for sp in spot_specs]
+                       if s.manual[self.current, q] and s.imported[self.current, q]])
         if build_only:
             return w                    # one camera of a simultaneous run (I141)
         self._launch_run(w)
@@ -9194,8 +9224,18 @@ class MainWindow(QMainWindow):
             return [], False
         if run_seg and segs is None:
             segs = self._run_segments()
-        return ([p for p in s.seedable_at(self.current) if p in scope],
+        here = [p for p in s.seedable_at(self.current) if p in scope]
+        return (here + [q for q in self._spot_joiners(s, sorted(scope)) if q not in here],
                 bool(run_seg and any(s.animal_seedable_at(self.current, k) for k in (segs or []))))
+
+    def _spot_joiners(self, s, pids, frame: int | None = None) -> list[int]:
+        """(I316) The Moving spot points among `pids` with no position on `frame` (default: this one) that a
+        run from there picks up at a later click of theirs: they join the run at it. (An AllTracker /
+        CoTracker3 point does not join yet: it starts where it has a position.)"""
+        f = self.current if frame is None else int(frame)
+        return [q for q in pids if 0 <= q < s.n_points and not s.tracked[f, q] and s.points[q].kind == "point"
+                and not s.points[q].derived and not s.points[q].is_ball and self._tracker_of(q, s) == "spot"
+                and s.reseed_frames(q, f, s.n_frames)]
 
     def _say_nothing_to_start(self, scope, run_seg: bool) -> None:
         """Track was pressed with nothing that can start on this frame: why, as a notice (the
@@ -9567,6 +9607,8 @@ class MainWindow(QMainWindow):
             w.error.connect(self._on_track_error)
         self._track_pids = list(w.point_ids)
         self._run_hand = getattr(w, "_kt_hand", None)       # (I189)
+        self._run_keep = bool(getattr(w, "_kt_keep", False))   # (I320)
+        self._run_own = getattr(w, "_kt_own", None)
         self._autopause_info = None
         self._member_frames.clear()
         self._run_start = self.current
@@ -9661,7 +9703,8 @@ class MainWindow(QMainWindow):
                   conf: np.ndarray, members: dict, new_frames: list):
         if self.session is None:
             return
-        self.session.write_segment(w0, tracks, vis, self._track_pids, conf)
+        self.session.write_segment(w0, tracks, vis, self._track_pids, conf,
+                                   keep_hand=self._run_keep, own=self._run_own)     # (I320)
         for idx, wrgb in new_frames:
             self._display_queue.append((idx, wrgb))
         if members:
@@ -9926,13 +9969,14 @@ class MainWindow(QMainWindow):
         s = self.session
         if not hand or s is None:
             return
-        f, pids = hand
+        f, pids, imported = (tuple(hand) + ([],))[:3]
         if not (0 <= f < s.n_frames):
             return
         changed = False
         for q in pids:
             if 0 <= q < s.n_points and s.tracked[f, q] and not s.manual[f, q]:
                 s.manual[f, q] = True
+                s.imported[f, q] = q in imported       # (I319) an imported click stays one
                 changed = True
         if changed:
             s._touch()
@@ -10021,7 +10065,8 @@ class MainWindow(QMainWindow):
             # from that frame to the end of its last window is cut, so the
             # track ends exactly where it stopped being trustworthy.
             if self.session and pid < self.session.n_points:
-                cut = self.session.clear_window([pid], fail_frame, max(fail_frame, last))
+                cut = self.session.clear_window([pid], fail_frame, max(fail_frame, last),
+                                                keep_hand=self._run_keep)      # (I320) a click there stays
                 if cut:
                     self._refresh_overlay()
                     self.timeline.refresh()
@@ -10082,7 +10127,7 @@ class MainWindow(QMainWindow):
                 continue
             pids = [q for q in holds.get(k, ()) if 0 <= q < s.n_points]
             if pids and f <= last:
-                cut += s.clear_window(pids, f, last)
+                cut += s.clear_window(pids, f, last, keep_hand=self._run_keep)     # (I320) clicks there stay
             parts.append(f"<b>{s.segments[k].name}</b> at frame {f}"
                          + (" (SAM took another object)" if why == "switched" else " (lost)"))
         if cut:
