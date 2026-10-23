@@ -850,7 +850,10 @@ def section_f():
     check("(f) ... and left no Fresh run armed (R1-C2)",
           lambda: win._fresh_press is None and win._press_choice == "keep", (win._fresh_press, win._press_choice))
     win._goto(10, force=True)
+    s.set_position(10, pid, *SLOW[10])                   # a position there, so the later run really starts (RC-M3)
+    n1 = len(LAUNCHED)
     win._start_tracking(stop_after=60, only_pids=[pid], quiet=True, segment=False)   # e.g. a 3D re-track's job
+    check("(f setup) the later run started", wait(lambda: len(LAUNCHED) > n1, 10))
     wait(lambda: win.state == READY and win.worker is None, 60)
     pump(0.2)
     check("(f) ... so a later run that is no Track press erases nothing it did not track",
@@ -917,6 +920,23 @@ def section_f():
     check("(f) ... and the Fresh run left camera 2's Q alone: its run never tracked Q there (R1-I2)",
           lambda: sb.tracked[50:71, qb].all(), int(sb.tracked[50:71, qb].sum()))
     POP["pick"] = "keep"
+    close(win)
+    # f5 (review RC-I1): a spot whose next click lies beyond the run's end does not join it - its data stays
+    win = new_window(VID_SLOW)
+    s = win.session
+    pid = add_spot_point(win, SLOW, frames=(0,))
+    old_ahead(s, pid, 20, 31)                            # an earlier run's frames 20-30
+    s.set_position(100, pid, *SLOW[100])                 # a click further on
+    win.act_mode_semi.trigger()
+    win.act_select_all.trigger()
+    win._goto(19, force=True)                            # no position here: F's one frame (20) is before the click
+    pump(0.05)
+    QTest.keyClick(win, Qt.Key_F)
+    wait(lambda: win.state == READY and win.worker is None, 30)
+    pump(0.2)
+    win.act_mode_auto.trigger()
+    check("(f) an F step beside a point whose click is further on leaves that point's data alone (RC-I1)",
+          lambda: s.tracked[20:31, pid].all() and hand(s, 100, pid), int(s.tracked[20:31, pid].sum()))
     close(win)
 
 

@@ -777,7 +777,8 @@ how much there is and how many of those frames are your clicks:
 - **Fresh run** — the run goes over everything ahead as if there were no
   clicks (it writes over the ones it reaches), and when it has ended,
   everything of these points after the last frame it reached is erased too,
-  clicks included. Stopping it with **X** erases nothing.
+  clicks included. Stopping it with **X** erases nothing, and neither does a
+  run that ends on an error (in any camera or pass of the press).
 
 Tick *Use this every time* to stop being asked; **Track ▾ → When there is data
 ahead** changes it back. A Fresh run removes clicks, so it is asked for every

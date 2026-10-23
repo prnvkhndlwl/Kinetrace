@@ -706,9 +706,10 @@ class TrackingSession:
                 for i in np.flatnonzero(ok)}
 
     def has_click_after(self, pid: int, frame: int, end: int | None = None) -> bool:
-        """(I316) Has `pid` a usable hand click after `frame` (before `end`, exclusive)? - i.e. a run from
-        `frame` starts it again there (= `reseed_frames` is not empty). Cheap: the Track button asks it on
-        every playhead move."""
+        """(I316) Has `pid` a usable hand click after `frame` (before `end`, exclusive)? For a point with no
+        position on `frame` (a joiner) that is exactly "a run from `frame` starts it at a click" (`reseed_frames`
+        not empty); with a click on `frame` the speed click right after it is no restart. Cheap: the Track
+        button asks it on every playhead move."""
         end = self.n_frames if end is None else min(self.n_frames, int(end))
         if not (0 <= pid < self.n_points) or end <= int(frame) + 1:
             return False

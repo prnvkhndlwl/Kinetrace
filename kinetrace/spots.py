@@ -642,8 +642,8 @@ class SpotRun:
             vel = old.vel.copy()
         st = old.settings if old is not None else self._settings.get(pid, SpotSettings())
         trk = SpotTracker(replace(st), xy, vel, self.size)        # the same settings, not rounded
-        if near:
-            trk.ref.extend(old.ref)
+        if near and float(np.hypot(*(np.asarray(xy, np.float64) - old.prediction()))) <= max(3.0, old.diameter):
+            trk.ref.extend(old.ref)        # within about one spot of where it was: the same spot (review RC-M1)
         self.trackers[pid] = trk
         self.reseed_log.append((h, pid))
         return trk

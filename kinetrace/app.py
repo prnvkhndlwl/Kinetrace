@@ -9325,13 +9325,23 @@ class MainWindow(QMainWindow):
         specs = self._point_specs(pids, seeds)
         balls = self._ball_specs(ball_pids, seeds)
         seg = self._segment_specs(pids, scope, animal_ok, segment, specs)
+        end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
+        # (I316) a Moving spot point with no position here joins the run at its first click INSIDE the run;
+        # one whose next click lies beyond the run's end is left out - its column would blank its older
+        # data over the whole run (review RC-I1)
+        joined = {}
+        for sp in (spot_specs if keep else []):
+            if not s.tracked[self.current, sp.pid]:
+                first = s.reseed_frames(sp.pid, self.current, end)
+                if first:
+                    joined[sp.pid] = first[0]
+        spot_specs = [sp for sp in spot_specs if s.tracked[self.current, sp.pid] or sp.pid in joined]
         if not specs and not balls and not spot_specs and not seg.animals:
             self.toast.show_message(
                 f"Nothing to start from on frame {self.current}: place a point with <b>N</b>, a ball "
                 "with Point ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
             self.act_undo.setEnabled(self._undo_snap is not None)       # no run: Ctrl+Z stays what it was
             return
-        end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
         # (I316) each Moving spot point's usable clicks from the start frame on: it starts again at them
         hand = ({sp.pid: s.hand_clicks(sp.pid, self.current, end) for sp in spot_specs} if keep else None)
         w = TrackingWorker(self.info.path, self.current, None, None,
@@ -9345,12 +9355,6 @@ class MainWindow(QMainWindow):
         # (I320) how this run's rows are written: round the hand-placed cells (keep), and a spot that joins
         # at a later click from that click on only - its older data before it stays
         w._kt_keep = keep
-        joined = {}
-        for sp in (spot_specs if keep else []):
-            if not s.tracked[self.current, sp.pid]:
-                first = s.reseed_frames(sp.pid, self.current, end)
-                if first:
-                    joined[sp.pid] = first[0]
         w._kt_own = ([(joined[q], end - 1) if q in joined else None for q in w.point_ids] if joined else None)
         # the points hand-placed on the start frame: `write_segment` clears the flag of every row it
         # writes, the start row (the user's click, position kept) included -- restored at the end of
@@ -9395,9 +9399,10 @@ class MainWindow(QMainWindow):
         run from there picks up at a later click of theirs: they join the run at it. (An AllTracker /
         CoTracker3 point does not join yet: it starts where it has a position.)"""
         f = self.current if frame is None else int(frame)
+        end = f + 2 if self._track_mode == "semi" else None       # F's one frame: a click inside it (RC-I1)
         return [q for q in pids if 0 <= q < s.n_points and not s.tracked[f, q] and s.points[q].kind == "point"
                 and not s.points[q].derived and not s.points[q].is_ball and self._tracker_of(q, s) == "spot"
-                and s.has_click_after(q, f)]
+                and s.has_click_after(q, f, end)]
 
     def _say_nothing_to_start(self, scope, run_seg: bool) -> None:
         """Track was pressed with nothing that can start on this frame: why, as a notice (the
