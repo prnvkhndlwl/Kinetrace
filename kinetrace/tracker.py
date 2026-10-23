@@ -552,7 +552,7 @@ class TrackingWorker(QThread):
                  head_pid: int | None = None, on_body_pids=None, constrain_pids=None,
                  point_backend: str = "cotracker3", balls: list[BallSpec] | None = None,
                  spots: list[SpotSpec] | None = None, stored_masks=None,
-                 animals: list[AnimalSpec] | None = None):
+                 animals: list[AnimalSpec] | None = None, hand: dict | None = None):
         super().__init__()
         self.video_path = video_path
         self.start_frame = start_frame
@@ -645,6 +645,14 @@ class TrackingWorker(QThread):
         self._spot_res: dict[int, dict] = {}          # frame -> {pid: SpotFix}
         self._spot_gone: set[int] = set()             # spots that stopped (data ends)
         self._spot_ended: dict[int, tuple[int, str]] = {}  # pid -> (frame it stopped, "missing"|"ambiguous")
+        # (I316) the hand clicks are the truth: {pid: {frame: (x, y)}} of the run's Moving spot points, from the
+        # start frame on - a spot starts again at the last click of each stretch, and one that stops with a
+        # click ahead is cut there (no data) and waits for it instead of ending the run. A spot whose seed is
+        # NaN joins the run at its first click. (AllTracker / CoTracker3 points: their clicks are kept by the
+        # app's write, they do not restart from them yet.)
+        self.hand = {int(p): dict(c) for p, c in (hand or {}).items()}
+        self._reseed_log: list[tuple[int, int]] = []     # (frame, pid) of every restart at a click
+        self._reseeds_seen = 0
         self.download_failed = None     # the DownloadError that ended the run, if one did (G45)
 
     def request_pause(self) -> None:
@@ -724,7 +732,9 @@ class TrackingWorker(QThread):
         if self.spots:
             from kinetrace.spots import SpotRun
             self._spot_run = SpotRun([(sp.pid, sp.seed, sp.vel, sp.settings) for sp in self.spots],
-                                     (nw, nh), self.start_frame)
+                                     (nw, nh), self.start_frame,
+                                     hand={sp.pid: self.hand[sp.pid] for sp in self.spots if sp.pid in self.hand})
+            self._reseed_log = self._spot_run.reseed_log
             self._spot_run.resolve(probe)
             # the unusual-change cue's background: the frames before the start and, near the
             # video's start, the ones after it -- up to the VIDEO's end, not the run's (I194;
@@ -816,6 +826,8 @@ class TrackingWorker(QThread):
             return True
         if any(sp.pid not in self._spot_gone for sp in self.spots):
             return True
+        if self._spot_run is not None and any(self._spot_run.reseed_after(sp.pid, frame) for sp in self.spots):
+            return True                     # (I316) a stopped spot with a click ahead starts again there
         for b in self.balls:
             if self._ball_trk is not None and self._ball_trk.has(self._ball_obj[b.pid]):
                 return True
@@ -2072,13 +2084,16 @@ class TrackingWorker(QThread):
         run = self._spot_run
         self._spot_res[abs_idx] = run.step(abs_idx, native)
         self._spot_last = abs_idx
+        for _f, pid in run.reseed_log[self._reseeds_seen:]:
+            self._spot_gone.discard(pid)        # (I316) started again at the user's click
+        self._reseeds_seen = len(run.reseed_log)
         for pid, trk in run.trackers.items():
             if trk.stopped is None or pid in self._spot_gone:
                 continue
             self._spot_gone.add(pid)
             frame, why = trk.stopped
-            if why == "left":
-                continue
+            if why == "left" or run.reseed_after(pid, frame):
+                continue                        # (I316) a click ahead: cut here, picked up again there
             self._detector_end(self._spot_ended, pid, frame, why, "spot")
         _drop_before(self._spot_res, abs_idx - 4 * MASK_HIST)
 

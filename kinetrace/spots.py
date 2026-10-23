@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import cv2
 import numpy as np
@@ -599,15 +599,46 @@ class SpotRun:
     the automatic settings (and so whether the history is needed), `step` is
     called once per frame in order, the start frame included."""
 
-    def __init__(self, spots, size, start_frame: int):
-        # spots: [(pid, xy, vel | None, SpotSettings | dict | None)]
+    def __init__(self, spots, size, start_frame: int, hand=None):
+        # spots: [(pid, xy, vel | None, SpotSettings | dict | None)]; xy NaN = a spot that joins at a later click.
+        # hand (I316): {pid: {frame: (x, y)}} each spot's usable hand clicks from the start frame on: the hand
+        # clicks are the truth, so the spot starts again at the last click of each stretch after the start
         self.start_frame = int(start_frame)
         self.size = size
         self.trackers: dict[int, SpotTracker] = {}
+        self._settings: dict[int, SpotSettings] = {}
         for pid, xy, vel, st in spots:
             st = st if isinstance(st, SpotSettings) else SpotSettings.from_dict(st or {})
-            self.trackers[int(pid)] = SpotTracker(st, xy, vel, size)
+            self._settings[int(pid)] = st
+            if np.isfinite(np.asarray(xy, np.float64)).all():
+                self.trackers[int(pid)] = SpotTracker(st, xy, vel, size)
         self.history: ChangeHistory | None = None
+        self.clicks = {int(p): {int(f): np.asarray(v, np.float64) for f, v in c.items()}
+                       for p, c in (hand or {}).items() if int(p) in self._settings}
+        self.reseeds = {p: {st[-1] for st in hand_stretches(c) if st[-1] > self.start_frame}
+                        for p, c in self.clicks.items()}
+        self.reseed_log: list[tuple[int, int]] = []      # (frame, pid) of every restart at a click
+
+    def reseed_after(self, pid: int, frame: int) -> bool:
+        """Does this spot start again at a click after `frame`? (A stop before it is a cut, not an end.)"""
+        return any(f > frame for f in self.reseeds.get(int(pid), ()))
+
+    def reseed(self, pid: int, h: int, xy, clicks=None) -> SpotTracker:
+        """(I316, I317) Start this spot again at the user's click on frame h, its settings kept. Its speed:
+        from the neighbouring clicks (`click_velocity`); else the old tracker's while the click lies inside
+        its search (it was following this very spot); else unknown, the wide first search - never the click
+        minus where the old track was, which after a drift onto a glint is the drift itself."""
+        pid, h = int(pid), int(h)
+        old = self.trackers.get(pid)
+        vel = click_velocity(clicks, h) if clicks and h in clicks else None
+        if (vel is None and old is not None and old.stopped is None and old.vel is not None
+                and float(np.hypot(*(np.asarray(xy, np.float64) - old.prediction()))) <= old.search_radius()):
+            vel = old.vel.copy()
+        st = old.settings if old is not None else self._settings.get(pid, SpotSettings())
+        trk = SpotTracker(replace(st), xy, vel, self.size)        # the same settings, not rounded
+        self.trackers[pid] = trk
+        self.reseed_log.append((h, pid))
+        return trk
 
     def resolve(self, rgb: np.ndarray) -> None:
         for t in self.trackers.values():
@@ -628,8 +659,13 @@ class SpotRun:
     def step(self, idx: int, rgb: np.ndarray) -> dict[int, SpotFix]:
         gray = _grey(rgb) if self.history is not None else None
         out = {}
+        restarted = set()
+        for pid, frames in self.reseeds.items():
+            if idx in frames:
+                self.reseed(pid, idx, self.clicks[pid][idx], self.clicks[pid])
+                restarted.add(pid)
         for pid, t in self.trackers.items():
-            fix = (t.start(idx, rgb, gray, self.history) if idx == self.start_frame
+            fix = (t.start(idx, rgb, gray, self.history) if idx == self.start_frame or pid in restarted
                    else t.step(idx, rgb, gray, self.history))
             if fix is not None:
                 out[pid] = fix
@@ -640,16 +676,26 @@ class SpotRun:
 
 # ------------------------------------------------------------------ the test on the user's clicks
 
-def clicked_stretch(frames, max_gap: int = TEST_MAX_GAP) -> list[int]:
-    """The longest run of hand-placed frames with no gap over `max_gap`."""
-    fs = sorted(int(f) for f in frames)
-    best, cur = [], []
-    for f in fs:
+def hand_stretches(frames, max_gap: int = TEST_MAX_GAP) -> list[list[int]]:
+    """Every run of hand-placed frames with no gap over `max_gap` missing frames, in order: THE one
+    stretch rule (D3) - the point-model test's clicks and a run's re-seeds (I316) both use it."""
+    out, cur = [], []
+    for f in sorted(int(f) for f in frames):
         if cur and f - cur[-1] > max_gap + 1:
+            out.append(cur)
             cur = []
         cur.append(f)
-        if len(cur) > len(best):
-            best = list(cur)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def clicked_stretch(frames, max_gap: int = TEST_MAX_GAP) -> list[int]:
+    """The longest run of hand-placed frames with no gap over `max_gap` (the first, of equal ones)."""
+    best: list[int] = []
+    for st in hand_stretches(frames, max_gap):
+        if len(st) > len(best):
+            best = st
     return best
 
 
