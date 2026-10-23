@@ -125,11 +125,12 @@ def section(fn):
 
 
 # ---- the Track pop-up (D9), stubbed: it records what it said and answers POP["pick"]
-POP = {"seen": [], "pick": "keep", "remember": False, "fresh_box": []}
+POP = {"seen": [], "pick": "keep", "remember": False, "fresh_box": [], "fresh_label": []}
 HAS_POPUP = hasattr(appmod, "TrackChoiceDialog")
 if HAS_POPUP:
     def _pop_exec(self):
         POP["seen"].append(self.message())
+        POP["fresh_label"].append(self.buttons["fresh"].text())
         self.pick(POP["pick"])
         POP["fresh_box"].append((POP["pick"], self.remember_box.isEnabled()))
         if POP["remember"] and self.remember_box.isEnabled():
@@ -191,7 +192,13 @@ N3 = 260
 LONG = np.stack([20.0 + 1.0 * np.arange(N3), 120.0 + 20.0 * np.sin(np.arange(N3) / 30.0)], 1)
 VID_LONG = spot_clip("long", [LONG])
 VID_B = spot_clip("line_b", [LINE + np.array([0.0, 30.0])])               # a second camera
-forget_recovery(VID1, VID_GAP, VID_GLINT, VID_LONG, VID_B)
+LINE_B_GAP = LINE + np.array([0.0, 30.0])
+LINE_B_GAP[30:] = np.nan                                                   # camera 2's spot is gone from 30
+VID_B_GAP = spot_clip("line_b_gap", [LINE_B_GAP])
+N6 = 600
+SLOW = np.stack([40.0 + 0.4 * np.arange(N6), np.full(N6, 120.0)], 1)       # a run long enough to press X in
+VID_SLOW = spot_clip("slow", [SLOW])
+forget_recovery(VID1, VID_GAP, VID_GLINT, VID_LONG, VID_B, VID_B_GAP, VID_SLOW)
 
 
 # ================================================================= the window
@@ -464,6 +471,16 @@ def section_c():
     check("(c) ... and the track goes on after it on the spot",
           lambda: s.tracked[31:75, pid].all() and np.hypot(*(s.tracks[40, pid] - LINE[40])) < 1.5)
     close(win)
+    # c1b (review): the speed click on frame 1 a few pixels off the spot (the spot restarts there) must not stop it
+    win = new_window(VID1)
+    s = win.session
+    pid = add_spot_point(win, LINE, frames=(0,))
+    click_at(win, 1, LINE[1, 0] + 3.0, LINE[1, 1] + 2.5)
+    track_press(win)
+    check("(c) a speed click a few pixels off the spot does not stop the run (the restart keeps the spot's strength)",
+          lambda: s.tracked[2:60, pid].all() and np.hypot(*(s.tracks[40, pid] - LINE[40])) < 1.5,
+          int(s.tracked[:, pid].sum()))
+    close(win)
     # c2: hidden 45-51, clicked at 52 where it comes back: cut, not stopped
     win = new_window(VID_GAP)
     s = win.session
@@ -536,9 +553,9 @@ def section_c():
         clicks[f] = s.tracks[f, pid].copy()
     track_press(win, timeout=180)
     w = LAUNCHED[-1] if LAUNCHED else None
-    # (the clicks on 0 and 1 are a stretch too: the spot restarts at its click on 1 - every stretch's last click)
+    # (the clicks on 0 and 1 are the run's own start - the seed and its speed click: no restart there)
     check("(c) clicks with up to 2 frames between them are ONE stretch: one re-seed, at its last click",
-          lambda: [f for f, _p in getattr(w, "_reseed_log", []) if f > 1] == [238], getattr(w, "_reseed_log", None))
+          lambda: [f for f, _p in getattr(w, "_reseed_log", [])] == [238], getattr(w, "_reseed_log", None))
     check("(c) ... and every click is intact", lambda: all(hand(s, f, pid) and np.array_equal(s.tracks[f, pid], c)
                                                           for f, c in clicks.items()))
     close(win)
@@ -708,6 +725,22 @@ def section_e():
           lambda: win.act_ahead_keep.isChecked() and not win.act_ahead_ask.isChecked())
     win._sync_ui_state()
     check("(e) ... saved with the view state", lambda: win.session.ui_state.get("ahead_choice") == "keep")
+    # ... and it survives a save, closing and opening the project again (review: the reader kept only known keys)
+    target = os.path.join(OUT, "ahead_choice.kinetrace")
+    PICK["save"] = target
+    saved = win._save_project_as()
+    close(win)
+    win = MainWindow()
+    win.resize(1300, 850)
+    win.show()
+    if saved:
+        win._open_project_from_path(target)
+        wait(lambda: win.state == READY and win.project is not None and not win._loading, 60)
+        pump(0.3)
+    check("(e) ... and comes back with the project (save, close, open: Track ▾ shows Keep my clicks)",
+          lambda: saved and win.act_ahead_keep.isChecked() and win._ahead_choice == "keep")
+    s = win.session
+    pid = 0
     if hasattr(win, "act_ahead_ask"):
         win.act_ahead_ask.trigger()
         pump(0.05)
@@ -755,12 +788,139 @@ def section_e():
     track_press(win, timeout=180)
     win.act_track_all.setChecked(False)
     msg = POP["seen"][-1] if len(POP["seen"]) > n_seen else ""
+    # (the counts are what a Fresh run would overwrite: camera 2's 20 old frames and each camera's speed click)
     check("(e) an every-camera press asks when only ANOTHER camera has data ahead, and counts it",
-          len(POP["seen"]) > n_seen and "20" in msg and "camera" in msg, msg[:160])
+          len(POP["seen"]) > n_seen and "22 tracked frames" in msg and "camera" in msg, msg[:160])
     close(win)
 
 
-for fn in (section_a, section_b, section_c, section_d, section_e):
+# ================================================================= (f) what a Fresh run erases, and when
+def old_ahead(s, pid, f0, f1, dx=5.0, line=SLOW):
+    """An earlier run's data on [f0, f1) (offset dx from the truth, so it is told from a new run's)."""
+    for f in range(f0, f1):
+        s.tracks[f, pid] = (line[f, 0] + dx, line[f, 1])
+        s.tracked[f, pid] = s.visibility[f, pid] = True
+        s.confidence[f, pid] = 0.8
+
+
+def section_f():
+    print("(f) a Fresh run erases only after it ended by itself, only what it ran, and says what it removes")
+    # f1 (review R1-C1): X during a Fresh run erases nothing
+    win = new_window(VID_SLOW)
+    s = win.session
+    pid = add_spot_point(win, SLOW, frames=(0,))
+    old_ahead(s, pid, 400, N6)
+    s.set_position(500, pid, *SLOW[500])
+    POP["pick"], POP["remember"] = "fresh", False
+    win.act_select_all.trigger()
+    win._goto(0, force=True)
+    pump(0.05)
+    QTest.keyClick(win, Qt.Key_T)
+    wait(lambda: win.state != READY and win.current >= 30, 30)
+    QTest.keyClick(win, Qt.Key_X)
+    wait(lambda: win.state == READY and win.worker is None, 60)
+    pump(0.3)
+    reached = int(np.flatnonzero(s.tracked[:400, pid]).max())
+    check("(f setup) X stopped the Fresh run before the old data", reached < 390, reached)
+    check("(f) X during a Fresh run erases nothing: the old data and the click ahead are still there (R1-C1)",
+          lambda: s.tracked[400:, pid].all() and hand(s, 500, pid), int(s.tracked[400:, pid].sum()))
+    # the erase never reaches the run's start frame (R1-M1: a run stopped before its first frame has last = start - 1)
+    win._goto(100, force=True)
+    win._fresh_press = {"views": {win.project.active: {"names": {s.points[pid].name}, "segs": set(), "start": 100}}}
+    s.set_position(100, pid, *SLOW[100])                # the start frame's click
+    win._fresh_erase({win.project.active: 99}, False)
+    check("(f) an erase after a run that reached nothing leaves its start frame alone, and only that (R1-M1)",
+          lambda: hand(s, 100, pid) and not s.tracked[101:, pid].any())
+    close(win)
+    # f2 (review R1-C2): a Fresh press that starts nothing leaves no erase behind for a later run
+    win = new_window(VID_SLOW)
+    s = win.session
+    pid = add_spot_point(win, SLOW, frames=(0,))
+    old_ahead(s, pid, 400, N6)
+    s.set_position(500, pid, *SLOW[500])
+    win._tracking_engine_ready = lambda: False          # the press is refused at its start (as a missing model is)
+    POP["pick"] = "fresh"
+    n0 = len(LAUNCHED)
+    win.act_select_all.trigger()
+    win._goto(0, force=True)
+    QTest.keyClick(win, Qt.Key_T)
+    pump(0.3)
+    del win._tracking_engine_ready
+    check("(f setup) the Fresh press started nothing", len(LAUNCHED) == n0 and win.state == READY)
+    check("(f) ... and left no Fresh run armed (R1-C2)",
+          lambda: win._fresh_press is None and win._press_choice == "keep", (win._fresh_press, win._press_choice))
+    win._goto(10, force=True)
+    win._start_tracking(stop_after=60, only_pids=[pid], quiet=True, segment=False)   # e.g. a 3D re-track's job
+    wait(lambda: win.state == READY and win.worker is None, 60)
+    pump(0.2)
+    check("(f) ... so a later run that is no Track press erases nothing it did not track",
+          lambda: s.tracked[400:, pid].all() and hand(s, 500, pid), int(s.tracked[400:, pid].sum()))
+    close(win)
+    # f3 (reviews R1-I1, R1 agent): only the speed click on the frame after the start does not make Track ask; a
+    # hand-digitised stretch from the start does, and the counts and the Fresh button include every click after it
+    win = new_window(VID_SLOW)
+    s = win.session
+    pid = add_spot_point(win, SLOW, frames=(0, 1))
+    POP["pick"] = "keep"
+    n_seen = len(POP["seen"])
+    track_press(win, timeout=60)
+    check("(f) a click on the start frame and the speed click after it: no pop-up", len(POP["seen"]) == n_seen)
+    close(win)
+    win = new_window(VID_SLOW)
+    s = win.session
+    pid = add_spot_point(win, SLOW, frames=tuple(range(0, 21)))      # hand-digitised 0-20
+    n_seen = len(POP["seen"])
+    track_press(win, timeout=60)
+    msg = POP["seen"][-1] if len(POP["seen"]) > n_seen else ""
+    label = POP["fresh_label"][-1] if POP["fresh_label"] else ""
+    check("(f) clicks on 0-20 from the start: it asks, counting the 20 clicks a Fresh run would overwrite",
+          "20 are clicks" in msg and "20 clicks" in label, (msg[:120], label))
+    close(win)
+    # f4 (review R1-I2): every camera - a Fresh run erases in each camera only what that camera's run tracked
+    win = new_window(VID1)
+    if not check("(f setup) a second camera is added", win._add_view(VID_B_GAP)):
+        close(win)
+        return
+    wait(lambda: win.project is not None and win.project.n_views == 2 and win.state == READY, 60)
+    pump(0.3)
+    p = win.project
+    win.act_pm_spot.trigger()
+    win._set_active_view(0)
+    pump(0.2)
+    add_spot_point(win, LINE)                                    # P, in both cameras
+    win.layers.clearSelection()
+    pump(0.05)
+    win.selected = None
+    q = add_spot_point(win, LINE)                                # Q (on the same spot): tracked in camera 1 only
+    names = [p.sessions[0].points[k].name for k in (0, q)]
+    old_ahead(p.sessions[0], 0, 60, N1, line=LINE)               # data ahead in camera 1: the press asks
+    win._set_active_view(1)
+    pump(0.2)
+    sb = p.sessions[1]
+    jb, qb = sb.pid_by_name(names[0]), sb.pid_by_name(names[1])
+    win.layers.setCurrentItem(win.layers.point_item(jb))
+    for f in (0, 1):
+        click_at(win, f, *LINE_B_GAP[f])
+    for f in range(50, 71):                                      # Q in camera 2: no position at 0, data on 50-70
+        sb.tracks[f, qb] = (100.0, 200.0)
+        sb.tracked[f, qb] = sb.visibility[f, qb] = True
+        sb.confidence[f, qb] = 0.8
+    win._set_active_view(0)
+    pump(0.2)
+    win.act_track_all.setChecked(True)
+    POP["pick"] = "fresh"
+    track_press(win, timeout=180)
+    win.act_track_all.setChecked(False)
+    sb = win.project.sessions[1]
+    check("(f setup) camera 2's run of P stopped where its spot vanished",
+          lambda: not sb.tracked[35:, jb].any() and sb.tracked[:25, jb].all())
+    check("(f) ... and the Fresh run left camera 2's Q alone: its run never tracked Q there (R1-I2)",
+          lambda: sb.tracked[50:71, qb].all(), int(sb.tracked[50:71, qb].sum()))
+    POP["pick"] = "keep"
+    close(win)
+
+
+for fn in (section_a, section_b, section_c, section_d, section_e, section_f):
     section(fn)
 appmod.MainWindow._launch_run = _orig_launch
 for w_ in QApplication.topLevelWidgets():

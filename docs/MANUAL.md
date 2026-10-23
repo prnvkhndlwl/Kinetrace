@@ -783,8 +783,11 @@ Tick *Use this every time* to stop being asked; **Track ▾ → When there is da
 ahead** changes it back. A Fresh run removes clicks, so it is asked for every
 time. **F** (one step) never asks and always keeps your clicks. The clicks you
 start from — the frame you are on, and a click on the next frame that gives a
-Moving spot its speed — do not count as data ahead. **Ctrl+Z** undoes the whole
-press. If a frame cannot be read once, the program tries it again; when
+Moving spot its speed — do not by themselves make Track ask (a Fresh run still
+counts them among the clicks it would remove). **Ctrl+Z** undoes the whole
+press.
+
+If a frame cannot be read once, the program tries it again; when
 the second try works, the message says so and asks you to press **Track ▶**
 again, instead of calling your file damaged.
 
@@ -1164,10 +1167,11 @@ coordinates the tracker uses, so a hand-placed frame lines up exactly with the
 tracked frames around it (and every export converts both the same way).
 
 Running **Track ▶** through hand-placed frames keeps them: the run writes
-around your clicks (and a Moving spot point starts again from them), so you can
-click a part on a few frames anywhere and track the whole clip in one press. To
-replace your clicks, choose **Fresh run** when Track asks, or delete them on the
-timeline first.
+around your clicks. A **Moving spot** point also starts again from them, so you
+can click it on a few frames anywhere and track the whole clip in one press;
+AllTracker and CoTracker3 points keep the clicks but do not start again from
+them yet. To replace your clicks, choose **Fresh run** when Track asks, or
+delete them on the timeline first.
 
 **Keyframe digitizing.** Some stretches are easier to do by hand than to
 track: a few frames of blur, a limb behind the body. Place the part by hand on
@@ -4067,7 +4071,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **N** | arm the crosshair — the next click places a point |
 | click (armed) | place a point, or continue the selected one where it has no data |
 | drag a circle (armed) | track a whole region as one point |
-| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed (a click on a marker just selects that point). Two quick clicks are two clicks, so frame-by-frame digitizing never loses one. A landmark derived from the outline cannot be placed by hand |
+| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed (a click on a marker just selects that point). Two quick clicks are two clicks, so frame-by-frame digitizing never loses one. A landmark derived from the outline is placed the same way, and tracking the outline again keeps your click |
 | **＋ Point** (LAYERS) | a point with no position yet, in the selected animal (else in Scene), selected — and in every camera's list |
 | **＋ Animal** (LAYERS) | a new animal with no silhouette yet, selected; give it points (**N** + click, or drag points onto it) and, if you like, outline it with **S** |
 | drag points in LAYERS | onto another animal (or one of its points), or onto Scene: they move there and are renamed "*animal part*" in every camera (one Ctrl+Z step) |

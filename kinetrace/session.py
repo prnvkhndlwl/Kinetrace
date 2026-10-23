@@ -70,6 +70,7 @@ DEFAULT_UI_STATE: dict = {
     "roi": True,             # ROI-zoom tracking
     "track_mode": "auto",    # "auto" = run to end | "semi" = F steps one frame
     "track_all": False,      # Track ▾ → Every camera: track the points in each camera that has them (G29)
+    "ahead_choice": "",      # (G217) Track ▾ → When there is data ahead: "" = ask (the Track pop-up), "keep"
     "marker_size": 3,        # marker radius, screen px (was 7 until 2026-09-22)
     "zoom": 0.0,             # canvas scale; 0 = never zoomed (fit on open)
     "center_x": 0.0,         # scene point at the viewport center
@@ -704,11 +705,23 @@ class TrackingSession:
         return {int(start + i): (float(self.tracks[start + i, pid, 0]), float(self.tracks[start + i, pid, 1]))
                 for i in np.flatnonzero(ok)}
 
+    def has_click_after(self, pid: int, frame: int, end: int | None = None) -> bool:
+        """(I316) Has `pid` a usable hand click after `frame` (before `end`, exclusive)? - i.e. a run from
+        `frame` starts it again there (= `reseed_frames` is not empty). Cheap: the Track button asks it on
+        every playhead move."""
+        end = self.n_frames if end is None else min(self.n_frames, int(end))
+        if not (0 <= pid < self.n_points) or end <= int(frame) + 1:
+            return False
+        rows = slice(int(frame) + 1, end)
+        ok = self.manual[rows, pid] & self.tracked[rows, pid] & self.visibility[rows, pid] & ~self.occluded[rows, pid]
+        return bool(ok.any() and in_frame(self.tracks[rows, pid][ok], self.width, self.height).any())
+
     def reseed_frames(self, pid: int, start: int, end: int) -> list[int]:
         """(I316) Where a run from `start` (bounded by `end`, exclusive) starts `pid` again: the last
-        usable click of every stretch of clicks after the start (the one stretch rule, D3)."""
-        from kinetrace.spots import hand_stretches
-        return [st[-1] for st in hand_stretches(self.hand_clicks(pid, start, end)) if st[-1] > start]
+        usable click of every stretch of clicks after the start (the one stretch rule, D3), not the
+        speed click right after a click on the start frame (`spots.reseed_frames`)."""
+        from kinetrace.spots import reseed_frames
+        return reseed_frames(self.hand_clicks(pid, start, end), start)
 
     def data_frames(self, pid: int) -> np.ndarray:
         """Frames where `pid` has a position at all (ascending int64) — what

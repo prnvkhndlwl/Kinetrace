@@ -178,7 +178,7 @@ position, the rest 0.
 |---|---|
 | `confidence` | 0 – 1, the tracker's belief the position is right (red on the timeline below 0.5); 1 for hand placements |
 | `visible` | 0 = the tracker thinks the point is covered on that frame (its position is still predicted) |
-| `hand_placed` | 1 = placed by hand on that frame. A tracking run never writes over it (only a new click, Delete or a *Fresh run* replace it) |
+| `hand_placed` | 1 = placed by hand on that frame. A tracking run never writes over it; a new click, Delete / Clear, a *Fresh run*, an import of tracks and Point Tools (Move / Swap / Split) can. A ball marker's hand-placed rows are its SAM clicks: its run fits them again |
 | `imported` | 1 = that hand-placed row came in with an import (a DLTdv or SLEAP project, a tracks file) and was not clicked in Kinetrace; only ever 1 where `hand_placed` is 1. A click on that frame in Kinetrace makes it 0. A file without the column reads as all 0 |
 | `hidden` | 1 = marked hidden (Shift+X): exported as blank, left out of 3D |
 | `radius` | a ball marker's fitted radius, in pixels |

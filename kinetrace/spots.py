@@ -615,8 +615,7 @@ class SpotRun:
         self.history: ChangeHistory | None = None
         self.clicks = {int(p): {int(f): np.asarray(v, np.float64) for f, v in c.items()}
                        for p, c in (hand or {}).items() if int(p) in self._settings}
-        self.reseeds = {p: {st[-1] for st in hand_stretches(c) if st[-1] > self.start_frame}
-                        for p, c in self.clicks.items()}
+        self.reseeds = {p: set(reseed_frames(c, self.start_frame)) for p, c in self.clicks.items()}
         self.reseed_log: list[tuple[int, int]] = []      # (frame, pid) of every restart at a click
 
     def reseed_after(self, pid: int, frame: int) -> bool:
@@ -627,15 +626,24 @@ class SpotRun:
         """(I316, I317) Start this spot again at the user's click on frame h, its settings kept. Its speed:
         from the neighbouring clicks (`click_velocity`); else the old tracker's while the click lies inside
         its search (it was following this very spot); else unknown, the wide first search - never the click
-        minus where the old track was, which after a drift onto a glint is the drift itself."""
+        minus where the old track was, which after a drift onto a glint is the drift itself. A click 2-3 frames
+        after another of the same stretch gives the stretch's own speed (review R1-M8). While the old tracker
+        was following this very spot, the new one also keeps its record of the spot's strength: a click a few
+        pixels off the spot's peak (where `start` measures none) must not stop the next step (review)."""
         pid, h = int(pid), int(h)
         old = self.trackers.get(pid)
+        near = (old is not None and old.stopped is None
+                and float(np.hypot(*(np.asarray(xy, np.float64) - old.prediction()))) <= old.search_radius())
         vel = click_velocity(clicks, h) if clicks and h in clicks else None
-        if (vel is None and old is not None and old.stopped is None and old.vel is not None
-                and float(np.hypot(*(np.asarray(xy, np.float64) - old.prediction()))) <= old.search_radius()):
+        for g in range(2, TEST_MAX_GAP + 2):
+            if vel is None and clicks and h in clicks and h - g in clicks:
+                vel = (np.asarray(clicks[h], np.float64) - np.asarray(clicks[h - g], np.float64)) / g
+        if vel is None and near and old.vel is not None:
             vel = old.vel.copy()
         st = old.settings if old is not None else self._settings.get(pid, SpotSettings())
         trk = SpotTracker(replace(st), xy, vel, self.size)        # the same settings, not rounded
+        if near:
+            trk.ref.extend(old.ref)
         self.trackers[pid] = trk
         self.reseed_log.append((h, pid))
         return trk
@@ -690,6 +698,18 @@ def hand_stretches(frames, max_gap: int = TEST_MAX_GAP) -> list[list[int]]:
         cur.append(f)
     if cur:
         out.append(cur)
+    return out
+
+
+def reseed_frames(frames, start: int) -> list[int]:
+    """(I316) Where a run from `start` starts a point again at the user's clicks: the last click of every
+    stretch after the start - except the run's own start (a click on `start` with the speed click right
+    after it: the run already starts from those two, and restarting at an imprecise speed click compounds
+    its error, review)."""
+    out = []
+    for st in hand_stretches(frames):
+        if st[-1] > start and st != [start, start + 1]:
+            out.append(st[-1])
     return out
 
 

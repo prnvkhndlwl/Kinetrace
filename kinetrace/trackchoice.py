@@ -16,9 +16,9 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QDialog, QDialogButtonBo
 
 CHOICES = {   # key: (label, what it does)
     "keep": ("Keep my clicks, replace the rest",
-             "Your clicks stay exactly where they are and the trackers start again from them; every other frame "
-             "the run reaches gets the trackers' new positions. If the run stops early, the frames after the "
-             "stop keep what they had."),
+             "Your clicks stay exactly where they are (a Moving spot point also starts again from them); every "
+             "other frame the run reaches gets the trackers' new positions. If the run stops early, the frames "
+             "after the stop keep what they had. (A ball marker's clicks are prompts its run fits again.)"),
     "fresh": ("Fresh run",
               "The run goes over everything ahead as if there were no clicks: it writes over the clicks it "
               "reaches and restarts nowhere. When it has ended, everything of these points after the last frame "

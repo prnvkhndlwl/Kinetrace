@@ -528,7 +528,7 @@ print("multi-camera export names carry the camera (I108) OK")
 # I107: X during an automatic re-track stops the whole queue
 calls107 = []
 orig_impl, orig_next = win._on_track_finished_impl, win._retrack_next
-win._on_track_finished_impl = lambda last, paused: None
+win._on_track_finished_impl = lambda last, paused, **k: None      # (G217: also gets the X as user_stop)
 win._retrack_next = lambda: calls107.append("next")
 win._retrack = {"jobs": [1, 2, 3]}
 win._user_paused = True
