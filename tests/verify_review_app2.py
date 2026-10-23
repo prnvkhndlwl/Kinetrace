@@ -441,16 +441,27 @@ s.visibility[:2090, 0] = True
 win._goto(10, force=True)
 win._on_add(30.0, 30.0)                  # a new point D: selected alone
 pump(0.1)
-ANSWER[0] = QMessageBox.No
+# (G217) the Track pop-up replaced the "Re-track from here?" question: it counts the run's own points too
+import kinetrace.app as _appmod  # noqa: E402
+from PySide6.QtWidgets import QDialog  # noqa: E402
+POPPED: list = []
+if hasattr(_appmod, "TrackChoiceDialog"):
+    _appmod.TrackChoiceDialog.exec = lambda self: (POPPED.append(self.message()), QDialog.Rejected)[1]
 ASKED.clear()
-win._start_tracking()
-check("G101 a new point D alone does not ask about overwriting another point's frames",
-      not [a for a in ASKED if "overwrite" in a], ASKED)
+win._toggle_tracking()
+check("G101 a new point D alone (no data ahead) is not asked about another point's frames",
+      not POPPED and not [a for a in ASKED if "overwrite" in a], (POPPED, ASKED))
+if win.state == TRACKING:
+    win._toggle_tracking()               # X: D's run is not what this checks
+wait(lambda: win.state == READY and win.worker is None, 60, "D's run paused")
 win._on_select(0)
 ASKED.clear()
-win._start_tracking()
-check("G101 the point that has the tracked frames does", any("overwrite" in a for a in ASKED), ASKED)
-ANSWER[0] = QMessageBox.Yes
+win._toggle_tracking()
+check("G101 the point that has the tracked frames gets the Track pop-up, with its 2079 frames ahead (G217)",
+      POPPED and "2079" in POPPED[-1].replace(",", ""), POPPED[-1:])
+check("G217 ... and the old overwrite question is gone (no second dialog)",
+      not [a for a in ASKED if "overwrite" in a], ASKED)
+check("G217 cancelling the pop-up starts nothing", win.state == READY and win.worker is None)
 close(win)
 
 # ================================================================== [2] the passes

@@ -39,7 +39,9 @@ GPU = ["audit_sweep", "verify_balls", "verify_animal", "verify_tracker", "verify
        # two segments with the real segmentation model in one pass (G149)
        "verify_segments_sam",
        # (I293) a real Track run over a self-contact loop
-       "verify_loop_track"]
+       "verify_loop_track",
+       # (I320, G217) hand-placed frames are the truth with the point models; Fresh run over two passes
+       "verify_hand_truth_models"]
 # verify_pythonw is in no group on purpose: it must be launched DETACHED (Start-Process,
 # no output redirect) or the stderr guard it checks cannot fail; see CLAUDE.md
 CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery", "verify_interop", "verify_shared_landmarks", "verify_multiview", "verify_loading", "verify_stress", "verify_3d", "verify_wand", "verify_lens", "verify_body",
@@ -80,6 +82,9 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_fingerprint", "verify_fingerprint_gui", "verify_decode_identity",
        # (I271, I300-I304, G199, G200) camera timing from the wand: refine, checks, pending offsets, the picture
        "verify_wand_sync", "verify_wand_sync_gui",
+       # (I320, I316, I317, I319, G217, G218) hand-placed frames are the truth: the rules, imported clicks, Moving
+       # spot re-seeds, clicks on silhouette landmarks, the Track pop-up
+       "verify_hand_truth",
        # the test-selection table and the pull-request evidence stamp
        "verify_suite_map"]
 # the synthetic test videos are generated on demand (deterministic; not stored in the repo)
