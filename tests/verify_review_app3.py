@@ -1,6 +1,6 @@
 """app.py (region 3: saving / opening / the 3D entries / Body handlers / exports / close) fixes from the
 2026-10-02 code review (docs/AUDIT.md: I168 I169 I170 I172 I183 I197 I198 I201 I207 I208 I209 I242 I243
-I244 G75 G76 G78 G96 G106 G107 G108 G109 G110 G113 G119 G140 I249 + the owner decision "DLTdv = points
+I244 G75 G76 G78 G96 G106 G107 G108 G109 G110 G113 G119 G140 I249 I315 + the owner decision "DLTdv = points
 only"). Each check FAILS on the code before the fixes. Offscreen, no GPU: a 3-camera synthetic project
 (known DLT cameras, static landmarks + a moving one) is opened through the real MainWindow.
 
@@ -661,6 +661,52 @@ def _g113():
     finally:
         v3.ExportCalibrationDialog, calibwizard.save_calibration_files = saved_dlg, saved_fn
     check(CRIT and "cal_out.kcal.json" in CRIT[0], f"the error names the file that was written: {CRIT[:1]}")
+
+
+@section("I315 File > Export > Calibration with no 3D result on a rig whose third camera has the first two "
+         "cameras' meeting point behind it")
+def _i315():
+    # cameras A and B look at (0, 3, 0); camera C sits between them and that point, looking back at the
+    # origin (the owner's 10-camera rig: that camera came out mirrored and the export was refused)
+    Kr = np.array([[125.0, 0, W / 2], [0, 125.0, H / 2], [0, 0, 1]])
+    rig = []
+    for pos, at in ((np.array([-2.0, -1.0, 0.3]), np.array([0.0, 3.0, 0.0])),
+                    (np.array([2.0, -1.0, 0.3]), np.array([0.0, 3.0, 0.0])),
+                    (np.array([0.0, 1.5, 0.5]), np.zeros(3))):
+        R, t = look_at(pos, at)
+        rig.append(CameraCalibration(dlt_from_camera(Kr, R, t), W, H, NoUndistort(), pixel_origin=0.0))
+
+    class FakeExp:
+        def __init__(self, *a, **k):
+            pass
+
+        def exec(self):
+            return QDialog.Accepted
+
+        def chosen(self):
+            return ["opencv_yml"]
+    import kinetrace.view3d as v3
+    saved_dlg = v3.ExportCalibrationDialog
+    v3.ExportCalibrationDialog = FakeExp
+    p.calibration = Calibration(rig, "m", "I315 rig")
+    drop_recon()
+    NEXT["save"] = os.path.join(OUT, "i315.kcal.json")
+    out = os.path.join(OUT, "i315_cameras.yml")
+    clear_logs()
+    try:
+        win.act_export_cal.trigger()            # File > Export > Calibration...
+        check(not CRIT, f"no error: {CRIT[:1]}")
+        models = calibio.read_opencv(out) if os.path.exists(out) else []
+        check(len(models) == 3, f"the .yml holds every camera ({len(models)} of 3)")
+        if len(models) == 3:
+            c = -models[2].R.T @ models[2].t                  # camera C's centre
+            cos = float(models[2].R[2] @ -c / np.linalg.norm(c))
+            check(cos > 0.9, f"camera C looks at the origin it faces in the exported pose (cos {cos:+.2f})")
+    finally:                                    # the later sections run on the shared rig
+        v3.ExportCalibrationDialog = saved_dlg
+        p.calibration = CAL
+        drop_recon()
+        win._reconstruct_3d(quiet=True)
 
 
 @section("G110 a save whose tidy-up failed says so instead of 'Nothing was changed'")

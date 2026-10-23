@@ -439,7 +439,7 @@ class Project:
             del self.lenses[i]
         if self.calibration is not None and i < len(self.calibration.cameras):
             del self.calibration.cameras[i]
-            self.calibration.__dict__.pop("_probe_cache", None)     # the first two cameras may be others now
+            self.calibration.__dict__.pop("_probe_cache", None)     # the probe depends on every camera (I315)
             if self.calibration.n_calibrated == 0:                    # (I273) nothing calibrated is left
                 self.calibration = None
         self.reconstruction = None
@@ -489,7 +489,7 @@ class Project:
         cal = self.calibration
         if cal is not None and len(cal):
             cal.cameras = perm(cal.padded(n))           # (I273) a not-calibrated camera (None) moves too
-            cal.__dict__.pop("_probe_cache", None)      # the first two calibrated cameras may be others now
+            cal.__dict__.pop("_probe_cache", None)      # the first two may be others now; it checks every camera
         r0 = self.rates[REFERENCE_VIEW]
         if r0 > 0 and abs(r0 - 1.0) > 1e-12:
             self.rates = [r / r0 for r in self.rates]

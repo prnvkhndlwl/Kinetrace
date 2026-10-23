@@ -1346,8 +1346,11 @@ def working_probe(cal: "Calibration") -> np.ndarray | None:
     to the cameras' look-at point), and the DLT denominator there is exactly 1
     for every camera, so "in front" is "denominator > 0". The probe is where
     the first two calibrated cameras' forward principal rays come closest -- when they
-    converge IN FRONT and within `PROBE_MAX_BASELINES` baselines; otherwise
-    (a parallel or toed-out stereo bar) the origin itself. The old rule tried
+    converge IN FRONT, within `PROBE_MAX_BASELINES` baselines, and that point is in
+    front of EVERY calibrated camera (I315: on a 10-camera rig it was behind one camera,
+    which was then drawn and exported facing backwards); otherwise (a parallel or
+    toed-out stereo bar, a camera that does not share the first two's view) the
+    origin itself. The old rule tried
     all four ray orientations and kept whichever converged: on a toed-out pair
     that is a point BEHIND both cameras, on a near-parallel pair one hundreds
     of metres away, and the epipolar guides missed by ~200 px.
@@ -1380,7 +1383,11 @@ def working_probe(cal: "Calibration") -> np.ndarray | None:
         s, t, gap = _closest_approach(rays[0][0], rays[0][1], rays[1][0], rays[1][1])
         if (np.isfinite(gap) and s > 0 and t > 0 and baseline > 1e-12
                 and max(s, t) <= PROBE_MAX_BASELINES * baseline):
-            probe = np.asarray(rays[0][0] + s * rays[0][1], np.float64)
+            meet = np.asarray(rays[0][0] + s * rays[0][1], np.float64)
+            # (I315) in front of the first two cameras only, so far: it must be in front of EVERY camera, as
+            # the origin is (denominator > 0), or a camera that does not share their view is turned around
+            if all(float(np.asarray(c.coefs, np.float64).reshape(11)[8:11] @ meet) + 1.0 > 1e-12 for c in cams):
+                probe = meet
     else:
         best = None
         for s1 in (1.0, -1.0):
