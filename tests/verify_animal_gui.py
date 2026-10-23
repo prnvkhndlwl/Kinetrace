@@ -24,6 +24,8 @@ QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 
 from kinetrace.app import IDLE, READY, TRACKING, MainWindow, apply_theme  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 from kinetrace.session import TrackingSession  # noqa: E402
 
 OUT = os.path.join(ROOT, "tests", "out")

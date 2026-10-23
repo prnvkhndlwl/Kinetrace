@@ -38,6 +38,8 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E4
 from kinetrace import app as app_mod  # noqa: E402
 from kinetrace import calibio, downloads, lens, projectfile, retrack, wand  # noqa: E402
 from kinetrace.app import READY, MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 from kinetrace.body import BodyTrack, rig_of  # noqa: E402
 from kinetrace.calib import (Calibration, CameraCalibration, NoUndistort, dlt_from_camera,  # noqa: E402
                              intersect_polylines)

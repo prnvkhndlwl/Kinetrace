@@ -72,6 +72,8 @@ QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QInputDialog.getText = staticmethod(lambda *a, **k: ("", False))
 
 from kinetrace.app import READY, TRACKING, MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 
 app = QApplication.instance() or QApplication([])
 win = MainWindow()

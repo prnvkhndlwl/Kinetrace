@@ -67,6 +67,8 @@ sys.excepthook = lambda t, v, tb: EXC.append("".join(traceback.format_exception(
 
 from kinetrace import app as appmod, projectfile, recovery, skeletons  # noqa: E402
 from kinetrace.app import READY, MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 
 FAILS: list[str] = []
 

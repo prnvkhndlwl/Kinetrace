@@ -213,8 +213,14 @@ def section3():
     ran_a = s.tracked[:, 1] & ~np.all(s.tracks[:, 1] == 100.0, axis=1)
     last_a = int(np.flatnonzero(ran_a).max()) if ran_a.any() else -1
     check("(setup) pass 2 (dot A) stopped near the loss", 140 <= last_a <= 220, last_a)
-    check("[3] Fresh run: after the trim and the erase nothing is left after the earliest end, for either point",
-          lambda: not s.tracked[last_a + 1:, :2].any(), [np.flatnonzero(s.tracked[:, k])[-1:] for k in range(2)])
+    # the passes end on one frame (the trim): the last frame either point has run data on; the lost dot A was cut
+    # at its loss, as today. Fresh run: nothing old (the (100, 100) data, the click at 280) is left after it
+    old = s.tracked[:, :2] & np.all(s.tracks[:, :2] == 100.0, axis=2)
+    end = int(max(np.flatnonzero(s.tracked[:, k] & ~old[:, k]).max() for k in range(2)))
+    check("[3] Fresh run: after the trim and the erase nothing old is left (the old data, the click at 280)",
+          lambda: not old.any() and not s.manual[280, 0], (int(old.sum()), end))
+    check("[3] ... and no point has data after the frame the passes ended on", lambda: not s.tracked[end + 1:, :2].any()
+          and end <= 230, [np.flatnonzero(s.tracked[:, k])[-1:] for k in range(2)])
     QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
     pump(0.3)
     s = win.session

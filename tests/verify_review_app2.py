@@ -52,6 +52,8 @@ QInputDialog.getText = staticmethod(lambda *a, **k: ("", False))
 app = QApplication.instance() or QApplication([])
 from kinetrace import alltracker_backend  # noqa: E402
 from kinetrace.app import READY, TRACKING, MainWindow, _SideRun  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 from kinetrace.calib import CameraCalibration, NoUndistort, dlt_from_camera  # noqa: E402
 from kinetrace.project import Project  # noqa: E402
 from kinetrace.session import TrackingSession  # noqa: E402
@@ -442,15 +444,12 @@ win._goto(10, force=True)
 win._on_add(30.0, 30.0)                  # a new point D: selected alone
 pump(0.1)
 # (G217) the Track pop-up replaced the "Re-track from here?" question: it counts the run's own points too
-import kinetrace.app as _appmod  # noqa: E402
-from PySide6.QtWidgets import QDialog  # noqa: E402
-POPPED: list = []
-if hasattr(_appmod, "TrackChoiceDialog"):
-    _appmod.TrackChoiceDialog.exec = lambda self: (POPPED.append(self.message()), QDialog.Rejected)[1]
+TRACK_CHOICE.said.clear()
+TRACK_CHOICE.answer = None               # cancel: the check is what it says, not the run
 ASKED.clear()
 win._toggle_tracking()
 check("G101 a new point D alone (no data ahead) is not asked about another point's frames",
-      not POPPED and not [a for a in ASKED if "overwrite" in a], (POPPED, ASKED))
+      not TRACK_CHOICE.said and not [a for a in ASKED if "overwrite" in a], (TRACK_CHOICE.said, ASKED))
 if win.state == TRACKING:
     win._toggle_tracking()               # X: D's run is not what this checks
 wait(lambda: win.state == READY and win.worker is None, 60, "D's run paused")
@@ -458,10 +457,11 @@ win._on_select(0)
 ASKED.clear()
 win._toggle_tracking()
 check("G101 the point that has the tracked frames gets the Track pop-up, with its 2079 frames ahead (G217)",
-      POPPED and "2079" in POPPED[-1].replace(",", ""), POPPED[-1:])
+      TRACK_CHOICE.said and "2079" in TRACK_CHOICE.said[-1].replace(",", ""), TRACK_CHOICE.said[-1:])
 check("G217 ... and the old overwrite question is gone (no second dialog)",
       not [a for a in ASKED if "overwrite" in a], ASKED)
 check("G217 cancelling the pop-up starts nothing", win.state == READY and win.worker is None)
+TRACK_CHOICE.answer = "keep"
 close(win)
 
 # ================================================================== [2] the passes

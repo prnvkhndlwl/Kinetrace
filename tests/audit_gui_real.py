@@ -224,6 +224,8 @@ QFileDialog.getExistingDirectory = staticmethod(
 
 app = QApplication.instance() or QApplication([])
 from kinetrace.app import IDLE, READY, TRACKING, MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 
 win = MainWindow()
 win.resize(1600, 1000)

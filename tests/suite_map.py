@@ -56,8 +56,10 @@ MAP = [
     # (I320, I316, I319, G217, G218) hand-placed frames are the truth: every writer of a point's cells, the runs
     # that keep and re-seed from them, the imports that mark them, the Track pop-up
     ([K + f for f in ("session.py", "tracker.py", "spots.py", "app.py", "projectfile.py", "trackio.py",
-                      "dltdvproject.py", "dltdvimport.py", "canvas.py", "timeline.py")],
+                      "dltdvproject.py", "dltdvimport.py", "canvas.py", "timeline.py", "trackchoice.py")],
      ["verify_hand_truth", "verify_hand_truth_models"]),
+    # (G217) the Track pop-up replaced the "Re-track from here?" question (G101's check)
+    ([K + "trackchoice.py"], ["verify_review_app2"]),
     # (I303) the wand wizard's accept path and its one Ctrl+Z live in app.py
     ([K + "app.py"], ["verify_wand_subset", "verify_wand_sync_gui"]),
     # (I305) the automatic 3D result follows every 2D gesture; the saved result's format

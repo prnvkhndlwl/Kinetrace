@@ -196,6 +196,7 @@ forget_recovery(VID1, VID_GAP, VID_GLINT, VID_LONG, VID_B)
 
 # ================================================================= the window
 def new_window(video):
+    forget_recovery(video)              # an earlier section's autosave of this video must not be restored
     win = MainWindow()
     win.resize(1300, 850)
     win.show()
@@ -650,10 +651,12 @@ def section_d():
 def section_e():
     print("(e) the Track pop-up")
     check("(e) the Track pop-up exists (TrackChoiceDialog)", HAS_POPUP)
-    # a reference run on the vanishing clip with nothing ahead: no pop-up
+    # a reference run on the vanishing clip with nothing ahead: no pop-up. One click only, so the reference IS
+    # today's run (a second click on frame 1 would restart the spot there, on purpose; the golden harness checks
+    # Fresh run against today's run with that speed click)
     win = new_window(VID_GAP)
     s = win.session
-    pid = add_spot_point(win, GAP)
+    pid = add_spot_point(win, GAP, frames=(0,))
     n_seen = len(POP["seen"])
     track_press(win)
     check("(e) no data ahead -> no pop-up", len(POP["seen"]) == n_seen)
@@ -675,8 +678,9 @@ def section_e():
     s = win.session
     msg = POP["seen"][-1] if len(POP["seen"]) > n_seen else ""
     check("(e) data ahead -> Track asks first", len(POP["seen"]) > n_seen)
-    check("(e) ... saying how much is ahead (31 tracked frames, 2 of them clicks)",
-          "31" in msg and "2 " in msg and "click" in msg, msg[:160])
+    # (the speed click on frame 1 is one of the clicks the run starts from: not data ahead)
+    check("(e) ... saying how much is ahead (30 tracked frames, 1 of them a click)",
+          "30 tracked frames" in msg and "1 is a click" in msg, msg[:160])
     check("(e) Fresh run: the frames it tracked are today's run, bit for bit",
           lambda: all(np.array_equal(getattr(s, a.name)[:45, pid], ref[a.name], equal_nan=True) for a in POINT_ARRAYS))
     check("(e) ... then everything after the last frame it reached is erased (old data and the click at 60)",

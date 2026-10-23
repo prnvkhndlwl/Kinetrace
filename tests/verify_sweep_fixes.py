@@ -93,6 +93,8 @@ pb = s_b.add_point(0, 10, 10)
 s_a.tracked[:, pa] = True
 s_b.tracked[:, pb] = True
 from kinetrace.app import MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 p3.active = 1                              # working in camera B (offset -50)
 lo, hi = MainWindow._t_range_3d(SimpleNamespace(project=p3))
 assert (lo, hi) == (50, 399), f"reference window from camera B's frames: {(lo, hi)}"

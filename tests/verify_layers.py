@@ -58,6 +58,8 @@ app = QApplication.instance() or QApplication([])
 
 from kinetrace import projectfile, skeletons  # noqa: E402
 from kinetrace.app import READY, MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 from kinetrace.project import Project  # noqa: E402
 from kinetrace.session import TrackingSession, qualified  # noqa: E402
 from kinetrace.timeline import EVENTS_H, LANE_H  # noqa: E402
