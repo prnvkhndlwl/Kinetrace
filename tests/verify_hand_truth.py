@@ -533,8 +533,9 @@ def section_c():
         clicks[f] = s.tracks[f, pid].copy()
     track_press(win, timeout=180)
     w = LAUNCHED[-1] if LAUNCHED else None
+    # (the clicks on 0 and 1 are a stretch too: the spot restarts at its click on 1 - every stretch's last click)
     check("(c) clicks with up to 2 frames between them are ONE stretch: one re-seed, at its last click",
-          lambda: [f for f, _p in getattr(w, "_reseed_log", [])] == [238], getattr(w, "_reseed_log", None))
+          lambda: [f for f, _p in getattr(w, "_reseed_log", []) if f > 1] == [238], getattr(w, "_reseed_log", None))
     check("(c) ... and every click is intact", lambda: all(hand(s, f, pid) and np.array_equal(s.tracks[f, pid], c)
                                                           for f, c in clicks.items()))
     close(win)
