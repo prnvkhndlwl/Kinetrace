@@ -367,9 +367,13 @@ def _():
 
     class _Run:                                             # the spot run itself is not needed here
         trackers = {}
+        reseed_log: list = []                               # (I316) SpotRun's re-seeds: none here
 
         def __init__(self, *a, **k):
             pass
+
+        def reseed_after(self, pid, frame):
+            return False
 
         def resolve(self, rgb):
             pass
