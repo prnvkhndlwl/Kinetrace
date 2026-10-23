@@ -760,14 +760,15 @@ _STOP_TEXTS = {
     "exit": dict(
         short="{name} left the segment", ms=15000,
         toast=("Stopped at frame {frame}: <b>{name}</b> left its animal's silhouette, so its track ends "
-               "at frame {prev}. Click it where it really is and press Track. If it is allowed off the "
-               "silhouette, right-click it → <i>May leave its silhouette</i>."),
+               "at frame {prev} (your own clicks after it stay). Click it where it really is and press Track. "
+               "If it is allowed off the silhouette, right-click it → <i>May leave its silhouette</i>."),
         status="Stopped: {name} left its animal's silhouette at frame {frame}"),
     "unreliable": dict(
         short="{name} was lost", ms=12000,
         toast=("Auto-paused: <b>{name}</b> became unreliable at frame {frame}, so its track is cut there "
-               "(its timeline lane is empty from this frame on). It is selected: click where it really is "
-               "on the video and press Track — or turn <b>Auto-pause</b> off (bottom bar) to run through."),
+               "(its timeline lane is empty from this frame on, apart from your own clicks). It is selected: "
+               "click where it really is on the video and press Track — or turn <b>Auto-pause</b> off (bottom "
+               "bar) to run through."),
         status=("Auto-paused: the model lost {name} at frame {frame} (low confidence; its track is cut "
                 "there). Click where it really is and press Track — or turn Auto-pause off to run "
                 "through")),
@@ -6363,7 +6364,8 @@ class MainWindow(QMainWindow):
         self._goto(target)
         fr = s.manual_frames(pid)
         k = int(np.searchsorted(fr, target)) + 1
-        self.statusBar().showMessage(f"{s.points[pid].name}: hand-placed frame {k} of {len(fr)}", 3000)
+        what = "imported click" if s.imported[target, pid] else "your click"      # (I319)
+        self.statusBar().showMessage(f"{s.points[pid].name}: hand-placed frame {k} of {len(fr)} ({what})", 3000)
 
     def _goto_low_conf(self, forward: bool):
         """J / Shift+J: jump to the next / previous low-confidence stretch (the
@@ -9405,8 +9407,16 @@ class MainWindow(QMainWindow):
         parts = ([f"the {len(pids)} selected point(s)"] if pids else []) + (
             [_silhouettes_text(len(segs))] if animal_ok else [])
         held = self._held_note(pids, segs)
+        # (I320, I316) the clicks ahead of the start: kept; Moving spot starts again at them, the point models
+        # do not restart from them yet (they write round them)
+        later = ([q for q in pids if not s.points[q].derived and not s.points[q].is_ball
+                  and s.reseed_frames(q, self.current, s.n_frames)] if self._press_choice != "fresh" else [])
+        models = [q for q in later if self._tracker_of(q) != "spot"]
+        ahead = ("" if not later else " — your clicks ahead stay"
+                 + ("; Moving spot starts again at them" if len(models) < len(later) else "")
+                 + ("; AllTracker / CoTracker3 points do not restart from them yet" if models else ""))
         self.statusBar().showMessage(
-            f"Tracking {' and '.join(parts)}" + (f" — {held}" if held else "")
+            f"Tracking {' and '.join(parts)}" + (f" — {held}" if held else "") + ahead
             + " — only what is selected in LAYERS is tracked", 6000)
         if skipped:
             self.statusBar().showMessage(
@@ -9829,7 +9839,9 @@ class MainWindow(QMainWindow):
             self._fps_ema = inst if not self._fps_ema else 0.9 * self._fps_ema + 0.1 * inst
         self._last_emit_t = now
         if self._fps_ema and not self._step_run:  # a 1-frame step has no useful ETA
-            remaining = (self.n_frames - 1 - head) / max(self._fps_ema, 1e-6)
+            # to the run's own end (a second pass / a bounded run ends before the video does)
+            end = int(getattr(self._model_worker, "n_frames", self.n_frames) or self.n_frames)
+            remaining = (min(end, self.n_frames) - 1 - head) / max(self._fps_ema, 1e-6)
             mins, secs = divmod(round(remaining), 60)
             eta = f"{mins} min {secs:02d} s" if mins else f"{secs} s"
             mw = self._model_worker
@@ -10253,7 +10265,8 @@ class MainWindow(QMainWindow):
         if say and parts:
             self.toast.show_message(
                 "Segments that ended during the run: " + ", ".join(parts) + ". Their silhouettes end on the frame "
-                "before" + (", and so do the landmarks held on them" if cut else "") + "; everything else went on. "
+                "before" + (", and so do the landmarks held on them (your own clicks stay)" if cut else "")
+                + "; everything else went on. "
                 "Where one is visible again, select its row, press S, click it, and Track.", "warn", 15000)
 
     def _stop_kind(self, reason: str, pid: int) -> str:
