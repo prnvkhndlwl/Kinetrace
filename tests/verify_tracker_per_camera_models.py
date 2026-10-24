@@ -272,7 +272,63 @@ def main():
     win._dev_probe.wait(30000)
 
 
+def two_cameras():
+    """The plan's hand check (e): two cameras, the snout on AllTracker in camera 1 and CoTracker3 in camera 2 ->
+    one every-camera press tracks it in both, each with its own (each pass then has ONE camera's job, and the
+    CoTracker3 one is not the working camera)."""
+    forget_recovery(*CAMS[:2])
+    win = MainWindow()
+    win.resize(1400, 900)
+    win.show()
+    win._open_video(CAMS[0])
+    wait(lambda: win.state == READY and win.project is not None and not win._loading, 60)
+    win._add_view(CAMS[1])
+    wait(lambda: win.state == READY and not win._loading, 60)
+    pump(0.3)
+    p = win.project
+    win._set_active_view(0)
+    pump(0.1)
+    win._goto(0, force=True)
+    win.btn_add.setChecked(True)
+    canvas_click(win, *GT[0][0, 0])
+    win._apply_rename(win.session.n_points - 1, "snout")
+    place(win, 1, "snout", 0, GT[1][0, 0])
+    ok = set_tracker_here(win, 0, "snout", "alltracker") & set_tracker_here(win, 1, "snout", "cotracker3")
+    check("(e setup) two cameras: snout AllTracker in camera 1, CoTracker3 in camera 2 (by the menu)", ok)
+    win._set_active_view(0)
+    pump(0.1)
+    win.act_track_all.setChecked(True)
+    win.act_select_all.trigger()
+    win._goto(0, force=True)
+    BUILT.clear()
+    QTest.keyClick(win, Qt.Key_T)
+    wait(lambda: win.state != READY or win._passes is not None, 30)
+    done = wait(lambda: win.state == READY and win.worker is None and win._passes is None and win._multi is None,
+                900)
+    pump(0.5)
+    vid = {os.path.basename(CAMS[v]): v for v in range(2)}
+    got = sorted((vid[b["video"]], b["backend"]) for b in BUILT)
+    errs = []
+    for v in range(2):
+        sv = p.sessions[v]
+        q = sv.pid_by_name("snout")
+        d = np.linalg.norm(sv.tracks[1:N, q] - GT[v][1:N, 0], axis=1)
+        errs.append((int(sv.tracked[1:N, q].sum()), float(np.nanmedian(d)) if sv.tracked[1:N, q].any() else np.inf))
+    print(f"  (two cameras: runs {got}; tracked frames, median px: {errs})")
+    check("(e) hand check: one every-camera press tracks the snout in both cameras, each with its own tracker",
+          done and got == [(0, "alltracker"), (1, "cotracker3")] and all(n == N - 1 and e < 3.0 for n, e in errs),
+          (got, errs))
+    win.act_track_all.setChecked(False)
+    p.dirty = False
+    for sv in p.sessions:
+        sv.dirty = False
+    win.close()
+    pump(0.3)
+    win._dev_probe.wait(30000)
+
+
 main()
+two_cameras()
 print()
 if FAILS:
     print(f"FAILED: {len(FAILS)} check(s)")

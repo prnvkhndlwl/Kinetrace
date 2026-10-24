@@ -311,7 +311,8 @@ def plan(project, threshold_px, min_run: int = MIN_RUN) -> list[Stretch]:
             continue
         s = project.sessions[st.view] if st.view < project.n_views else None
         q = s.pid_by_name(st.name) if s is not None else None
-        if q is not None and s.points[q].tracker == "hand":
+        m = s.points[q] if q is not None else None
+        if m is not None and m.tracker == "hand" and not (m.derived or m.is_ball):
             # (G219) no tracker runs it there: a re-track would change nothing
             st.reason = ("placed by hand only in this camera (no tracker): correct it by hand there, or give it a "
                          "tracker (right-click its row in LAYERS -> Tracker)")

@@ -359,14 +359,15 @@ def set_tracker_here(win, v, name, key_label, key):
     return got["chosen"] is not None
 
 
-def track_press(win, start=0, every=False, timeout=120):
+def track_press(win, start=0, every=False, timeout=120, mods=Qt.NoModifier, select_all=True):
     """Select all, go to `start`, T: True when a run was launched and the whole press has ended."""
     win.act_track_all.setChecked(bool(every))
-    win.act_select_all.trigger()
+    if select_all:
+        win.act_select_all.trigger()
     win._goto(start, force=True)
     pump(0.05)
     n0 = len(LAUNCHED)
-    QTest.keyClick(win, Qt.Key_T)
+    QTest.keyClick(win, Qt.Key_T, mods)
     started = wait(lambda: len(LAUNCHED) > n0, 15)
     ended = wait(lambda: win.state == READY and win.worker is None and win._passes is None and win._multi is None,
                  timeout)
@@ -875,7 +876,78 @@ def section_f():
     close(win)
 
 
-for fn in (section_a, section_b, section_c, section_d, section_e, section_f):
+# ================================================================= (g) two cameras (the plan's hand check (e))
+def section_g():
+    print("(g) two cameras: a pass that only the other camera runs")
+    win = new_window(CAMS[0])
+    check("(g setup) a second camera", add_cameras(win, [CAMS[1]]))
+    p = win.project
+    win._set_active_view(0)
+    pump(0.1)
+    win.act_pm_cotracker.trigger()
+    new_point(win, TRUTH[0][0], "snout")
+    place(win, 1, "snout", 0, TRUTH[0][0])
+    sa, sb = p.sessions
+    vid = {os.path.basename(CAMS[v]): v for v in range(2)}
+    toasts = Toasts(win)
+
+    def press(a_key, b_key, label, **kw):
+        set_tracker_here(win, 0, "snout", {"alltracker": "AllTracker", "cotracker3": "CoTracker3",
+                                           "hand": "Hand only"}[a_key], a_key)
+        set_tracker_here(win, 1, "snout", {"alltracker": "AllTracker", "cotracker3": "CoTracker3",
+                                           "hand": "Hand only"}[b_key], b_key)
+        win._set_active_view(0)
+        pump(0.1)
+        before = [cells(sv, sv.pid_by_name("snout")) for sv in p.sessions]
+        RUNS.clear()
+        toasts.msgs.clear()
+        ran = track_press(win, **kw)
+        got = sorted((vid.get(r["video"]), r["backend"]) for r in RUNS)
+        return ran, got, before
+
+    # hand check (e): the snout on AllTracker in camera 1 and CoTracker3 in camera 2, Every camera, T
+    for a_key, b_key in (("alltracker", "cotracker3"), ("cotracker3", "alltracker")):
+        ran, got, _b = press(a_key, b_key, "", every=True)
+        check(f"(g) camera 1 {a_key}, camera 2 {b_key}: one press tracks the snout in both cameras, each with its own",
+              ran and got == [(0, a_key), (1, b_key)]
+              and last_tracked(sa, sa.pid_by_name("snout")) == N - 1
+              and last_tracked(sb, sb.pid_by_name("snout")) == N - 1,
+              (got, last_tracked(sa, sa.pid_by_name("snout")), last_tracked(sb, sb.pid_by_name("snout")),
+               toasts.text()[:160]))
+        QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+        pump(0.3)
+    # Hand only here, tracked in the other camera: Every camera (and Shift+T) runs it there, leaves it here
+    for kw, how in (({"every": True}, "Every camera, T"), ({"every": False, "mods": Qt.ShiftModifier}, "Shift+T")):
+        ran, got, before = press("hand", "alltracker", "", **kw)
+        check(f"(g) Hand only in camera 1, AllTracker in camera 2, {how}: camera 2 tracks it, camera 1 leaves it",
+              ran and got == [(1, "alltracker")] and last_tracked(sb, sb.pid_by_name("snout")) == N - 1
+              and same_cells(sa, sa.pid_by_name("snout"), before[0]),
+              (ran, got, last_tracked(sb, sb.pid_by_name("snout")), toasts.text()[:160]))
+        if ran:
+            QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+            pump(0.3)
+    # a pass that cannot start anywhere is named, with the model it is
+    set_tracker_here(win, 0, "snout", "CoTracker3", "cotracker3")
+    set_tracker_here(win, 1, "snout", "AllTracker", "alltracker")
+    q = sb.pid_by_name("snout")
+    kept = cells(sb, q)
+    sb.clear_window([q], 0, 0)                              # camera 2 has no snout on its frame of this instant
+    win._set_active_view(0)
+    pump(0.1)
+    toasts.msgs.clear()
+    track_press(win, every=True)
+    check("(g) a pass that cannot start anywhere is named (snout, the AllTracker pass)",
+          "snout" in toasts.text() and "AllTracker" in toasts.text() and "no position" in toasts.text(),
+          toasts.text()[:200])
+    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    pump(0.3)
+    for a in POINT_ARRAYS:
+        getattr(sb, a.name)[:, q] = kept[a.name]
+    win.act_track_all.setChecked(False)
+    close(win)
+
+
+for fn in (section_a, section_b, section_c, section_d, section_e, section_f, section_g):
     section(fn)
 
 print()
