@@ -9102,8 +9102,12 @@ class MainWindow(QMainWindow):
         msg = ("Two passes" if len(labels) == 2 else f"{len(labels)} passes") + ", one after the other — " \
             + "; ".join(said) + "."
         if trimmed:
-            msg += (f" The second pass stopped earlier (frame {trimmed[0][1]}), so the first pass's points end "
-                    "there too — every point of the run ends on the same frame.")
+            # (R1 re-check) with a tracker per camera only the cameras both passes ran in are trimmed: named
+            many = p.n_views > 1
+            msg += (f" The second pass stopped earlier (frame {trimmed[0][1]}"
+                    + (f" in {', '.join(dict.fromkeys(nm for nm, _e in trimmed))}" if many else "")
+                    + "), so the first pass's points end there too — every point of the run ends on the same frame"
+                    + (" in each camera both passes ran in." if many else "."))
         msg += " One Ctrl+Z undoes " + ("both passes." if len(labels) == 2 else "all of them.")
         unusual = bool(fails or trimmed or any(d.get("skipped") or d["user_stop"] for d in st["done"])
                        or len(ran) < len(labels))
@@ -9499,7 +9503,8 @@ class MainWindow(QMainWindow):
                 + " — F for the next; Ctrl+Z undoes the step" + ("" if one else " in all"), 6000)
             return
         self.toast.show_message(
-            ("Stopped: " if user_stop else "Tracked in every camera: " if not one else "Tracked in ") + "; ".join(parts)
+            ("Stopped: " if user_stop else "Tracked in every camera: " if not one else "" if problem is not None
+             else "Tracked in ") + "; ".join(parts)
             + (". One Ctrl+Z undoes the run in every camera." if not one else ". Ctrl+Z undoes it."),
             "warn" if (problem or user_stop) else "info", 12000)
 
