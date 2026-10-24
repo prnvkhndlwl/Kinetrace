@@ -737,12 +737,13 @@ win._undo_run()
 check("G68 and one Ctrl+Z puts it back in every camera", [sv.points[0].tracker for sv in p.sessions] == [""] * 3,
       [sv.points[0].tracker for sv in p.sessions])
 
-# ---- G68: the test's Use is one step across the cameras too
+# ---- G68: the test's Use is one step; (D8, review R0-M11) it sets the camera the test ran in only
 use = types.SimpleNamespace(model="cotracker3", settings=None, label="CoTracker3")
 win._apply_test_choice(0, use)
-check("G68 (setup) Use set the tracker in every camera", [sv.points[0].tracker for sv in p.sessions] == ["cotracker3"] * 3)
+check("G68 / D8 (setup) Use set the tracker in this camera only",
+      [sv.points[0].tracker for sv in p.sessions] == ["cotracker3", "", ""], [sv.points[0].tracker for sv in p.sessions])
 win._undo_run()
-check("G68 one Ctrl+Z puts the tracker back in every camera after Use",
+check("G68 one Ctrl+Z puts the tracker back after Use",
       [sv.points[0].tracker for sv in p.sessions] == [""] * 3, [sv.points[0].tracker for sv in p.sessions])
 
 # ---- G125 / G69: the automatic re-track

@@ -8921,7 +8921,7 @@ class MainWindow(QMainWindow):
                 return
             stop = self.current + 1 if stop is None else min(stop, self.current + 1)
         if pids is None and segment is None:
-            kw = {"model": model, "rest": rest}
+            kw = {}                 # the press's one pass: no model to filter by (every point has the same)
             if stop is not None:
                 kw["stop_after"] = stop
             if step:
