@@ -140,16 +140,29 @@ class _NoAction:
     def isChecked(self):
         return False
 
+    def isEnabled(self):
+        return True
+
 
 def act(win, name):
     return getattr(win, name, None) or _NoAction()
 
 
-def click(win, x, y):
-    """A real click on the canvas; returns the scene position Qt gives that pixel (what must be stored)."""
+def click(win, x, y, double=False, look=True):
+    """A real click (or double-click) on the canvas; returns the scene position Qt gives that pixel (what must be
+    stored). `look`: first wait for the frame's own picture, as a user looks before clicking."""
+    if look:
+        pump(0.05)
+        wait(lambda: win.cache.get(win.current) is not None and not win.canvas.is_preview(), 5)
     vp = win.canvas.mapFromScene(QPointF(float(x), float(y)))
     sp = win.canvas.mapToScene(vp)
-    QTest.mouseClick(win.canvas.viewport(), Qt.LeftButton, Qt.NoModifier, vp)
+    vpw = win.canvas.viewport()
+    QTest.mouseClick(vpw, Qt.LeftButton, Qt.NoModifier, vp)
+    if double:
+        # what the system sends for a double-click: press, release, double-click, release (QTest.mouseDClick sends
+        # the double-click event alone here)
+        QTest.mouseDClick(vpw, Qt.LeftButton, Qt.NoModifier, vp)
+        QTest.mouseRelease(vpw, Qt.LeftButton, Qt.NoModifier, vp)
     pump(0.08)
     return float(sp.x()), float(sp.y())
 
@@ -160,9 +173,16 @@ def section_main():
     toasts = Toasts(win)
     check("(setup) the clip opens", s is not None and s.n_frames == N)
     check("Track > Manual - no tracker exists", lambda: getattr(win, "act_mode_manual", None) is not None)
+    after_off = not act(win, "act_after_step").isEnabled()
+    QTest.keyClick(win, Qt.Key_S)                     # an armed Segment tool (Automatic mode)...
+    pump(0.05)
+    armed = win.btn_animal.isChecked()
     act(win, "act_mode_manual").trigger()
     pump(0.05)
     check("... and ticking it puts the window in Manual mode", lambda: win._track_mode == "manual")
+    check("... it puts down the armed Segment tool", armed and not win.btn_animal.isChecked(), armed)
+    check("After a click is offered only in Manual mode (greyed in Automatic)",
+          after_off and act(win, "act_after_step").isEnabled(), after_off)
     # N + a click adds the point, the next 9 clicks digitise it frame by frame
     launched = []
     orig_launch, orig_ready = win._launch_run, win._tracking_engine_ready
@@ -203,13 +223,32 @@ def section_main():
     QTest.keyClick(win, Qt.Key_B)
     pump(0.1)
     check("B steps one frame back", win.current == f_before, (f_before, win.current))
+    # a double-click is ONE click: its second press would land on the next frame, unseen
+    win._goto(12, force=True)
+    click(win, 76.0, 120.0, double=True)
+    check("a double-click places ONE frame and moves on once (12 placed, 13 not, the playhead on 13)",
+          lambda: s.manual[12, pid] and not s.tracked[13, pid] and win.current == 13,
+          (bool(s.manual[12, pid]), bool(s.tracked[13, pid]), win.current))
+    check("... and the bottom bar says the double-click counted once",
+          "double-click" in win.statusBar().currentMessage().lower(), win.statusBar().currentMessage()[:80])
+    # a click on a stand-in picture (the nearest cached frame, dimmed, while this one decodes: G204) is not placed
+    wait(lambda: not win.canvas.is_preview(), 5)
+    win.canvas.set_preview(True)
+    click(win, 79.0, 120.0, look=False)
+    check("a click while the frame's picture is still loading is not placed, and the video stays",
+          lambda: not s.tracked[13, pid] and win.current == 13, (bool(s.tracked[13, pid]), win.current))
+    check("... and the bottom bar says why", "loading" in win.statusBar().currentMessage().lower(),
+          win.statusBar().currentMessage()[:80])
+    win.canvas.set_preview(False)
     # T / the Track button track nothing and say why
     toasts.msgs.clear()
     QTest.keyClick(win, Qt.Key_T)
     pump(0.3)
+    QTest.keyClick(win, Qt.Key_T, Qt.ShiftModifier)
+    pump(0.3)
     win.btn_track.click()
     pump(0.3)
-    check("T and the Track button start no run in Manual mode", not launched and win.state == READY)
+    check("T, Shift+T and the Track button start no run in Manual mode", not launched and win.state == READY)
     check("... the model is never even prepared", not ready_calls)
     check("... and they say so (Manual mode, and how to track again)",
           toasts.said("manual") and toasts.said("automatic"), toasts.msgs[-2:])
@@ -227,6 +266,11 @@ def section_main():
     win.act_body_run.trigger()
     pump(0.2)
     check("Body refuses in Manual mode, in words", toasts.said("manual"), toasts.msgs[-1:])
+    toasts.msgs.clear()
+    win.act_add_ball.trigger()
+    pump(0.1)
+    check("Point > Ball marker refuses in Manual mode (SAM outlines a ball), in words",
+          lambda: not win.btn_add.isChecked() and toasts.said("manual"), toasts.msgs[-1:])
     # After a click: the step box, the next point, stay
     win.step_spin.setValue(5)
     act(win, "act_after_step").trigger()
@@ -256,6 +300,27 @@ def section_main():
     click(win, 133.0, 100.0)
     check("... and after the last point: the first point again, on the next frame",
           win.selected == pid and win.current == 32, (win.selected, win.current))
+    # the next point skips a hidden row (its LAYERS checkbox off) and a ball marker
+    act(win, "act_after_stay").trigger()
+    win.layers.clearSelection()
+    win.selected = None
+    win.btn_add.setChecked(True)
+    click(win, 140.0, 140.0)
+    r = s.n_points - 1
+    s.add_ball(32, 170.0, 60.0)                        # (setup: no SAM runs to add one)
+    s.points[q].display = False
+    win._refresh_point_list()
+    act(win, "act_after_point").trigger()
+    win._on_select(pid)
+    pump(0.05)
+    click(win, 136.0, 120.0)
+    check("the next point skips a hidden row: P1 -> P3 (P2 hidden), the frame stays",
+          win.selected == r and win.current == 32, (win.selected, win.current))
+    click(win, 140.0, 141.0)
+    check("... and a ball marker: P3 -> P1 on the next frame", win.selected == pid and win.current == 33,
+          (win.selected, win.current))
+    s.points[q].display = True
+    win._refresh_point_list()
     # hints stay silent: no "try Moving spot" for frame-by-frame corrections
     toasts.msgs.clear()
     act(win, "act_after_next_frame").trigger()

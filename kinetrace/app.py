@@ -870,7 +870,7 @@ class MainWindow(QMainWindow):
         self._pending_event: int | None = None      # E pressed once: start frame
         self._autopause_info: tuple[int, int] | None = None  # (frame, pid)
         self._member_frames: dict[int, dict] = {}   # frame -> {pid: (M,2)} overlay
-        # _track_mode ("auto" | "semi") is a property over the Track menu's actions (I139)
+        # _track_mode ("auto" | "semi" | "manual") is a property over the Track menu's actions (I139)
         self._step_run = False                      # current run is a semi-auto step
         self._track_blocked: str | None = None      # why Track cannot start here (G34)
         self._seg_backend = preferred_backend()     # segmentation model (Settings)
@@ -1032,6 +1032,9 @@ class MainWindow(QMainWindow):
         canvas.free_toggled.connect(self._on_free_toggled)
         canvas.region_requested.connect(self._on_add_region)
         canvas.occluded_toggled.connect(self._on_occluded_toggled)
+        canvas.double_click_dropped.connect(lambda: self.statusBar().showMessage(
+            "A double-click counts as one click in Manual mode: the first click placed the point and moved the "
+            "video on — click once per frame", 6000))           # (G215)
         canvas.menu_extra = self._extend_point_menu
         canvas.menu_extra_action = self._point_menu_extra_action
         canvas.multi_menu = self._maybe_multi_menu
@@ -1054,6 +1057,8 @@ class MainWindow(QMainWindow):
             out["set_pan_mode"] = (self.btn_pan.isChecked(),)
         if getattr(self, "marker_spin", None) is not None:
             out["set_marker_size"] = (self.marker_spin.value(),)
+        if getattr(self, "act_mode_manual", None) is not None:
+            out["set_one_click_moves_on"] = (self._track_mode == "manual",)     # (G215)
         if getattr(self, "act_onion", None) is not None:
             out["set_onion"] = (self.act_onion.isChecked(),)
             out["set_loupe"] = (self.act_loupe.isChecked(),)
@@ -1275,13 +1280,14 @@ class MainWindow(QMainWindow):
         self.act_mode_manual = QAction("Manual — no tracker: click each point on each frame", self, checkable=True)
         self.act_mode_manual.setToolTip(
             "Nothing is tracked and no model runs (no SAM, no point model): select a point and click it on each "
-            "frame; each click lands exactly where you click and the video moves on (After a click, below). "
-            "F / B step frames, Ctrl+Z takes a click back. Automatic switches the trackers on again.")
+            "frame; each click lands exactly where you click and the video moves on as After a click (below) "
+            "says. F / B step frames, Ctrl+Z takes a click back. Automatic switches the trackers on again.")
         for act, mode in ((self.act_mode_auto, "auto"), (self.act_mode_semi, "semi"), (self.act_mode_manual, "manual")):
             self._mode_group.addAction(act)
             menu_track.addAction(act)
             act.triggered.connect(lambda _=False, m=mode: self._set_track_mode(m))
-        # (G215) where the playhead goes after a click in Manual mode
+        # (G215) where the playhead goes after a click in Manual mode: only offered in Manual mode
+        menu_track.addSeparator()
         self._after_group = QActionGroup(self)
         self._after_acts = {
             "frame": QAction("After a click (Manual mode): the next frame", self, checkable=True, checked=True),
@@ -1292,12 +1298,15 @@ class MainWindow(QMainWindow):
         self.act_after_next_frame, self.act_after_step, self.act_after_point, self.act_after_stay = \
             self._after_acts.values()
         self.act_after_point.setToolTip("The next point of the clicked one's animal (or Scene), in LAYERS order, "
-                                        "hidden rows skipped; after its last point, its first point on the next "
-                                        "frame.")
+                                        "hidden rows and ball markers skipped; after its last point, its first "
+                                        "point on the next frame.")
         for key, act in self._after_acts.items():
             self._after_group.addAction(act)
             menu_track.addAction(act)
             act.triggered.connect(lambda _=False, k=key: self._set_after_click(k))
+            act.setEnabled(False)
+        # every way into or out of Manual mode (the menu, a project opened, the setter) passes here
+        self.act_mode_manual.toggled.connect(self._on_manual_toggled)
         # several cameras: the same points tracked in every camera that has them (G29)
         menu_track.addSeparator()
         self.act_track_all = QAction("Every camera — track the point(s) in each camera that has them here",
@@ -2380,7 +2389,10 @@ class MainWindow(QMainWindow):
         # far away) has no silhouette worth outlining: place a point
         # with N and Track — the tracker zooms into its own crop around it.
         # The strip therefore never waits for a segment; Track is the goal.
-        if not tracked:
+        if not tracked and self._track_mode == "manual":
+            hint = ("Manual mode: press N and click the point, then click it again on each frame — the video "
+                    "moves on by itself (Track ▾ → After a click)")             # (G215) no Track, no S
+        elif not tracked:
             hint = ("Press N and click the animal (a few pixels is enough), then Track ▶ — or S to "
                     "outline a larger animal first for silhouette landmarks"
                     if not (seg or landmarks) else
@@ -2620,7 +2632,7 @@ class MainWindow(QMainWindow):
             self.btn_track.setEnabled(True)
             self._set_track_blocked(MANUAL_BLOCKED)
             self.btn_track.setToolTip(MANUAL_BLOCKED + ". Each click places the selected point exactly where you "
-                                      "click and moves the video on (Track ▾ → After a click).")
+                                      "click; Track ▾ → After a click says where the video goes next.")
             self._fit_track_label()
             return
         s = self.session
@@ -2839,6 +2851,28 @@ class MainWindow(QMainWindow):
                     "step": f"the video moves {self.step_spin.value()} frames on (the step box, as Shift+F)",
                     "point": "the next point of the animal is selected; after its last point, the next frame",
                     "stay": "the video stays on the frame"}[key], 6000)
+
+    def _on_manual_toggled(self, on: bool) -> None:
+        """(G215) Manual mode on / off: After a click is offered only in it (it does nothing elsewhere), and
+        every view treats a double-click as one click (`Canvas.set_one_click_moves_on`)."""
+        for act in self._after_acts.values():
+            act.setEnabled(on)
+        if getattr(self, "grid", None) is not None:
+            self._push_canvas("set_one_click_moves_on")
+        if getattr(self, "onboarding", None) is not None:
+            self._refresh_onboarding()               # its hint names Track / S, or Manual mode's clicks
+
+    def _picture_pending(self) -> bool:
+        """(G215) Manual mode: the view shows a stand-in picture (the nearest cached frame, dimmed, while this
+        frame decodes, G204), so a click would be stored on this frame at a place seen on another one. It says
+        so; True = the click is not placed. The other modes are unchanged (a click never moves the video on
+        there)."""
+        if self._track_mode != "manual" or not self.canvas.is_preview():
+            return False
+        self.statusBar().showMessage(
+            f"Not placed: frame {self.current}'s picture is still loading (the dimmed picture is a nearby frame) "
+            "— click again when it shows", 6000)
+        return True
 
     def _manual_refuses(self, what: str) -> bool:
         """(G215) Manual mode runs no model: `what` (the segment tool, the point-model test, Body, ...) says so
@@ -5344,7 +5378,7 @@ class MainWindow(QMainWindow):
             self.btn_add.setChecked(True)
 
     def _on_add(self, x: float, y: float):
-        if self.session is None:
+        if self.session is None or self._picture_pending():      # (G215) armed: N stays on for the retry
             return
         kind = self._place_kind
         self.btn_add.setChecked(False)  # one placement per arm (also resets _place_kind)
@@ -5516,7 +5550,7 @@ class MainWindow(QMainWindow):
     def _on_add_group(self, cx: float, cy: float, radius: float):
         """Circle drag: track a region as one point (robust center of a member
         constellation). Future region shapes (rectangle, polygon) plug in here."""
-        if self.session is None:
+        if self.session is None or self._picture_pending():
             return
         self.btn_add.setChecked(False)  # one placement per arm
         s = self.session
@@ -5526,6 +5560,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Added region {s.points[pid].name} (r={radius:.0f} px) at frame "
             f"{self.current} — it tracks as one point: the region's fitted center", 6000)
+        self._advance_after_click(pid)          # (G215) Manual mode: the video moves on
 
     # ---------------------------------------------------------------- animal
 
@@ -6311,7 +6346,7 @@ class MainWindow(QMainWindow):
     def _on_add_region(self, shape: str, outline):
         """Rectangle / polygon region from an armed gesture: tracked as ONE
         point (the fitted centre of a member constellation sampled inside it)."""
-        if self.session is None:
+        if self.session is None or self._picture_pending():
             return
         self.btn_add.setChecked(False)  # one placement per arm
         pts = np.asarray(outline, np.float32).reshape(-1, 2)
@@ -6909,7 +6944,7 @@ class MainWindow(QMainWindow):
     def _on_place(self, pid: int, x: float, y: float):
         """Ctrl+click / N-continue: a manual correction at the current frame (a marker is no longer
         dragged since G59)."""
-        if self.session is None or pid >= self.session.n_points or self.state != READY:
+        if self.session is None or pid >= self.session.n_points or self.state != READY or self._picture_pending():
             return
         # (G218) a silhouette-derived landmark is placed by hand too, on this frame: the silhouette fills its
         # other frames and never overwrites a click (owner 2026-10-20)
@@ -7003,6 +7038,8 @@ class MainWindow(QMainWindow):
                 + ", or pick one in LAYERS and click where it is."
                 + (" <b>Alt+click</b> shows where a spot can be in the other cameras." if multi else ""),
                 "info", 7000)
+            return
+        if self._picture_pending():
             return
         if self._track_mode != "manual":
             x, y = self._snap_to_prediction(pid, x, y)      # (G215) Manual mode: exactly where clicked

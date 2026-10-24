@@ -1206,7 +1206,12 @@ button then reads **Manual · no tracker**, and from then on:
   click**: *the next frame* (the default), *on by the step box's frames* (the
   number in the control bar, as **Shift+F**), *the next point, then the next
   frame* (the next point of the same animal, in LAYERS order, skipping the ones
-  you hid; after its last point, its first point on the next frame), or *stay*;
+  you hid and ball markers; after its last point, its first point on the next
+  frame), or *stay*. These choices are offered only in Manual mode;
+- a **double-click counts as one click** (its second click would otherwise land
+  on the next frame, which you have not seen yet), and a click while the picture
+  is still loading — a dimmed nearby frame stands in for it — is not placed: the
+  bottom bar says so, click again when the picture shows;
 - **F** / **B** still step one frame, **Ctrl+Z** takes the last click back and
   returns to its frame and point, so you can click it again;
 - the hints that suggest another point model stay quiet.
@@ -1742,7 +1747,8 @@ says so before you press it ("· 5 cams (2 hidden)"), and a warning names the
 hidden cameras when the run starts; click the warning to show them all.
 The Track ▾ menu stays open while you tick, so the run mode
 (Automatic / Semi-automatic / Manual), **Every camera** and the point model (AllTracker /
-CoTracker3) can all be chosen in one visit; they combine. If only the camera you
+CoTracker3) can all be chosen in one visit; they combine (Manual mode tracks
+nothing). If only the camera you
 are working in has the point at this instant, Track says which camera lacks it
 (and on which frame) and tracks this camera alone. In semi-automatic mode **F**
 steps one frame in every camera. **Shift+T** does one such run without ticking

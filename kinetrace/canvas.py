@@ -441,6 +441,7 @@ class VideoCanvas(QGraphicsView):
     probe_requested = Signal(float, float)         # Alt+click: where is this spot in the other cameras?
     view_clicked = Signal()                        # any press — the camera grid uses
     #                                                it to make a clicked view active
+    double_click_dropped = Signal()                # (G215) Manual mode: a double-click's second press, not placed
 
     def __init__(self):
         super().__init__()
@@ -498,6 +499,7 @@ class VideoCanvas(QGraphicsView):
         self._pan_mode = False   # ✋: left-drag pans instead of editing points
         self._place_mode = False  # N: next click places a point (crosshair)
         self._click_only = False  # ball marker: armed clicks ignore the region shape
+        self._one_click_moves_on = False   # (G215) Manual mode: a double-click is ONE click (set_one_click_moves_on)
         # THE gesture in progress (R5): exactly one at a time, so a lost release
         # cannot leave a second flag behind. A gesture that owns a mouse button
         # (`_gbutton`) ends the moment that button is no longer held.
@@ -980,6 +982,12 @@ class VideoCanvas(QGraphicsView):
         if not enabled:
             self.cancel_gesture()
         self._update_cursor()
+
+    def set_one_click_moves_on(self, on: bool) -> None:
+        """(G215) Manual mode: the first click of a double-click already placed the point and moved the video
+        on, so the pair's second press is dropped (`double_click_dropped`) - it would land, at the same pixel,
+        on a frame the user has not seen yet."""
+        self._one_click_moves_on = bool(on)
 
     def set_click_only(self, on: bool) -> None:
         """Armed placement makes single clicks only (a ball marker): the region
@@ -1640,6 +1648,10 @@ class VideoCanvas(QGraphicsView):
             # the pair's first click already added the corner: close the polygon
             if not self.finish_polygon():
                 self.cancel_gesture()
+            return
+        if (ev.button() == Qt.LeftButton and self._one_click_moves_on and self._interactive
+                and not self._pan_mode and not self._animal_mode):
+            self.double_click_dropped.emit()       # (G215) the same click twice, not a click on the next frame
             return
         # Qt delivers the second press of a quick pair ONLY as a double-click event:
         # it is a press like any other, or a fast second click was lost (G65)
