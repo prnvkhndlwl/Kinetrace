@@ -1211,10 +1211,12 @@ button then reads **Manual · no tracker**, and from then on:
   several cameras on screen the video stays** after a click, whatever is chosen:
   each camera's click is the same instant, so click a camera to work in it,
   place the point there, and press **F** when every camera has it;
-- a **double-click counts as one click** (its second click would otherwise land
-  on the next frame, which you have not seen yet), and a click while the picture
-  is still loading — a dimmed nearby frame stands in for it — is not placed: the
-  bottom bar says so, click again when the picture shows;
+- when a click moved the video (or the selection) on, a **double-click counts
+  as one click** (its second click would otherwise land on the next frame or
+  point, which you have not looked at yet), and a click is placed only once the
+  frame's own picture is on screen — not while a dimmed nearby frame stands in
+  for it, or the previous picture is still up after a quick move: the bottom bar
+  says so, click again when the picture shows;
 - **F** / **B** still step one frame, **Ctrl+Z** takes the last click back and
   returns to its frame and point, so you can click it again;
 - the hints that suggest another point model stay quiet.
@@ -1224,8 +1226,8 @@ its frame, so you can add the other points there the same way), **F**, then
 click it on every frame that follows. Silhouette landmarks are clicked the same way. Onion skin (**O**),
 **,** / **.** and *Fill its gaps between hand placements* all work as usual.
 As in the other modes, **N** + a click on a frame where the selected point has no
-position yet places that point there (the bottom bar says "same point, no new
-point created"): press **Esc** first to add a new point instead.
+position yet places that point there (a notice on the video says "same point,
+no new point created"): press **Esc** first to add a new point instead.
 The mode and the After-a-click choice are saved with the project. Track ▾ →
 **Automatic** switches the trackers on again; every click you made stays (see
 above: a run keeps them).

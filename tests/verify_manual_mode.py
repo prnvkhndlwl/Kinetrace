@@ -247,6 +247,15 @@ def section_main():
     check("... and the bottom bar says why", "loading" in win.statusBar().currentMessage().lower(),
           win.statusBar().currentMessage()[:80])
     win.canvas.set_preview(False)
+    # with "stay" nothing moved on: the second press goes through, as in the other modes (R1-N1)
+    act(win, "act_after_stay").trigger()
+    win.statusBar().clearMessage()
+    click(win, 79.0, 120.0, double=True)
+    check("After a click = stay: a double-click places once, with no 'counted once' line (nothing moved on)",
+          lambda: s.manual[13, pid] and win.current == 13
+          and "double-click" not in win.statusBar().currentMessage().lower(),
+          (win.current, win.statusBar().currentMessage()[:60]))
+    act(win, "act_after_next_frame").trigger()
     # T / the Track button track nothing and say why
     toasts.msgs.clear()
     QTest.keyClick(win, Qt.Key_T)
@@ -384,11 +393,11 @@ def section_setup():
     QTest.keyClick(win, Qt.Key_F)
     pump(0.1)
     sel = win.selected
+    toasts = Toasts(win)
     win.btn_add.setChecked(True)
     click(win, 60.0, 60.0)
-    check("N + click where the selected point has no position continues it, and says so (no new point)",
-          lambda: s.n_points == 2 and s.manual[1, sel] and "no new point" in win.statusBar().currentMessage(),
-          win.statusBar().currentMessage()[:80])
+    check("N + click where the selected point has no position continues it, and says so on the video",
+          lambda: s.n_points == 2 and s.manual[1, sel] and toasts.said("no new point", "esc"), toasts.msgs[-1:])
     # Ctrl+Z after the next point: the same frame, the clicked point selected again
     act(win, "act_after_point").trigger()
     win._goto(5, force=True)
@@ -402,6 +411,11 @@ def section_setup():
     check("Ctrl+Z after the next point: the click is gone, P1 is selected again, on the same frame",
           lambda: moved_to == 1 and not s.tracked[5, 0] and win.selected == 0 and win.current == 5,
           (moved_to, bool(s.tracked[5, 0]), win.selected, win.current))
+    # a double-click with "the next point": the second press is not P2 at P1's pixel
+    click(win, 82.0, 100.0, double=True)
+    check("the next point: a double-click places P1 once and leaves P2 unplaced (its second press dropped)",
+          lambda: s.manual[5, 0] and not s.tracked[5, 1] and win.selected == 1 and win.current == 5,
+          (bool(s.manual[5, 0]), bool(s.tracked[5, 1]), win.selected, win.current))
     # the last frame: nowhere to go
     act(win, "act_after_next_frame").trigger()
     win._goto(N - 1, force=True)

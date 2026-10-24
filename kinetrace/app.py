@@ -873,6 +873,7 @@ class MainWindow(QMainWindow):
         # _track_mode ("auto" | "semi" | "manual") is a property over the Track menu's actions (I139)
         self._step_run = False                      # current run is a semi-auto step
         self._track_blocked: str | None = None      # why Track cannot start here (G34)
+        self._moved_on = False                      # (G215) the last canvas click moved on (`_click_moved_on`)
         self._seg_backend = preferred_backend()     # segmentation model (Settings)
         self._point_backend = self._preferred_point_backend()   # Track dropdown
         self._spot_hints: set = set()          # the one-time Moving spot hints already shown (G58)
@@ -1033,8 +1034,10 @@ class MainWindow(QMainWindow):
         canvas.region_requested.connect(self._on_add_region)
         canvas.occluded_toggled.connect(self._on_occluded_toggled)
         canvas.double_click_dropped.connect(lambda: self.statusBar().showMessage(
-            "A double-click counts as one click in Manual mode: the first click placed the point and moved the "
-            "video on — click once per frame", 6000))           # (G215)
+            "A double-click counts as one click in Manual mode: the first click placed the point and moved on "
+            "— click once per frame", 6000))           # (G215)
+        canvas.drop_double_click = self._click_moved_on       # (G215) only after this pair's first click moved on
+        canvas.view_clicked.connect(lambda: setattr(self, "_moved_on", False))      # every press starts afresh
         canvas.menu_extra = self._extend_point_menu
         canvas.menu_extra_action = self._point_menu_extra_action
         canvas.multi_menu = self._maybe_multi_menu
@@ -1057,8 +1060,6 @@ class MainWindow(QMainWindow):
             out["set_pan_mode"] = (self.btn_pan.isChecked(),)
         if getattr(self, "marker_spin", None) is not None:
             out["set_marker_size"] = (self.marker_spin.value(),)
-        if getattr(self, "act_mode_manual", None) is not None:
-            out["set_one_click_moves_on"] = (self._track_mode == "manual",)     # (G215)
         if getattr(self, "act_onion", None) is not None:
             out["set_onion"] = (self.act_onion.isChecked(),)
             out["set_loupe"] = (self.act_loupe.isChecked(),)
@@ -2393,8 +2394,8 @@ class MainWindow(QMainWindow):
         # with N and Track — the tracker zooms into its own crop around it.
         # The strip therefore never waits for a segment; Track is the goal.
         if not tracked and self._track_mode == "manual":
-            hint = ("Manual mode: press N and click the point, then click it again on each frame — the video "
-                    "moves on by itself (Track ▾ → After a click)")             # (G215) no Track, no S
+            hint = ("Manual mode: N and click the point, F, then click it on each frame (Track ▾ → After a "
+                    "click says where the video goes next)")                     # (G215) no Track, no S
         elif not tracked:
             hint = ("Press N and click the animal (a few pixels is enough), then Track ▶ — or S to "
                     "outline a larger animal first for silhouette landmarks"
@@ -2856,12 +2857,9 @@ class MainWindow(QMainWindow):
                     "stay": "the video stays on the frame"}[key], 6000)
 
     def _on_manual_toggled(self, on: bool) -> None:
-        """(G215) Manual mode on / off: After a click is offered only in it (it does nothing elsewhere), and
-        every view treats a double-click as one click (`Canvas.set_one_click_moves_on`)."""
+        """(G215) Manual mode on / off: After a click is offered only in it (it does nothing elsewhere)."""
         for act in self._after_acts.values():
             act.setEnabled(on)
-        if getattr(self, "grid", None) is not None:
-            self._push_canvas("set_one_click_moves_on")
         if getattr(self, "onboarding", None) is not None:
             self._refresh_onboarding()               # its hint names Track / S, or Manual mode's clicks
 
@@ -5427,9 +5425,9 @@ class MainWindow(QMainWindow):
                 # so does its warning (review R1-C1: the user may have meant a new point)
                 name, f = s.points[self.selected].name, self.current
                 self._on_place(self.selected, x, y)
-                self.statusBar().showMessage(
-                    f"{name} placed on frame {f} (same point, no new point created) — Esc first if you wanted a "
-                    "new point; Ctrl+Z takes it back", 8000)
+                self.toast.show_message(           # on the video, not only the bottom bar (R1-N4)
+                    f"<b>{name}</b> placed on frame {f} (same point, no new point created). To add a new point, "
+                    "press <b>Esc</b> first, then <b>N</b>; <b>Ctrl+Z</b> takes this click back.", "info", 8000)
                 return
             self._on_place(self.selected, *self._snap_to_prediction(self.selected, x, y))
             rmse = self._residual_sentence(s.points[self.selected].name)      # (G28)
@@ -7027,6 +7025,7 @@ class MainWindow(QMainWindow):
             i = row.index(pid) if pid in row else -1
             if 0 <= i < len(row) - 1:
                 self.__dict__["_undo_click"] = (f, s.points[pid].name)
+                self._moved_on = True
                 self._on_select(row[i + 1])
                 return
             nxt = row[0] if row and row[0] != pid else None      # the row's first point, on the next frame
@@ -7034,9 +7033,18 @@ class MainWindow(QMainWindow):
         if to == f:
             return                          # the last frame: nowhere to go (the click's status line stands)
         self.__dict__["_undo_click"] = (f, s.points[pid].name)
+        self._moved_on = True
         if nxt is not None:
             self._on_select(nxt)
         self._goto(to)
+
+    def _click_moved_on(self) -> bool:
+        """(G215) `Canvas.drop_double_click`: the first click of this double-click (every press clears the flag,
+        `view_clicked`) moved the video or the selection on in Manual mode, so the pair's second press is the
+        same click, not one on the frame / point it moved to (review: a double-click put two hand clicks on two
+        frames). Otherwise the press goes through as in the other modes (R1-N1: "stay", several cameras, a new
+        point, a camera-switching tile click)."""
+        return self._track_mode == "manual" and self._moved_on
 
     def _on_reposition(self, x: float, y: float):
         if self._selected_point() is not None:
