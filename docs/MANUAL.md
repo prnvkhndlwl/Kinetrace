@@ -480,7 +480,7 @@ dimmed picture is never the frame whose number and markers you see.
   it on), **Mask** (shows the silhouettes; off hides every one),
   **Auto-pause** and **ROI**;
 - the blue **Track ▶** button that starts the work. Its **▾** arrow chooses
-  automatic or semi-automatic tracking and the point model.
+  automatic, semi-automatic or manual (no tracker) work and the point model.
 
 Until a video is open most of the bar is greyed out. The window opens as large
 as your screen allows. On a narrower window the tools and switches give up
@@ -1190,6 +1190,34 @@ Ctrl+Z step, and both respect a frame window selected on the timeline. The curve
 natural cubic spline with three or more — the more keyframes on a curved path,
 the truer the fill.
 
+### Manual mode: no tracker at all
+
+When you would rather click every frame yourself — a tracker you do not trust
+on this footage, a short clip, a body part no model follows — switch the models
+off: click the **▾** on the Track button and choose **Manual — no tracker**. The
+button then reads **Manual · no tracker**, and from then on:
+
+- **nothing is tracked and no model runs**: **T** and the Track button only say
+  that Manual mode is on; the Segment tool (**S**), ball markers, *Test the point
+  models*, *Re-track Disagreeing Stretches* and **Body** say they are off;
+- each click places the selected point **exactly where you click** (with
+  several cameras it is not pulled onto the **◇**; press **A** for that), and
+  the video **moves on by itself**. Choose how under Track ▾ → **After a
+  click**: *the next frame* (the default), *on by the step box's frames* (the
+  number in the control bar, as **Shift+F**), *the next point, then the next
+  frame* (the next point of the same animal, in LAYERS order, skipping the ones
+  you hid; after its last point, its first point on the next frame), or *stay*;
+- **F** / **B** still step one frame, **Ctrl+Z** takes the last click back and
+  returns to its frame and point, so you can click it again;
+- the hints that suggest another point model stay quiet.
+
+So digitizing a point is: **N**, click it; click it again on every frame that
+follows. Silhouette landmarks are clicked the same way. Onion skin (**O**),
+**,** / **.** and *Fill its gaps between hand placements* all work as usual.
+The mode and the After-a-click choice are saved with the project. Track ▾ →
+**Automatic** switches the trackers on again; every click you made stays (see
+above: a run keeps them).
+
 ### If a body part left the picture and came back
 
 While it is outside the picture, its cells are deliberately left **empty** — not
@@ -1713,7 +1741,7 @@ cannot watch the tracking there or stop it on a mistake you see. The Track butto
 says so before you press it ("· 5 cams (2 hidden)"), and a warning names the
 hidden cameras when the run starts; click the warning to show them all.
 The Track ▾ menu stays open while you tick, so the run mode
-(Automatic / Semi-automatic), **Every camera** and the point model (AllTracker /
+(Automatic / Semi-automatic / Manual), **Every camera** and the point model (AllTracker /
 CoTracker3) can all be chosen in one visit; they combine. If only the camera you
 are working in has the point at this instant, Track says which camera lacks it
 (and on which frame) and tracks this camera alone. In semi-automatic mode **F**
@@ -4103,6 +4131,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **Shift+T** | several cameras: this run in every camera that has the points here, all at the same time |
 | **X** or **Space** | stop (during **3D → Re-track Disagreeing Stretches** it stops the whole queue and asks whether to keep what was re-tracked; during an every-camera run it stops every camera at once) |
 | **F** (semi-automatic mode) | track exactly one frame (in every camera with Track ▾ → Every camera) |
+| **T** (Manual mode) | nothing is tracked: it says Manual mode is on (Track ▾ → Automatic tracks again) |
 | **Ctrl+Z** | undo the last run, bulk edit or hand edit — a click, drag, Ctrl+click, deleted point or Shift+X (one step only) |
 
 ### Looking
