@@ -1216,8 +1216,9 @@ button then reads **Manual · no tracker**, and from then on:
   returns to its frame and point, so you can click it again;
 - the hints that suggest another point model stay quiet.
 
-So digitizing a point is: **N**, click it; click it again on every frame that
-follows. Silhouette landmarks are clicked the same way. Onion skin (**O**),
+So digitizing a point is: **N** and click it (adding a point keeps the video on
+its frame, so you can add the other points there the same way), **F**, then
+click it on every frame that follows. Silhouette landmarks are clicked the same way. Onion skin (**O**),
 **,** / **.** and *Fill its gaps between hand placements* all work as usual.
 The mode and the After-a-click choice are saved with the project. Track ▾ →
 **Automatic** switches the trackers on again; every click you made stays (see

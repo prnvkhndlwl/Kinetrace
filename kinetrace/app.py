@@ -5433,7 +5433,8 @@ class MainWindow(QMainWindow):
             f"Added {s.points[pid].name}{where} at ({x:.0f}, {y:.0f}) on frame {self.current}"
             + (" — N adds a NEW point (the landmark that was selected comes from the silhouette: to place it "
                "here by hand, click it without N)" if derived_sel else ""), 6000 if derived_sel else 4000)
-        self._advance_after_click(pid)          # (G215) Manual mode: the video moves on
+        # (G215, owner 2026-10-23) a NEW point (or region) stays on its frame, also in Manual mode: several
+        # landmarks are set up on one frame; only placing an existing point moves on (`_advance_after_click`)
 
     def _commit_new_point(self, pid: int, x: float | None = None, y: float | None = None,
                           companions: bool = False) -> str:
@@ -5560,7 +5561,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Added region {s.points[pid].name} (r={radius:.0f} px) at frame "
             f"{self.current} — it tracks as one point: the region's fitted center", 6000)
-        self._advance_after_click(pid)          # (G215) Manual mode: the video moves on
 
     # ---------------------------------------------------------------- animal
 
@@ -6362,7 +6362,6 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Added {shape} region {s.points[pid].name} ({len(pts)} corners) at frame {self.current} "
             "— it tracks as one point: the region's fitted centre", 6000)
-        self._advance_after_click(pid)          # (G215) Manual mode: the video moves on
 
     # ------------------------------------------------ hidden (occluded) marks
 

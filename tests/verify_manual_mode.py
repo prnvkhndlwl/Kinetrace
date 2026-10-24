@@ -198,10 +198,14 @@ def section_main():
     check("(setup) N + a click added the point on frame 0", s.n_points == 1 and s.tracked[0, pid])
     check("the small-spot hint stays silent in Manual mode (the point sits on a 6 px dot)",
           not toasts.said("moving spot"), toasts.msgs[-1:])
+    check("adding a point (N + a click) keeps the video on its frame (owner 2026-10-23: set up several there)",
+          win.current == 0, win.current)
+    QTest.keyClick(win, Qt.Key_F)
+    pump(0.1)
+    placed = {0: xy0, 1: click(win, 43.3, 119.8)}
     check("a click advances the playhead to the next frame (After a click: the next frame, the default)",
-          win.current == 1, win.current)
-    placed = {0: xy0}
-    for f in range(1, 10):
+          win.current == 2, win.current)
+    for f in range(2, 10):
         placed[f] = click(win, 40.0 + 3 * f + 0.3, 120.0 - 0.2)
     check("ten clicks: ten hand-placed frames, each exactly where it was clicked",
           lambda: all(s.manual[f, pid] and np.allclose(s.tracks[f, pid], placed[f], atol=1e-4) for f in placed),
