@@ -43,6 +43,12 @@ app = QApplication.instance() or QApplication([])
 from _clean import forget_recovery  # noqa: E402
 
 from kinetrace.app import READY, MainWindow  # noqa: E402
+from kinetrace.bodyview import BodyRunDialog  # noqa: E402
+from kinetrace.pointtest import PointModelTest  # noqa: E402
+from PySide6.QtWidgets import QDialog  # noqa: E402
+# main opens these instead of refusing: Rejected, so its checks fail there instead of waiting on a dialog (R1-N5)
+BodyRunDialog.exec = lambda self: QDialog.Rejected
+PointModelTest.exec = lambda self: QDialog.Rejected
 from _stubs import stub_track_choice  # noqa: E402
 TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 
@@ -184,6 +190,7 @@ def section_main():
     pump(0.05)
     check("... and ticking it puts the window in Manual mode", lambda: win._track_mode == "manual")
     check("... it puts down the armed Segment tool", armed and not win.btn_animal.isChecked(), armed)
+    win.btn_animal.setChecked(False)     # (main leaves it armed: later clicks would be SAM prompts there)
     check("After a click is offered only in Manual mode (greyed in Automatic)",
           after_off and act(win, "act_after_step").isEnabled(), after_off)
     # N + a click adds the point, the next 9 clicks digitise it frame by frame
@@ -268,6 +275,9 @@ def section_main():
     check("... the model is never even prepared", not ready_calls)
     check("... and they say so (Manual mode, and how to track again)",
           toasts.said("manual") and toasts.said("automatic"), toasts.msgs[-2:])
+    if win.state != READY:      # (main tracks here: its run ends first, so the later checks see main's own clicks)
+        win._pause_tracking()
+    wait(lambda: win.state == READY, 120)
     # S, the point-model test and Body refuse in words
     toasts.msgs.clear()
     QTest.keyClick(win, Qt.Key_S)
