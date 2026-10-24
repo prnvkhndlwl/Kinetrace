@@ -1207,7 +1207,10 @@ button then reads **Manual · no tracker**, and from then on:
   number in the control bar, as **Shift+F**), *the next point, then the next
   frame* (the next point of the same animal, in LAYERS order, skipping the ones
   you hid and ball markers; after its last point, its first point on the next
-  frame), or *stay*. These choices are offered only in Manual mode;
+  frame), or *stay*. These choices are offered only in Manual mode. **With
+  several cameras on screen the video stays** after a click, whatever is chosen:
+  each camera's click is the same instant, so click a camera to work in it,
+  place the point there, and press **F** when every camera has it;
 - a **double-click counts as one click** (its second click would otherwise land
   on the next frame, which you have not seen yet), and a click while the picture
   is still loading — a dimmed nearby frame stands in for it — is not placed: the
@@ -1220,6 +1223,9 @@ So digitizing a point is: **N** and click it (adding a point keeps the video on
 its frame, so you can add the other points there the same way), **F**, then
 click it on every frame that follows. Silhouette landmarks are clicked the same way. Onion skin (**O**),
 **,** / **.** and *Fill its gaps between hand placements* all work as usual.
+As in the other modes, **N** + a click on a frame where the selected point has no
+position yet places that point there (the bottom bar says "same point, no new
+point created"): press **Esc** first to add a new point instead.
 The mode and the After-a-click choice are saved with the project. Track ▾ →
 **Automatic** switches the trackers on again; every click you made stays (see
 above: a run keeps them).

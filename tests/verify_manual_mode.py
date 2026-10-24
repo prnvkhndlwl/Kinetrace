@@ -99,6 +99,8 @@ forget_recovery(VID)
 
 
 def new_window(path=None, project=None):
+    if path:
+        forget_recovery(path)          # an earlier section's recovery copy is not offered to this window
     win = MainWindow()
     win.resize(1300, 850)
     win.show()
@@ -153,7 +155,8 @@ def click(win, x, y, double=False, look=True):
     stored). `look`: first wait for the frame's own picture, as a user looks before clicking."""
     if look:
         pump(0.05)
-        wait(lambda: win.cache.get(win.current) is not None and not win.canvas.is_preview(), 5)
+        wait(lambda: (lambda rgb: rgb is not None and win.canvas.shows(rgb) and not win.canvas.is_preview())(
+            win.cache.get(win.current)), 5)
     vp = win.canvas.mapFromScene(QPointF(float(x), float(y)))
     sp = win.canvas.mapToScene(vp)
     vpw = win.canvas.viewport()
@@ -283,8 +286,10 @@ def section_main():
     click(win, 100.0, 120.0)
     check("After a click: the step box (5) -> the playhead moves 5 frames", win.current == 25, win.current)
     act(win, "act_after_stay").trigger()
+    f_stay = win.current
     click(win, 115.0, 120.0)
-    check("After a click: stay -> the playhead stays", win.current == 25, win.current)
+    check("After a click: stay -> the playhead stays (a guard: main stays too)", win.current == f_stay,
+          (f_stay, win.current))
     # a second point: the next point, then the next frame
     act(win, "act_after_next_frame").trigger()
     win._goto(30, force=True)
@@ -361,11 +366,123 @@ def section_main():
     close(win)
 
 
-try:
-    section_main()
-except Exception as e:  # noqa: BLE001
-    traceback.print_exc()
-    check("(the suite ran to its end)", False, repr(e))
+def section_setup():
+    """Setting up points on one frame (review R1-C1), the continue rule's warning, Ctrl+Z after the next point, the
+    last frame, and the previous picture left up without a veil (review R1-I2)."""
+    win = new_window(VID)
+    s = win.session
+    act(win, "act_mode_manual").trigger()
+    pump(0.05)
+    win.btn_add.setChecked(True)
+    click(win, 80.0, 100.0)
+    win.btn_add.setChecked(True)
+    click(win, 200.0, 140.0)
+    check("N + click, N + click on one frame: two points, both on frame 0, the video stays (review R1-C1)",
+          lambda: s.n_points == 2 and s.tracked[0, 0] and s.tracked[0, 1] and win.current == 0
+          and not s.tracked[1].any(), (s.n_points, win.current))
+    # the continue rule (I69, kept by the owner 2026-10-23): N + click where the selected point has no position
+    QTest.keyClick(win, Qt.Key_F)
+    pump(0.1)
+    sel = win.selected
+    win.btn_add.setChecked(True)
+    click(win, 60.0, 60.0)
+    check("N + click where the selected point has no position continues it, and says so (no new point)",
+          lambda: s.n_points == 2 and s.manual[1, sel] and "no new point" in win.statusBar().currentMessage(),
+          win.statusBar().currentMessage()[:80])
+    # Ctrl+Z after the next point: the same frame, the clicked point selected again
+    act(win, "act_after_point").trigger()
+    win._goto(5, force=True)
+    win._on_select(0)
+    click(win, 82.0, 100.0)
+    moved_to = win.selected
+    win.activateWindow()
+    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    pump(0.2)
+    s = win.session
+    check("Ctrl+Z after the next point: the click is gone, P1 is selected again, on the same frame",
+          lambda: moved_to == 1 and not s.tracked[5, 0] and win.selected == 0 and win.current == 5,
+          (moved_to, bool(s.tracked[5, 0]), win.selected, win.current))
+    # the last frame: nowhere to go
+    act(win, "act_after_next_frame").trigger()
+    win._goto(N - 1, force=True)
+    win._on_select(0)
+    click(win, 120.0, 100.0)
+    check("on the last frame a click is placed and the video stays",
+          lambda: s.manual[N - 1, 0] and win.current == N - 1, win.current)
+    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    pump(0.2)
+    s = win.session
+    check("... and Ctrl+Z takes it back there", lambda: not s.tracked[N - 1, 0] and win.current == N - 1,
+          win.current)
+    # a quick move (G24) shows no stand-in and no veil: the previous picture stays up until the frame decodes
+    win._goto(10, force=True)
+    win._on_select(0)
+    click(win, 90.0, 100.0)                       # placed on 10, the video on 11
+    wait(lambda: win.cache.get(11) is not None and win.canvas.shows(win.cache.get(11)), 5)
+    svc = win.seek
+    svc.request = lambda *a, **k: None            # a decoder that has not answered yet
+    win.cache.clear()
+    win._last_goto_t = time.monotonic()
+    QTest.keyClick(win, Qt.Key_F)                 # quick: frame 11's picture stays up, unveiled
+    pump(0.05)
+    old_up = win.current == 12 and not win.canvas.is_preview()
+    click(win, 93.0, 100.0, look=False)
+    check("a click while the previous picture is still up (a quick move, no veil) is not placed (review R1-I2)",
+          lambda: old_up and not s.tracked[12, 0] and win.current == 12,
+          (old_up, bool(s.tracked[12, 0]), win.current))
+    del svc.request
+    win._goto(12, force=True)
+    click(win, 93.0, 100.0)
+    check("... and once frame 12's picture shows, the click is placed", lambda: s.manual[12, 0])
+    close(win)
+
+
+def section_two_cameras():
+    """(review R1-I1, owner 2026-10-23) several cameras on screen: each camera's click is the same instant, so the
+    video stays; both cameras get the point on the same frame, through the real tile clicks."""
+    from PySide6.QtWidgets import QDialogButtonBox
+    from kinetrace import cameraorder
+    vid_b = os.path.join(OUT, "manual_b.mp4")
+    shutil.copyfile(VID, vid_b)
+    forget_recovery(vid_b)
+    cameraorder.CameraOrderDialog.exec = lambda self: (self.buttons.button(QDialogButtonBox.Ok).click(),
+                                                       self.result())[1]
+    QFileDialog.getOpenFileNames = staticmethod(lambda *a, **k: ([vid_b], ""))
+    win = new_window(VID)
+    win._add_video_dialog()
+    wait(lambda: win.project.n_views == 2 and win.state == READY and not win._loading, 30)
+    pump(0.5)
+    check("(setup) two cameras on screen", lambda: win.project.n_views == 2 and len(win.grid.visible_indices()) == 2)
+    act(win, "act_mode_manual").trigger()
+    win._goto(5, force=True)
+    win.btn_add.setChecked(True)
+    click(win, 70.0, 120.0)
+    QTest.keyClick(win, Qt.Key_F)
+    pump(0.2)
+    f = win.current
+    s0 = win.project.sessions[0]
+    click(win, 72.0, 120.0)
+    check("camera 1's click: placed, and the video stays (several cameras on screen)",
+          lambda: win.project.active == 0 and s0.manual[f, 0] and win.current == f, (f, win.current))
+    tile = win.grid.canvas(1)
+    QTest.mouseClick(tile.viewport(), Qt.LeftButton, Qt.NoModifier, tile.mapFromScene(QPointF(72.0, 120.0)))
+    pump(0.3)
+    check("(setup) the tile click made camera 2 the working camera", win.project.active == 1, win.project.active)
+    click(win, 73.0, 121.0)
+    s1 = win.project.sessions[1]
+    j = s1.pid_by_name(s0.points[0].name)
+    both = [g for g in range(N) if j is not None and s0.tracked[g, 0] and s1.tracked[g, j]]
+    check("camera 2's click lands on the SAME frame: both cameras have the point there (3D can be made)",
+          lambda: j is not None and s1.manual[f, j] and f in both and win.current == f, (f, both, win.current))
+    close(win)
+
+
+for section in (section_main, section_setup, section_two_cameras):
+    try:
+        section()
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        check(f"({section.__name__} ran to its end)", False, repr(e))
 for w_ in QApplication.topLevelWidgets():
     probe = getattr(w_, "_dev_probe", None)
     if probe is not None:

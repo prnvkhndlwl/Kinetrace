@@ -1305,6 +1305,9 @@ class MainWindow(QMainWindow):
             menu_track.addAction(act)
             act.triggered.connect(lambda _=False, k=key: self._set_after_click(k))
             act.setEnabled(False)
+            act.setToolTip((act.toolTip() + " " if key == "point" else "")      # (review R1-I1, owner)
+                           + "With several cameras on screen the video stays after a click, whatever is chosen "
+                             "here: place the point in each camera, then F.")
         # every way into or out of Manual mode (the menu, a project opened, the setter) passes here
         self.act_mode_manual.toggled.connect(self._on_manual_toggled)
         # several cameras: the same points tracked in every camera that has them (G29)
@@ -2863,14 +2866,21 @@ class MainWindow(QMainWindow):
             self._refresh_onboarding()               # its hint names Track / S, or Manual mode's clicks
 
     def _picture_pending(self) -> bool:
-        """(G215) Manual mode: the view shows a stand-in picture (the nearest cached frame, dimmed, while this
-        frame decodes, G204), so a click would be stored on this frame at a place seen on another one. It says
-        so; True = the click is not placed. The other modes are unchanged (a click never moves the video on
-        there)."""
-        if self._track_mode != "manual" or not self.canvas.is_preview():
+        """(G215) Manual mode: a click is placed only while the view shows THIS frame's own picture (the
+        cache's array for it, `Canvas.shows`) - not a stand-in (the nearest cached frame, dimmed, while this one
+        decodes, G204), nor the previous picture that a quick move or a step waiting for the other cameras (G24)
+        leaves up without a veil (review R1-I2). Otherwise the click would be stored on this frame at a place
+        seen on another one: it says so, asks for the frame again (a picture that left the cache comes back)
+        and returns True. The other modes are unchanged (a click never moves the video on there)."""
+        if self._track_mode != "manual":
             return False
+        rgb = self.cache.get(self.current) if self.cache is not None else None
+        if not self.canvas.is_preview() and (self.cache is None or (rgb is not None and self.canvas.shows(rgb))):
+            return False
+        if self.seek is not None and self.state == READY:
+            self.seek.request(self.current)
         self.statusBar().showMessage(
-            f"Not placed: frame {self.current}'s picture is still loading (the dimmed picture is a nearby frame) "
+            f"Not placed: frame {self.current}'s picture is still loading (what shows is another frame) "
             "— click again when it shows", 6000)
         return True
 
@@ -5413,7 +5423,13 @@ class MainWindow(QMainWindow):
         if (self._selected_point() is not None and not s.points[self.selected].derived
                 and not s.tracked[self.current, self.selected]):
             if self._track_mode == "manual":
-                self._on_place(self.selected, x, y)     # (G215) where clicked; it says so and moves on
+                # (G215) where clicked, then on as After a click says; the I69 rule stays (owner 2026-10-23), and
+                # so does its warning (review R1-C1: the user may have meant a new point)
+                name, f = s.points[self.selected].name, self.current
+                self._on_place(self.selected, x, y)
+                self.statusBar().showMessage(
+                    f"{name} placed on frame {f} (same point, no new point created) — Esc first if you wanted a "
+                    "new point; Ctrl+Z takes it back", 8000)
                 return
             self._on_place(self.selected, *self._snap_to_prediction(self.selected, x, y))
             rmse = self._residual_sentence(s.points[self.selected].name)      # (G28)
@@ -5560,7 +5576,9 @@ class MainWindow(QMainWindow):
         self._commit_new_point(pid, cx, cy)
         self.statusBar().showMessage(
             f"Added region {s.points[pid].name} (r={radius:.0f} px) at frame "
-            f"{self.current} — it tracks as one point: the region's fitted center", 6000)
+            f"{self.current} — " + ("in Manual mode its centre is the point you click on each frame"   # (G215)
+                                    if self._track_mode == "manual" else
+                                    "it tracks as one point: the region's fitted center"), 6000)
 
     # ---------------------------------------------------------------- animal
 
@@ -6361,7 +6379,9 @@ class MainWindow(QMainWindow):
         self._commit_new_point(pid, float(c[0]), float(c[1]))
         self.statusBar().showMessage(
             f"Added {shape} region {s.points[pid].name} ({len(pts)} corners) at frame {self.current} "
-            "— it tracks as one point: the region's fitted centre", 6000)
+            "— " + ("in Manual mode its centre is the point you click on each frame"      # (G215)
+                    if self._track_mode == "manual" else "it tracks as one point: the region's fitted centre"),
+            6000)
 
     # ------------------------------------------------ hidden (occluded) marks
 
@@ -6985,12 +7005,20 @@ class MainWindow(QMainWindow):
         step box's frames, the next point of the clicked one's animal or Scene (LAYERS order, hidden rows
         and ball markers skipped; after its last point, its first point on the next frame), or nowhere. The
         undo point the click made remembers its frame and point: Ctrl+Z takes the click back AND returns
-        there. Not in the other modes (a click never moved the playhead there)."""
+        there. With several cameras on screen the video stays, whatever the choice (owner 2026-10-23, review
+        R1-I1: each camera's click is the same instant; moving on after the first put the next camera's click
+        on the next frame, and no frame had 3D). Not in the other modes (a click never moved the playhead there)."""
         s = self.session
         if self._track_mode != "manual" or s is None or not 0 <= pid < s.n_points:
             return
         mode, f = self._after_click, self.current
         if mode == "stay":
+            return
+        p = self.project
+        if p is not None and p.n_views > 1 and len(self.grid.visible_indices()) > 1:
+            self.statusBar().showMessage(
+                f"{s.points[pid].name} placed in {p.name(p.active)} on frame {f}. With several cameras on screen "
+                "the video stays: click a camera to work in it and place the point there, then F", 8000)
             return
         nxt = None
         if mode == "point":
