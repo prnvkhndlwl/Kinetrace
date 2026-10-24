@@ -93,9 +93,11 @@ DEFAULT_UI_STATE: dict = {
 }
 
 SOURCES = ("track", "silhouette", "ball")
-TRACKERS = ("alltracker", "cotracker3", "spot")   # a point's own tracker (G62); "" = the project default
+# a point's own tracker in ITS camera (G62, D8 G216: each camera's session keeps its own); "" = the project
+# default. "hand" (D10, G219) = no tracker: Track never runs the point, its clicks are its data (never a default)
+TRACKERS = ("alltracker", "cotracker3", "spot", "hand")
 # their names for the user: point menu, LAYERS tooltips, the model test, the DLC scorer (R26: three copies)
-TRACKER_NAMES = {"alltracker": "AllTracker", "cotracker3": "CoTracker3", "spot": "Moving spot"}
+TRACKER_NAMES = {"alltracker": "AllTracker", "cotracker3": "CoTracker3", "spot": "Moving spot", "hand": "Hand only"}
 # below this confidence a tracked, not hidden cell is doubtful: the timeline's red and J's stops (G193)
 LOW_CONF = 0.5
 
@@ -583,11 +585,13 @@ class TrackingSession:
         kind and data source, so selecting it and clicking the video places it in
         THIS camera (project.sync_landmarks). A rectangle / polygon outline is that
         camera's own geometry, so the region arrives here as a circle of the same
-        radius; ball clicks and the appearance lock are per camera too."""
+        radius; ball clicks and the appearance lock are per camera too. Its tracker is the project's
+        point model (D8, G216): the tracker is chosen per camera, so another camera's choice is not
+        carried over."""
         pid = self._new_point(meta.name, "point", color=meta.color, counted=False, unique=False,
                               kind=meta.kind, radius=meta.radius, source=meta.source, spec=meta.spec,
                               free=meta.free, shape=meta.shape if meta.outline is None else "circle",
-                              tracker=meta.tracker, segment=meta.segment)
+                              segment=meta.segment)
         self._touch()
         return pid
 

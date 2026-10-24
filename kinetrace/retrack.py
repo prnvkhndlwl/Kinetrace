@@ -302,11 +302,19 @@ def plan(project, threshold_px, min_run: int = MIN_RUN) -> list[Stretch]:
     `reason` (no other camera at the first frame; the leave-one-out test does
     not blame this camera; the other cameras put the landmark outside this
     camera's picture on the first frame or inside the stretch; fewer than two
-    other cameras see it), so the report can say why. A stretch whose first
-    frames only ONE other camera sees starts where two do (`note` says so)."""
+    other cameras see it; the landmark is placed by hand only in that camera),
+    so the report can say why. A stretch whose first frames only ONE other
+    camera sees starts where two do (`note` says so)."""
     out = _blame(project, disagreeing_stretches(project, threshold_px, min_run), threshold_px)
     for st in out:
         if st.reason:
+            continue
+        s = project.sessions[st.view] if st.view < project.n_views else None
+        q = s.pid_by_name(st.name) if s is not None else None
+        if q is not None and s.points[q].tracker == "hand":
+            # (G219) no tracker runs it there: a re-track would change nothing
+            st.reason = ("placed by hand only in this camera (no tracker): correct it by hand there, or give it a "
+                         "tracker (right-click its row in LAYERS -> Tracker)")
             continue
         if project.calibration.n_calibrated >= 3 and not _start_on_two_rays(project, st, threshold_px, min_run):
             continue
