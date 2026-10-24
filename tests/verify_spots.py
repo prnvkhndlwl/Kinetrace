@@ -280,6 +280,8 @@ QInputDialog.getText = staticmethod(lambda *a, **k: ("", False))
 app = QApplication.instance() or QApplication([])
 from kinetrace import pointtest  # noqa: E402
 from kinetrace.app import READY, TRACKING, MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 
 
 def pump(sec):

@@ -38,6 +38,8 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox  # noqa: E4
 from kinetrace import app as app_mod  # noqa: E402
 from kinetrace import calibio, downloads, lens, projectfile, retrack, wand  # noqa: E402
 from kinetrace.app import READY, MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 from kinetrace.body import BodyTrack, rig_of  # noqa: E402
 from kinetrace.calib import (Calibration, CameraCalibration, NoUndistort, dlt_from_camera,  # noqa: E402
                              intersect_polylines)
@@ -688,10 +690,11 @@ def _r17():
 @section("R15 projectfile walks session.POINT_ARRAYS; the saved bytes are unchanged")
 def _r15():
     names = [a.name for a in POINT_ARRAYS]
-    check(sorted(names) == sorted(["tracks", "confidence", "visibility", "manual", "tracked", "occluded", "radius"]),
-          f"the seven arrays {names}")
+    check(sorted(names) == sorted(["tracks", "confidence", "visibility", "manual", "imported", "tracked", "occluded",
+                                   "radius"]),
+          f"the eight arrays (I319: + imported) {names}")
     old = dict(tracks=np.full((6, 3, 2), np.nan, np.float32), confidence=np.zeros((6, 3), np.float32),
-               visibility=np.zeros((6, 3), bool), manual=np.zeros((6, 3), bool),
+               visibility=np.zeros((6, 3), bool), manual=np.zeros((6, 3), bool), imported=np.zeros((6, 3), bool),
                tracked=np.zeros((6, 3), bool), occluded=np.zeros((6, 3), bool),
                radius=np.full((6, 3), np.nan, np.float32))
     new = projectfile._empty_tracks(6, 3)

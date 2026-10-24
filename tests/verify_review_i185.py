@@ -46,6 +46,8 @@ app = QApplication.instance() or QApplication([])
 from kinetrace import alltracker_backend, segmenter  # noqa: E402
 from kinetrace import tracker as trk  # noqa: E402
 from kinetrace.app import READY, MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 from kinetrace.project import Project  # noqa: E402
 from kinetrace.segmenter import MaskTrack, working_size  # noqa: E402
 from kinetrace.session import TrackingSession  # noqa: E402

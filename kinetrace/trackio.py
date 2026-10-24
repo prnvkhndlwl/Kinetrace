@@ -56,6 +56,9 @@ class Imported:
     visible: np.ndarray | None = None  # (C, R, N) bool; None = wherever there is data
     manual: np.ndarray | None = None
     hidden: np.ndarray | None = None
+    # (I319) which of the file's hand-placed cells were themselves imported: None = all of them (a file
+    # from another program); a Kinetrace file carries its own project's marks
+    imported: np.ndarray | None = None
     pixel_origin: float = 0.0         # first pixel's coordinate in the file (DLTdv: 1)
     flip_y: bool = False              # y counted up from the bottom edge (older DLTdv / Argus)
     rows: str = "frames"              # "frames": row k = frame k; "reference": frame k of the reference camera
@@ -399,7 +402,8 @@ def _read_kinetrace(path: Path, text: str) -> Imported:
         raise TrackImportError(str(e)) from None
     assert all(isinstance(p, PointMeta) for p in points)
     return Imported("kinetrace", [p.name for p in points], arr["tracks"][None], arr["confidence"][None],
-                    visible=arr["visibility"][None], manual=arr["manual"][None], hidden=arr["occluded"][None])
+                    visible=arr["visibility"][None], manual=arr["manual"][None], hidden=arr["occluded"][None],
+                    imported=arr["imported"][None])
 
 
 # ------------------------------------------------------------------ into a session
@@ -474,7 +478,10 @@ def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
         session.tracked[f, pid] = True
         session.confidence[f, pid] = imp.conf[camera, rr, j]
         session.visibility[f, pid] = True if imp.visible is None else imp.visible[camera, rr, j]
-        session.manual[f, pid] = False if imp.manual is None else imp.manual[camera, rr, j]
+        man = np.zeros(len(rr), bool) if imp.manual is None else imp.manual[camera, rr, j]
+        session.manual[f, pid] = man
+        # (I319) the file's hand clicks are imported clicks here (another Kinetrace file: its own marks)
+        session.imported[f, pid] = man if imp.imported is None else man & imp.imported[camera, rr, j]
         session.occluded[f, pid] = False if imp.hidden is None else imp.hidden[camera, rr, j]
     session._touch()
     parts = [f"{cells} position(s) of {new + updated} point(s) imported from the {imp.label}"

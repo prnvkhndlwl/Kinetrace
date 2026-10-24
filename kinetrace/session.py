@@ -70,6 +70,7 @@ DEFAULT_UI_STATE: dict = {
     "roi": True,             # ROI-zoom tracking
     "track_mode": "auto",    # "auto" = run to end | "semi" = F steps one frame
     "track_all": False,      # Track ▾ → Every camera: track the points in each camera that has them (G29)
+    "ahead_choice": "",      # (G217) Track ▾ → When there is data ahead: "" = ask (the Track pop-up), "keep"
     "marker_size": 3,        # marker radius, screen px (was 7 until 2026-09-22)
     "zoom": 0.0,             # canvas scale; 0 = never zoomed (fit on open)
     "center_x": 0.0,         # scene point at the viewport center
@@ -118,6 +119,9 @@ POINT_ARRAYS: tuple[PointArray, ...] = (
     PointArray("tracks", np.float32, np.nan, (2,)),
     PointArray("visibility", bool, False),
     PointArray("manual", bool, False),
+    # (I319) a hand-placed cell that came in with an import (DLTdv, SLEAP ...), not clicked here: only ever set
+    # where `manual` is; a click here or anything that clears `manual` clears it
+    PointArray("imported", bool, False),
     PointArray("tracked", bool, False),
     PointArray("confidence", np.float32, 0.0),
     # hand-marked "hidden here": the data stays (so the mark can be undone) but
@@ -398,6 +402,7 @@ class Snapshot:
     # (G153) each animal's name, skeleton and hold, in order: renamed / moved with its points (I22) --
     # its clicks are not undone (segment clicks cannot be, G70)
     animals: list | None = None
+    imported: np.ndarray | None = None     # (I319) imported clicks; None in a snapshot from before it
 
 
 HEAD_HINTS = ("snout", "nose", "head", "beak", "rostrum", "mouth")
@@ -648,14 +653,16 @@ class TrackingSession:
 
     def set_source(self, pid: int, source: str, spec: str = "") -> None:
         """Switch a point between appearance tracking and silhouette derivation.
-        Data derived under the old rule is cleared (it would be stale)."""
+        Data derived under the old rule is cleared (it would be stale); its hand-placed frames
+        stay (I320: they are the truth under either rule) - a ball's clicks are SAM prompts, so a
+        ball's go with the rest."""
         meta = self.points[pid]
         source = source if source in SOURCES else "track"
         if source == "silhouette":
+            self.clear_window([pid], 0, self.n_frames - 1, keep_hand=not meta.is_ball)
             meta.spec = spec
-            self.clear_window([pid], 0, self.n_frames - 1)
         elif meta.source == "silhouette":
-            self.clear_window([pid], 0, self.n_frames - 1)
+            self.clear_window([pid], 0, self.n_frames - 1, keep_hand=True)
             meta.spec = ""
         meta.source = source
         self._touch()
@@ -665,6 +672,7 @@ class TrackingSession:
         self.tracks[frame, pid] = (x, y)
         self.visibility[frame, pid] = True
         self.manual[frame, pid] = True
+        self.imported[frame, pid] = False  # (I319) clicked here: the user's own click now
         self.tracked[frame, pid] = True
         self.confidence[frame, pid] = 1.0  # user input is ground truth
 
@@ -684,6 +692,37 @@ class TrackingSession:
         if not (0 <= pid < self.n_points):
             return np.zeros(0, np.int64)
         return np.nonzero(self.manual[:, pid] & self.tracked[:, pid])[0].astype(np.int64)
+
+    def hand_clicks(self, pid: int, start: int, end: int) -> dict[int, tuple[float, float]]:
+        """(I316) The hand clicks of `pid` in frames [start, end) a tracker can start from: hand-placed,
+        visible, not marked hidden, inside the picture. {frame: (x, y)}."""
+        start, end = max(0, int(start)), min(self.n_frames, int(end))
+        if not (0 <= pid < self.n_points) or end <= start:
+            return {}
+        rows = slice(start, end)
+        ok = (self.manual[rows, pid] & self.tracked[rows, pid] & self.visibility[rows, pid]
+              & ~self.occluded[rows, pid] & in_frame(self.tracks[rows, pid], self.width, self.height))
+        return {int(start + i): (float(self.tracks[start + i, pid, 0]), float(self.tracks[start + i, pid, 1]))
+                for i in np.flatnonzero(ok)}
+
+    def has_click_after(self, pid: int, frame: int, end: int | None = None) -> bool:
+        """(I316) Has `pid` a usable hand click after `frame` (before `end`, exclusive)? For a point with no
+        position on `frame` (a joiner) that is exactly "a run from `frame` starts it at a click" (`reseed_frames`
+        not empty); with a click on `frame` the speed click right after it is no restart. Cheap: the Track
+        button asks it on every playhead move."""
+        end = self.n_frames if end is None else min(self.n_frames, int(end))
+        if not (0 <= pid < self.n_points) or end <= int(frame) + 1:
+            return False
+        rows = slice(int(frame) + 1, end)
+        ok = self.manual[rows, pid] & self.tracked[rows, pid] & self.visibility[rows, pid] & ~self.occluded[rows, pid]
+        return bool(ok.any() and in_frame(self.tracks[rows, pid][ok], self.width, self.height).any())
+
+    def reseed_frames(self, pid: int, start: int, end: int) -> list[int]:
+        """(I316) Where a run from `start` (bounded by `end`, exclusive) starts `pid` again: the last
+        usable click of every stretch of clicks after the start (the one stretch rule, D3), not the
+        speed click right after a click on the start frame (`spots.reseed_frames`)."""
+        from kinetrace.spots import reseed_frames
+        return reseed_frames(self.hand_clicks(pid, start, end), start)
 
     def data_frames(self, pid: int) -> np.ndarray:
         """Frames where `pid` has a position at all (ascending int64) — what
@@ -739,6 +778,7 @@ class TrackingSession:
         self.visibility[rows, pid] = True
         self.tracked[rows, pid] = True
         self.manual[rows, pid] = False
+        self.imported[rows, pid] = False
         self.confidence[rows, pid] = self.INTERP_CONF
         self._touch()
         return int(len(rows)), (int(rows[0]), int(rows[-1]))
@@ -1374,13 +1414,19 @@ class TrackingSession:
     # --------------------------------------------------------------- tracking
 
     def write_segment(self, t0: int, tracks_win: np.ndarray, vis_win: np.ndarray,
-                      point_ids: list[int], conf_win: np.ndarray | None = None) -> None:
+                      point_ids: list[int], conf_win: np.ndarray | None = None, keep_hand: bool = False,
+                      own=None) -> None:
         """Scatter a window of tracker output into the session.
 
         tracks_win: (L, K, 2) float32 in native pixels; vis_win: (L, K) bool;
         conf_win: (L, K) float32 in [0, 1] (None -> 1.0 where tracked); rows
         map to frames t0..t0+L (clipped to the video length), columns map to
         session point ids via point_ids.
+        keep_hand (I320): a hand-placed cell (manual & tracked) is left as it is - a run's
+        writes; a ball's is written (its clicks are SAM prompts). own: per column the
+        (first, last) frame it may write, inclusive, or None for all of them (a point that
+        joins a run at a later click keeps its older data before it). Without either - or
+        when they keep no cell of this window - it is the old path, cell for cell.
         """
         L = tracks_win.shape[0]
         end = min(t0 + L, self.n_frames)
@@ -1402,20 +1448,49 @@ class TrackingSession:
         tw[oob] = np.nan
         vw[oob] = False
         cw[oob] = 0.0
-        self.tracks[rows, cols, :] = tw
-        self.visibility[rows, cols] = vw
-        self.tracked[rows, cols] = ~oob
-        self.confidence[rows, cols] = np.clip(np.nan_to_num(cw), 0.0, 1.0)
-        self.manual[rows, cols] = False  # model output supersedes stale manual flags
-        rad = self.radius[rows, cols]
-        rad[oob] = np.nan
-        self.radius[rows, cols] = rad
+        keep = None
+        if keep_hand:
+            keep = self._hand_cells(rows, cols)
+        if own is not None:
+            fr = np.arange(t0, end)[:, None]
+            lo = np.array([-1 if o is None else int(o[0]) for o in own], np.int64)[None, :]
+            hi = np.array([self.n_frames if o is None else int(o[1]) for o in own], np.int64)[None, :]
+            outside = (fr < lo) | (fr > hi)
+            keep = outside if keep is None else keep | outside
+        if keep is None or not keep.any():
+            self.tracks[rows, cols, :] = tw
+            self.visibility[rows, cols] = vw
+            self.tracked[rows, cols] = ~oob
+            self.confidence[rows, cols] = np.clip(np.nan_to_num(cw), 0.0, 1.0)
+            self.manual[rows, cols] = False  # model output supersedes stale manual flags
+            self.imported[rows, cols] = False
+            rad = self.radius[rows, cols]
+            rad[oob] = np.nan
+            self.radius[rows, cols] = rad
+        else:
+            rad = self.radius[rows, cols]
+            rad[oob] = np.nan
+            no = np.zeros(vw.shape, bool)
+            for name, new in (("tracks", tw), ("visibility", vw), ("tracked", ~oob),
+                              ("confidence", np.clip(np.nan_to_num(cw), 0.0, 1.0)), ("manual", no),
+                              ("imported", no), ("radius", rad)):
+                arr = getattr(self, name)
+                cur = arr[rows, cols]
+                arr[rows, cols] = np.where(keep[..., None] if cur.ndim == 3 else keep, cur, new)
         self._touch()
 
-    def clear_window(self, pids: list[int], start: int, end: int) -> int:
+    def _hand_cells(self, rows, cols: np.ndarray) -> np.ndarray:
+        """(I320) The hand-placed cells of these rows x columns that a run keeps: manual and
+        tracked, on a point that is not a ball (a ball's clicks are SAM prompts, not positions)."""
+        ball = np.array([self.points[c].is_ball for c in cols.tolist()], bool)
+        return self.manual[rows, cols] & self.tracked[rows, cols] & ~ball[None, :]
+
+    def clear_window(self, pids: list[int], start: int, end: int, keep_hand: bool = False) -> int:
         """Blank the tracked data of `pids` in frames [start, end] inclusive —
         the points themselves survive (bulk cleanup of a bad stretch).
-        Returns how many tracked cells were cleared."""
+        keep_hand (I320): a cut the APP makes (where a run lost a point, a source
+        switch) keeps the hand-placed cells; the user's Delete / Clear passes nothing
+        and removes them too. Returns how many tracked cells were cleared."""
         if end < start:
             start, end = end, start
         start = max(0, min(self.n_frames - 1, int(start)))
@@ -1424,9 +1499,17 @@ class TrackingSession:
         cols = np.asarray([p for p in pids if 0 <= p < self.n_points], np.int64)
         if len(cols) == 0:
             return 0
-        n = int(self.tracked[rows, cols].sum())
-        for a in POINT_ARRAYS:
-            getattr(self, a.name)[rows, cols] = a.fill
+        keep = self._hand_cells(rows, cols) if keep_hand else None
+        if keep is None or not keep.any():
+            n = int(self.tracked[rows, cols].sum())
+            for a in POINT_ARRAYS:
+                getattr(self, a.name)[rows, cols] = a.fill
+        else:
+            n = int((self.tracked[rows, cols] & ~keep).sum())
+            for a in POINT_ARRAYS:
+                arr = getattr(self, a.name)
+                cur = arr[rows, cols]
+                arr[rows, cols] = np.where(keep[..., None] if cur.ndim == 3 else keep, cur, a.fill)
         # (I190) a ball's SAM clicks in the window go with its data: the next run
         # would otherwise prompt SAM at a click the user removed
         for c in cols.tolist():
@@ -1796,6 +1879,7 @@ class TrackingSession:
             "tracks": tracks,
             "visibility": self.visibility,
             "manual": self.manual,
+            "imported": self.imported,         # (I319) the hand-placed cells that came in with an import
             "tracked": self.exportable,
             "occluded": self.occluded,
             "confidence": self.confidence.astype(np.float64),

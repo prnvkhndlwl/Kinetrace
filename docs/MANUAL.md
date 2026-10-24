@@ -673,10 +673,11 @@ Look at the small icons beside them:
 - **A ring** — a ball marker: the program outlines the ball and follows the
   centre of the fitted circle (see *Track the wand balls* in section 10).
 
-The dotted, silhouette landmarks cannot be placed by hand: with one of them
-selected, **N** and a click add a *new* point instead. To place such a landmark
-yourself, right-click it → **Data source** → **Track by appearance (click to
-seed it)** first.
+The dotted, silhouette landmarks are worked out from the animal's outline, but
+you can still place one by hand on a frame where the outline gets it wrong:
+select it and click where it really is. Your click stays — tracking the
+silhouette again fills the other frames and never moves it. (With one of them
+selected, **N** and a click add a *new* point instead.)
 
 Hover over a name and a line says how that landmark is found.
 
@@ -753,10 +754,41 @@ outlining the animal a second time, so its on-body landmarks are kept on the
 same outlines. A pass whose points have no position on the frame you are on is
 left out, and the other still runs. One Ctrl+Z undoes it all.
 
-If you start in the middle of a stretch that is already tracked, the program
-asks before overwriting it, and counts **only the points being tracked** in
-that question. A point you placed by hand on the frame you start from keeps its
-white diamond. If a frame cannot be read once, the program tries it again; when
+**Your clicks are the truth.** A frame you placed by hand is never changed by a
+tracking run: the run writes around it. A **Moving spot** point starts again
+from your clicks (from the last click of each group of clicks close together),
+and when it loses the spot it is cut there and picked up again at your next
+click, instead of stopping the run; a Moving spot point that has no position on
+the frame you start from joins the run at its first click. **AllTracker** and
+**CoTracker3** points keep your clicks too, but do not start again from them
+yet. Clicks that came in with an import (a DLTdv or SLEAP project) count as
+your clicks; hovering the timeline calls them *imported click* until you click
+that frame yourself. Only a new click on that frame, **Delete** on the
+timeline, the point menu's *Clear*, or a *Fresh run* (below) removes a click.
+
+If the points you track already have data after the frame you start from — in
+any camera the press runs in — Track first asks what to do with it, and says
+how much there is and how many of those frames are your clicks:
+
+- **Keep my clicks, replace the rest** (the usual choice) — every frame you
+  placed by hand stays exactly as you placed it; everything else the run
+  reaches is tracked again. If the run stops early, the frames after the stop
+  keep what they had.
+- **Fresh run** — the run goes over everything ahead as if there were no
+  clicks (it writes over the ones it reaches), and when it has ended,
+  everything of these points after the last frame it reached is erased too,
+  clicks included. Stopping it with **X** erases nothing, and neither does a
+  run that ends on an error (in any camera or pass of the press).
+
+Tick *Use this every time* to stop being asked; **Track ▾ → When there is data
+ahead** changes it back. A Fresh run removes clicks, so it is asked for every
+time. **F** (one step) never asks and always keeps your clicks. The clicks you
+start from — the frame you are on, and a click on the next frame that gives a
+Moving spot its speed — do not by themselves make Track ask (a Fresh run still
+counts them among the clicks it would remove). **Ctrl+Z** undoes the whole
+press.
+
+If a frame cannot be read once, the program tries it again; when
 the second try works, the message says so and asks you to press **Track ▶**
 again, instead of calling your file damaged.
 
@@ -920,10 +952,10 @@ For one point:
   silhouette:** the tail tip, a point along the midline, the centroid, a foot
   or a wing tip — left and right as seen from above the animal, so they swap
   when it is filmed from below). An outline source needs the animal outlined
-  with **S** and fills in when you track. Switching either way throws away the
-  track the part has now, so if it has one the program first tells you how
-  many frames that is (and how many of them you placed by hand) and asks;
-  **Ctrl+Z** brings it back;
+  with **S** and fills in when you track. Switching either way throws away
+  what the other way made, but the frames you placed by hand stay; if there is
+  anything to throw away, the program first says how many frames it erases and
+  how many of your own frames it keeps, and asks; **Ctrl+Z** brings it back;
 - **May leave its silhouette (free point)** — for a point of an animal that
   is allowed off its outline: *Keep its points on its silhouette* (section 14)
   then leaves it alone. (A mark that belongs to no animal at all, such as a
@@ -1052,16 +1084,17 @@ To look around while zoomed in, **hold the left button and move** the mouse:
 that pans the view, and never moves a point (starting on a marker too).
 
 Each correction is one **Ctrl+Z** step. A body part that comes from the
-silhouette (a dotted marker: tail tip, midline, feet) cannot be moved by hand:
-the program leaves it where it is and says so in the bottom bar. Correct the
+silhouette (a dotted marker: tail tip, midline, feet) is corrected the same way:
+click where it really is, and that frame keeps your click when the silhouette
+is tracked again. If the outline itself is wrong over a stretch, correct the
 outline instead (press **S** on that frame and click the animal), or, to follow
 that part by how it looks from now on, right-click it → **Data source** →
-**Track by appearance (click to seed it)** (the program asks first, because that
-throws away its silhouette track).
+**Track by appearance (click to seed it)** (your clicks stay; the program asks
+first if that throws away its silhouette frames).
 
 Then press **Track ▶** again. Tracking restarts from the frame you are on, using
-your corrected position, and overwrites what follows. Your correction is treated
-as certain truth. Only what is selected is tracked: while the part you
+your corrected position, and re-tracks what follows — your other clicks further
+on stay. Your correction is treated as certain truth. Only what is selected is tracked: while the part you
 corrected is selected alone, the button reads **Track · 1 point ▶** and
 re-tracks only that part. Press **Ctrl+A** first to re-track everything.
 
@@ -1129,15 +1162,17 @@ and holding the button and moving only pans the view, so an accidental click
 cannot add points or edit a different one. Two quick clicks count as two clicks,
 so you can digitize frame by frame as fast as you can press **F** and click. To add
 a *new* point, press **N** first. A body part that comes from the silhouette
-cannot be digitized by hand (see *Fixing a body part that has gone wrong*
-above). Your click is kept to a fraction of a pixel, in the same pixel
+is digitized the same way (the silhouette fills the frames you do not click).
+Your click is kept to a fraction of a pixel, in the same pixel
 coordinates the tracker uses, so a hand-placed frame lines up exactly with the
 tracked frames around it (and every export converts both the same way).
 
-Running **Track ▶** through hand-placed frames replaces them with the tracker's
-output (the tracker restarts from the frame you are on and overwrites what
-follows), so digitize by hand *after* the last tracking run over that stretch,
-or track in pieces around it.
+Running **Track ▶** through hand-placed frames keeps them: the run writes
+around your clicks. A **Moving spot** point also starts again from them, so you
+can click it on a few frames anywhere and track the whole clip in one press;
+AllTracker and CoTracker3 points keep the clicks but do not start again from
+them yet. To replace your clicks, choose **Fresh run** when Track asks, or
+delete them on the timeline first.
 
 **Keyframe digitizing.** Some stretches are easier to do by hand than to
 track: a few frames of blur, a limb behind the body. Place the part by hand on
@@ -3923,8 +3958,10 @@ camera.
 
 **Auto-pause** — stopping tracking automatically when a body part is lost. The
 lost part's track is cut at the first frame where it became unreliable, so what
-is left can be trusted. (When the animal keeps its points on its silhouette, a
-part that leaves the outline stops the run the same way.)
+is left can be trusted (your own clicks after it stay). A Moving spot point
+with a click of yours further on does not stop the run: it is cut where it was
+lost and picked up again at that click. (When the animal keeps its points on its
+silhouette, a part that leaves the outline stops the run the same way.)
 
 **Ball marker** — a round marker (a wand ball, a reflective dot, a dropped
 ball) found in every frame by outlining it and fitting a circle; the circle's
@@ -4035,7 +4072,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **N** | arm the crosshair — the next click places a point |
 | click (armed) | place a point, or continue the selected one where it has no data |
 | drag a circle (armed) | track a whole region as one point |
-| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed (a click on a marker just selects that point). Two quick clicks are two clicks, so frame-by-frame digitizing never loses one. A landmark derived from the outline cannot be placed by hand |
+| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed (a click on a marker just selects that point). Two quick clicks are two clicks, so frame-by-frame digitizing never loses one. A landmark derived from the outline is placed the same way, and tracking the outline again keeps your click |
 | **＋ Point** (LAYERS) | a point with no position yet, in the selected animal (else in Scene), selected — and in every camera's list |
 | **＋ Animal** (LAYERS) | a new animal with no silhouette yet, selected; give it points (**N** + click, or drag points onto it) and, if you like, outline it with **S** |
 | drag points in LAYERS | onto another animal (or one of its points), or onto Scene: they move there and are renamed "*animal part*" in every camera (one Ctrl+Z step) |

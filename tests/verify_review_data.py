@@ -493,7 +493,7 @@ def _():
     from kinetrace.session import POINT_ARRAYS, Snapshot
     s = sess(T=12, n_points=3)
     names = [a.name for a in POINT_ARRAYS]
-    assert len(names) == 7 and len(set(names)) == 7
+    assert len(names) == 8 and len(set(names)) == 8           # (I319) + imported
     fields = {f.name for f in dataclasses.fields(Snapshot)}
     assert set(names) <= fields, set(names) - fields
     for a in POINT_ARRAYS:

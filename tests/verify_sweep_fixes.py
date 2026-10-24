@@ -93,6 +93,8 @@ pb = s_b.add_point(0, 10, 10)
 s_a.tracked[:, pa] = True
 s_b.tracked[:, pb] = True
 from kinetrace.app import MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 p3.active = 1                              # working in camera B (offset -50)
 lo, hi = MainWindow._t_range_3d(SimpleNamespace(project=p3))
 assert (lo, hi) == (50, 399), f"reference window from camera B's frames: {(lo, hi)}"
@@ -238,10 +240,11 @@ for _ in range(200):
 assert win.state == READY
 s = win.session
 
-# I45: a source switch that would erase a track asks, and is undoable
+# I45: a source switch that would erase a track asks, and is undoable; (I320) hand-placed frames are kept
 pid = s.add_point(0, 50.0, 60.0)
 for f in range(30):
     s.set_position(f, pid, 50.0 + f, 60.0)
+s.manual[10:, pid] = False                     # frames 0-9 by hand, 10-29 the tracker's
 win._refresh_point_list()
 ASK["answer"], ASK["asked"] = QMessageBox.No, []
 win._on_source_change(pid, "tip")
@@ -249,10 +252,18 @@ assert ASK["asked"] and s.tracked[:, pid].sum() == 30 and s.points[pid].source !
     "No must keep the track"
 ASK["answer"] = QMessageBox.Yes
 win._on_source_change(pid, "tip")
-assert s.points[pid].source == "silhouette" and not s.tracked[:, pid].any()
+assert s.points[pid].source == "silhouette" and s.tracked[:, pid].sum() == 10 and s.manual[:10, pid].all(), \
+    "the switch erases the tracker's 20 frames and keeps the 10 hand-placed ones (I320)"
 win._undo_run()
 assert win.session.tracked[:, pid].sum() == 30, "Ctrl+Z must bring the erased track back"
-print("data-source switch asks before erasing a track and Ctrl+Z restores it (I45) OK")
+s = win.session
+s.manual[:, pid] = s.tracked[:, pid]           # every frame by hand: nothing would be erased, nothing to ask
+ASK["asked"] = []
+win._on_source_change(pid, "tip")
+assert not ASK["asked"] and s.points[pid].derived and s.tracked[:, pid].sum() == 30, \
+    "a switch that erases nothing does not ask (I320)"
+win._undo_run()
+print("data-source switch asks before erasing a track, keeps the hand frames, Ctrl+Z restores it (I45, I320) OK")
 s = win.session
 
 # I46: an unticked point is never grabbed
@@ -469,7 +480,8 @@ pj.calibration = None
 assert ok67, "epipolar guides raised IndexError in a non-reference camera"
 print("epipolar guides look up the reference row, bounds-checked (I67) OK")
 
-# I69: a silhouette-derived landmark is never hand-placed by N-continue / drag
+# I69: N with a silhouette-derived landmark selected adds a NEW point; (G218) a Ctrl+click places the
+# landmark itself by hand on this frame (the owner: some frames from the silhouette, some by hand)
 sd = win.session
 sd.apply_skeleton({"name": "d", "landmarks": ["snoot", "tailtip"], "bones": [], "head": "snoot",
                    "derived": {"tailtip": "tip"}})
@@ -481,8 +493,9 @@ win.btn_add.setChecked(True)
 win._on_add(40.0, 40.0)
 assert sd.n_points == n_before + 1 and not sd.tracked[win.current, dpid], "N-click placed the derived landmark"
 win._on_place(dpid, 50.0, 50.0)
-assert not sd.tracked[win.current, dpid], "a drag placed the derived landmark"
-print("derived landmarks are not hand-placed; N adds the new point (I69) OK")
+assert sd.tracked[win.current, dpid] and sd.manual[win.current, dpid] and \
+    tuple(sd.tracks[win.current, dpid]) == (50.0, 50.0), "a Ctrl+click places the derived landmark by hand (G218)"
+print("N adds a new point next to a derived landmark (I69); a Ctrl+click places the landmark by hand (G218) OK")
 
 # I71: deleting one point / Shift+X are their own undo steps
 win._undo_snap = None
@@ -515,7 +528,7 @@ print("multi-camera export names carry the camera (I108) OK")
 # I107: X during an automatic re-track stops the whole queue
 calls107 = []
 orig_impl, orig_next = win._on_track_finished_impl, win._retrack_next
-win._on_track_finished_impl = lambda last, paused: None
+win._on_track_finished_impl = lambda last, paused, **k: None      # (G217: also gets the X as user_stop)
 win._retrack_next = lambda: calls107.append("next")
 win._retrack = {"jobs": [1, 2, 3]}
 win._user_paused = True

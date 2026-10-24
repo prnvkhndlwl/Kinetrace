@@ -959,7 +959,8 @@ class TimelinePanel(QWidget):
         if row is not None and self.session.tracked[f, row]:
             c = self.session.confidence[f, row]
             src = " (from silhouette)" if self.session.points[row].derived else ""
-            hand = " · placed by hand" if self.session.manual[f, row] else ""
+            hand = ((" · imported click (from the file it came in with)" if self.session.imported[f, row]
+                     else " · your click") if self.session.manual[f, row] else "")     # (I319)
             dis = ""
             if self._disagree is not None and f < self._disagree.shape[0] \
                     and row < self._disagree.shape[1] and np.isfinite(self._disagree[f, row]):

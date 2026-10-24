@@ -303,6 +303,7 @@ TRANSIENT = {
 }
 PERSISTED = {
     "TrackingSession": {"n_frames", "fps", "file_fps", "width", "height", "tracks", "visibility", "manual", "tracked",
+                        "imported",                    # (I319) the landmark CSVs' imported column
                         "confidence", "occluded", "radius", "points", "events", "notes", "annotator", "animal",
                         "masks", "body", "current_frame", "ui_state", "_name_counter", "_event_counter",
                         "segments", "seg_masks",       # (G149) every segment and its silhouettes
@@ -596,6 +597,7 @@ try:
                                                            confidence=np.ones((10, 1), np.float32),
                                                            visibility=np.ones((10, 1), bool),
                                                            manual=np.zeros((10, 1), bool), tracked=np.ones((10, 1), bool),
+                                                           imported=np.zeros((10, 1), bool),
                                                            occluded=np.zeros((10, 1), bool),
                                                            radius=np.full((10, 1), np.nan, np.float32)), 0, False),
                                    Path(OUT) / "hung.csv")], workers=2, timeout=2.0)

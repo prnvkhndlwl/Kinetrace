@@ -160,6 +160,8 @@ import kinetrace.app as _app_mod              # noqa: E402
 for _mod in (_canvas_mod, _timeline_mod, _app_mod):
     _mod.QMenu = _PickMenu
 from kinetrace.app import MainWindow, READY, TRACKING, IDLE       # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 # `QAction.menu()` hands back a wrapper Python believes it owns: let it be
 # garbage-collected and shiboken deletes the C++ menu under the app's feet.
 # Keep every submenu wrapper the sweep ever touches alive.

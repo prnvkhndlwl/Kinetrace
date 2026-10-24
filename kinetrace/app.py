@@ -52,6 +52,7 @@ from kinetrace.viewgrid import ViewGrid, caption_for
 from kinetrace.skeletons import all_templates, save_user_template
 from kinetrace.theme import apply_theme
 from kinetrace.timeline import TIME_ZOOM_STEP, TimelinePanel
+from kinetrace.trackchoice import TrackChoiceDialog
 from kinetrace.video_source import (DEFAULT_CACHE_BYTES, SCRUB_WINDOW, FrameCache, SeekService, VideoInfo,
                                     describe_scrub, probe_video, scrub_budget)
 from kinetrace import icons
@@ -180,7 +181,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>hold left + move</td><td>pan the view (from a marker too: points are never dragged — a click places them)</td></tr>
 <tr><td class=k>right-click a marker</td><td>clear that point on <b>this frame only</b> and select it (one Ctrl+Z step); with several points selected, a short right click on one of their markers clears all of them on this frame (points only — the silhouettes are not touched)</td></tr>
 <tr><td class=k>hold right on a marker</td><td>(half a second) the point's menu — the same menu as a right click on its name in LAYERS</td></tr>
-<tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing is placed (a notice on the video says so). One Ctrl+Z step. A click on or right beside the ◇ places it exactly there. A landmark derived from the silhouette cannot be placed by hand (right-click → Data source → Track by appearance first)</td></tr>
+<tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing is placed (a notice on the video says so). One Ctrl+Z step. A click on or right beside the ◇ places it exactly there. A landmark derived from the silhouette is placed by hand the same way: the silhouette fills its other frames and keeps your click</td></tr>
 <tr><td class=k>＋ Point</td><td>LAYERS: a named point with no position yet, in the selected animal (else in Scene), selected (and in every camera's list) — then click it on the video</td></tr>
 <tr><td class=k>A</td><td>with a calibration: place the selected point at the <b>◇</b> — where two or more other cameras put it — exactly (one Ctrl+Z step)</td></tr>
 <tr><td class=k>Alt+click</td><td>with a calibration: <b>look here</b> — where this spot can be in the other cameras (a dashed line there, a "?" ring here). Nothing is edited; Esc clears it</td></tr>
@@ -595,7 +596,9 @@ class _SideRun(QObject):
     def on_chunk(self, w0, tracks, vis, conf, members, new_frames):
         s = self._session()
         if s is not None:
-            s.write_segment(w0, tracks, vis, self.pids, conf)
+            s.write_segment(w0, tracks, vis, self.pids, conf,                  # (I320) as the working camera
+                            keep_hand=bool(getattr(self.worker, "_kt_keep", False)),
+                            own=getattr(self.worker, "_kt_own", None))
             self.frames.extend(new_frames)
 
     def on_masks(self, summaries):
@@ -677,8 +680,8 @@ class _SaveWorker(QThread):
 
 # ui_state entries that belong to the USER (tools, display), not to one camera:
 # carried across a camera switch (I50). Frame, selection and zoom stay per camera.
-GLOBAL_UI_KEYS = ("follow", "autopause", "roi", "track_mode", "track_all", "marker_size", "show_mask", "mask_opacity",
-                  "show_midline", "show_bones", "seg_backend", "point_backend", "trail_len",
+GLOBAL_UI_KEYS = ("follow", "autopause", "roi", "track_mode", "track_all", "ahead_choice", "marker_size",
+                  "show_mask", "mask_opacity", "show_midline", "show_bones", "seg_backend", "point_backend", "trail_len",
                   "trail_future", "onion", "loupe", "epipolar", "display_filter", "region_shape", "wand_ends")
 
 
@@ -757,14 +760,15 @@ _STOP_TEXTS = {
     "exit": dict(
         short="{name} left the segment", ms=15000,
         toast=("Stopped at frame {frame}: <b>{name}</b> left its animal's silhouette, so its track ends "
-               "at frame {prev}. Click it where it really is and press Track. If it is allowed off the "
-               "silhouette, right-click it → <i>May leave its silhouette</i>."),
+               "at frame {prev}{kept}. Click it where it really is and press Track. "
+               "If it is allowed off the silhouette, right-click it → <i>May leave its silhouette</i>."),
         status="Stopped: {name} left its animal's silhouette at frame {frame}"),
     "unreliable": dict(
         short="{name} was lost", ms=12000,
         toast=("Auto-paused: <b>{name}</b> became unreliable at frame {frame}, so its track is cut there "
-               "(its timeline lane is empty from this frame on). It is selected: click where it really is "
-               "on the video and press Track — or turn <b>Auto-pause</b> off (bottom bar) to run through."),
+               "(its timeline lane is empty from this frame on{kept_lane}). It is selected: "
+               "click where it really is on the video and press Track — or turn <b>Auto-pause</b> off (bottom "
+               "bar) to run through."),
         status=("Auto-paused: the model lost {name} at frame {frame} (low confidence; its track is cut "
                 "there). Click where it really is and press Track — or turn Auto-pause off to run "
                 "through")),
@@ -799,6 +803,13 @@ class MainWindow(QMainWindow):
         self._hidden_warned = None
         self._user_paused = False
         self._run_hand = None
+        # (I320, G217) what the Track press chose for the data ahead: "keep" (the hand clicks are kept and
+        # Moving spot starts again at them) or "fresh" (today's run exactly); how the running worker writes
+        self._press_choice = "keep"
+        self._ahead_choice = ""                  # Track ▾ "When there is data ahead": "" = ask, "keep"
+        self._fresh_press = None                 # a Fresh run's press: what to erase after it (G217)
+        self._run_keep = False
+        self._run_own = None
         self._run_start = 0
         self._recovery_fallback_said = False
         self._gopro_pending = False
@@ -1272,6 +1283,23 @@ class MainWindow(QMainWindow):
             "(the menu stays open while you tick).")
         self.act_track_all.toggled.connect(lambda _on: (self._update_track_button(), self._refresh_companions()))
         menu_track.addAction(self.act_track_all)
+        # (G217) what a Track press does with the data already ahead of it: ask (the pop-up), or the choice
+        # the pop-up's "Use this every time" remembered. A Fresh run removes clicks: it is never remembered
+        menu_track.addSeparator()
+        self._ahead_group = QActionGroup(self)
+        self.act_ahead_ask = QAction("When there is data ahead: ask (the Track pop-up)", self, checkable=True,
+                                     checked=True)
+        self.act_ahead_keep = QAction("When there is data ahead: keep my clicks, replace the rest", self,
+                                      checkable=True)
+        self.act_ahead_ask.setToolTip("Track asks first when the points it tracks already have data after the "
+                                      "frame you start from: keep your clicks and re-track the rest, or a Fresh "
+                                      "run that replaces everything ahead.")
+        self.act_ahead_keep.setToolTip("Track does not ask: your clicks stay and the trackers start again from "
+                                       "them; every other frame the run reaches is tracked again.")
+        for act, key in ((self.act_ahead_ask, ""), (self.act_ahead_keep, "keep")):
+            self._ahead_group.addAction(act)
+            menu_track.addAction(act)
+            act.triggered.connect(lambda _=False, k=key: self._set_ahead_choice(k))
         menu_track.setToolTipsVisible(True)
         # point-tracking model: AllTracker (robust on animals) or CoTracker3 (fast)
         menu_track.addSeparator()
@@ -2526,6 +2554,7 @@ class MainWindow(QMainWindow):
         if stops is not None and stops.get(p.active if p is not None else 0) is None:
             return False
         return bool(any(s.tracked[self.current, q] and not s.points[q].derived for q in pids)
+                    or self._spot_joiners(s, pids)                  # (I316) a spot that joins at its click
                     or (carries_seg and any(s.animal_seedable_at(self.current, k) for k in range(s.n_segments))))
 
     def _plan_passes(self, scope, step: bool, every: bool) -> list[list[int]]:
@@ -2602,8 +2631,8 @@ class MainWindow(QMainWindow):
                        "what is selected is tracked")
         elif s is None or (n == 0 and not animal_ok):
             if scope and all(0 <= q < s.n_points and s.points[q].derived for q in scope):
-                # silhouette-derived landmarks are never placed by hand: they fill in whenever their
-                # animal's silhouette is tracked (G120, G180)
+                # silhouette-derived landmarks are not TRACKED on their own: they fill in whenever their
+                # animal's silhouette is tracked (G120, G180); a click of the user's on one stays (G218)
                 blocked = ("The selected landmark(s) fill in from their animal's silhouette: select the animal's "
                            "row in LAYERS and Track — they fill in with it"
                            + (f" (its silhouette has no click on frame {self.current}: press S and click the "
@@ -5290,8 +5319,8 @@ class MainWindow(QMainWindow):
         self._hint_small_spot(pid, x, y)
         self.statusBar().showMessage(
             f"Added {s.points[pid].name}{where} at ({x:.0f}, {y:.0f}) on frame {self.current}"
-            + (" — the landmark that was selected is derived from the silhouette and cannot be placed by "
-               "hand, so a NEW point was added" if derived_sel else ""), 6000 if derived_sel else 4000)
+            + (" — N adds a NEW point (the landmark that was selected comes from the silhouette: to place it "
+               "here by hand, click it without N)" if derived_sel else ""), 6000 if derived_sel else 4000)
 
     def _commit_new_point(self, pid: int, x: float | None = None, y: float | None = None,
                           companions: bool = False) -> str:
@@ -6335,7 +6364,8 @@ class MainWindow(QMainWindow):
         self._goto(target)
         fr = s.manual_frames(pid)
         k = int(np.searchsorted(fr, target)) + 1
-        self.statusBar().showMessage(f"{s.points[pid].name}: hand-placed frame {k} of {len(fr)}", 3000)
+        what = "imported click" if s.imported[target, pid] else "your click"      # (I319)
+        self.statusBar().showMessage(f"{s.points[pid].name}: hand-placed frame {k} of {len(fr)} ({what})", 3000)
 
     def _goto_low_conf(self, forward: bool):
         """J / Shift+J: jump to the next / previous low-confidence stretch (the
@@ -6374,21 +6404,22 @@ class MainWindow(QMainWindow):
         if s is None or pid >= s.n_points or self.state != READY:
             return
         meta = s.points[pid]
-        # a switch to a silhouette spec, or away from one, erases the point's
-        # track (set_source clears it): that used to happen silently, with no
-        # undo, and autosave wrote the loss to disk (I45)
+        # a switch to a silhouette spec, or away from one, erases what the other rule made (set_source
+        # clears it): that used to happen silently, with no undo, and autosave wrote the loss to disk (I45);
+        # the hand-placed frames stay (I320) - a ball's clicks are SAM prompts and go with the rest
         will_clear = (bool(spec) and not (meta.source == "silhouette" and meta.spec == spec)) or \
             (not spec and meta.source == "silhouette")
         n_data = int(s.tracked[:, pid].sum())
-        if will_clear and n_data:
-            n_hand = int((s.manual[:, pid] & s.tracked[:, pid]).sum())
+        n_hand = 0 if meta.is_ball else int((s.manual[:, pid] & s.tracked[:, pid]).sum())
+        n_erase = n_data - n_hand
+        if will_clear and n_erase:
             what = (f"derive {meta.name} from the silhouette ({spec})" if spec
                     else f"track {meta.name} by its appearance")
             if QMessageBox.question(
                     self, "Replace this point's track?",
-                    f"To {what}, its current track is erased: {n_data} frame(s)"
-                    + (f", {n_hand} of them placed by hand" if n_hand else "") + ".\n\n"
-                    "Ctrl+Z brings it back. Go ahead?",
+                    f"To {what}, its {n_erase} tracked frame(s) are erased"
+                    + (f"; the {n_hand} hand-placed one(s) are kept" if n_hand else "") + ".\n\n"
+                    "Ctrl+Z brings them back. Go ahead?",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 self._refresh_point_list()
                 return
@@ -6747,7 +6778,8 @@ class MainWindow(QMainWindow):
         if s is not None and row < s.n_points and not s.tracked[self.current, row]:
             self.statusBar().showMessage(
                 (f"{s.points[row].name} is derived from the silhouette: it fills in when you track "
-                 "its animal (it cannot be placed by hand)" if s.points[row].derived else
+                 "its animal - or click it on the video to place it here by hand (the silhouette keeps your "
+                 "click)" if s.points[row].derived else
                  f"{s.points[row].name} has no position on this frame — click on the video "
                  "to place it here and continue the same point"), 6000)
     def _set_undo_point(self, snap, extra: dict | None = None) -> None:
@@ -6796,10 +6828,8 @@ class MainWindow(QMainWindow):
         dragged since G59)."""
         if self.session is None or pid >= self.session.n_points or self.state != READY:
             return
-        if self.session.points[pid].derived:        # the same refusal as a plain click (I69)
-            self._refresh_overlay()
-            self._say_derived(pid, "place")
-            return
+        # (G218) a silhouette-derived landmark is placed by hand too, on this frame: the silhouette fills its
+        # other frames and never overwrites a click (owner 2026-10-20)
         # a Ctrl+click / N-continue is ONE undo step, like a plain click:
         # without it Ctrl+Z threw away the whole previous tracking run (I64)
         self._hand_place(pid, x, y)
@@ -6830,12 +6860,6 @@ class MainWindow(QMainWindow):
         self._refresh_overlay()
         self._update_track_button()
 
-    def _say_derived(self, pid: int, verb: str) -> None:
-        """A landmark derived from the silhouette is not placed by hand (I69): says how to make it one."""
-        self.statusBar().showMessage(
-            f"{self.session.points[pid].name} is derived from the silhouette — to {verb} it by hand, "
-            "right-click it → Data source → Track by appearance", 6000)
-
     def _on_reposition(self, x: float, y: float):
         if self._selected_point() is not None:
             self._on_place(self.selected, x, y)
@@ -6863,9 +6887,6 @@ class MainWindow(QMainWindow):
                 + ", or pick one in LAYERS and click where it is."
                 + (" <b>Alt+click</b> shows where a spot can be in the other cameras." if multi else ""),
                 "info", 7000)
-            return
-        if s.points[pid].derived:
-            self._say_derived(pid, "annotate")
             return
         x, y = self._snap_to_prediction(pid, x, y)
         self._hand_place(pid, x, y)      # Ctrl+Z takes the click back
@@ -7519,10 +7540,13 @@ class MainWindow(QMainWindow):
         a_ml = menu.addAction(
             f"Go to its last hand-placed frame  ({manual[-1]})" if len(manual)
             else "Go to its last hand-placed frame")
+        n_imp = int(s.imported[manual, pid].sum()) if len(manual) else 0          # (I319)
         for a in (a_mf, a_ml):
             a.setEnabled(bool(len(manual)))
-            a.setToolTip("The frames you placed by hand (the white diamonds on its timeline row); "
-                         ", and . step between them")
+            a.setToolTip("The frames placed by hand (the white diamonds on its timeline row); , and . step "
+                         "between them"
+                         + (f" - {n_imp} of the {len(manual)} came in with an import (imported clicks), the rest "
+                            "are your clicks" if n_imp else ""))
         acts["go_manual_first"], acts["go_manual_last"] = a_mf, a_ml
         a_low = menu.addAction(
             f"Go to its first doubtful stretch  ({low[0][0]}\u2013{low[0][1]})" if low
@@ -7590,7 +7614,7 @@ class MainWindow(QMainWindow):
         a_snap = menu.addAction(
             f"Snap to the other cameras' rays here  ({n_other} camera{'s' if n_other != 1 else ''} see it)"
             if n_other else "Snap to the other cameras' rays here")
-        a_snap.setEnabled(bool(n_other) and not s.points[pid].derived)
+        a_snap.setEnabled(bool(n_other))               # (G218) a silhouette landmark too: a hand placement
         a_snap.setToolTip("Moves this landmark onto the dashed epipolar line(s) drawn from the other cameras' "
                           "positions at this instant (the nearest point with one camera, the crossing with "
                           "two or more; cameras standing in a line give only a line, so check the place along "
@@ -7601,7 +7625,7 @@ class MainWindow(QMainWindow):
         pr = self._prediction(self.project.active, s.points[pid].name, self.current) \
             if self._guides_ready() else None
         a_pred = menu.addAction("Place it where the other cameras put it (◇)   A")
-        a_pred.setEnabled(pr is not None and pr["why"] is None and not s.points[pid].derived)
+        a_pred.setEnabled(pr is not None and pr["why"] is None)
         a_pred.setToolTip(
             "Two or more other cameras have this landmark at this instant: their rays meet in 3D, and the ◇ is "
             "that point seen from this camera. This places the landmark exactly there (hand-placed, one "
@@ -8221,9 +8245,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("A places the selected point at the ◇ — select a point first", 5000)
             return
         name = s.points[pid].name
-        if s.points[pid].derived:
-            self.statusBar().showMessage(f"{name} is derived from the silhouette — it cannot be placed by hand", 5000)
-            return
         pr = self._prediction(self.project.active, name, self.current) if self._guides_ready() else None
         if pr is None:
             n = len(self._observations(name, self.current, self.project.active)) if self._guides_ready() else 0
@@ -8266,7 +8287,7 @@ class MainWindow(QMainWindow):
         more. Flagged hand-placed, one undo step; Track re-seeds from it."""
         from kinetrace import retrack
         s = self.session
-        if s is None or self.state != READY or not (0 <= pid < s.n_points) or s.points[pid].derived:
+        if s is None or self.state != READY or not (0 <= pid < s.n_points):
             return
         p = self.project
         name = s.points[pid].name
@@ -8399,6 +8420,7 @@ class MainWindow(QMainWindow):
             self._on_select(pid)
             self._refresh_overlay()
             # the point alone: a held one is kept on its animal's saved silhouettes, nothing re-segmented (G180)
+            self._end_press()                   # (I320, R1-C2) a re-track keeps the clicks; no press's Fresh erase
             self._start_tracking(stop_after=job.local1, only_pids=[pid], quiet=True, segment=False)
             if self.state == TRACKING:
                 st["done"].append(job)
@@ -8539,6 +8561,20 @@ class MainWindow(QMainWindow):
             scope, _n = self._run_scope()
             s = self.session
             passes = self._plan_passes(scope, step, every)      # only what can start here (I203)
+            # (G217) the data already ahead of the press, in every camera it runs in: the Track pop-up asks
+            # what to do with it (F never asks: a step keeps the clicks)
+            self._end_press()
+            if not step:
+                info = self._ahead_info(every)
+                if info["trigger"] or info["masks"]:
+                    choice = self._ask_track_choice(info)
+                    if choice is None:
+                        self.statusBar().showMessage("Nothing was tracked (the Track question was cancelled)", 4000)
+                        return
+                    self._press_choice = choice
+                    if choice == "fresh":
+                        # what each camera's run tracks: the Fresh run erases that there, nothing else (R1-I2)
+                        self._fresh_press = {"views": info["views"]}
             n_full = len(self._tracker_passes(scope)) if scope else 1
             self._passes = None
             if len(passes) > 1:
@@ -8558,6 +8594,129 @@ class MainWindow(QMainWindow):
                              segment=None, stops=None, quiet=False)
             if self._passes is not None and self.state != TRACKING and self._multi is None:
                 self._passes = None             # pass 1 could not start: no later pass is waiting for it
+            if self.state != TRACKING and self._multi is None and self._passes is None:
+                self._end_press()               # (R1-C2) the press started nothing: no Fresh run stays armed
+
+    def _ahead_info(self, every: bool) -> dict:
+        """(G217) What a Track press would find after its start frame, in every camera it runs in: its points
+        (every pass), the silhouette-derived landmarks of the animals it segments, and their silhouettes.
+        The counts are what a Fresh run would overwrite or erase (every cell after the start; a ball's clicks
+        are SAM prompts a run refits, not clicks it keeps); `trigger` leaves out the click on the frame right
+        after the start (a Moving spot's speed click), so "click two frames, Track" does not make Track ask.
+        -> {frames, clicks, imported, masks, trigger, n_points, cameras, cameras_with, start, names, segs,
+        views: {camera: {names, segs, start}}} (`views` = what each camera's run starts from - its points with
+        a position there and its silhouette landmarks: a Fresh run erases that, and only that, R1-I2)."""
+        p, s = self.project, self.session
+        jobs = self._multi_jobs(False) if every else []
+        if len(jobs) < 2:
+            scope, pids, _run_seg, animal_ok = self._run_targets(None, None)
+            segs = self._run_segments() if animal_ok else []
+            jobs = [{"view": p.active if p is not None else 0, "frame": self.current,
+                     "pids": list(pids) + [q for q in self._live_derived(s, segs) if q not in pids],
+                     "segment": [s.segments[k].name for k in segs] if segs else False}]
+        out = {"frames": 0, "clicks": 0, "imported": 0, "masks": 0, "trigger": 0, "cameras": len(jobs),
+               "cameras_with": 0, "start": self.current, "names": set(), "segs": set(), "views": {}}
+        for j in jobs:
+            v = int(j["view"])
+            sv = p.sessions[v] if p is not None else s
+            f = int(j["frame"])
+            mine = out["views"].setdefault(v, {"names": set(), "segs": set(), "start": f})
+            before = out["frames"] + out["masks"]
+            for q in j["pids"]:
+                if not (0 <= q < sv.n_points):
+                    continue
+                m = sv.points[q]
+                if m.derived or sv.tracked[f, q]:      # a joiner is not in a Fresh run (it drops joiners)
+                    mine["names"].add(m.name)
+                tk = sv.tracked[f + 1:, q]
+                hand = (sv.manual[f + 1:, q] & tk) if not m.is_ball else np.zeros_like(tk)
+                out["frames"] += int(tk.sum())
+                out["clicks"] += int(hand.sum())
+                out["imported"] += int((hand & sv.imported[f + 1:, q]).sum())
+                # the speed click on the frame right after the start is part of how the run starts
+                out["trigger"] += int(tk.sum()) - int(bool(len(hand) and hand[0]))
+            for nm in (j["segment"] or []):
+                k = sv.segment_index(nm)
+                if k is not None:
+                    mine["segs"].add(nm)
+                    out["masks"] += int((sv.mask_frames(k) > f).sum())
+            out["names"] |= mine["names"]
+            out["segs"] |= mine["segs"]
+            out["cameras_with"] += int(out["frames"] + out["masks"] > before)
+        out["n_points"] = len(out["names"])
+        return out
+
+    def _ask_track_choice(self, info: dict) -> str | None:
+        """(G217) The Track pop-up: "keep" | "fresh", None = cancelled. Not asked when Track ▾ → When there
+        is data ahead says what to do (the pop-up's "Use this every time")."""
+        if self._ahead_choice:
+            return self._ahead_choice
+        dlg = TrackChoiceDialog(self, info)
+        try:
+            if dlg.exec() != QDialog.Accepted:
+                return None
+            key = dlg.choice()
+            remember = dlg.remember_box.isChecked()
+        finally:
+            dlg.deleteLater()
+        if key != "fresh" and remember:
+            self._set_ahead_choice(key)
+        return key
+
+    def _set_ahead_choice(self, key: str, announce: bool = True) -> None:
+        """Track ▾ → When there is data ahead: "" = ask (the pop-up), "keep" = keep my clicks without asking.
+        A Fresh run is never a standing choice (it removes clicks)."""
+        key = key if key in ("", "keep") else ""
+        self._ahead_choice = key
+        (self.act_ahead_keep if key == "keep" else self.act_ahead_ask).setChecked(True)
+        if announce:
+            self.statusBar().showMessage(
+                "Track keeps your clicks and re-tracks the rest without asking (Track ▾ → When there is data "
+                "ahead: ask, to be asked again)" if key else
+                "Track asks first when there is data ahead of where you start", 7000)
+
+    def _end_press(self) -> None:
+        """(G217, R1-C2) A Track press is over, whatever ended it (its run, an error, nothing started, a
+        re-track taking over): what it chose ends with it, so no later run inherits a Fresh run's erase."""
+        self._press_choice, self._fresh_press = "keep", None
+
+    def _fresh_erase(self, ends: dict, user_stop: bool) -> None:
+        """(G217) The end of a Fresh run's press: after today's run, everything of its points (and the
+        silhouettes it segmented) after the last frame it reached is erased in each camera, clicks included
+        - only what THAT camera's run tracked (R1-I2), never at or before its start frame (R1-M1), and not
+        at all when the user stopped it with X (a paused run erases nothing, R1-C1). The press's undo point
+        (taken before the run) brings it all back. `ends` = {camera: last frame reached}."""
+        fp = self._fresh_press
+        self._end_press()
+        p = self.project
+        if fp is None or user_stop or p is None:
+            return
+        n = 0
+        first = None
+        for v, last in ends.items():
+            ran = fp["views"].get(v)
+            if last is None or ran is None or not (0 <= v < p.n_views):
+                continue
+            sv = p.sessions[v]
+            f0 = max(int(last), int(ran["start"])) + 1
+            if f0 >= sv.n_frames:
+                continue
+            pids = [q for q in (sv.pid_by_name(nm) for nm in ran["names"]) if q is not None]
+            if pids:
+                n += sv.clear_window(pids, f0, sv.n_frames - 1)
+            for nm in ran["segs"]:
+                k = sv.segment_index(nm)
+                if k is not None:
+                    n += sv.clear_masks(f0, sv.n_frames - 1, k)
+            first = f0 - 1 if first is None else min(first, f0 - 1)
+        if n:
+            self._refresh_overlay()
+            self._refresh_companions()          # the other cameras' views (the 3D result follows by itself)
+            self.timeline.refresh()
+            self._autosave()                    # `_end_run` saved the copy before this erase
+            self.statusBar().showMessage(
+                f"Fresh run: everything of these points after frame {first} was erased too (clicks included) — "
+                "Ctrl+Z brings it back", 9000)
 
     def _pass_label(self, pids) -> str:
         """'AllTracker (A, B), ball markers (C)': what a pass tracks, each name under the thing that
@@ -8693,6 +8852,14 @@ class MainWindow(QMainWindow):
                                 if q is not None]
                         sv.restore_cells(snaps[v], pids, end + 1, d["lasts"][v])
                         trimmed.append((p.name(v), end))
+        if self._fresh_press is not None:
+            # (G217) a Fresh run: the passes are trimmed to one end first, then what lies after it is erased
+            ends = {}
+            for _k, d in ran:
+                for v, x in d["lasts"].items():
+                    if x is not None:
+                        ends[v] = x if v not in ends else min(ends[v], x)
+            self._fresh_erase(ends, any(d["user_stop"] for d in st["done"]))
         fails = [d["fail"] for _k, d in ran if d.get("fail") is not None]
         if fails:
             self._show_at(*min(fails, key=lambda t: t[1]))
@@ -8774,6 +8941,8 @@ class MainWindow(QMainWindow):
             if fv is None or rt is None or not (0 <= fv < rt.n_frames - (1 if step else 0)):
                 continue
             pids = [q for q in sv.seedable_at(fv) if sv.points[q].name in names]
+            pids += [q for q in self._spot_joiners(sv, [i for i in range(sv.n_points) if sv.points[i].name in names], fv)
+                     if q not in pids]                   # (I316) a spot that joins at its click in this camera
             # the working camera's segmented animals, by name; a held point never brings one (G180: it is
             # kept on that camera's saved silhouettes, `_stored_segments`)
             segs_v = self._seg_list(seg_names, sv) if segment is not False else []
@@ -9075,6 +9244,10 @@ class MainWindow(QMainWindow):
         # cleared the undo point, as any camera switch does)
         snaps = {v: s for v, s in st["snaps"].items() if v < p.n_views}
         self._set_run_undo_point(snaps)
+        if self._passes is None and self._fresh_press is not None:
+            # (G217) an every-camera Fresh run (one pass): each camera erased after where it ended
+            self._fresh_erase({r["view"]: r.get("last") for r in st["results"] if r.get("view") is not None},
+                              user_stop)
         self._refresh_companions()
         self._refresh_guides()
         self._update_track_button()
@@ -9135,38 +9308,61 @@ class MainWindow(QMainWindow):
             return
         self._step_run = bool(step)
         self._say_what_runs(scope, pids, animal_ok)
-        if not self._overwrite_ok(scope, pids, animal_ok, quiet):
-            return
+        # (G217) the press asked about the data ahead already (the Track pop-up replaced "Re-track from here?")
 
         if not quiet:
             self._undo_snap = s.snapshot()
         self.act_undo.setEnabled(False)  # re-enabled when the run ends
 
         from kinetrace.tracker import TrackingWorker        # lazy: imports torch
+        # (I320, G217) the press's choice: keep the hand clicks (the run writes round them and Moving spot
+        # starts again at them) or a Fresh run (today's run exactly: it writes over them, nothing restarts)
+        keep = self._press_choice != "fresh"
+        if not keep:
+            pids = [q for q in pids if s.tracked[self.current, q]]     # no joiners either
         seeds = s.positions_at(self.current)
         pids, ball_pids, spot_specs, backend = self._split_by_tracker(pids, seeds, quiet)
         specs = self._point_specs(pids, seeds)
         balls = self._ball_specs(ball_pids, seeds)
         seg = self._segment_specs(pids, scope, animal_ok, segment, specs)
+        end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
+        # (I316) a Moving spot point with no position here joins the run at its first click INSIDE the run;
+        # one whose next click lies beyond the run's end is left out - its column would blank its older
+        # data over the whole run (review RC-I1)
+        joined = {}
+        for sp in (spot_specs if keep else []):
+            if not s.tracked[self.current, sp.pid]:
+                first = s.reseed_frames(sp.pid, self.current, end)
+                if first:
+                    joined[sp.pid] = first[0]
+        spot_specs = [sp for sp in spot_specs if s.tracked[self.current, sp.pid] or sp.pid in joined]
         if not specs and not balls and not spot_specs and not seg.animals:
             self.toast.show_message(
                 f"Nothing to start from on frame {self.current}: place a point with <b>N</b>, a ball "
                 "with Point ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
             self.act_undo.setEnabled(self._undo_snap is not None)       # no run: Ctrl+Z stays what it was
             return
-        end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
+        # (I316) each Moving spot point's usable clicks from the start frame on: it starts again at them
+        hand = ({sp.pid: s.hand_clicks(sp.pid, self.current, end) for sp in spot_specs} if keep else None)
         w = TrackingWorker(self.info.path, self.current, None, None,
                            self.cache, end, refine=True,
                            specs=specs,
                            roi=self.btn_roi.isChecked(),
                            autopause=self.btn_autopause.isChecked(),
                            animals=seg.animals, derived=seg.derived,             # (G149) every segment
-                           point_backend=backend, balls=balls, spots=spot_specs)
+                           point_backend=backend, balls=balls, spots=spot_specs,
+                           hand={q: c for q, c in (hand or {}).items() if c} or None)
+        # (I320) how this run's rows are written: round the hand-placed cells (keep), and a spot that joins
+        # at a later click from that click on only - its older data before it stays
+        w._kt_keep = keep
+        w._kt_own = ([(joined[q], end - 1) if q in joined else None for q in w.point_ids] if joined else None)
         # the points hand-placed on the start frame: `write_segment` clears the flag of every row it
         # writes, the start row (the user's click, position kept) included -- restored at the end of
-        # the run (I189)
+        # the run (I189), with its imported mark (I319)
         w._kt_hand = (self.current, [q for q in pids + ball_pids + [sp.pid for sp in spot_specs]
-                                     if s.manual[self.current, q]])
+                                     if s.manual[self.current, q]],
+                      [q for q in pids + ball_pids + [sp.pid for sp in spot_specs]
+                       if s.manual[self.current, q] and s.imported[self.current, q]])
         if build_only:
             return w                    # one camera of a simultaneous run (I141)
         self._launch_run(w)
@@ -9194,8 +9390,19 @@ class MainWindow(QMainWindow):
             return [], False
         if run_seg and segs is None:
             segs = self._run_segments()
-        return ([p for p in s.seedable_at(self.current) if p in scope],
+        here = [p for p in s.seedable_at(self.current) if p in scope]
+        return (here + [q for q in self._spot_joiners(s, sorted(scope)) if q not in here],
                 bool(run_seg and any(s.animal_seedable_at(self.current, k) for k in (segs or []))))
+
+    def _spot_joiners(self, s, pids, frame: int | None = None) -> list[int]:
+        """(I316) The Moving spot points among `pids` with no position on `frame` (default: this one) that a
+        run from there picks up at a later click of theirs: they join the run at it. (An AllTracker /
+        CoTracker3 point does not join yet: it starts where it has a position.)"""
+        f = self.current if frame is None else int(frame)
+        end = f + 2 if self._track_mode == "semi" else None       # F's one frame: a click inside it (RC-I1)
+        return [q for q in pids if 0 <= q < s.n_points and not s.tracked[f, q] and s.points[q].kind == "point"
+                and not s.points[q].derived and not s.points[q].is_ball and self._tracker_of(q, s) == "spot"
+                and s.has_click_after(q, f, end)]
 
     def _say_nothing_to_start(self, scope, run_seg: bool) -> None:
         """Track was pressed with nothing that can start on this frame: why, as a notice (the
@@ -9232,41 +9439,21 @@ class MainWindow(QMainWindow):
         parts = ([f"the {len(pids)} selected point(s)"] if pids else []) + (
             [_silhouettes_text(len(segs))] if animal_ok else [])
         held = self._held_note(pids, segs)
+        # (I320, I316) the clicks ahead of the start: kept; Moving spot starts again at them, the point models
+        # do not restart from them yet (they write round them)
+        later = ([q for q in pids if not s.points[q].derived and not s.points[q].is_ball
+                  and s.reseed_frames(q, self.current, s.n_frames)] if self._press_choice != "fresh" else [])
+        models = [q for q in later if self._tracker_of(q) != "spot"]
+        ahead = ("" if not later else " — your clicks ahead stay"
+                 + ("; Moving spot starts again at them" if len(models) < len(later) else "")
+                 + ("; AllTracker / CoTracker3 points do not restart from them yet" if models else ""))
         self.statusBar().showMessage(
-            f"Tracking {' and '.join(parts)}" + (f" — {held}" if held else "")
+            f"Tracking {' and '.join(parts)}" + (f" — {held}" if held else "") + ahead
             + " — only what is selected in LAYERS is tracked", 6000)
         if skipped:
             self.statusBar().showMessage(
                 f"{skipped} point(s) have no position at frame {self.current} and will be "
                 "skipped (their existing tracks are kept)", 6000)
-
-    def _overwrite_ok(self, scope, pids, animal_ok: bool, quiet: bool) -> bool:
-        """The accidental-overwrite guard: starting far before a large body of work asks first
-        (irrelevant for a one-frame step, which would nag on every F, and for a quiet run). It
-        counts the frames THIS run would overwrite: its own points' tracked frames after the
-        start, plus the segment's silhouette frames when it runs -- every point's, a new point D
-        alone read "will overwrite 4900 already-tracked frames" (G101). False = the user said no."""
-        s = self.session
-        segs = self._run_segments() if animal_ok else []     # the run's segments (G149, G180)
-        cols = list(pids) + self._live_derived(s, segs)
-        ahead = (s.tracked[self.current + 1:][:, cols].any(axis=1) if cols
-                 else np.zeros(max(0, s.n_frames - self.current - 1), bool))
-        if animal_ok:
-            has_mask = np.zeros(s.n_frames, bool)
-            for k in segs:
-                has_mask[s.mask_frames(k)] = True
-            ahead = ahead | has_mask[self.current + 1:]
-        frames_after = int(ahead.sum())
-        last = self.current + 1 + int(np.nonzero(ahead)[0][-1]) if frames_after else self.current
-        if not quiet and not self._step_run and frames_after > 2000 and self.current < 0.5 * last:
-            if QMessageBox.question(
-                    self, "Re-track from here?",
-                    f"Tracking from frame {self.current} will progressively overwrite "
-                    f"{frames_after} already-tracked frames ahead of it.\n\n"
-                    "You can undo with Ctrl+Z after it finishes. Continue?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
-                return False
-        return True
 
     def _split_by_tracker(self, pids, seeds, quiet: bool):
         """Sort the run's points by what follows them: (the points the ONE appearance model of this
@@ -9460,8 +9647,10 @@ class MainWindow(QMainWindow):
         """G58: once per point, when it has been corrected by hand on 5 of the last
         20 frames while AllTracker / CoTracker3 tracks it -- a small spot those trackers lose without a word."""
         s = self.session
-        # a ball marker is not tested (the test refuses it): no hint for it (G102)
-        if s is None or s.points[pid].kind != "point" or s.points[pid].is_ball or self._tracker_of(pid) == "spot":
+        # a ball marker is not tested (the test refuses it): no hint for it (G102); nor a silhouette landmark
+        # (G218: corrected by hand on bad silhouette frames - no point model follows it)
+        if (s is None or s.points[pid].kind != "point" or s.points[pid].is_ball or s.points[pid].derived
+                or self._tracker_of(pid) == "spot"):
             return
         key = ("corr", id(self.project), self.project.active if self.project else 0, s.points[pid].name)
         hist = self._spot_corrections.setdefault(key[1:], [])
@@ -9567,6 +9756,8 @@ class MainWindow(QMainWindow):
             w.error.connect(self._on_track_error)
         self._track_pids = list(w.point_ids)
         self._run_hand = getattr(w, "_kt_hand", None)       # (I189)
+        self._run_keep = bool(getattr(w, "_kt_keep", False))   # (I320)
+        self._run_own = getattr(w, "_kt_own", None)
         self._autopause_info = None
         self._member_frames.clear()
         self._run_start = self.current
@@ -9661,7 +9852,8 @@ class MainWindow(QMainWindow):
                   conf: np.ndarray, members: dict, new_frames: list):
         if self.session is None:
             return
-        self.session.write_segment(w0, tracks, vis, self._track_pids, conf)
+        self.session.write_segment(w0, tracks, vis, self._track_pids, conf,
+                                   keep_hand=self._run_keep, own=self._run_own)     # (I320)
         for idx, wrgb in new_frames:
             self._display_queue.append((idx, wrgb))
         if members:
@@ -9679,7 +9871,9 @@ class MainWindow(QMainWindow):
             self._fps_ema = inst if not self._fps_ema else 0.9 * self._fps_ema + 0.1 * inst
         self._last_emit_t = now
         if self._fps_ema and not self._step_run:  # a 1-frame step has no useful ETA
-            remaining = (self.n_frames - 1 - head) / max(self._fps_ema, 1e-6)
+            # to the run's own end (a second pass / a bounded run ends before the video does)
+            end = int(getattr(self._model_worker, "n_frames", self.n_frames) or self.n_frames)
+            remaining = (min(end, self.n_frames) - 1 - head) / max(self._fps_ema, 1e-6)
             mins, secs = divmod(round(remaining), 60)
             eta = f"{mins} min {secs:02d} s" if mins else f"{secs} s"
             mw = self._model_worker
@@ -9926,13 +10120,14 @@ class MainWindow(QMainWindow):
         s = self.session
         if not hand or s is None:
             return
-        f, pids = hand
+        f, pids, imported = (tuple(hand) + ([],))[:3]
         if not (0 <= f < s.n_frames):
             return
         changed = False
         for q in pids:
             if 0 <= q < s.n_points and s.tracked[f, q] and not s.manual[f, q]:
                 s.manual[f, q] = True
+                s.imported[f, q] = q in imported       # (I319) an imported click stays one
                 changed = True
         if changed:
             s._touch()
@@ -9943,7 +10138,7 @@ class MainWindow(QMainWindow):
         autopause = self._autopause_info            # the impl consumes it
         reason = getattr(self.worker, "_autopause_reason", "") if self.worker is not None else ""
         pass_view = self.project.active if self.project is not None else 0
-        self._on_track_finished_impl(last, was_paused)
+        self._on_track_finished_impl(last, was_paused, user_stop=bool(user_pause and was_paused))
         if self._passes is not None and self._multi is None and self._retrack is None:
             # one pass of a two-pass run (G63)
             fail = None if autopause is None else (pass_view, int(autopause[0]), int(autopause[1]))
@@ -9974,11 +10169,21 @@ class MainWindow(QMainWindow):
                 self._retrack["jobs"] = []
             QTimer.singleShot(0, self._retrack_next)
 
-    def _on_track_finished_impl(self, last: int, was_paused: bool):
+    def _on_track_finished_impl(self, last: int, was_paused: bool, user_stop: bool = False):
         if self.worker is None:
             # the run was torn down with its video (_teardown_video) and its queued end
             # arrived afterwards: there is nothing left to finish
             return
+        # (G217) a lone run (not one pass / camera of a bigger press: those end in `_passes_finish` /
+        # `_multi_finish`) that was a Fresh run erases what lies after it once it has ended - not after X:
+        # `user_stop` = the X `_on_track_finished` recorded before it cleared the flag (R1-C1)
+        lone = self._passes is None and self._multi is None and self._fresh_press is not None
+        view = self.project.active if self.project is not None else 0
+        self._on_track_finished_run(last, was_paused)
+        if lone:
+            self._fresh_erase({view: last}, user_stop)
+
+    def _on_track_finished_run(self, last: int, was_paused: bool):
         self.worker.wait(2000)
         reason = getattr(self.worker, "_autopause_reason", "")
         ball_ended = dict(getattr(self.worker, "_ball_ended", {}) or {})
@@ -10021,7 +10226,8 @@ class MainWindow(QMainWindow):
             # from that frame to the end of its last window is cut, so the
             # track ends exactly where it stopped being trustworthy.
             if self.session and pid < self.session.n_points:
-                cut = self.session.clear_window([pid], fail_frame, max(fail_frame, last))
+                cut = self.session.clear_window([pid], fail_frame, max(fail_frame, last),
+                                                keep_hand=self._run_keep)      # (I320) a click there stays
                 if cut:
                     self._refresh_overlay()
                     self.timeline.refresh()
@@ -10082,7 +10288,7 @@ class MainWindow(QMainWindow):
                 continue
             pids = [q for q in holds.get(k, ()) if 0 <= q < s.n_points]
             if pids and f <= last:
-                cut += s.clear_window(pids, f, last)
+                cut += s.clear_window(pids, f, last, keep_hand=self._run_keep)     # (I320) clicks there stay
             parts.append(f"<b>{s.segments[k].name}</b> at frame {f}"
                          + (" (SAM took another object)" if why == "switched" else " (lost)"))
         if cut:
@@ -10091,7 +10297,9 @@ class MainWindow(QMainWindow):
         if say and parts:
             self.toast.show_message(
                 "Segments that ended during the run: " + ", ".join(parts) + ". Their silhouettes end on the frame "
-                "before" + (", and so do the landmarks held on them" if cut else "") + "; everything else went on. "
+                "before" + (", and so do the landmarks held on them"
+                            + (" (your own clicks stay)" if self._run_keep else "") if cut else "")
+                + "; everything else went on. "
                 "Where one is visible again, select its row, press S, click it, and Track.", "warn", 15000)
 
     def _stop_kind(self, reason: str, pid: int) -> str:
@@ -10112,7 +10320,10 @@ class MainWindow(QMainWindow):
         """The notice and the status-bar line of a run that stopped at `frame` (`_STOP_TEXTS`);
         `why` = what Moving spot reported ("ambiguous" = two spots alike, else not found)."""
         t = _STOP_TEXTS[kind]
-        fmt = dict(name=name, frame=frame, prev=frame - 1)
+        # (I320) the cut keeps the user's clicks after it - not in a Fresh run, whose cuts take them too
+        fmt = dict(name=name, frame=frame, prev=frame - 1,
+                   kept=" (your own clicks after it stay)" if self._run_keep else "",
+                   kept_lane=", apart from your own clicks" if self._run_keep else "")
         if kind == "spot":
             two = why == "ambiguous"
             fmt["said"] = t["said_two" if two else "said_none"].format(**fmt)
@@ -10121,6 +10332,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(t["status"].format(**fmt), 12000)
 
     def _on_track_error(self, tb: str):
+        self._end_press()                       # (R1-C2) an error ends the press's choice: no Fresh erase after it
         if self._passes is not None and self._multi is None:
             self._passes = None                 # an error ends a two-pass run (G63)
         decode_at = getattr(self.worker, "decode_failed_at", None) if self.worker is not None else None
@@ -10323,6 +10535,7 @@ class MainWindow(QMainWindow):
         st["roi"] = self.btn_roi.isChecked()
         st["track_mode"] = self._track_mode
         st["track_all"] = self.act_track_all.isChecked()
+        st["ahead_choice"] = self._ahead_choice                 # (G217) "" = ask
         st["marker_size"] = self.marker_spin.value()
         st["show_mask"] = self.btn_mask.isChecked()
         st["mask_opacity"] = float(self._mask_opacity)
@@ -10365,6 +10578,7 @@ class MainWindow(QMainWindow):
         (self.act_mode_semi if self._track_mode == "semi"
          else self.act_mode_auto).setChecked(True)
         self.act_track_all.setChecked(bool(st.get("track_all", False)))
+        self._set_ahead_choice(str(st.get("ahead_choice", "") or ""), announce=False)     # (G217)
         self.marker_spin.setValue(int(np.clip(st.get("marker_size", 3), 2, 24)))
         try:
             tl = int(st.get("trail_len", TRAIL_FRAMES))

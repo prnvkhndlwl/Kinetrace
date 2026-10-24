@@ -33,6 +33,8 @@ QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 app = QApplication.instance() or QApplication([])
 from kinetrace.app import READY, TRACKING, MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 
 VID = os.path.join(ROOT, "test600.mp4")
 OUT = os.path.join(ROOT, "tests", "out")

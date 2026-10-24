@@ -86,7 +86,8 @@ VIEW_KEYS = ("selected", "selected_names", "segment_selected", "segments_selecte
 # (G167, G154) "hidden_animals" = the animals whose LAYERS checkbox is off (silhouette not drawn): display state, so it
 # lives in view.json (and the view sidecar), never makes the project dirty, and is not in segment.json
 TRACK_COLS = ("frame", "point", "x", "y", "confidence", "visible", "hand_placed", "hidden", "radius")  # format 1
-LANDMARK_COLS = ("frame", "x", "y", "confidence", "visible", "hand_placed", "hidden", "radius")
+# (I319) imported = a hand-placed row that came in with an import (DLTdv, SLEAP ...), 1 only where hand_placed is 1
+LANDMARK_COLS = ("frame", "x", "y", "confidence", "visible", "hand_placed", "imported", "hidden", "radius")
 SILHOUETTE_COLS = ("frame", "area", "score", "centroid_x", "centroid_y", "x0", "y0", "x1", "y1")
 POINT3D_COLS = ("frame", "x", "y", "z", "residual", "n_cams")         # + one <camera>_px column per camera
 POINT_COLS = ("name", "color", "shown", "kind", "radius", "anchor", "source", "spec", "free", "shape", "outline",
@@ -579,20 +580,21 @@ def _put_mesh(files: dict, folder: str, body) -> None:
 
 
 # ------------------------------------------------------------------ tables (worker thread)
-_LM_KINDS = ("i", "f4", "f4", "f4", "b", "b", "b", "f4")
+_LM_KINDS = ("i", "f4", "f4", "f4", "b", "b", "b", "b", "f4")
 # (R47) a landmark CSV's columns after frame, x, y: (column, the session array, how a cell is read), in
 # LANDMARK_COLS order -- what a save writes, a read fills and a missing column defaults to (`_lm_default`)
 LM_FIELDS = (("confidence", "confidence", text_f32), ("visible", "visibility", _bool_col),
-             ("hand_placed", "manual", _bool_col), ("hidden", "occluded", _bool_col), ("radius", "radius", text_f32))
+             ("hand_placed", "manual", _bool_col), ("imported", "imported", _bool_col),
+             ("hidden", "occluded", _bool_col), ("radius", "radius", text_f32))
 
 
 def _lm_default(col: str, has: np.ndarray) -> np.ndarray:
     """A column a file does not have, for rows with (`has`) or without a position: confidence 1 / 0,
-    visible where placed, not hand placed, not hidden, no radius."""
+    visible where placed, not hand placed, not imported, not hidden, no radius."""
     n = len(has)
     return {"confidence": lambda: np.where(has, 1.0, 0.0).astype(np.float32), "visible": has.copy,
-            "hand_placed": lambda: np.zeros(n, bool), "hidden": lambda: np.zeros(n, bool),
-            "radius": lambda: np.full(n, np.nan, np.float32)}[col]()
+            "hand_placed": lambda: np.zeros(n, bool), "imported": lambda: np.zeros(n, bool),
+            "hidden": lambda: np.zeros(n, bool), "radius": lambda: np.full(n, np.nan, np.float32)}[col]()
 
 
 def _point3d_spec(cams_px: list[str]) -> tuple[tuple, tuple]:
@@ -701,6 +703,7 @@ def _fill_landmark(arr: dict, j: int, t: Table, T: int, where: str) -> None:
     arr["tracked"][fr, j] = np.isfinite(d["x"]) & np.isfinite(d["y"])
     for col, key, _ in LM_FIELDS:
         arr[key][fr, j] = d[col]
+    arr["imported"][fr, j] &= arr["manual"][fr, j]       # (I319) only a hand-placed row can be an imported one
 
 
 def _empty_tracks(T: int, N: int) -> dict:
@@ -2029,7 +2032,10 @@ def _read_tracks(src: _Source, d: str, points: list, pfiles: list, T: int) -> tu
     -- a landmark file points.csv does not name adds one)."""
     if src.has(f"{d}/tracks.npy"):
         from kinetrace.session import POINT_ARRAYS
-        arr = {a.name: src.npy(f"{d}/{a.name}.npy") for a in POINT_ARRAYS}      # (R15)
+        # (R15) an array the copy does not have (written before it existed: `imported`, I319) is that
+        # array's empty fill, as a missing CSV column is (R47) - an update must not set unsaved work aside
+        arr = {a.name: (src.npy(f"{d}/{a.name}.npy") if src.has(f"{d}/{a.name}.npy")
+                        else a.empty(T, len(points))) for a in POINT_ARRAYS}
         for k, v in arr.items():
             if v.shape[0] != T or v.shape[1] != len(points):
                 raise ProjectFileError(f"{d}/{k}.npy: shape {v.shape} does not match {T} frames x "

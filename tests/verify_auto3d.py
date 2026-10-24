@@ -107,6 +107,8 @@ QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError(a[2] if len(a) > 2 else a)))
 
 from kinetrace.app import READY, MainWindow  # noqa: E402
+from _stubs import stub_track_choice  # noqa: E402
+TRACK_CHOICE = stub_track_choice()     # (G217) the Track pop-up answers "keep": no press waits on it
 
 app = QApplication.instance() or QApplication([])
 win = MainWindow()
@@ -243,6 +245,9 @@ win.act_pm_spot.trigger()
 pid = select_point("pelvis")
 win._goto(30, force=True)
 pump(0.2)
+# every frame of the synthetic project is a hand click, and a run keeps hand clicks (I320): after frame 30 the
+# pelvis is an earlier run's output here, so this run replaces it
+win.session.manual[31:, pid] = False
 before = win.session.tracks[31:60, pid].copy()
 win.act_track_all.setChecked(False)
 QTest.keyClick(win, Qt.Key_T)
