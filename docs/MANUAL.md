@@ -761,7 +761,10 @@ there; a camera that has no point of the first model runs the second to its
 own end. The pass that holds the head landmark (in the camera you are working
 in) goes first and makes the silhouettes; the second pass reuses them instead
 of outlining the animal a second time, so its on-body landmarks are kept on the
-same outlines. A pass whose points have no position on the frame you are on is
+same outlines. In a camera whose head point uses the *other* model, the
+silhouette is made without its head, so the landmarks derived from it there
+are placed along the midline as when no head point is tracked: give the head
+the same tracker in every camera when they matter. A pass whose points have no position on the frame you are on is
 left out, and the other still runs. One Ctrl+Z undoes it all, in every camera.
 
 **Hand only (no tracker).** Right-click a point → *Tracker* → **Hand only** for

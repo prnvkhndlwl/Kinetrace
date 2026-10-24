@@ -9075,12 +9075,17 @@ class MainWindow(QMainWindow):
         self._update_track_button()
         # worded from why each pass ended (G100)
         labels = st.get("labels") or [", ".join(g) for g in st["groups"]]
-        s = self.session
         said = []
+
+        def cam(v) -> str:
+            """' in camB' for a frame of another camera than the one the press was made in (R1-M2: with D8 a pass
+            may run only in other cameras, whose frame numbers differ)."""
+            return "" if v == st["view"] or v >= p.n_views else f" in {p.name(v)}"
         for k, label in enumerate(labels):
             d = next((x for kk, x in enumerate(st["done"]) if x.get("group", kk) == k), None)
-            last = None if d is None else next((x for x in [d["lasts"].get(st["view"])]
-                                                 + list(d["lasts"].values()) if x is not None), None)
+            at = None if d is None else next(((v, x) for v, x in [(st["view"], d["lasts"].get(st["view"]))]
+                                              + list(d["lasts"].items()) if x is not None), None)
+            last = None if at is None else f"{at[1]}{cam(at[0])}"
             if d is None:
                 said.append(f"{label}: not run (you stopped the run first)")
             elif d.get("skipped"):
@@ -9089,8 +9094,9 @@ class MainWindow(QMainWindow):
                 said.append(f"{label}: stopped by you" + (f" at frame {last}" if last is not None else ""))
             elif d.get("fail") is not None:
                 fv, ff, fp = d["fail"]
-                nm = s.points[fp].name if 0 <= fp < s.n_points else "the segment"
-                said.append(f"{label}: stopped at frame {ff} ({nm} was lost)")
+                sf = p.sessions[fv] if 0 <= fv < p.n_views else self.session      # the point's own camera
+                nm = sf.points[fp].name if 0 <= fp < sf.n_points else "the segment"
+                said.append(f"{label}: stopped at frame {ff}{cam(fv)} ({nm} was lost)")
             else:
                 said.append(f"{label}: to frame {last}" if last is not None else f"{label}: nothing tracked")
         msg = ("Two passes" if len(labels) == 2 else f"{len(labels)} passes") + ", one after the other — " \
@@ -9485,13 +9491,17 @@ class MainWindow(QMainWindow):
                                  if r.get("view") is not None and not r.get("unbuilt")},
                                 (problem["view"], problem["fail"], problem.get("pid", -1)) if problem else None,
                                 user_stop)
+        one = len(st["results"]) == 1          # (D8, R1-M2) a pass that only ONE other camera runs
         if st["step"] and not user_stop and problem is None:
             self.statusBar().showMessage(
-                f"Stepped one frame in {len(done)} cameras — F for the next; Ctrl+Z undoes the step in all", 6000)
+                (f"Stepped one frame in {len(done)} cameras" if not one else
+                 f"Stepped one frame in {parts[0].split(' to frame')[0]}")
+                + " — F for the next; Ctrl+Z undoes the step" + ("" if one else " in all"), 6000)
             return
         self.toast.show_message(
-            ("Stopped: " if user_stop else "Tracked in every camera: ") + "; ".join(parts)
-            + ". One Ctrl+Z undoes the run in every camera.", "warn" if (problem or user_stop) else "info", 12000)
+            ("Stopped: " if user_stop else "Tracked in every camera: " if not one else "Tracked in ") + "; ".join(parts)
+            + (". One Ctrl+Z undoes the run in every camera." if not one else ". Ctrl+Z undoes it."),
+            "warn" if (problem or user_stop) else "info", 12000)
 
     def _pause_tracking(self):
         if self.state == TRACKING and self.worker is not None:
@@ -9708,8 +9718,10 @@ class MainWindow(QMainWindow):
                 spot_specs.append(SpotSpec(pid, seeds[pid], self._spot_velocity(pid, self.current), q.spot))
             else:
                 nn.append((pid, t))
-        kinds = [k for k in ("alltracker", "cotracker3") if any(t == k for _q, t in nn) and model in (None, k)]
-        backend = kinds[0] if kinds else self._point_backend
+        kinds = [k for k in ("alltracker", "cotracker3") if any(t == k for _q, t in nn)]
+        # a pass of a press runs ITS model only, never the project's default (R1-M1: a point of the other model rode
+        # along and ran twice); with no point of that model here the worker has no model points at all
+        backend = model if model is not None else (kinds[0] if kinds else self._point_backend)
         not_now = [s.points[q].name for q, t in nn if t != backend]
         if not_now and not quiet and model is None:
             # (a pass of a press: its other-model points run in the press's other pass, D8 -- nothing to say)

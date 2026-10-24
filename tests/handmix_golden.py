@@ -58,6 +58,9 @@ Ctrl+Z (act_undo) gives the pre-run arrays back. The A1 / A2 / A5 variants each 
   A5ii  + a click ahead in the second camera only (P1 at frame 300, GT + 6 px in x)
   A6    verify_review_i185 [3]: a two-pass run (the AllTracker head + the animal with a mock SAM, then a
         CoTracker3 point kept on the silhouettes) + 2 silhouette-derived landmarks (tip, centroid)
+  A7    (PR D, review R1-M5) two cameras (test600 + mirror), 2 AllTracker + 2 CoTracker3 landmarks with the SAME
+        trackers in both cameras, Track > Every camera, T: two passes, each in both cameras (recorded on main
+        1d4c3d4, before the per-camera pass planning: golden_1d4c3d4.npz)
 
 COMPARE RULE
   W: every chunk payload and every signal np.array_equal (NaN == NaN); the mask / ball payload hashes
@@ -1020,6 +1023,47 @@ def a5i():
 def a5ii():
     a_setup()
     return _a5(True)
+
+
+@scenario("A7", "A", True, "app, two cameras, AllTracker x2 + CoTracker3 x2 in both, Every camera, T (two passes)")
+def a7():
+    a_setup()
+    _need_alltracker()
+    from kinetrace.project import Project
+    from kinetrace.session import TrackingSession
+    GT = _gt(V600)
+    mirror = os.path.join(OUT, "test600_mirror.mp4")
+    _make_mirror(mirror)
+    GTB = GT.copy()
+    GTB[..., 0] = 639.0 - GT[..., 0]
+    proj = os.path.join(SCRATCH, "a7.kinetrace")
+    shutil.rmtree(proj, ignore_errors=True)
+    Project([TrackingSession(V600, 600, 30.0, 640, 480), TrackingSession(mirror, 600, 30.0, 640, 480)],
+            ["camA", "camB"], [0, 0]).save(proj)
+    forget_recovery(V600, mirror)
+    win = new_win()
+    try:
+        win._open_project_from_path(proj)
+        wait(lambda: (win.state == K.READY and win.project is not None and win.project.n_views == 2
+                      and not win._loading), 120, "open the two-camera project")
+        pump(0.3)
+        p = win.project
+        sa, sb = p.sessions
+        for s, gt in ((sa, GT), (sb, GTB)):          # the same trackers in both cameras
+            add_pts(s, 0, gt[0, :2], "alltracker", names=["P1", "P2"])
+            add_pts(s, 0, gt[0, 2:4], "cotracker3", names=["P3", "P4"])
+        win._set_active_view(0)
+        pump(0.2)
+        win._refresh_point_list()
+        win._goto(0, force=True)
+        pump(0.3)
+        win.act_track_all.setChecked(True)
+        pump(0.05)
+        arrays, meta = a_run(win, K.Qt.Key_T)
+        meta["inputs"] = {"test600.mp4": md5_file(V600), os.path.basename(mirror): md5_file(mirror)}
+        return arrays, meta
+    finally:
+        close_win(win)
 
 
 @scenario("A6", "A", True, "app, verify_review_i185 [3]: two passes with the head + mock SAM, + 2 derived landmarks")

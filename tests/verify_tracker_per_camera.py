@@ -375,6 +375,14 @@ def track_press(win, start=0, every=False, timeout=120, mods=Qt.NoModifier, sele
     return started and ended
 
 
+def ctrl_z(win):
+    """Ctrl+Z as the user presses it: in the ACTIVE window (offscreen, a run can leave no window active and the key
+    then reaches no action; verify_manual_mode does the same, review R1-M4)."""
+    win.activateWindow()
+    pump(0.05)
+    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+
+
 class Toasts:
     def __init__(self, win):
         self.msgs: list = []
@@ -441,7 +449,7 @@ def section_a():
           got["chosen"] is not None and s0.points[q0].tracker == "alltracker"
           and s1.points[s1.pid_by_name("snout")].tracker == "alltracker",
           (s0.points[q0].tracker, s1.points[s1.pid_by_name("snout")].tracker))
-    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    ctrl_z(win)
     pump(0.2)
     s0, s1 = p.sessions
     check("(a) one Ctrl+Z puts every camera back (Moving spot / CoTracker3)",
@@ -677,7 +685,7 @@ def section_c():
     order = [r["backend"] for r in RUNS]
     check("(c) pass 1 = AllTracker (cameras 1 and 2), pass 2 = CoTracker3 (cameras 1, 2, 3)",
           sorted(order[:2]) == ["alltracker"] * 2 and sorted(order[2:]) == ["cotracker3"] * 3, order)
-    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    ctrl_z(win)
     pump(0.3)
     check("(c) one Ctrl+Z undoes both passes in every camera",
           all(np.array_equal(p.sessions[v].tracked, snap[v].tracked) for v in range(3)))
@@ -695,7 +703,7 @@ def section_c():
     check("(c) ... and a camera the earlier pass did not run in is not bounded (camera 3 to the end)",
           ct3 == [N] and all(last_tracked(p.sessions[2], p.sessions[2].pid_by_name(nm)) == N - 1 for nm in names),
           (got[2], [last_tracked(p.sessions[2], p.sessions[2].pid_by_name(nm)) for nm in names]))
-    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    ctrl_z(win)
     pump(0.3)
     # AllTracker in the working camera only, CoTracker3 in the two others: pass 1 runs in camera 1 alone, pass 2
     # in cameras 2 and 3 together; no camera is "missing a position", and one Ctrl+Z restores all three
@@ -716,7 +724,7 @@ def section_c():
           and all(last_tracked(sv, sv.pid_by_name(nm)) == N - 1 for sv in p.sessions for nm in names), got)
     check("(c) ... with no 'only this camera can start' notice for the cameras the first pass leaves to the second",
           "only this camera can start" not in toasts.text(), toasts.text()[:200])
-    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    ctrl_z(win)
     pump(0.3)
     check("(c) ... and one Ctrl+Z restores every camera (the first pass's camera too)",
           all(np.array_equal(p.sessions[v].tracked, snap[v].tracked) for v in range(3)))
@@ -914,7 +922,11 @@ def section_g():
               and last_tracked(sb, sb.pid_by_name("snout")) == N - 1,
               (got, last_tracked(sa, sa.pid_by_name("snout")), last_tracked(sb, sb.pid_by_name("snout")),
                toasts.text()[:160]))
-        QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+        if a_key == "alltracker":
+            last = toasts.msgs[-1] if toasts.msgs else ""
+            check("(g) the end notice says which camera the CoTracker3 pass ran in (R1-M2)",
+                  f"to frame {N - 1} in {p.name(1)}" in last, last[:200])
+        ctrl_z(win)
         pump(0.3)
     # Hand only here, tracked in the other camera: Every camera (and Shift+T) runs it there, leaves it here
     for kw, how in (({"every": True}, "Every camera, T"), ({"every": False, "mods": Qt.ShiftModifier}, "Shift+T")):
@@ -924,7 +936,7 @@ def section_g():
               and same_cells(sa, sa.pid_by_name("snout"), before[0]),
               (ran, got, last_tracked(sb, sb.pid_by_name("snout")), toasts.text()[:160]))
         if ran:
-            QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+            ctrl_z(win)
             pump(0.3)
     # a pass that cannot start anywhere is named, with the model it is
     set_tracker_here(win, 0, "snout", "CoTracker3", "cotracker3")
@@ -939,7 +951,30 @@ def section_g():
     check("(g) a pass that cannot start anywhere is named (snout, the AllTracker pass)",
           "snout" in toasts.text() and "AllTracker" in toasts.text() and "no position" in toasts.text(),
           toasts.text()[:200])
-    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    ctrl_z(win)
+    pump(0.3)
+    for a in POINT_ARRAYS:
+        getattr(sb, a.name)[:, q] = kept[a.name]
+    # (R1-M1) the AllTracker pass runs in camera 1 for a Moving spot point alone: the snout (CoTracker3 here,
+    # AllTracker in camera 2 where it has no position) must not ride in it with the project's default model
+    win._set_active_view(0)
+    pump(0.1)
+    d = new_point(win, TRUTH[1][0], "dot")
+    set_tracker_here(win, 0, "dot", "Moving spot", "spot")
+    set_tracker_here(win, 0, "snout", "CoTracker3", "cotracker3")
+    set_tracker_here(win, 1, "snout", "AllTracker", "alltracker")
+    q = sb.pid_by_name("snout")
+    kept = cells(sb, q)
+    sb.clear_window([q], 0, 0)
+    win._set_active_view(0)
+    pump(0.1)
+    RUNS.clear()
+    track_press(win, every=True)
+    got = [(vid.get(r["video"]), r["backend"], sorted(sa.points[i].name for i in r["pids"])) for r in RUNS]
+    check("(g) a point of the other model never rides in a pass with the project's model: the snout runs once, "
+          "with CoTracker3 (R1-M1)", got == [(0, "cotracker3", ["snout"])]
+          and last_tracked(sa, sa.pid_by_name("dot")) == N - 1, (got, last_tracked(sa, d)))
+    ctrl_z(win)
     pump(0.3)
     for a in POINT_ARRAYS:
         getattr(sb, a.name)[:, q] = kept[a.name]
