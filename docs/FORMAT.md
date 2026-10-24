@@ -161,7 +161,7 @@ any more.
 | `anchor` | 1 = the appearance lock is on |
 | `source` | `track` (followed by the point tracker), `silhouette` (computed from its animal's silhouette; `spec` says how) or `ball` |
 | `free` | 1 = may leave its silhouette (not held on it even when its animal holds its points) |
-| `tracker` | the point's own tracker: `alltracker`, `cotracker3` or `spot` (Moving spot); blank = the project's default point model (`state.json` `tools`). Any other value reads as blank |
+| `tracker` | the point's own tracker IN THIS CAMERA (each camera's `points.csv` has its own; the same landmark may differ between cameras): `alltracker`, `cotracker3`, `spot` (Moving spot) or `hand` (Hand only: no tracker, Track never runs it); blank = the project's default point model (`state.json` `tools`). Any other value reads as blank |
 
 ### `cameras/<folder>/tracks/<landmark>.csv`
 
