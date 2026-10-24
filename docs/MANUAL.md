@@ -769,7 +769,9 @@ a part you digitise yourself, frame by frame, while the others are tracked in
 the same press: Track never runs it (the status line names it) and your clicks
 are its data. The Track question does not count its clicks, a *Fresh run*
 never erases them, and 3D → Re-track Disagreeing Stretches leaves it to you.
-Select only such points and Track says so and starts nothing. It can be set
+Select only such points and Track says so and starts nothing — unless *Every
+camera* is ticked (or you press Shift+T) and another camera gives them a
+tracker: then that camera tracks them and this one leaves them. It can be set
 for one camera only, like any tracker; it is never the project's point model.
 
 **Your clicks are the truth.** A frame you placed by hand is never changed by a
