@@ -58,6 +58,8 @@ MAP = [
     ([K + f for f in ("session.py", "tracker.py", "spots.py", "app.py", "projectfile.py", "trackio.py",
                       "dltdvproject.py", "dltdvimport.py", "canvas.py", "timeline.py", "trackchoice.py")],
      ["verify_hand_truth", "verify_hand_truth_models"]),
+    # (G215) Manual mode: no tracker, a click lands where it was made and moves the playhead on
+    ([K + f for f in ("app.py", "canvas.py", "session.py")], ["verify_manual_mode"]),
     # (G217) the Track pop-up replaced the "Re-track from here?" question (G101's check)
     ([K + "trackchoice.py"], ["verify_review_app2"]),
     # (I303) the wand wizard's accept path and its one Ctrl+Z live in app.py
