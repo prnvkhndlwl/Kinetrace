@@ -85,6 +85,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        # (I320, I316, I317, I319, G217, G218) hand-placed frames are the truth: the rules, imported clicks, Moving
        # spot re-seeds, clicks on silhouette landmarks, the Track pop-up
        "verify_hand_truth",
+       # (G215) Manual mode: no tracker, clicks frame by frame
+       "verify_manual_mode",
        # the test-selection table and the pull-request evidence stamp
        "verify_suite_map"]
 # the synthetic test videos are generated on demand (deterministic; not stored in the repo)

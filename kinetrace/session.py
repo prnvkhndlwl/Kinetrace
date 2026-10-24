@@ -68,7 +68,8 @@ DEFAULT_UI_STATE: dict = {
                              # an automatic re-frame surprises more than it helps
     "autopause": True,       # pause tracking on confidence collapse
     "roi": True,             # ROI-zoom tracking
-    "track_mode": "auto",    # "auto" = run to end | "semi" = F steps one frame
+    "track_mode": "auto",    # "auto" = run to end | "semi" = F steps one frame | "manual" = no tracker (G215)
+    "after_click": "frame",  # (G215) Manual mode, after a click: "frame" | "step" (the step box) | "point" | "stay"
     "track_all": False,      # Track ▾ → Every camera: track the points in each camera that has them (G29)
     "ahead_choice": "",      # (G217) Track ▾ → When there is data ahead: "" = ask (the Track pop-up), "keep"
     "marker_size": 3,        # marker radius, screen px (was 7 until 2026-09-22)
