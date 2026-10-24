@@ -89,6 +89,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_hand_truth",
        # (G216, G219) a tracker per camera and Hand only: the menus, the passes over every camera, a stand-in model
        "verify_tracker_per_camera",
+       # (G215) Manual mode: no tracker, clicks frame by frame
+       "verify_manual_mode",
        # the test-selection table and the pull-request evidence stamp
        "verify_suite_map"]
 # the synthetic test videos are generated on demand (deterministic; not stored in the repo)
