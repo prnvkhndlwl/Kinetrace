@@ -1358,8 +1358,8 @@ class MainWindow(QMainWindow):
         self.act_ahead_keep = QAction("When there is data ahead: keep my clicks, replace the rest", self,
                                       checkable=True)
         self.act_ahead_ask.setToolTip("Track asks first when the points it tracks already have data after the "
-                                      "frame you start from: keep your clicks and re-track the rest, or a Fresh "
-                                      "run that replaces everything ahead.")
+                                      "frame you start from: keep your clicks and re-track the rest, only fill "
+                                      "the gaps, or a Fresh run that replaces everything ahead.")
         self.act_ahead_keep.setToolTip("Track does not ask: your clicks stay and the trackers start again from "
                                        "them; every other frame the run reaches is tracked again.")
         self.act_ahead_gaps = QAction("When there is data ahead: only fill the gaps", self, checkable=True)
@@ -10074,7 +10074,8 @@ class MainWindow(QMainWindow):
     def _sessions_fit(self, peak: int, backend: str, s) -> bool:
         """(PR B, RE-I2) Would the most sessions live at once fit the graphics card? An estimate from the device
         probe's cached memory (the window never touches torch): the run's measured peak at 4K (AllTracker 11.7 GB,
-        CoTracker3 2.7 GB, scaled down with the picture, at least a quarter) + about 0.2 / 0.1 GB per session.
+        CoTracker3 2.7 GB, scaled down with the picture, at least a quarter) + per session SESSION_GB (measured at
+        4K: about 1.6 / 0.15 GB).
         Asks before a run that may not fit; the run checks the real free memory again when it starts."""
         from kinetrace.device import cached_vram_gb
         from kinetrace.tracker import SESSION_GB
@@ -10180,8 +10181,8 @@ class MainWindow(QMainWindow):
         parts = ([f"the {len(pids)} selected point(s)"] if pids else []) + (
             [_silhouettes_text(len(segs))] if animal_ok else [])
         held = self._held_note(pids, segs)
-        # (I320, I316) the clicks ahead of the start: kept; Moving spot starts again at them, the point models
-        # do not restart from them yet (they write round them)
+        # (I320, I316) the clicks ahead of the start: kept, and every point starts again at them (Moving spot in
+        # its run, the point models each in its own session, PR B)
         later = ([q for q in pids if not s.points[q].derived and not s.points[q].is_ball
                   and s.reseed_frames(q, self.current, s.n_frames)] if self._press_choice != "fresh" else [])
         ahead = "" if not later else " — your clicks ahead stay and each clicked point starts again at them"

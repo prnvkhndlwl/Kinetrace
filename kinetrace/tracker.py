@@ -650,8 +650,8 @@ class TrackingWorker(QThread):
         # (I316) the hand clicks are the truth: {pid: {frame: (x, y)}} of the run's Moving spot points, from the
         # start frame on - a spot starts again at the last click of each stretch, and one that stops with a
         # click ahead is cut there (no data) and waits for it instead of ending the run. A spot whose seed is
-        # NaN joins the run at its first click. (AllTracker / CoTracker3 points: their clicks are kept by the
-        # app's write, they do not restart from them yet.)
+        # NaN joins the run at its first click. (AllTracker / CoTracker3 points start again at their clicks in
+        # their own sessions: `RunDriver`, PR B.)
         self.hand = {int(p): dict(c) for p, c in (hand or {}).items()}
         self._reseed_log: list[tuple[int, int]] = []     # (frame, pid) of every restart at a click
         self._reseeds_seen = 0
@@ -2393,7 +2393,9 @@ class TrackingWorker(QThread):
 
 # =============================================================================== re-seed sessions (I316, PR B)
 SESSION_TAIL = 16           # frames a session tracks past the last one it owns: its last rows get a full window
-SESSION_GB = {"alltracker": 0.2, "cotracker3": 0.1}     # GPU memory a session adds (plan rev 4: measured order)
+# GPU memory a session adds, measured at 4K on real footage (PR B step 20: AllTracker +9.4 GB for ~6 sessions live at
+# once, CoTracker3 +0.6 GB); a smaller picture needs less, so this errs high
+SESSION_GB = {"alltracker": 1.6, "cotracker3": 0.15}
 
 
 class ModelPool:

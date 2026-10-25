@@ -780,13 +780,20 @@ To switch tracking off for every point at once, use Track ▾ → **Manual — n
 tracker** instead (below).
 
 **Your clicks are the truth.** A frame you placed by hand is never changed by a
-tracking run: the run writes around it. A **Moving spot** point starts again
-from your clicks (from the last click of each group of clicks close together),
-and when it loses the spot it is cut there and picked up again at your next
-click, instead of stopping the run; a Moving spot point that has no position on
-the frame you start from joins the run at its first click. **AllTracker** and
-**CoTracker3** points keep your clicks too, but do not start again from them
-yet. Clicks that came in with an import (a DLTdv or SLEAP project) count as
+tracking run: the run writes around it, and every point **starts again from
+your clicks** - from the last click of each group of clicks close together (up
+to two frames apart). An **AllTracker** or **CoTracker3** point gets its own
+tracker from each such click on, while every point you did not click there goes
+on exactly as it would have without your clicks; a **Moving spot** point starts
+again inside its run. When a point is lost before a later click of yours, it is
+cut where it was lost and picked up again at that click, instead of stopping the
+run; a point that has no position on the frame you start from joins the run at
+its first click. When a point starts again the video waits a moment (its new
+tracker needs a few frames before its first positions) - it never goes back.
+Clicks on many points at once use more of the graphics card: when a press may
+not fit, Track asks first. If the head point of an animal you outline is
+clicked, its silhouette landmarks are measured from that head as it is tracked
+from your click. Clicks that came in with an import (a DLTdv or SLEAP project) count as
 your clicks; hovering the timeline calls them *imported click* until you click
 that frame yourself. Only a new click on that frame, **Delete** on the
 timeline, the point menu's *Clear*, or a *Fresh run* (below) removes a click.
@@ -799,6 +806,16 @@ how much there is and how many of those frames are your clicks:
   placed by hand stays exactly as you placed it; everything else the run
   reaches is tracked again. If the run stops early, the frames after the stop
   keep what they had.
+- **Only fill the gaps** — nothing that exists is touched: each empty stretch
+  after the frame you start from (frames you deleted, or what an Auto-pause
+  cut) is tracked from the frame before it. A stretch is skipped when that frame
+  is no usable position - the point left the picture there, is marked hidden, or
+  is not visible - and the end says which ones and why; the frame or two missing
+  between your clicks are left to *Fill gaps*, which interpolates between them.
+  Inside a stretch Auto-pause is on: where the tracker loses the point, the
+  stretch ends there. The choice says how many stretches and frames it fills
+  and, after a first run, about how long it takes. (Silhouettes and Moving spot
+  points are left to a normal run.)
 - **Fresh run** — the run goes over everything ahead as if there were no
   clicks (it writes over the ones it reaches), and when it has ended,
   everything of these points after the last frame it reached is erased too,
@@ -806,7 +823,8 @@ how much there is and how many of those frames are your clicks:
   run that ends on an error (in any camera or pass of the press).
 
 Tick *Use this every time* to stop being asked; **Track ▾ → When there is data
-ahead** changes it back. A Fresh run removes clicks, so it is asked for every
+ahead** changes it back (remembered *Only fill the gaps* with no gap to fill,
+Track asks and says so). A Fresh run removes clicks, so it is asked for every
 time. **F** (one step) never asks and always keeps your clicks. The clicks you
 start from — the frame you are on, and a click on the next frame that gives a
 Moving spot its speed — do not by themselves make Track ask (a Fresh run still
@@ -1193,11 +1211,10 @@ coordinates the tracker uses, so a hand-placed frame lines up exactly with the
 tracked frames around it (and every export converts both the same way).
 
 Running **Track ▶** through hand-placed frames keeps them: the run writes
-around your clicks. A **Moving spot** point also starts again from them, so you
-can click it on a few frames anywhere and track the whole clip in one press;
-AllTracker and CoTracker3 points keep the clicks but do not start again from
-them yet. To replace your clicks, choose **Fresh run** when Track asks, or
-delete them on the timeline first.
+around your clicks, and each point starts again from them, so you can click a
+point on a few frames anywhere - where it drifts, or where it comes back after
+being hidden - and track the whole clip in one press. To replace your clicks,
+choose **Fresh run** when Track asks, or delete them on the timeline first.
 
 **Keyframe digitizing.** Some stretches are easier to do by hand than to
 track: a few frames of blur, a limb behind the body. Place the part by hand on
