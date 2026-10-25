@@ -770,7 +770,8 @@ left out, and the other still runs. One Ctrl+Z undoes it all, in every camera.
 **Hand only (no tracker).** Right-click a point → *Tracker* → **Hand only** for
 a part you digitise yourself, frame by frame, while the others are tracked in
 the same press: Track never runs it (the status line names it) and your clicks
-are its data. The Track question does not count its clicks, a *Fresh run*
+are its data (an animal's head: they anchor its silhouette landmarks on those
+frames). The Track question does not count its clicks, a *Fresh run*
 never erases them, and 3D → Re-track Disagreeing Stretches leaves it to you.
 Select only such points and Track says so and starts nothing — unless *Every
 camera* is ticked (or you press Shift+T) and another camera gives them a
@@ -795,7 +796,9 @@ tracker needs a few frames before its first positions) - it never goes back.
 Clicks on many points at once use more of the graphics card: when a press may
 not fit, Track asks first. If the head point of an animal you outline is
 clicked, its silhouette landmarks are measured from that head as it is tracked
-from your click. Clicks that came in with an import (a DLTdv or SLEAP project) count as
+from your click; a *Hand only* head anchors them on each frame you clicked it
+after the start (on the frames between, they are measured as for an animal
+with no head point). Clicks that came in with an import (a DLTdv or SLEAP project) count as
 your clicks; hovering the timeline calls them *imported click* until you click
 that frame yourself. Only a new click on that frame, **Delete** on the
 timeline, the point menu's *Clear*, or a *Fresh run* (below) removes a click.

@@ -922,9 +922,42 @@ def section14():
     close(win)
 
 
+# ===================================================================== [15] auto-pause while a session runs
+def section15():
+    print("[15] app: a point lost with no click ahead auto-pauses the run while another point's session runs")
+    win = new_window(VAN)
+    add_points(win, [(AX[0], AY[0]), (BX[0], BY[0])], "cotracker3")
+    click_at(win, 1, 30, (BX[30], BY[30]))              # dot B starts again at 30: its session is live at the loss
+    ok = press_t(win)
+    s = win.session
+    tr = np.flatnonzero(s.tracked[:, 0])
+    check("(setup) the run auto-paused on dot A (no click ahead of it): the playhead at the loss, dot A selected",
+          ok and GONE - 2 <= win.current < BACK and 0 in win._selected_pids(), (win.current, win._selected_pids()))
+    lost = win.current
+    check(f"[15] dot A is cut from where it was lost (frame {lost}) to the last row the run wrote (last tracked frame "
+          f"{tr[-1] if len(tr) else None}; re-check of 441467c: a stopped session's lower frame left rows standing)",
+          lambda: not s.tracked[lost:, 0].any())
+    close(win)
+    # the driver's end rule itself (a session lagging the run's own worker is a matter of timing in a real run): an
+    # auto-pause ends at the auto-paused worker's own last frame - the app cuts the lost point to it - even when a
+    # session it stopped had emitted less
+    cache = FrameCache(CACHE)
+    prim = worker(VAN, 0, T1, {0: (AX[0], AY[0]), 1: (BX[0], BY[0])}, "cotracker3", cache, resume_pids={1})
+    sess = worker(VAN, 30, T1, {1: (BX[30], BY[30])}, "cotracker3", cache, cache_first=True, emit_frames=False)
+    job = trk.SessionJob(30, sess, {1: (30, T1 - 1)})
+    drv = trk.RunDriver(prim, [job])
+    rd = Rec(drv, chunks=False)
+    job.started = job.stopped = True
+    drv._res[id(prim)].update(auto=(71, 0), last=95, seq=1)
+    drv._res[id(sess)].update(last=90)
+    drv._emit_end()
+    check("[15] bare driver: the auto-pause's end is the auto-paused worker's last frame (95), not a stopped session's "
+          "lower one (90)", rd.auto == [(71, 0)] and rd.fin == [(95, True)], (rd.auto, rd.fin))
+
+
 ONLY ={int(x) for x in os.environ.get("HAND_RESTART_ONLY", "").split(",") if x.strip()}   # e.g. "1,2" (a subset)
 for k, fn in enumerate((section1, section2, section3, section4, section5, section6, section7, section8, section9,
-                         section10, section11, section12, section13, section14), 1):
+                         section10, section11, section12, section13, section14, section15), 1):
     if ONLY and k not in ONLY:
         continue
     try:

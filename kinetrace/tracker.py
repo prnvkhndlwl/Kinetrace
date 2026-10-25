@@ -2743,7 +2743,9 @@ class RunDriver(QThread):
             self._auto_worker = w
             self.autopaused.emit(*r["auto"])
             last = r["last"] if r["last"] is not None else r["auto"][0]
-            self.finished_ok.emit(int(lowered(last)), True)     # (review nit) a stopped session's frames too
+            # NOT lowered for stopped sessions: the app cuts the lost point to this frame, the rows its worker
+            # emitted (a lowered frame left its last rows standing - reviewer re-check of 441467c)
+            self.finished_ok.emit(int(last), True)
             return
         last = rp["last"] if rp["last"] is not None else self.primary.start_frame - 1
         paused = bool(rp["paused"] or self._pause or any(j.stopped and self._res[id(j.worker)]["last"] is not None

@@ -9012,6 +9012,7 @@ class MainWindow(QMainWindow):
         out = {"frames": 0, "clicks": 0, "imported": 0, "masks": 0, "trigger": 0, "cameras": len(jobs),
                "cameras_with": 0, "start": self.current, "names": set(), "segs": set(), "views": {},
                "gaps": 0, "gap_frames": 0, "gap_track": 0, "gap_jobs": {}, "gap_skipped": []}
+        joined: set = set()
         for j in jobs:
             v = int(j["view"])
             sv = p.sessions[v] if p is not None else s
@@ -9024,6 +9025,8 @@ class MainWindow(QMainWindow):
                 m = sv.points[q]
                 if m.derived or sv.tracked[f, q]:      # a joiner is not in a Fresh run (it drops joiners)
                     mine["names"].add(m.name)
+                else:
+                    joined.add(m.name)                 # ... but counted in the sentence (a lone joiner: "this point")
                 tk = sv.tracked[f + 1:, q]
                 hand = (sv.manual[f + 1:, q] & tk) if not m.is_ball else np.zeros_like(tk)
                 out["frames"] += int(tk.sum())
@@ -9040,7 +9043,7 @@ class MainWindow(QMainWindow):
             out["names"] |= mine["names"]
             out["segs"] |= mine["segs"]
             out["cameras_with"] += int(out["frames"] + out["masks"] > before)
-        out["n_points"] = len(out["names"])
+        out["n_points"] = len(out["names"] | joined)
         if out["gap_track"] and self._fps_ema:
             out["gap_seconds"] = out["gap_track"] / max(self._fps_ema, 1e-6)    # at the last run's speed
         return out
@@ -9942,7 +9945,8 @@ class MainWindow(QMainWindow):
     def _unrun_heads(self, s, animals: list, plan: dict, end: int) -> dict:
         """(D2, D10, PR B) The head of each animal this run segments that the run itself does not track: a head that
         joins at its click (in `plan`) becomes the animal's head - its sessions anchor the landmarks from its click
-        on (`_with_sessions`); a Hand-only head anchors them on each frame the user clicked it (review #4). Sets the
+        on (`_with_sessions`); a Hand-only head anchors them on each frame AFTER the start the user clicked it
+        (review #4; D2 is "after a head click": a press with no such click is today's run, bit for bit). Sets the
         animals' `head_pid`; -> {Hand-only head: its hook}. Before such a head's first click, and between a Hand-only
         head's clicks, the landmarks are measured without an anchor, as for an animal with no head point."""
         from kinetrace.tracker import hand_head_hook
@@ -9953,7 +9957,7 @@ class MainWindow(QMainWindow):
                 continue
             if hp in plan:
                 a.head_pid = hp
-            elif self._hand_only(hp, s) and (clicks := s.hand_clicks(hp, self.current, end)):
+            elif self._hand_only(hp, s) and (clicks := s.hand_clicks(hp, self.current + 1, end)):
                 a.head_pid = hp
                 hooks[hp] = hand_head_hook(clicks)
         return hooks
@@ -10029,7 +10033,6 @@ class MainWindow(QMainWindow):
 
     def _gaps_next(self) -> None:
         """The next run of "Only fill the gaps", or the end."""
-        from kinetrace.tracker import RunDriver, SessionJob
         st = self._gaps
         if st is None:
             return
@@ -10039,6 +10042,7 @@ class MainWindow(QMainWindow):
         if st["stopped"] or not st["queue"] or not self._tracking_engine_ready():
             self._gaps_finish()
             return
+        from kinetrace.tracker import RunDriver, SessionJob     # after the engine card (G46, review: never before)
         c = st["queue"].pop(0)
         p = self.project
         if c["view"] >= p.n_views:

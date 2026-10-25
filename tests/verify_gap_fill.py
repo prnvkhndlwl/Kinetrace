@@ -379,6 +379,19 @@ def section_torch():
     check("(setup) the press asked, and its counts hold the gap", seen and seen[0][1] >= 1, seen)
     check("[8] ... and the tracker was not loaded on the window's thread before it asked (review #2, G46: the "
           "engine card loads it)", seen and not seen[0][0], seen)
+    # answered "Only fill the gaps": the gap runs too load the tracker only after the engine card (re-check of
+    # 441467c: `_gaps_next` imported it first). The card is refused here, so nothing runs.
+    ready = []
+    win._tracking_engine_ready = lambda: (ready.append("kinetrace.tracker" in sys.modules), False)[1]
+    MainWindow._ask_track_choice = lambda self, info: "gaps"
+    try:
+        QTest.keyClick(win, Qt.Key_T)
+        pump(0.5)
+    finally:
+        MainWindow._ask_track_choice = STUB_ASK
+        del win._tracking_engine_ready
+    check("[8] answered Only fill the gaps: the tracker was not loaded before the engine card", ready and not any(ready),
+          ready)
     close(win)
 
 
