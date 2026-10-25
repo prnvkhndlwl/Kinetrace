@@ -281,7 +281,8 @@ def entries(path):
 
 
 assert [a for _, a in entries(["3D", "Sync"])] == [win.act_sync, win.act_offsets3d]
-assert [a for _, a in entries(["3D", "Calibrate"])] == [win.act_lens, win.act_load_lens, win.act_wand]
+assert [a for _, a in entries(["3D", "Calibrate"])] == [win.act_lens, win.act_load_lens, win.act_wand,
+                                                        win.act_charuco]          # (G221)
 assert [n for n, _ in entries(["3D"])][:3] == ["Cameras Overview…", "Sync", "Calibrate"], entries(["3D"])
 assert len(entries(["3D"])) == 8, [n for n, _ in entries(["3D"])]
 assert [a for _, a in entries(["Help"])][:4] == [win.act_manual, win.act_tour, by_text["Keyboard & Mouse Reference…"],

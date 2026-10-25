@@ -186,8 +186,8 @@ beside them, so its axes stay attached to the board however you turn it.</li>
 named by the markers around it, so a board <b>half out of the picture or partly covered by a hand still
 counts</b>: pushing it into the corners is easy. Print Kinetrace's (7 × 5 squares of 30&nbsp;mm, markers
 22&nbsp;mm, button below) or use your own and type its squares, sizes and dictionary on the next page.
-The same board filmed by all your cameras at once can also place the cameras (the 3D menu's Calibrate
-entries).</p>
+The same board filmed by all your cameras at once can also place the cameras: 3D → Calibrate →
+Calibrate Cameras with a ChArUco Board…</p>
 <p style="color:{theme.TEXT_DIM}">Method: OpenCV's pinhole + radial model, or the fisheye model for wide
 lenses (chosen automatically). The report's thresholds are conservative on purpose. The ChArUco route
 follows Argus (Jackson et al. 2016, Biology Open), adapted with its authors' permission.</p>

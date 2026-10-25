@@ -272,10 +272,11 @@ class RigScan:
 
     `views[f][c]` = camera c's padded (N, 2) view at reference instant `ref_frames[f]`
     (all NaN where the board was not found or fewer than R1's corners were seen);
-    `local_frames[f][c]` the frame of camera c that was read (the earlier of the two when the
-    instant fell between frames and both were read, see `scan_rig`); `failed[c]` = the first
-    frame of camera c that did not decode (None = every one did) - reported, never skipped
-    in silence."""
+    `local_frames[f][c]` camera c's frame nearest that instant (between two frames both were read
+    and the corners interpolated, see `scan_rig`); `failed[c]` = the first frame of camera c that
+    did not decode (None = every one did) - reported, never skipped in silence; `cameras[c]` =
+    the project camera of scan camera c; `spec` = the board as found (its layout included), `note`
+    a sentence when the layout is not the one typed."""
     spec: BoardSpec
     sizes: list[tuple[int, int]]
     names: list[str]
@@ -284,6 +285,7 @@ class RigScan:
     views: list[list[np.ndarray]]
     failed: list[int | None]
     note: str = ""
+    cameras: list[int] | None = None
 
     def seen(self, c: int) -> int:
         """Frames in which camera c saw the board (R1)."""
@@ -296,7 +298,7 @@ class RigScan:
         for f, row in enumerate(self.views):
             if usable_for_lens(row[c], self.spec):
                 vs.append(row[c])
-                fr.append(int(np.floor(self.local_frames[f][c])))
+                fr.append(int(self.local_frames[f][c]))
         return vs, fr
 
 
@@ -311,20 +313,29 @@ def _interp_views(a: np.ndarray | None, b: np.ndarray | None, w: float, n: int) 
     return out
 
 
+def shared_window(project, offsets=None, views=None) -> tuple[int, int]:
+    """The integer reference instants every camera `views` (None = all) covers at `offsets`
+    ((0, -1) when they share none): the stretch a rig scan can look at."""
+    from kinetrace.wanddata import RunView
+    return _window(RunView(project, views, offsets))
+
+
 def scan_rig(project, spec: BoardSpec, offsets=None, first: int | None = None, last: int | None = None,
-             n: int = DEFAULT_FRAMES, progress=None, should_cancel=None) -> RigScan:
-    """Find the board in every camera of `project` at `n` reference instants spread evenly over
-    first..last (R5; default: the stretch every camera covers) at `offsets` (pending ones from the
-    wizard, None = the project's own). Each camera's picture at an instant is its frame there; when
-    the instant falls between two frames (a fractional offset) both are read and the corners seen in
-    both are interpolated, so a moving board is not seen half a frame early or late. Opens its own
-    captures: never on the GUI thread. Frames are read in increasing order per camera."""
+             n: int = DEFAULT_FRAMES, progress=None, should_cancel=None, views=None) -> RigScan:
+    """Find the board in the cameras `views` (None = every camera) of `project` at `n` reference
+    instants spread evenly over first..last (R5; default: the stretch they all cover) at `offsets`
+    (None = the project's own). Each camera's picture at an instant is its frame there; when the
+    instant falls between two frames (a fractional offset) both are read and the corners seen in
+    both are interpolated, so a moving board is not seen half a frame early or late. The board's
+    layout (current or older OpenCV) is first read from the first camera (`guess_legacy`; the scan's
+    `spec` and `note` say which). Opens its own captures: never on the GUI thread. Frames are read in
+    increasing order per camera. The scan's cameras are `views`, in that order."""
     from kinetrace.calib import even_indices
     from kinetrace.project import half_up
     from kinetrace.video_source import FrameReader
-    from kinetrace.wanddata import retimed
+    from kinetrace.wanddata import RunView
 
-    rv = retimed(project, offsets)
+    rv = RunView(project, views, offsets)
     C = rv.n_views
     lo, hi = _window(rv)
     if first is not None:
@@ -336,9 +347,25 @@ def scan_rig(project, spec: BoardSpec, offsets=None, first: int | None = None, l
                          "(3D -> Sync), or widen the frames to look at")
     count = hi - lo + 1
     refs = (lo + even_indices(count, min(int(n), count))).tolist()
+    # the printed layout, from up to 8 of the first camera's pictures at these instants
+    note = ""
+    reader = FrameReader(rv.sessions[0].video_path, 0)
+    try:
+        grays = []
+        for t in [refs[i] for i in even_indices(len(refs), min(8, len(refs)))]:
+            k = int(half_up(float(rv.local_frame(0, t))))
+            if 0 <= k < rv.sessions[0].n_frames:
+                reader.reset(k)
+                bgr = reader.read(k)
+                if bgr is not None:
+                    grays.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
+    finally:
+        reader.release()
+    if grays:
+        spec, note = guess_legacy(grays, spec)
     N = spec.n_corners
     sizes = [(int(s.width), int(s.height)) for s in rv.sessions]
-    views = [[np.full((N, 2), np.nan) for _ in range(C)] for _ in refs]
+    out_views = [[np.full((N, 2), np.nan) for _ in range(C)] for _ in refs]
     local = [[float("nan")] * C for _ in refs]
     failed: list[int | None] = [None] * C
     done, total = 0, len(refs) * C
@@ -376,9 +403,9 @@ def scan_rig(project, spec: BoardSpec, offsets=None, first: int | None = None, l
                     got[k] = cache[k]
                 if len(want) == 1:
                     v = got[k0]
-                    views[f][c] = v if v is not None else np.full((N, 2), np.nan)
+                    out_views[f][c] = v if v is not None else np.full((N, 2), np.nan)
                 else:
-                    views[f][c] = _interp_views(got[k0], got[k0 + 1], w, N)
+                    out_views[f][c] = _interp_views(got[k0], got[k0 + 1], w, N)
                 local[f][c] = float(int(half_up(x)))
                 for k in [k for k in cache if k < k0]:
                     del cache[k]
@@ -388,7 +415,8 @@ def scan_rig(project, spec: BoardSpec, offsets=None, first: int | None = None, l
         finally:
             if reader is not None:
                 reader.release()
-    return RigScan(spec, sizes, list(rv.names), [int(r) for r in refs], local, views, failed)
+    return RigScan(spec, sizes, list(rv.names), [int(r) for r in refs], local, out_views, failed, note,
+                   list(rv.views))
 
 
 def _window(rv) -> tuple[int, int]:

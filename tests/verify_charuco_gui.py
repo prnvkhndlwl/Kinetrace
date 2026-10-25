@@ -202,6 +202,126 @@ if prof is not None:
           "the attached profile names its ChArUco board")
 
 
+# ------------------------------------------------------------------ [2] the camera wizard
+print("[2] the camera wizard: three synced cameras film the board")
+from kinetrace import charucowizard as cwz  # noqa: E402
+
+RIG_N = 150
+paths, cams = sc.rig_videos(SCRATCH, RIG_N)
+RW, RH = sc.RIG_SIZE
+rig = Project([TrackingSession(pth, RIG_N, 30.0, RW, RH) for pth in paths], ["cam1", "cam2", "cam3"],
+              list(sc.RIG_OFFSETS))
+PROJ2 = os.path.join(SCRATCH, "charuco_gui_rig.kinetrace")
+rig.save(PROJ2)
+for pth in paths:
+    forget_recovery(pth)
+p.dirty = False
+win._open_project_from_path(PROJ2)
+for _ in range(300):
+    pump(0.05)
+    if win.state == READY and win.project is not None and win.project.n_views == 3:
+        break
+p = win.project
+check(p is not None and p.n_views == 3 and win.state == READY and all(x is None for x in p.lenses)
+      and p.calibration is None, "the three-camera board project opened, no lens, no calibration")
+check(any(a is win.act_charuco for a in win.findChildren(type(win.act_charuco)))
+      and "ChArUco" in win.act_charuco.text() and win.act_charuco.isEnabled(), "3D > Calibrate has the ChArUco entry")
+RIG = {"choice": "both", "cancel": False}
+
+
+def wait_thread(page, limit=600):
+    t0 = time.time()
+    pump(0.1)
+    while page._thread is not None and page._thread.isRunning():
+        pump(0.1)
+        if time.time() - t0 > limit:
+            raise TimeoutError("the worker did not finish")
+    pump(0.2)
+
+
+def drive_rig(self):
+    self.show()
+    self.restart()
+    pump(0.1)
+    bp = self.page_board
+    RIG["ticks"] = [cb.isChecked() for cb in bp.ticks]
+    RIG["window"] = (bp.first.value(), bp.last.value())
+    click(bp.r_choice[RIG["choice"]])
+    # the rig's board: 9 x 7 squares of 60 mm, markers 45 mm
+    type_into(bp.fields.sx, "9")
+    type_into(bp.fields.sy, "7")
+    type_into(bp.fields.square, "60")
+    type_into(bp.fields.marker, "45")
+    type_into(bp.count, "100")
+    RIG["next_before"] = self.button(QWizard.NextButton).isEnabled()
+    click(bp.btn_scan)
+    wait_thread(bp)
+    RIG["scan_status"] = bp.status.text()
+    RIG["scan_ok"] = self.scan is not None and bp.isComplete()
+    click(self.button(QWizard.NextButton))
+    pump(0.2)
+    rp = self.page_run
+    RIG["finish_text"] = self.buttonText(QWizard.FinishButton)
+    click(rp.btn_run)
+    wait_thread(rp)
+    RIG["report"] = rp.report.toPlainText()
+    RIG["complete"] = rp.isComplete()
+    if RIG["cancel"]:
+        click(self.button(QWizard.CancelButton))
+    else:
+        click(self.button(QWizard.FinishButton))
+    pump(0.1)
+    return QDialog.result(self)          # the wizard's own `result` is its WandResult (as the wand wizard's)
+
+
+cwz.CharucoWizard.exec = drive_rig
+win.act_charuco.trigger()
+pump(0.5)
+check(RIG.get("ticks") == [True, True, True] and RIG.get("window", (0, 0))[1] > 100,
+      "every camera ticked, the stretch they share filled in", (RIG.get("ticks"), RIG.get("window")))
+check(not RIG.get("next_before"), "Next waits for the board to be found")
+check(RIG.get("scan_ok") and "good enough for its lens" in RIG.get("scan_status", ""),
+      "Find the board: per camera what it saw, and Next", RIG.get("scan_status"))
+check(RIG.get("finish_text") == "Use these lenses and this calibration", "Finish says what it will do",
+      RIG.get("finish_text"))
+check(RIG.get("complete") and "GOOD" in RIG.get("report", "") and "420 mm" in RIG.get("report", ""),
+      "Calibrate now: the report gives verdicts and the board's edge length", RIG.get("report", "")[:300])
+check(all(x is not None and x.board.get("kind") == "charuco" for x in p.lenses),
+      "Finish attached a ChArUco lens to every camera")
+check(p.calibration is not None and len(p.calibration.views()) == 3, "Finish made the three-camera calibration")
+cal_made, lenses_made = p.calibration, list(p.lenses)
+if p.calibration is not None:
+    import itertools  # noqa: E402
+    C = [p.calibration.camera(v).center() for v in range(3)]
+    sp = np.array([np.linalg.norm(C[i] - C[j]) for i, j in itertools.combinations(range(3), 2)])
+    true = np.array([np.linalg.norm(cams[i][4] - cams[j][4]) for i, j in itertools.combinations(range(3), 2)])
+    check(np.all(np.abs(sp / true - 1) < 0.01), "the project's calibration: camera spacing within 1 %", sp / true)
+# offscreen Qt leaves NO focus window after a modal wizard closes (a desktop gives it back to the main
+# window), and a shortcut fires only in the focus window: the window is activated as the desktop would
+win.windowHandle().requestActivate()
+pump(0.2)
+QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+pump(0.3)
+check(all(x is None for x in p.lenses) and p.calibration is None,
+      "one Ctrl+Z takes back the lenses and the calibration together", win.statusBar().currentMessage())
+check("Restored the lens profiles and the calibration" in win.statusBar().currentMessage()
+      or "Restored the lens profiles and the calibration" in str(getattr(win.toast, "text", lambda: "")()),
+      "Ctrl+Z says what it put back", win.statusBar().currentMessage())
+
+RIG.update(choice="lenses")
+win.act_charuco.trigger()
+pump(0.5)
+check(RIG.get("finish_text") == "Use these lenses", "lenses only: Finish says so", RIG.get("finish_text"))
+check(all(x is not None for x in p.lenses) and p.calibration is None,
+      "lenses only: lenses attached, the calibration left as it was")
+before_l, before_c = list(p.lenses), p.calibration
+RIG.update(choice="both", cancel=True)
+win.act_charuco.trigger()
+pump(0.5)
+check(all(a is b for a, b in zip(before_l, p.lenses)) and p.calibration is before_c,
+      "Cancel after a run changes nothing")
+
+
 def finish():
     p.dirty = False
     win.close()

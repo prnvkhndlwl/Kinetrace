@@ -239,6 +239,102 @@ print(f"      GoPro curve: {len(vg)} views ({n_part} partial), focal {100 * dfg:
       f"({profg.K[0, 2] - Kg[0, 2]:+.1f}, {profg.K[1, 2] - Kg[1, 2]:+.1f}) px")
 check(n_part >= 5 and abs(dfg) < 0.005, "GoPro curve with partly seen boards: focal length within 0.5 %", dfg)
 
+# ------------------------------------------------------------------ [3] the rig: lenses and camera positions
+print("[3] the rig: three synced cameras film the board")
+import dataclasses  # noqa: E402
+import itertools  # noqa: E402
+
+from kinetrace import charucowizard as cwz  # noqa: E402
+from kinetrace import lens as _lens  # noqa: E402
+from kinetrace.project import Project  # noqa: E402
+from kinetrace.session import TrackingSession  # noqa: E402
+
+RIG_N = 150
+paths, cams = sc.rig_videos(SCRATCH, RIG_N)
+RW, RH = sc.RIG_SIZE
+rig = Project([TrackingSession(pth, RIG_N, 30.0, RW, RH) for pth in paths], ["cam1", "cam2", "cam3"],
+              list(sc.RIG_OFFSETS))
+scan = charuco.scan_rig(rig, sc.RIG_SPEC, n=100)
+seen = [scan.seen(c) for c in range(3)]
+print(f"      board seen at {seen} of {len(scan.ref_frames)} instants; failed frames {scan.failed}")
+check(min(seen) >= 70 and scan.failed == [None, None, None] and scan.cameras == [0, 1, 2],
+      "every camera sees the board at most instants; every frame decodes", (seen, scan.failed))
+# cam2 runs half a frame late: its corners at an instant are interpolated between two frames
+errs2 = []
+for f, t in enumerate(scan.ref_frames):
+    v = scan.views[f][1]
+    K, D, R, tt, _pos = cams[1]
+    Rb, ob = sc.board_at(t)
+    rvec, _ = cv2.Rodrigues(R @ Rb)
+    tr = sc.truth(sc.RIG_SPEC, K, D, False, rvec.ravel(), R @ ob + tt)
+    ok_ = np.isfinite(v).all(axis=1)
+    errs2 += np.linalg.norm(v[ok_] - tr[ok_], axis=1).tolist()
+errs2 = np.asarray(errs2)
+print(f"      cam2 (offset +0.5 frame): corners at the reference instants within {np.median(errs2):.2f} px "
+      f"(median), {np.percentile(errs2, 95):.2f} px (95th pct) of the truth")
+check(np.median(errs2) < 0.25 and np.percentile(errs2, 95) < 0.8,
+      "a fractional offset: the corners are interpolated to the instant, not read half a frame off")
+wand_uv, L, bg_uv, frames, _bgf = charuco.pairs_and_extras(scan)
+check(len(wand_uv) >= 30 and abs(L - 0.42) < 1e-12 and len(bg_uv) > 500,
+      "R2 / R4: board instants give wand pairs (7 squares = 420 mm) and extra points", (len(wand_uv), len(bg_uv)))
+check(np.all((np.isfinite(wand_uv[:, :, 0]).all(axis=2)).sum(axis=1) >= 2),
+      "every wand row is seen whole by two or more cameras")
+
+
+def spacing(res):
+    C = np.array([-R.T @ t for R, t in zip(res.R, res.t)])
+    return np.array([np.linalg.norm(C[i] - C[j]) for i, j in itertools.combinations(range(3), 2)])
+
+
+TRUE_SPACING = np.array([np.linalg.norm(cams[i][4] - cams[j][4]) for i, j in itertools.combinations(range(3), 2)])
+out = cwz.calibrate_rig(rig, scan, "both")
+res = out["result"]
+for v, prof in sorted(out["lenses"].items()):
+    K = cams[v][0]
+    print(f"      cam{v + 1} lens: f {prof.K[0, 0]:.1f}/{prof.K[1, 1]:.1f} (true {K[0, 0]:.0f}), centre "
+          f"({prof.K[0, 2] - K[0, 2]:+.1f}, {prof.K[1, 2] - K[1, 2]:+.1f}) px, rms {prof.rms:.2f}, "
+          f"{prof.report['verdict']}")
+check(sorted(out["lenses"]) == [0, 1, 2], "lenses and positions: a lens for every camera")
+check(all(abs(out["lenses"][v].K[0, 0] - cams[v][0][0, 0]) / cams[v][0][0, 0] < 0.005 for v in range(3)),
+      "every lens: focal length within 0.5 %")
+check(all(abs(out["lenses"][v].K[0, 2] - cams[v][0][0, 2]) < 3 and abs(out["lenses"][v].K[1, 2] - cams[v][0][1, 2]) < 3
+          for v in range(3)), "every lens: centre within 3 px")
+check(all(out["lenses"][v].board.get("kind") == "charuco" and out["lenses"][v].rotation == 0 for v in range(3)),
+      "each lens names the board and its video's turn")
+sp = spacing(res)
+print(f"      camera spacing {np.round(sp, 4)} m, true {np.round(TRUE_SPACING, 4)} m; verdict {res.report['verdict']}, "
+      f"reprojection {res.report.get('reproj_rmse_all', float('nan')):.2f} px")
+check(np.all(np.abs(sp / TRUE_SPACING - 1) < 0.01), "camera spacing within 1 % (the scale from the square size)",
+      sp / TRUE_SPACING)
+check(res.report["verdict"] in ("good", "ok"), "the calibration's verdict", res.report["verdict_reasons"])
+check(all(res.cameras[c].undistort is not None and not isinstance(res.cameras[c].undistort, type(None))
+          for c in range(3)), "the calibrated cameras straighten points with the fitted lenses")
+check("board" in res.report and "420 mm" in cwz.board_html(res.report, out["lenses"], rig),
+      "the report says the wand is the board's long edge and gives its length")
+
+only = cwz.calibrate_rig(rig, scan, "lenses")
+check(only["result"] is None and sorted(only["lenses"]) == [0, 1, 2]
+      # (calibrateCamera's threaded sums differ by ~1e-8 px between two runs of the same input)
+      and all(np.allclose(only["lenses"][v].K, out["lenses"][v].K, rtol=0, atol=1e-5) for v in range(3)),
+      "lenses only: the same lenses, no calibration")
+existing = {v: out["lenses"][v] for v in range(3)}
+keys = [_lens.profile_key(existing[v]) for v in range(3)]
+pos = cwz.calibrate_rig(rig, scan, "positions", existing)
+check(pos["lenses"] == {} and [_lens.profile_key(existing[v]) for v in range(3)] == keys,
+      "positions only: no lens fitted, the cameras' own profiles untouched")
+check(np.all(np.abs(spacing(pos["result"]) / TRUE_SPACING - 1) < 0.01), "positions only: spacing within 1 %")
+big = dataclasses.replace(scan, spec=dataclasses.replace(sc.RIG_SPEC, square_m=0.12, marker_m=0.09))
+pos2 = cwz.calibrate_rig(rig, big, "positions", existing)
+ratio = spacing(pos2["result"]) / spacing(pos["result"])
+check(np.all(np.abs(ratio - 2.0) < 0.002), "a square typed twice as big doubles every length", ratio)
+try:
+    cwz.calibrate_rig(rig, dataclasses.replace(scan, views=[row[:1] + [np.full_like(row[1], np.nan)] * 2
+                                                            for row in scan.views]), "positions", existing)
+    said = ""
+except ValueError as e:
+    said = str(e)
+check("at least 10" in said, "a rig seen by one camera only is refused in words", said)
+
 if FAILS:
     print(f"FAILED: {len(FAILS)} check(s): " + "; ".join(FAILS))
     sys.exit(1)
