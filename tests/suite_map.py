@@ -58,6 +58,9 @@ MAP = [
     ([K + f for f in ("session.py", "tracker.py", "spots.py", "app.py", "projectfile.py", "trackio.py",
                       "dltdvproject.py", "dltdvimport.py", "canvas.py", "timeline.py", "trackchoice.py")],
      ["verify_hand_truth", "verify_hand_truth_models"]),
+    # (I316, I318, PR B) a re-seed session per click for the point models: the run driver, the frames it reads
+    # from the cache, the app's plan of the sessions and their writes
+    ([K + f for f in ("tracker.py", "video_source.py", "session.py", "app.py", "spots.py")], ["verify_hand_restart"]),
     # (G216, G219) a tracker per camera and "Hand only": the Tracker menu, the passes of a press over every
     # camera's trackers, what a press leaves alone (pop-up counts, Fresh erase, 3D re-track, hints, DLC scorer)
     ([K + f for f in ("app.py", "session.py", "projectfile.py", "project.py", "layers.py", "retrack.py",
