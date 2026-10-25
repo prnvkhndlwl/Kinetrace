@@ -82,8 +82,9 @@ class BoardSpec:
 
     def problem(self) -> str:
         """Why this board cannot exist, in a sentence ("" = it can)."""
-        if self.squares_x < 3 or self.squares_y < 3:
-            return "a ChArUco board needs at least 3 squares across and 3 down"
+        if self.squares_x < 3 or self.squares_y < 3 or self.n_corners < MIN_CORNERS_LENS:
+            return (f"a ChArUco board needs at least 3 squares across and 3 down, and {MIN_CORNERS_LENS} inner "
+                    "corners (4 x 3 squares or more)")
         if not (0.0 < self.marker_m < self.square_m):
             return "the marker must be smaller than the square it sits in"
         if self.dictionary not in DICTIONARIES:
@@ -286,19 +287,24 @@ class RigScan:
     failed: list[int | None]
     note: str = ""
     cameras: list[int] | None = None
+    # per scan camera {local frame: padded view} of every picture READ and the board found in it - the
+    # real detections; `views` may interpolate two of them at a fractional offset
+    frame_views: list[dict] | None = None
 
     def seen(self, c: int) -> int:
         """Frames in which camera c saw the board (R1)."""
         return sum(1 for row in self.views if np.isfinite(row[c]).all(axis=1).sum() >= MIN_CORNERS_SEEN)
 
     def camera_views(self, c: int) -> tuple[list[np.ndarray], list[int]]:
-        """Camera c's lens boards (padded views usable for a lens fit, R1 + a pose) and the
-        local frames they were read at."""
+        """Camera c's lens boards (views usable for a lens fit, R1 + a pose) and the frames they are:
+        the pictures actually read (`frame_views`), never an interpolated instant - a lens is fitted on
+        corners one picture shows, and the frames it records can be detected again."""
         vs, fr = [], []
-        for f, row in enumerate(self.views):
-            if usable_for_lens(row[c], self.spec):
-                vs.append(row[c])
-                fr.append(int(self.local_frames[f][c]))
+        src = self.frame_views[c] if self.frame_views is not None else {}
+        for k in sorted(src):
+            if usable_for_lens(src[k], self.spec):
+                vs.append(src[k])
+                fr.append(int(k))
         return vs, fr
 
 
@@ -367,6 +373,7 @@ def scan_rig(project, spec: BoardSpec, offsets=None, first: int | None = None, l
     sizes = [(int(s.width), int(s.height)) for s in rv.sessions]
     out_views = [[np.full((N, 2), np.nan) for _ in range(C)] for _ in refs]
     local = [[float("nan")] * C for _ in refs]
+    frame_views: list[dict] = [{} for _ in range(C)]
     failed: list[int | None] = [None] * C
     done, total = 0, len(refs) * C
     for c in range(C):
@@ -392,13 +399,15 @@ def scan_rig(project, spec: BoardSpec, offsets=None, first: int | None = None, l
                             reader.reset(k)
                         bgr = reader.read(k)
                         if bgr is None:
-                            if failed[c] is None:
-                                failed[c] = int(k)
+                            if failed[c] is None:       # the frame that did not decode (a skip may stop earlier)
+                                failed[c] = int(reader.failed if reader.failed is not None else k)
                             cache[k] = None
                             reader.reset(k + 1)
                         else:
                             d = detect(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), spec)
                             cache[k] = None if d is None else padded(d[0], d[1], spec)
+                            if cache[k] is not None:
+                                frame_views[c][int(k)] = cache[k]
                         last_read = k
                     got[k] = cache[k]
                 if len(want) == 1:
@@ -416,7 +425,7 @@ def scan_rig(project, spec: BoardSpec, offsets=None, first: int | None = None, l
             if reader is not None:
                 reader.release()
     return RigScan(spec, sizes, list(rv.names), [int(r) for r in refs], local, out_views, failed, note,
-                   list(rv.views))
+                   list(rv.views), frame_views)
 
 
 def _window(rv) -> tuple[int, int]:

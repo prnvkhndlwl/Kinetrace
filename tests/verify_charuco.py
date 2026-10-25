@@ -44,6 +44,8 @@ check(SPEC.problem() == "", "the default board is valid", SPEC.problem())
 check("smaller" in charuco.BoardSpec(marker_m=0.04).problem(), "a marker bigger than its square is refused")
 check("fewer" in charuco.BoardSpec(12, 10, dictionary="DICT_4X4_50").problem(),
       "a board needing more markers than its dictionary has is refused")
+check("6 inner" in charuco.BoardSpec(3, 3).problem() and charuco.BoardSpec(4, 3).problem() == "",
+      "a 3 x 3 board (4 corners: no lens pose) is refused; 4 x 3 is the smallest")
 check(charuco.BoardSpec.from_json(SPEC.to_json()) == SPEC, "the board spec survives a JSON round trip")
 
 png = os.path.join(SCRATCH, "charuco_print.png")
@@ -195,6 +197,28 @@ cov = lens.coverage_image(scan, used)
 check(cov.ndim == 3, "the coverage picture skips unseen corners")
 check("markers" in lens.orientation_summary(scan.orient, SPEC.pattern), "the review board says how corner 0 is known")
 
+# (review) 2.7K: a board with ~35 px squares in a far corner - where the lens is measured - must be found
+# whole (a scan on a 1280-px copy lost half its corners); unit-sensitive code is tested at real sizes
+W4, H4 = 2704, 1520
+K4 = np.array([[1300.0, 0, (W4 - 1) / 2], [0, 1300.0, (H4 - 1) / 2], [0, 0, 1]])
+D4 = np.array([-0.2, 0.05, 0.0, 0.0, 0.0])
+vid4 = os.path.join(SCRATCH, "charuco_lens_27k.mp4")
+poses4 = [(np.array([0.2, -0.25, 0.05]), np.array([-0.88, -0.48, 1.0])),        # top-left corner
+          (np.array([-0.15, 0.3, 0.0]), np.array([0.85, 0.40, 1.10])),         # bottom-right corner
+          (np.array([0.1, 0.1, 0.1]), np.array([-0.09, -0.06, 1.12]))]         # middle
+if not os.path.exists(vid4):
+    sc.write_video(vid4, [sc.render(SPEC, K4, D4, False, rv_, tv_, (W4, H4), seed=900 + k)
+                          for k, (rv_, tv_) in enumerate(poses4)])
+scan4 = lens.scan_video(vid4, SPEC.pattern, max_candidates=3, board=SPEC)
+n4 = [int(np.isfinite(v).all(axis=1).sum()) for v in scan4.corners]
+want4 = []
+for rv_, tv_ in poses4:
+    tr = sc.truth(SPEC, K4, D4, False, rv_, tv_)
+    want4.append(int(((tr[:, 0] > 8) & (tr[:, 0] < W4 - 8) & (tr[:, 1] > 8) & (tr[:, 1] < H4 - 8)).sum()))
+print(f"      2.7K, ~35 px squares: {len(scan4.corners)} of 3 boards, corners {n4} (inside the picture {want4})")
+check(len(scan4.corners) == 3 and sum(n4) >= sum(want4) - 2,
+      "2.7K: small boards in the corners are found whole (detected at full resolution)", (n4, want4))
+
 # fisheye
 Kf = np.array([[520.0, 0, W / 2 - 3], [0, 520.0, H / 2 + 2], [0, 0, 1]])
 Df = np.array([0.08, -0.02, 0.005, 0.0])
@@ -301,6 +325,21 @@ check(all(abs(out["lenses"][v].K[0, 2] - cams[v][0][0, 2]) < 3 and abs(out["lens
           for v in range(3)), "every lens: centre within 3 px")
 check(all(out["lenses"][v].board.get("kind") == "charuco" and out["lenses"][v].rotation == 0 for v in range(3)),
       "each lens names the board and its video's turn")
+# (review) a lens is fitted on corners ONE picture shows, and the frames it records hold exactly those corners:
+# cam2 runs half a frame late, so its instants are interpolated - its lens must not be
+fr2 = out["lenses"][1].board["frames"]
+cap = cv2.VideoCapture(paths[1])
+redet = []
+for f in fr2[:4]:
+    cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+    ok_, bgr = cap.read()
+    d_ = charuco.detect(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), sc.RIG_SPEC) if ok_ else None
+    redet.append(d_ is not None and np.array_equal(charuco.padded(d_[0], d_[1], sc.RIG_SPEC), scan.frame_views[1][f],
+                                                   equal_nan=True))
+cap.release()
+check(len(fr2) >= 10 and set(fr2) <= set(scan.frame_views[1]) and all(redet),
+      "a fractional offset: the lens boards are the pictures read, and their recorded frames re-detect the same "
+      "corners", (len(fr2), redet))
 sp = spacing(res)
 print(f"      camera spacing {np.round(sp, 4)} m, true {np.round(TRUE_SPACING, 4)} m; verdict {res.report['verdict']}, "
       f"reprojection {res.report.get('reproj_rmse_all', float('nan')):.2f} px")
