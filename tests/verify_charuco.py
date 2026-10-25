@@ -135,6 +135,110 @@ check(charuco.long_edge_pairs(charuco.BoardSpec(5, 8)) == [(0, 24), (3, 27)],
       "R4: a tall board pairs the ends of its left / right columns")
 check(abs(charuco.wand_length_m(SPEC) - 0.15) < 1e-12, "R4: the pair is 5 squares = 150 mm apart")
 
+# ------------------------------------------------------------------ [2] the lens from a ChArUco video
+print("[2] the lens from a ChArUco video")
+from kinetrace import gpmf, lens  # noqa: E402
+from _synth_gopro import H12_POLY, H12_ZFOV, H12_ZMPL  # noqa: E402
+
+
+def board_video(path, K, D, fisheye, n, seed, spread=1.1, z=(0.28, 0.6)):
+    if os.path.exists(path):
+        return
+    rr = np.random.RandomState(seed)
+    pics = []
+    for k in range(n):
+        rv_, tv_ = sc.random_pose(K, (W, H), rr, spread=spread, z=z)
+        pics.append(sc.render(SPEC, K, D, fisheye, rv_, tv_, (W, H), seed=seed * 1000 + k))
+    sc.write_video(path, pics)
+
+
+vid = os.path.join(SCRATCH, "charuco_lens_std.mp4")
+board_video(vid, K_STD, D_STD, False, 70, 5)
+scan = lens.scan_video(vid, SPEC.pattern, max_candidates=70, board=SPEC)
+partial = sum(1 for v in scan.corners if np.isnan(v).any())
+print(f"      {len(scan.frames)} boards in {scan.n_scanned} frames, {partial} of them partly seen")
+check(len(scan.frames) >= 45 and scan.board == SPEC and set(scan.orient) == {"id"},
+      "the scan finds the ChArUco board (corners named by id)", len(scan.frames))
+check(partial >= 5, "boards partly out of the picture are kept", partial)
+prof = lens.calibrate_lens(scan.corners, SPEC.pattern, SPEC.square_m, scan.size, model="auto")
+rep = prof.report
+print(f"      model {rep['model']}, rms {prof.rms:.3f} px, f {prof.K[0, 0]:.1f}/{prof.K[1, 1]:.1f} (true 820/815), "
+      f"pp ({prof.K[0, 2]:.1f}, {prof.K[1, 2]:.1f}) true ({K_STD[0, 2]:.1f}, {K_STD[1, 2]:.1f}), k1 {prof.dist[0]:.4f}, "
+      f"coverage {rep['coverage_pct']:.0f}%, reach {rep['edge_reach_pct']:.0f}%, verdict {rep['verdict']}")
+check(not prof.fisheye, "a standard lens is recognised as such")
+check(abs(prof.K[0, 0] - 820) / 820 < 0.005 and abs(prof.K[1, 1] - 815) / 815 < 0.005,
+      "focal length within 0.5 %", prof.K)
+check(abs(prof.K[0, 2] - K_STD[0, 2]) < 2.0 and abs(prof.K[1, 2] - K_STD[1, 2]) < 2.0,
+      "centre within 2 px (the centre is fitted, not pinned as in Argus)", prof.K)
+check(abs(prof.dist[0] - D_STD[0]) < 0.02, "k1 recovered", prof.dist)
+check(prof.rms < 0.3, "fit error under 0.3 px", prof.rms)
+check(rep["verdict"] in ("good", "ok"), "the report gives a verdict a user can act on", rep["verdict_reasons"])
+err = lens.per_view_errors(scan.corners, SPEC.pattern, SPEC.square_m, prof)
+check(np.isfinite(err).all() and float(np.max(err)) < 1.0, "every view (partial ones too) scores", err)
+used = rep["views_used"]
+rec = lens.board_record(scan, used, SPEC.pattern, SPEC.square_m)
+check(rec.get("kind") == "charuco" and charuco.BoardSpec.from_json(rec["charuco"]) == SPEC,
+      "the profile's board record names the ChArUco board")
+check("ChArUco" in lens.board_sentence(rec), "the report sentence names the board", lens.board_sentence(rec))
+prof.board = rec
+p2 = lens.LensProfile.from_json(prof.to_json())
+check(p2.board.get("charuco") == SPEC.to_json() and np.array_equal(p2.K, prof.K),
+      "the board survives the lens file round trip")
+tile = lens.draw_board_review(scan.thumbs[0], scan.corners[0], SPEC.pattern, SPEC.square_m, prof,
+                              scale=scan.thumb_scale(0))
+k_part = next(i for i, v in enumerate(scan.corners) if np.isnan(v).any())
+tile2 = lens.draw_board_review(scan.thumbs[k_part], scan.corners[k_part], SPEC.pattern, SPEC.square_m, prof,
+                               scale=scan.thumb_scale(k_part))
+check(tile.shape == scan.thumbs[0].shape and tile2.shape == scan.thumbs[k_part].shape,
+      "a partly seen board is drawn for review")
+cov = lens.coverage_image(scan, used)
+check(cov.ndim == 3, "the coverage picture skips unseen corners")
+check("markers" in lens.orientation_summary(scan.orient, SPEC.pattern), "the review board says how corner 0 is known")
+
+# fisheye
+Kf = np.array([[520.0, 0, W / 2 - 3], [0, 520.0, H / 2 + 2], [0, 0, 1]])
+Df = np.array([0.08, -0.02, 0.005, 0.0])
+vidf = os.path.join(SCRATCH, "charuco_lens_fish.mp4")
+board_video(vidf, Kf, Df, True, 80, 6, spread=1.4, z=(0.2, 0.45))
+scanf = lens.scan_video(vidf, SPEC.pattern, max_candidates=80, board=SPEC)
+proff = lens.calibrate_lens(scanf.corners, SPEC.pattern, SPEC.square_m, scanf.size, model="fisheye")
+print(f"      fisheye: {len(scanf.frames)} boards, rms {proff.rms:.3f} px, f {proff.K[0, 0]:.1f} (true 520), "
+      f"pp ({proff.K[0, 2]:.1f}, {proff.K[1, 2]:.1f}), verdict {proff.report['verdict']}")
+check(proff.fisheye and abs(proff.K[0, 0] - 520) / 520 < 0.005 and abs(proff.K[1, 1] - 520) / 520 < 0.005,
+      "fisheye: focal length within 0.5 %", proff.K)
+check(abs(proff.K[0, 2] - Kf[0, 2]) < 2.0 and abs(proff.K[1, 2] - Kf[1, 2]) < 2.0, "fisheye: centre within 2 px",
+      proff.K)
+
+# the GoPro curve: projected partial views (the curve fixed, focal + centre fitted)
+h12 = gpmf.GoProInfo("h12", model="HERO12 Black", width=2704, height=1520, fps=239.76, lens_mode="Wide",
+                     poly=list(H12_POLY), zmpl=H12_ZMPL, zfov_deg=H12_ZFOV)
+base = gpmf.lens_profile(h12)
+Kg = base.K_square().copy()
+Kg[0, 0] = Kg[1, 1] = base.K[0, 0] * 1.012
+Kg[0, 2] += 8.0
+Kg[1, 2] -= 6.0
+Dg = np.asarray(base.dist, float).reshape(4, 1)
+big = charuco.BoardSpec(9, 7, 0.06, 0.045)
+obj = charuco.object_points(big, np.arange(big.n_corners))
+rg = np.random.default_rng(4)
+vg = []
+while len(vg) < 40:
+    rv_ = rg.normal(0, 0.5, 3)
+    tv_ = np.array([rg.uniform(-0.4, 0.2), rg.uniform(-0.3, 0.1), rg.uniform(0.5, 1.0)])
+    pr, _ = cv2.fisheye.projectPoints(obj.reshape(-1, 1, 3), rv_, tv_, Kg, Dg)
+    pr = pr.reshape(-1, 2) + rg.normal(0, 0.15, (len(obj), 2))
+    r_ = np.hypot(pr[:, 0] - 1351.5, pr[:, 1] - 759.5) / np.hypot(1351.5, 759.5)
+    ok_ = (r_ < 0.6) & (pr[:, 0] > 0)
+    v = np.where(ok_[:, None], pr, np.nan)
+    if charuco.usable_for_lens(v, big):
+        vg.append(v)
+n_part = sum(1 for v in vg if np.isnan(v).any())
+profg = lens.calibrate_lens(vg, big.pattern, big.square_m, (2704, 1520), "gopro", max_views=lens.MAX_VIEWS, base=base)
+dfg = profg.K[0, 0] / Kg[0, 0] - 1
+print(f"      GoPro curve: {len(vg)} views ({n_part} partial), focal {100 * dfg:+.2f} %, centre "
+      f"({profg.K[0, 2] - Kg[0, 2]:+.1f}, {profg.K[1, 2] - Kg[1, 2]:+.1f}) px")
+check(n_part >= 5 and abs(dfg) < 0.005, "GoPro curve with partly seen boards: focal length within 0.5 %", dfg)
+
 if FAILS:
     print(f"FAILED: {len(FAILS)} check(s): " + "; ".join(FAILS))
     sys.exit(1)
