@@ -1,7 +1,8 @@
 """Other programs' files in and out of Kinetrace (no GPU).
 
 [1] 2D tracks (trackio.py): DeepLabCut CSV, DLTdv / Argus xypts (one camera,
-    all cameras, top-left and bottom-left, with and without the sidecar),
+    all cameras, top-left and bottom-left, with and without the sidecar;
+    DLTdv8a's own _U / _V header and DLTdv 8.4+ named points),
     SLEAP (1.x analysis CSV and sleap-io's sleap / instances / points / frames
     layouts), Kinetrace's own tracks.csv. Each is checked two ways: a file
     written by hand the way the other program writes it (a hand-computed
@@ -24,6 +25,7 @@
 
 Run: .venv\\Scripts\\python.exe tests\\verify_interop.py
 """
+import csv
 import os
 import shutil
 import sys
@@ -170,6 +172,72 @@ for c, s_ in enumerate((a, b)):
         check(not t.tracked[T - 5:].any() and t.tracked[:T - 5].all(),
               "camera B's frames come back through the offset (its last 5 frames are after camera A's end)")
 check(worst <= 5e-5 + 1e-4, "each camera's positions come back", f"max diff {worst}")
+
+
+# (I324) DLTdv8a writes its xypts header as '<point name>_cam<j>_U' / '_V' (the raw clicks, the same pixels as
+# _X / _Y) and, since 8.4, the point's own name in place of pt<k>
+def uv_twin(p, name):
+    """The same xypts file (and its sidecar) with DLTdv8a's _U / _V header: data rows untouched."""
+    with open(p, encoding="utf-8", newline="") as fh:
+        rows = list(csv.reader(fh))
+    rows[0] = [c[:-2] + {"_X": "_U", "_Y": "_V"}[c[-2:]] for c in rows[0]]
+    q = os.path.join(OUT, name)
+    with open(q, "w", encoding="utf-8", newline="") as fh:
+        csv.writer(fh).writerows(rows)
+    side = os.path.splitext(p)[0] + "_pointnames.csv"
+    if os.path.isfile(side):
+        shutil.copyfile(side, os.path.splitext(q)[0] + "_pointnames.csv")
+    return q
+
+
+def read_or_none(p):
+    try:
+        return trackio.read(p), ""
+    except trackio.TrackImportError as e:
+        return None, str(e)
+
+
+def same_import(a, b):
+    return (a.kind == b.kind and a.names == b.names and a.rows == b.rows and a.flip_y == b.flip_y
+            and a.pixel_origin == b.pixel_origin and a.notes == b.notes
+            and np.array_equal(a.xy, b.xy, equal_nan=True) and np.array_equal(a.conf, b.conf))
+
+
+p = os.path.join(OUT, "one_xypts.csv")
+imp_x = trackio.read(p)
+imp_u, err = read_or_none(uv_twin(p, "one_uv_xypts.csv"))
+check(imp_u is not None and same_import(imp_u, imp_x),
+      "DLTdv8a's _U / _V header (pt1_cam1_U ...) reads exactly like the same file with _X / _Y", err)
+if imp_u is not None:
+    s_x, s_u = session(), session()
+    trackio.apply(s_x, imp_x)
+    trackio.apply(s_u, imp_u)
+    check(np.array_equal(s_u.tracks, s_x.tracks) and np.array_equal(s_u.tracked, s_x.tracked)
+          and np.array_equal(s_u.confidence, s_x.confidence), "and lands in a camera bit for bit the same")
+imp_u, err = read_or_none(uv_twin(os.path.join(OUT, "multi_xypts.csv"), "multi_uv_xypts.csv"))
+check(imp_u is not None and same_import(imp_u, trackio.read(os.path.join(OUT, "multi_xypts.csv"))),
+      "an all-cameras _U / _V file reads exactly like its _X / _Y twin", err)
+# DLTdv 8.4+: named points, DLTdv8a's own layout (point, camera, U then V) and printing (%.6f, NaN), no sidecar
+p = write("named_xypts.csv",
+          "head_cam1_U,head_cam1_V,head_cam2_U,head_cam2_V,tail tip_cam1_U,tail tip_cam1_V,tail tip_cam2_U,"
+          "tail tip_cam2_V\n"
+          "1.000000,1.000000,NaN,NaN,NaN,NaN,NaN,NaN\n"
+          "NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN\n"
+          "640.000000,480.000000,12.500000,20.250000,100.000000,200.000000,NaN,NaN\n")
+imp, err = read_or_none(p)
+check(imp is not None and imp.kind == "dltdv" and imp.names == ["head", "tail tip"] and imp.n_cameras == 2
+      and imp.rows == "reference" and np.array_equal(imp.xy[1, 2, 0], (12.5, 20.25)),
+      "DLTdv 8.4+ named points (head_cam1_U ...): the names come from the header, cameras from _cam<j>", err)
+if imp is not None:
+    s = session()
+    trackio.apply(s, imp, camera=0)
+    check(np.array_equal(s.tracks[0, 0], (0, 0)) and np.array_equal(s.tracks[2, 0], (639, 479))
+          and np.array_equal(s.tracks[2, 1], (99, 199)) and not s.tracked[1].any() and not s.tracked[0, 1],
+          "its pixels are DLTdv8's (first pixel 1, top-left); NaN is no data")
+    check(bool(imp.notes) and "header" in imp.notes[0] and "pt1" not in imp.notes[0],
+          "no sidecar: the note says the names are the column headers'", " | ".join(imp.notes))
+imp, err = read_or_none(write("named_cam_xypts.csv", "left_cam_marker_cam1_U,left_cam_marker_cam1_V\n5,6\n"))
+check(imp is not None and imp.names == ["left_cam_marker"], "a name that itself holds '_cam' keeps it", err)
 
 print("\n[1c] SLEAP")
 v14 = ("track,frame_idx,instance.score,head.x,head.y,head.score,tail.x,tail.y,tail.score\n"
