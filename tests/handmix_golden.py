@@ -61,6 +61,10 @@ Ctrl+Z (act_undo) gives the pre-run arrays back. The A1 / A2 / A5 variants each 
   A7    (PR D, review R1-M5) two cameras (test600 + mirror), 2 AllTracker + 2 CoTracker3 landmarks with the SAME
         trackers in both cameras, Track > Every camera, T: two passes, each in both cameras (recorded on main
         1d4c3d4, before the per-camera pass planning: golden_1d4c3d4.npz)
+  A8i   (PR B, reviewer re-check) the animal of A6 (mock SAM, 2 derived landmarks) with its head point Hand only
+        (D10), clicked on the start frame only, + a CoTracker3 point: no head click after the start = today's run
+  A8ii  + the head clicked on frames 40 and 70: the landmarks anchored on those clicks (changed on purpose: the
+        first difference must be on frame 40 or later, in a derived column) - both recorded on main 263f739
 
 COMPARE RULE
   W: every chunk payload and every signal np.array_equal (NaN == NaN); the mask / ball payload hashes
@@ -1121,6 +1125,74 @@ def a6():
         return arrays, meta
     finally:
         close_win(win)
+
+
+def _a8(head_clicks: list):
+    """A8: A6's animal (mock SAM) with its head Hand only (D10), a CoTracker3 point, 2 derived landmarks; the head
+    also clicked on `head_clicks` (at its GT there)."""
+    a_setup()
+    trk = K.trk
+    from kinetrace import segmenter
+    GT = _gt(V600)
+    clip = os.path.join(OUT, "clip100.mp4")
+    _make_clip100(clip)
+
+    class MockAnimal:
+        """SAM stand-in: the rectangle round dot 0 of test600 on every frame (as A6)."""
+
+        def new_session(self, start, size):
+            w, h = size
+
+            class S:
+                def step(self, native, idx, prompts):
+                    m = _rect_mask(GT, idx, w, h)
+                    return segmenter.FrameMasks(idx, [1], m[None], np.array([8.0], np.float32), (w, h), (w, h))
+            return S()
+
+    win = new_win()
+    try:
+        open_video(win, clip)
+        s = win.session
+        win._on_add(*[float(v) for v in GT[0, 0]])
+        win._on_add(*[float(v) for v in GT[0, 1]])
+        s.points[0].tracker = "hand"
+        s.points[1].tracker = "cotracker3"
+        for f in head_clicks:
+            s.set_position(f, 0, float(GT[f, 0, 0]), float(GT[f, 0, 1]))
+        s.ensure_animal()
+        s.animal.add_click(0, float(GT[0, 0, 0]), float(GT[0, 0, 1]), True)
+        tip = s.add_landmark("tip", "silhouette", "tip")
+        cen = s.add_landmark("centre", "silhouette", "centroid")
+        s.move_points([0, 1, tip, cen], 0)
+        s.set_head(0)
+        win._refresh_point_list()
+        win._goto(0, force=True)
+        select_rows(win, 0, 1)
+        win._on_select(0)
+        select_rows(win, 0, 1)
+        win._animal_item(0).setSelected(True)
+        pump(0.05)
+        win._update_track_button()
+        saved = trk.get_segmenter
+        trk.get_segmenter = lambda be, **k: MockAnimal()
+        try:
+            arrays, meta = a_run(win, K.Qt.Key_T, sel="keep")
+        finally:
+            trk.get_segmenter = saved
+        meta["inputs"] = {os.path.basename(clip): md5_file(clip)}
+        return arrays, meta
+    finally:
+        close_win(win)
+
+
+@scenario("A8i", "A", True, "app, A6's animal with a Hand-only head clicked on the start frame only (D10)")
+def a8i():
+    return _a8([])
+
+
+@scenario("A8ii", "A", True, "app, A8i + the Hand-only head clicked on frames 40 and 70 (changed on purpose)")
+def a8ii():
+    return _a8([40, 70])
 
 
 # ===================================================================== the child process

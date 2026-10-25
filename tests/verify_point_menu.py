@@ -236,6 +236,10 @@ qa = s.add_point(300, 100.0, 100.0)
 qb = s.add_point(300, 200.0, 100.0)
 s.set_position(340, qa, 120.0, 110.0)
 s.set_position(340, qb, 220.0, 110.0)
+for q in (qa, qb):
+    # (PR B) a usable click ahead lets a point join a run there (Track is not blocked): marked hidden, the click on
+    # 340 is still a key of the fill but no place to start from
+    s.set_occluded(340, q, True)
 win._refresh_point_list()
 win.layers.select_only([qa, qb], current=qa)
 win._on_point_selection_changed()

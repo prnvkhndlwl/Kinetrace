@@ -61,6 +61,13 @@ SEGMENT_COLORS: tuple[tuple[int, int, int], ...] = (ANIMAL_COLOR, (255, 159, 207
                                                     (190, 150, 255), (120, 230, 240), (255, 140, 110), (200, 230, 120))
 
 
+# (D9 choice 3) "Only fill the gaps": a stretch is filled only when the position before it is this far (a share of the
+# picture's smaller side, 4 px at least) inside the picture - nearer, the point most likely left it
+GAP_EDGE_FRAC = 0.02
+# (PR B) frames a re-seed session tracks past the last one it owns: its last rows get a full window. Here, not in
+# tracker.py (which imports torch), because the Track press counts with it on the GUI thread (review #2, G46)
+SESSION_TAIL = 16
+
 # Reopening a project must restore the exact working state, not just tracks.
 DEFAULT_UI_STATE: dict = {
     "selected": -1,          # selected point id, -1 = none
@@ -71,7 +78,7 @@ DEFAULT_UI_STATE: dict = {
     "track_mode": "auto",    # "auto" = run to end | "semi" = F steps one frame | "manual" = no tracker (G215)
     "after_click": "frame",  # (G215) Manual mode, after a click: "frame" | "step" (the step box) | "point" | "stay"
     "track_all": False,      # Track ▾ → Every camera: track the points in each camera that has them (G29)
-    "ahead_choice": "",      # (G217) Track ▾ → When there is data ahead: "" = ask (the Track pop-up), "keep"
+    "ahead_choice": "",      # (G217) Track ▾ → When there is data ahead: "" = ask (the Track pop-up), "keep", "gaps"
     "marker_size": 3,        # marker radius, screen px (was 7 until 2026-09-22)
     "zoom": 0.0,             # canvas scale; 0 = never zoomed (fit on open)
     "center_x": 0.0,         # scene point at the viewport center
@@ -728,6 +735,72 @@ class TrackingSession:
         speed click right after a click on the start frame (`spots.reseed_frames`)."""
         from kinetrace.spots import reseed_frames
         return reseed_frames(self.hand_clicks(pid, start, end), start)
+
+    def hand_plan(self, pid: int, start: int, end: int) -> tuple[int, list]:
+        """(I316, PR B) How a run from `start` (to `end`, exclusive) covers `pid` with the user's usable clicks
+        (`hand_clicks`): (the last frame the run's own tracker writes for it, [(restart frame, the last frame that
+        restart writes, the click (x, y)), ...]). The one stretch rule (D3): clicks with up to two missing frames
+        between them are one stretch; a tracker starts again once, at the stretch's LAST click, and writes up to
+        the frame before the next stretch; nobody writes inside a stretch (the clicks are kept, the frames missing
+        between them stay as they are - Fill gaps fills them). (A Moving spot's speed click right after a click
+        on `start` is no restart - `spots.reseed_frames` - but a point model has no speed click: clicks on the start
+        frame and the next one restart it at the next one, review R1-M1.)"""
+        from kinetrace.spots import hand_stretches
+        start, end = int(start), int(end)
+        clicks = self.hand_clicks(pid, start, end)
+        sts = [st for st in hand_stretches(clicks) if st[-1] > start]
+        restarts = []
+        for i, st in enumerate(sts):
+            last = sts[i + 1][0] - 1 if i + 1 < len(sts) else end - 1
+            restarts.append((int(st[-1]), int(last), clicks[st[-1]]))
+        return (int(sts[0][0]) - 1 if sts else end - 1), restarts
+
+    def gap_plan(self, pid: int, start: int, end: int) -> tuple[list, list]:
+        """(D9 choice 3, PR B) "Only fill the gaps": the empty stretches of `pid` after `start` (to `end`,
+        exclusive) and what becomes of each -> (fill = [(the frame before it, its first, its last frame, the
+        position on the frame before (x, y))], skip = [(first, last, why)]). A stretch is tracked from the frame
+        before it only when that frame is a usable position: tracked, visible, not marked hidden, inside the
+        picture and away from its edge (GAP_EDGE_FRAC); else it is skipped and why is said ("marked hidden",
+        "not visible", "left the picture", "no position before it"). The frames missing between two clicks of one
+        stretch of clicks (D3: up to two) are left to Fill gaps, which interpolates between the clicks."""
+        from kinetrace.spots import TEST_MAX_GAP
+        start, end = int(start), min(self.n_frames, int(end))
+        fill: list = []
+        skip: list = []
+        if not (0 <= pid < self.n_points) or end <= start + 1:
+            return fill, skip
+        empty = np.flatnonzero(~self.tracked[start + 1:end, pid]) + start + 1
+        runs: list[list[int]] = []
+        for g in empty.tolist():
+            if runs and g == runs[-1][1] + 1:
+                runs[-1][1] = g
+            else:
+                runs.append([g, g])
+        hand = self.manual[:, pid] & self.tracked[:, pid]
+        margin = max(4.0, GAP_EDGE_FRAC * min(self.width or 1, self.height or 1))
+        for g0, g1 in runs:
+            b = g0 - 1
+            if g1 + 1 < end and hand[b] and hand[g1 + 1] and g1 - g0 + 1 <= TEST_MAX_GAP:
+                skip.append((g0, g1, "between your clicks"))
+                continue
+            if self.occluded[g0:g1 + 1, pid].any():          # (review R1-I2) its own frames marked hidden
+                skip.append((g0, g1, "marked hidden"))
+                continue
+            x, y = (float(v) for v in self.tracks[b, pid])
+            if not self.tracked[b, pid]:
+                why = "no position before it"
+            elif self.occluded[b, pid]:
+                why = "marked hidden"
+            elif not self.visibility[b, pid]:
+                why = "not visible"
+            elif not (np.isfinite([x, y]).all() and margin <= x <= (self.width or 0) - 1 - margin
+                      and margin <= y <= (self.height or 0) - 1 - margin):
+                why = "left the picture"
+            else:
+                fill.append((b, g0, g1, (x, y)))
+                continue
+            skip.append((g0, g1, why))
+        return fill, skip
 
     def data_frames(self, pid: int) -> np.ndarray:
         """Frames where `pid` has a position at all (ascending int64) — what

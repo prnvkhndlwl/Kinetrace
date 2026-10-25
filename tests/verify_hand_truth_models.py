@@ -1,14 +1,14 @@
 """Hand-placed frames are the truth, with the point MODELS (PR A of dev/work/2026-10-20-silhouette-hand-mix): the
 GPU half of verify_hand_truth. Offscreen; CoTracker3 and AllTracker are used (the models in models/).
   [1] a CoTracker3 run over a later click keeps the click exactly (still hand-placed) and writes every other
-      frame; until the re-seed sessions (PR B) the model point does not restart from it, and the run says so;
-  [2] a lost model point with a click ahead still stops the run where it was lost (PR A: cut-and-resume is
-      Moving spot only), and the click ahead is kept;
+      frame (since PR B the point also starts again from it: tests/verify_hand_restart.py);
+  [2] a lost model point with a click ahead: the run goes on (PR B, I316) - the point is cut from where it was
+      lost to its click and starts again there - and the click is kept;
   [3] Fresh run (the Track pop-up, G217) on a two-pass press (AllTracker points, then CoTracker3 points whose
       dot vanishes): the passes are trimmed to the earliest end FIRST, then everything after it is erased -
       nothing old comes back, and one Ctrl+Z restores the old data and the clicks.
-[1] and [3] FAIL on the code before the change (the run writes over the click; there is no pop-up); [2] guards
-today's stop. Run: .venv\\Scripts\\python.exe tests\\verify_hand_truth_models.py
+[1] and [3] FAIL on the code before PR A (the run writes over the click; there is no pop-up); [2] fails before
+PR B (the run stopped at the loss). Run: .venv\\Scripts\\python.exe tests\\verify_hand_truth_models.py
 """
 import os
 import shutil
@@ -169,7 +169,7 @@ vw.release()
 
 
 def section2():
-    print("[2] a lost model point with a click ahead still stops (PR A)")
+    print("[2] a lost model point with a click ahead: cut, and picked up at the click (PR B)")
     win = new_window(SABO)
     s = win.session
     win._on_add(float(AX[0]), float(AY[0]))
@@ -179,9 +179,12 @@ def section2():
     s.set_position(250, 0, 300.0, 200.0)
     win._refresh_point_list()
     press_t(win)
-    check("[2] the run stops where dot A was lost, as today", lambda: s.tracked[:140, 1].all()
-          and not s.tracked[230:, 1].any(), np.flatnonzero(s.tracked[:, 1])[-1:])
-    check("[2] ... and the click ahead is kept", lambda: s.manual[250, 0] and tuple(s.tracks[250, 0]) == (300.0, 200.0))
+    check("[2] the run does not stop where dot A was lost: dot B is tracked to the end",
+          lambda: s.tracked[:, 1].all(), np.flatnonzero(s.tracked[:, 1])[-1:])
+    check("[2] dot A has no data from where it was lost to its click", lambda: not s.tracked[215:250, 0].any(),
+          np.flatnonzero(s.tracked[150:250, 0])[-1:] + 150)
+    check("[2] ... the click ahead is kept, and dot A starts again from it",
+          lambda: s.manual[250, 0] and tuple(s.tracks[250, 0]) == (300.0, 200.0) and s.tracked[251:, 0].all())
     close(win)
 
 

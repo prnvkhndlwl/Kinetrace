@@ -18,6 +18,7 @@ import bisect
 import os
 import queue
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -814,6 +815,68 @@ class VideoSource:
 
     def close(self) -> None:
         self._cap.release()
+
+
+class CacheFirstSource:
+    """(I316, PR B) A re-seed session's frames: the camera's frame cache first - the run's own worker has just
+    decoded them there (`VideoSource.read_next` files every frame it reads) - else decoded here, by this
+    source's own capture, opened on the first miss. The same pixels either way, and a frame the run has
+    decoded is not decoded twice. A read waits up to `wait_s` for the run's worker to file a frame before
+    decoding it itself; once that worker has ended (`gone` set) nothing waits. Same contract as `VideoSource`
+    (sequential `read_next`, `seek`, `get_frame`, `close`; one owner at a time). `limit` = the session's end: its
+    read-ahead never decodes past it. `decoded` counts the frames it had to decode itself."""
+
+    def __init__(self, path: str, cache: FrameCache, gone: threading.Event | None = None, wait_s: float = 0.1,
+                 limit: int | None = None):
+        self.path = path
+        self.cache = cache
+        self.limit = limit
+        self.gone = gone if gone is not None else threading.Event()
+        self.wait_s = float(wait_s)
+        self._own: VideoSource | None = None
+        self._pos = 0
+        self.decoded = 0
+
+    def _source(self) -> VideoSource:
+        if self._own is None:
+            self._own = VideoSource(self.path, self.cache)
+        return self._own
+
+    def _cached(self, idx: int) -> np.ndarray | None:
+        rgb = self.cache.get(idx)
+        if rgb is None and self.wait_s > 0 and not self.gone.is_set():
+            t_end = time.monotonic() + self.wait_s
+            while rgb is None and not self.gone.is_set() and time.monotonic() < t_end:
+                time.sleep(0.001)
+                rgb = self.cache.get(idx)
+        return rgb
+
+    def read_next(self) -> tuple[int, np.ndarray] | None:
+        idx = self._pos
+        if self.limit is not None and idx >= self.limit:
+            return None                                 # the session's end: an end of file to its read loop
+        rgb = self._cached(idx)
+        if rgb is None:
+            rgb = self._source().get_frame(idx)       # a read forward when it can, a seek only when it must (R2-M5)
+            if rgb is None:
+                return None
+            self.decoded += 1
+        self._pos = idx + 1
+        return idx, rgb
+
+    def seek(self, idx: int) -> None:
+        self._pos = int(idx)
+
+    def get_frame(self, idx: int) -> np.ndarray | None:
+        rgb = self.cache.get(idx)
+        if rgb is not None:
+            return rgb
+        self.decoded += 1
+        return self._source().get_frame(idx)
+
+    def close(self) -> None:
+        if self._own is not None:
+            self._own.close()
 
 
 class ReadAhead:

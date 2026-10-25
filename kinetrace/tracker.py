@@ -66,7 +66,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Qt, Signal
 
 from kinetrace import alltracker_backend as at_backend
 from kinetrace.downloads import DownloadError
@@ -74,8 +74,8 @@ from kinetrace.pixels import centre_scale, centre_unscale, centred_origin
 from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity, bbox_diagonal,
                                      click_arrays, fit_within, get_segmenter, score_to_confidence, summarize_mask, working_size)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
-from kinetrace.session import in_frame
-from kinetrace.video_source import FrameCache, ReadAhead, VideoSource
+from kinetrace.session import SESSION_TAIL, in_frame  # noqa: F401 - SESSION_TAIL: the sessions' tail (re-exported)
+from kinetrace.video_source import CacheFirstSource, FrameCache, ReadAhead, VideoSource
 from kinetrace import paths as _paths
 
 MODELS_DIR = _paths.MODELS_DIR                      # (R48) the one models folder
@@ -552,7 +552,9 @@ class TrackingWorker(QThread):
                  head_pid: int | None = None, on_body_pids=None, constrain_pids=None,
                  point_backend: str = "cotracker3", balls: list[BallSpec] | None = None,
                  spots: list[SpotSpec] | None = None, stored_masks=None,
-                 animals: list[AnimalSpec] | None = None, hand: dict | None = None):
+                 animals: list[AnimalSpec] | None = None, hand: dict | None = None,
+                 resume_pids=None, cache_first: bool = False, emit_frames: bool = True, head_xy=None,
+                 keep_rows: dict | None = None):
         super().__init__()
         self.video_path = video_path
         self.start_frame = start_frame
@@ -648,12 +650,31 @@ class TrackingWorker(QThread):
         # (I316) the hand clicks are the truth: {pid: {frame: (x, y)}} of the run's Moving spot points, from the
         # start frame on - a spot starts again at the last click of each stretch, and one that stops with a
         # click ahead is cut there (no data) and waits for it instead of ending the run. A spot whose seed is
-        # NaN joins the run at its first click. (AllTracker / CoTracker3 points: their clicks are kept by the
-        # app's write, they do not restart from them yet.)
+        # NaN joins the run at its first click. (AllTracker / CoTracker3 points start again at their clicks in
+        # their own sessions: `RunDriver`, PR B.)
         self.hand = {int(p): dict(c) for p, c in (hand or {}).items()}
         self._reseed_log: list[tuple[int, int]] = []     # (frame, pid) of every restart at a click
         self._reseeds_seen = 0
         self.download_failed = None     # the DownloadError that ended the run, if one did (G45)
+        # (I316, PR B) a re-seed session (`RunDriver`), all off by default - a run without them is today's:
+        # `resume_pids` = the points with a click ahead: lost, one is cut from its first low-confidence frame
+        # (`resume_cuts` {pid: frame}; nothing is emitted for it from there) and picked up again at that click
+        # instead of stopping the run; `cache_first` = read the frames the run's own worker has just decoded
+        # (`CacheFirstSource`); `emit_frames` False = no display frames (a session is not drawn); `head_xy`
+        # (D2) {head pid: `head_hook`} = an animal's head as a session tracks it from the head's click on (or a
+        # Hand-only head's clicks, `hand_head_hook`); `keep_rows` {head pid: {frame: xy}} = those columns as this
+        # worker emits them, for such a hook (every head it tracks: two animals' heads clicked on one frame)
+        self.resume_pids = {int(p) for p in (resume_pids or ())}
+        self.resume_cuts: dict[int, int] = {}
+        self.cache_first = bool(cache_first)
+        self.emit_frames = bool(emit_frames)
+        self.head_xy = head_xy
+        self.keep_rows = keep_rows
+        self.model_pool = None          # a CoTracker3 session's model copies (RunDriver)
+        self.emitted_to = int(start_frame) - 1      # the last frame emitted (PR B: a cut ends there, `_resume_cuts`)
+        self.source_gone = None         # set once the run's own worker has ended (RunDriver -> CacheFirstSource)
+        self._pooled = None
+        self._read_at = start_frame - 1     # the last frame a read loop has read (RunDriver keeps sessions behind it)
 
     def request_pause(self) -> None:
         self._pause = True
@@ -688,10 +709,15 @@ class TrackingWorker(QThread):
         finally:
             if src is not None:
                 src.close()
+            if self._pooled is not None:            # (PR B) a session's CoTracker3 copy, for the next session
+                self.model_pool.give(self._pooled)
+                self._pooled = None
 
     def _open_source(self) -> VideoSource:
-        src = VideoSource(self.video_path, self.cache)
+        src = (CacheFirstSource(self.video_path, self.cache, self.source_gone, limit=self.n_frames) if self.cache_first
+               else VideoSource(self.video_path, self.cache))           # (PR B) a session's frames: the cache's
         src.seek(self.start_frame)
+        self.source_obj = src           # (what it read from: a session's `decoded` count)
         return src
 
     def _run_steps(self, src: VideoSource):
@@ -704,7 +730,9 @@ class TrackingWorker(QThread):
                 model, device = at_backend.get_alltracker(**dl)
             else:
                 model, device = get_model(**dl)
-                if self.private_model:
+                if self.model_pool is not None:
+                    model = self._pooled = self.model_pool.take(model)     # (PR B) a session's own copy
+                elif self.private_model:
                     # CoTracker3's online wrapper keeps the run's queries and window
                     # state on the model object: runs interleaved on one thread each
                     # need their own copy (same weights, so the same numbers; I141)
@@ -1155,6 +1183,7 @@ class TrackingWorker(QThread):
                         read_end = seg_start + n
                     break
                 abs_idx, native = nxt
+                self._read_at = abs_idx
                 self._side_steps(abs_idx, native)
                 model_frame = model_input_of(native)
                 window.append(model_frame)
@@ -1162,7 +1191,8 @@ class TrackingWorker(QThread):
                     gray_hist.append((abs_idx, cv2.cvtColor(native, cv2.COLOR_RGB2GRAY)))
                     if abs_idx == self.start_frame and first_seg and anchor_q:
                         self._capture_templates(gray_hist[-1][1], specs)
-                pending.append((abs_idx, display_of(native, model_frame)))
+                if self.emit_frames:
+                    pending.append((abs_idx, display_of(native, model_frame)))
                 n += 1
                 if use_at:
                     # AllTracker: the segment's first frame is the query frame; every
@@ -1563,7 +1593,28 @@ class TrackingWorker(QThread):
             head = None
             if head_col is not None and np.isfinite(out_tr[i, head_col]).all():
                 head = out_tr[i, head_col]
+            hook = self.head_xy.get(self.head_pid) if self.head_xy else None     # this animal's head (G149)
+            handed = False
+            if hook is not None:
+                # (D2, PR B) from the head's click on, the head as ITS session tracks it (the click on a click
+                # frame); None while that session has not tracked frame f yet: the midline without an anchor,
+                # capped at ANCHOR_LOST_CONF. A frame judged on another head is judged again on this one
+                handed, hx = hook(f)
+                if handed:
+                    head = None if hx is None else np.asarray(hx, np.float32)
+                    key = None if head is None else (round(float(head[0]), 1), round(float(head[1]), 1))
+                    cached = self._mid_cache.get(f)
+                    if cached is not None and cached[0] != key:
+                        self._anchor_lost.discard(f)
+                        self._anchor_verdict = None
+                    elif self._anchor_verdict is not None and self._anchor_verdict[0] < getattr(hook, "handover", -1):
+                        self._anchor_verdict = None      # made on the run's own head, before the click (R2-M4)
             ml = self._midline_for(f, head)       # the midline is always shown / exported
+            if hook is not None and head_col is None and not handed:
+                # (D2, D10) a head the run itself does not track - one that joins at its click, or a Hand-only one
+                # between its clicks - is no head on this frame: unanchored by design, as with no head point (never
+                # capped at ANCHOR_LOST_CONF)
+                self._anchor_lost.discard(f)
             if ml is not None and len(ml.path) >= 2:
                 summ["midline"] = self._w2n(resample(ml.path, MIDLINE_SAMPLES), scale)
             if not self.derived:
@@ -1726,8 +1777,13 @@ class TrackingWorker(QThread):
                     # does not guarantee the same spot). Stop the
                     # run at this frame instead, and invent nothing: this frame
                     # and the rest of the window are blank for this point.
-                    if self._exit_hit is None or f < self._exit_hit[0]:
-                        self._exit_hit = (f, landmark_pid[q])
+                    pid_q = landmark_pid[q]
+                    if pid_q in self.resume_pids:
+                        # (I316, PR B; review R2-I1) a click ahead: cut here, picked up again at that click - the
+                        # run goes on, with or without Auto-pause (the exit stop ignores that switch too)
+                        self.resume_cuts[pid_q] = min(f, self.resume_cuts.get(pid_q, f))
+                    elif self._exit_hit is None or f < self._exit_hit[0]:
+                        self._exit_hit = (f, pid_q)
                     tr[i:, q] = np.nan
                     continue
                 # within the band: outline jitter, nudge onto the silhouette
@@ -1894,6 +1950,11 @@ class TrackingWorker(QThread):
             autopause_check()
         self._check_animal_lost(w0, L)
         self._emit_masks(w0, L)
+        for q, rows in (self.keep_rows or {}).items():     # (D2) a session's head columns, for the run's landmarks
+            c = self.point_ids.index(q)
+            for i in range(L):
+                rows[w0 + i] = out_tr[i, c].copy() if np.isfinite(out_tr[i, c]).all() else None
+        self.emitted_to = max(self.emitted_to, w0 + L - 1)
         self.chunk_ready.emit(w0, out_tr, out_vi, out_cf, members, list(pending))
 
     # ---------------------------------------------------- the two read loops share these
@@ -1968,9 +2029,11 @@ class TrackingWorker(QThread):
                         read_end = want
                     break
                 abs_idx, native = nxt
+                self._read_at = abs_idx
                 want = abs_idx + 1
                 self._side_steps(abs_idx, native)
-                pending.append((abs_idx, self._display_of(native, disp)))
+                if self.emit_frames:
+                    pending.append((abs_idx, self._display_of(native, disp)))
                 buf.append(abs_idx)
                 if len(buf) >= step:
                     flush()
@@ -2194,8 +2257,13 @@ class TrackingWorker(QThread):
                         self._low_run[sp.pid] += 1
                         if (self._low_run[sp.pid] >= CONF_PAUSE_RUN
                                 and self.autopause and self._autopause_hit is None):
-                            self._autopause_hit = (self._low_start[sp.pid], sp.pid)
-                            self._autopause_reason = "lowconf"
+                            if sp.pid in self.resume_pids:
+                                # (I316, PR B) a click ahead: cut here, picked up again at that click (its
+                                # session) - the run goes on
+                                self.resume_cuts.setdefault(sp.pid, self._low_start[sp.pid])
+                            else:
+                                self._autopause_hit = (self._low_start[sp.pid], sp.pid)
+                                self._autopause_reason = "lowconf"
                     else:
                         self._low_run[sp.pid] = 0
                     if gone:
@@ -2222,6 +2290,10 @@ class TrackingWorker(QThread):
                                 self._back_run[sp.pid] = 0
                 if sp.pid in self._lost and gone:
                     blank(i, k)
+        for a, sp in enumerate(specs):
+            cut = self.resume_cuts.get(sp.pid)
+            if cut is not None and cut < w0 + L:            # (PR B) nothing for a cut point until its click
+                blank(slice(max(0, cut - w0), L), col_idx[a])
 
     # ----------------------------------------------------------- refinement
 
@@ -2327,3 +2399,355 @@ class TrackingWorker(QThread):
             self._refined[f] = out[i].copy()
         _drop_before(self._refined, w0 - 2)        # keep the chain buffer bounded
         return out
+
+
+# =============================================================================== re-seed sessions (I316, PR B)
+# GPU memory a session adds, measured at 4K on real footage (PR B step 20: AllTracker +9.4 GB for ~6 sessions live at
+# once, CoTracker3 +0.6 GB); a smaller picture needs less, so this errs high
+SESSION_GB = {"alltracker": 1.6, "cotracker3": 0.15}
+
+
+class ModelPool:
+    """(PR B) CoTracker3 copies for re-seed sessions: its online wrapper keeps a run's queries and window on the
+    model object, so every session live at the same time needs its own copy (as every camera after the first
+    of a simultaneous run, I141); a session that ends gives its copy back for the next one (same weights, so the
+    same numbers)."""
+
+    def __init__(self):
+        self._free: list = []
+
+    def take(self, base):
+        import copy
+        return self._free.pop() if self._free else copy.deepcopy(base)
+
+    def give(self, model) -> None:
+        self._free.append(model)
+
+
+class LiveMasks:
+    """(PR B) A held point's re-seed session kept on the run's LIVE silhouette of its animal: the run's own
+    worker's working-resolution mask of each frame, read as a stored mask track (`has`, `rasterize`: what
+    `_stored_step` reads). The run segments a frame before any session reads it (RunDriver keeps every session
+    behind the run's worker), and a session is never more than a few frames behind (MASK_HIST). `seg` = the
+    index of the animal in that worker's segments. `served` counts the frames given."""
+
+    def __init__(self, worker, seg: int):
+        self.worker, self.seg = worker, int(seg)
+        self.served = 0
+
+    def _hist(self):
+        segs = getattr(self.worker, "_segs", [])
+        return segs[self.seg].mask_hist if 0 <= self.seg < len(segs) else {}
+
+    def has(self, frame: int) -> bool:
+        return int(frame) in self._hist()
+
+    def rasterize(self, frame: int, h: int, w: int) -> np.ndarray:
+        mask, _scale = self._hist()[int(frame)]
+        self.served += 1
+        if mask.shape[:2] != (h, w):
+            mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+        return mask
+
+
+def head_hook(handover: int, clicks: dict, owned: list):
+    """(D2, PR B) The head of an animal whose head point the user clicked, for the run's silhouette landmarks:
+    a function f -> (handed over?, xy or None). Before `handover` (its first click after the run's start) the
+    run's own head (False); on a click frame the click; in a session's frames [first, last] what that session
+    emitted (`rows`, its `keep_rows`), None while it has not emitted that frame (the landmarks are then measured
+    without an anchor). `owned` = [(first, last, rows), ...]."""
+    clicks = {int(f): np.asarray(xy, np.float32) for f, xy in clicks.items()}
+
+    def hook(f: int):
+        if f < handover:
+            return False, None
+        if f in clicks:
+            return True, clicks[f]
+        for first, last, rows in owned:
+            if first <= f <= last:
+                return True, rows.get(f)
+        return True, None
+    hook.handover = int(handover)
+    return hook
+
+
+def hand_head_hook(clicks: dict):
+    """(D10, PR B) An animal's Hand-only head (no tracker) for the run's silhouette landmarks, as `head_hook`: on a
+    frame the user clicked it, the click; elsewhere not handed over - the run has no head there, and the landmarks
+    are measured without an anchor, as for an animal with no head point."""
+    clicks = {int(f): np.asarray(xy, np.float32) for f, xy in clicks.items()}
+
+    def hook(f: int):
+        xy = clicks.get(int(f))
+        return xy is not None, xy
+    return hook
+
+
+def peak_sessions(spans) -> int:
+    """The most of `spans` [(first frame, end frame exclusive), ...] live on one frame."""
+    ev = sorted([(a, 1) for a, b in spans if b > a] + [(b, -1) for a, b in spans if b > a])
+    n = best = 0
+    for _f, d in ev:
+        n += d
+        best = max(best, n)
+    return best
+
+
+@dataclass
+class SessionJob:
+    """(I316, PR B) One re-seed session of a run: `worker` = an unstarted TrackingWorker built at `frame` for the
+    points the user clicked there (one tracker, one camera; its `n_frames` = where it ends), `own` = {pid:
+    (first, last)} = the frames it writes for each (the app writes only those). Filled in as the run goes:
+    `started`, `stopped` (the driver stopped it: X, or another worker's stop)."""
+    frame: int
+    worker: "TrackingWorker"
+    own: dict
+    started: bool = False
+    stopped: bool = False
+    done: bool = False
+
+
+class RunDriver(QThread):
+    """(I316, PR B, the plan's "one pass, many tracker sessions") One camera's run whose points start again at the
+    user's clicks: the run's own worker (`primary`, built exactly as a run without clicks) plus one `SessionJob`
+    per (tracker, click frame), each an ordinary TrackingWorker started at its click. They are stepped in turn on
+    ONE thread, a frame each, as MultiTrackingWorker steps cameras: the primary first, then every live session -
+    never past the frame the primary has read, so a session's frames are already in the cache
+    (`CacheFirstSource`) and its animal already segmented (`LiveMasks`); one model step on the GPU at a time. A
+    session starts when the primary reaches its frame and ends at its own end. Nothing a session does reaches
+    the primary (its output is today's, bit for bit); a run with no session is never driven here.
+
+    Towards the app it stands in for the primary: the primary's chunk / mask / ball / model signals are
+    forwarded and any other attribute is the primary's (`__getattr__`); the run's end is ONE autopaused /
+    finished_ok / error for all - pause, stop and error go to every worker. A session's rows come out as
+    `session_chunk` (job index, w0, tracks, vis, conf); `session_state` (job index, started?, its last frame)
+    says when one starts and ends. `n_live` = sessions running now."""
+
+    model_loading = Signal()
+    model_progress = Signal(str, float, float)
+    started_ok = Signal()
+    chunk_ready = Signal(int, object, object, object, object, object)
+    masks_ready = Signal(object)
+    balls_ready = Signal(object)
+    autopaused = Signal(int, int)
+    finished_ok = Signal(int, bool)
+    error = Signal(str)
+    session_chunk = Signal(int, int, object, object, object)
+    session_state = Signal(int, bool, int)
+    session_ready = Signal()                     # a session has its model and is tracking
+    is_run_driver = True
+
+    def __init__(self, primary, jobs):
+        super().__init__()
+        self.__dict__["primary"] = primary          # first: `__getattr__` forwards to it
+        self.jobs = list(jobs)
+        self.n_live = 0
+        self._pause = False
+        self._seq = 0
+        self._auto_worker = None
+        self._gone = threading.Event()               # the primary has ended: sessions decode their own frames
+        self._pool = ModelPool()
+        self._res: dict[int, dict] = {}
+        self.insist = False          # the user answered "Track anyway" to the press's memory estimate: no refusal
+        self.refused = None          # the run's refusal for lack of GPU memory, in words (`_short_of_memory`)
+        direct = Qt.DirectConnection
+        for name in ("model_loading", "model_progress", "started_ok", "chunk_ready", "masks_ready", "balls_ready"):
+            getattr(primary, name).connect(getattr(self, name), direct)
+        self._watch(primary)
+        for i, job in enumerate(self.jobs):
+            w = job.worker
+            self._watch(w)
+            w.model_progress.connect(self.model_progress, direct)     # (review R1-M4) a session's first download
+            w.started_ok.connect(self.session_ready, direct)
+            w.chunk_ready.connect(lambda w0, tr, vi, cf, _m, _f, i=i: self.session_chunk.emit(i, int(w0), tr, vi, cf),
+                                  direct)
+            w.source_gone = self._gone
+            if w.point_backend == "cotracker3":
+                w.model_pool = self._pool
+
+    def __getattr__(self, name):
+        prim = self.__dict__.get("primary")
+        if prim is None or name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(prim, name)
+
+    @property
+    def private_model(self):
+        return self.primary.private_model
+
+    @private_model.setter
+    def private_model(self, on) -> None:            # MultiTrackingWorker: every camera after the first (I141)
+        self.primary.private_model = on
+
+    @property
+    def decode_failed_at(self):
+        """(review R1-M3) The first frame any of the run's workers could not decode (None = none)."""
+        fails = [w.decode_failed_at for w in [self.primary] + [j.worker for j in self.jobs]
+                 if getattr(w, "decode_failed_at", None) is not None]
+        return min(fails) if fails else None
+
+    @property
+    def decode_transient(self) -> bool:
+        f = self.decode_failed_at
+        return bool(f is not None and any(getattr(w, "decode_failed_at", None) == f and getattr(w, "decode_transient", False)
+                                          for w in [self.primary] + [j.worker for j in self.jobs]))
+
+    @property
+    def _autopause_reason(self) -> str:
+        w = self._auto_worker if self._auto_worker is not None else self.primary
+        return getattr(w, "_autopause_reason", "")
+
+    def _watch(self, w) -> None:
+        r = self._res.setdefault(id(w), {"last": None, "paused": False, "auto": None, "seq": 0, "error": None})
+        direct = Qt.DirectConnection
+
+        def on_auto(f, p, r=r):
+            self._seq += 1
+            r.update(auto=(int(f), int(p)), seq=self._seq)
+        w.finished_ok.connect(lambda last, paused, r=r: r.update(last=int(last), paused=bool(paused)), direct)
+        w.autopaused.connect(on_auto, direct)
+        w.error.connect(lambda m, r=r: r.update(error=str(m)), direct)
+
+    def request_pause(self) -> None:
+        self._pause = True
+        self.primary.request_pause()
+        for job in self.jobs:
+            if job.started and not job.done:
+                job.stopped = True               # (R2-M1) its last bounds the run's, also after the primary's end
+            job.worker.request_pause()
+
+    def spans(self) -> list[tuple[int, int]]:
+        """Every session's frames [its click, its end)."""
+        return [(int(j.frame), int(j.worker.n_frames)) for j in self.jobs]
+
+    def _short_of_memory(self) -> str | None:
+        """(RE-I2) Is there GPU memory for the most sessions live at once? Asked HERE, on the run's own thread
+        (the window never touches torch), when the first session is about to start - the run's own model and
+        windows are then in use, so the free memory left is what the sessions can have (R2-M2): a sentence when
+        it is not enough, else None."""
+        peak = peak_sessions(self.spans())
+        if not peak or self.insist or not torch.cuda.is_available():
+            return None             # (review nit) the user answered "Track anyway" to the press's estimate
+        try:
+            free, _total = torch.cuda.mem_get_info()
+            free += torch.cuda.memory_reserved() - torch.cuda.memory_allocated()   # PyTorch's own free blocks (R2-N1)
+        except Exception:      # noqa: BLE001 - no answer is no refusal
+            return None
+        need = peak * max(SESSION_GB.get(j.worker.point_backend, 0.2) for j in self.jobs) * 1e9
+        if free >= need:
+            return None
+        return (f"Tracking stopped: restarting your clicked points needs up to {peak} extra tracker sessions at "
+                f"once (about {need / 1e9:.1f} GB more on the graphics card), and only {free / 1e9:.1f} GB is free. "
+                "Everything tracked so far is kept. Close other programs that use the graphics card, or track fewer "
+                "clicked points at once.")
+
+    def run(self) -> None:
+        for _ in self.steps():
+            pass
+
+    def steps(self):
+        prim = self.primary
+        gen = prim.steps()
+        checked = False
+        live: list = []                              # [(job index, its generator)]
+        pending = sorted(range(len(self.jobs)), key=lambda i: self.jobs[i].frame)
+        frontier = prim.start_frame - 1
+        prim_done = stopping = False
+        try:
+            while True:
+                if not prim_done:
+                    try:
+                        next(gen)
+                    except StopIteration:
+                        prim_done = True
+                        self._gone.set()
+                        r = self._res[id(prim)]
+                        if r["error"] is not None or r["auto"] is not None or r["paused"] or self._pause:
+                            stopping = True          # the run stopped: so do its sessions, none starts
+                            self._stop(live)
+                    frontier = max(frontier, prim._read_at)
+                while (pending and not stopping and not self._pause
+                       and (prim_done or self.jobs[pending[0]].frame <= frontier)):
+                    if not checked:
+                        checked = True
+                        short = self._short_of_memory()
+                        if short is not None:
+                            self.refused = short          # the window says it in words (not as a crash)
+                            self._res[id(prim)]["error"] = short
+                            stopping = True
+                            self._stop(live, primary=True)
+                            break
+                    i = pending.pop(0)
+                    self.jobs[i].started = True
+                    live.append((i, self.jobs[i].worker.steps()))
+                    self.session_state.emit(i, True, self.jobs[i].frame - 1)
+                for item in list(live):
+                    i, g = item
+                    w = self.jobs[i].worker
+                    if not prim_done and w._read_at >= frontier:
+                        continue                      # never past the frame the primary has read
+                    try:
+                        next(g)
+                    except StopIteration:
+                        live.remove(item)
+                        self.jobs[i].done = True
+                        r = self._res[id(w)]
+                        self.session_state.emit(i, False, r["last"] if r["last"] is not None else self.jobs[i].frame - 1)
+                        if (r["error"] is not None or r["auto"] is not None) and not stopping:
+                            stopping = True           # a session stopped the run (its point lost, nothing ahead)
+                            self._stop(live, primary=True)
+                self.n_live = len(live)
+                if prim_done and not live:
+                    break
+                yield
+        except Exception:      # noqa: BLE001 - (R2-M3) the driver's own fault: ONE error for the run, all stopped
+            self._res[id(prim)]["error"] = traceback.format_exc()
+            self.request_pause()
+        finally:
+            for _i, g in live:                         # only on an unexpected exit
+                g.close()
+            if not prim_done:
+                gen.close()
+            self.n_live = 0
+        self._emit_end()
+
+    def _stop(self, live, primary: bool = False) -> None:
+        if primary:
+            self.primary.request_pause()
+        for i, _g in live:
+            self.jobs[i].stopped = True
+            self.jobs[i].worker.request_pause()
+
+    def _emit_end(self) -> None:
+        """ONE end for the whole run: an error if any worker had one; else the first auto-pause (its frame,
+        point and last emitted frame - the app cuts that point there); else the frame the run reached = the
+        primary's last, or a stopped session's if lower (after X the clicked point has no newer rows)."""
+        rp = self._res[id(self.primary)]
+        started = [j for j in self.jobs if j.started]
+
+        def lowered(last: int) -> int:
+            for j in started:
+                r = self._res[id(j.worker)]
+                if j.stopped and r["last"] is not None:
+                    last = min(last, max(r["last"], j.frame - 1))
+            return last
+        workers = [self.primary] + [j.worker for j in started]
+        err = next((self._res[id(w)]["error"] for w in workers if self._res[id(w)]["error"] is not None), None)
+        if err is not None:
+            self.error.emit(err)
+            return
+        autos = [(self._res[id(w)]["seq"], w) for w in workers if self._res[id(w)]["auto"] is not None]
+        if autos:
+            w = min(autos, key=lambda t: t[0])[1]
+            r = self._res[id(w)]
+            self._auto_worker = w
+            self.autopaused.emit(*r["auto"])
+            last = r["last"] if r["last"] is not None else r["auto"][0]
+            # NOT lowered for stopped sessions: the app cuts the lost point to this frame, the rows its worker
+            # emitted (a lowered frame left its last rows standing - reviewer re-check of 441467c)
+            self.finished_ok.emit(int(last), True)
+            return
+        last = rp["last"] if rp["last"] is not None else self.primary.start_frame - 1
+        paused = bool(rp["paused"] or self._pause or any(j.stopped and self._res[id(j.worker)]["last"] is not None
+                                                         for j in started))
+        self.finished_ok.emit(int(lowered(last)), paused)

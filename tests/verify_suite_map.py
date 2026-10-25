@@ -48,7 +48,7 @@ s, _ = suite_map.suites_for(["tests/verify_lens.py"])
 check(s == ["verify_lens"], "a changed suite runs itself")
 s, _ = suite_map.suites_for(["tests/_synth.py"])
 s2, _ = suite_map.suites_for(["tests/_synth_spots.py"])
-check(s == ["verify_animal", "verify_animal_gui"] and "verify_spots" in s2,
+check(set(s) == {"verify_animal", "verify_animal_gui", "verify_hand_restart"} and "verify_spots" in s2,
       "a changed test helper runs the suites that import it")
 s, _ = suite_map.suites_for(["docs/MANUAL.md"])
 check(s == ["verify_timeline_events", "verify_menu_paths"],
