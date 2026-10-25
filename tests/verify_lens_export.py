@@ -177,7 +177,9 @@ ASK["save"] = (os.path.join(OUT, "chosen.klens.json"), "Kinetrace lens (*.klens.
 w.act_export_lens.trigger()
 pump(0.1)
 chosen = lens.LensProfile.load(ASK["save"][0]) if os.path.exists(ASK["save"][0]) else None
-check(ASK["items"] and len(ASK["items"][-1]) == 2 and chosen is not None and same(chosen, prof),
+# (I323) the two cameras, then "every camera" as one Argus camera_profile.txt
+check(ASK["items"] and len(ASK["items"][-1]) == 3 and ASK["items"][-1][-1].startswith("Every camera")
+      and chosen is not None and same(chosen, prof),
       "with profiles on both cameras it asks which, and writes the one chosen", ASK["items"])
 
 w.project.dirty = False

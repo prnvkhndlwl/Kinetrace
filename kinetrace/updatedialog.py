@@ -35,6 +35,9 @@ def about_html(version: str = APP_VERSION) -> str:
         f"<p>Built on AllTracker, CoTracker3, SAM 2.1 / SAM 3, SAM 3D Body, ViTPose, PyTorch, OpenCV "
         f"and Qt &mdash; each under its own licence (<a href='{CREDITS_URL}'>the list</a>). Please cite "
         f"the models you use in publications.</p>"
+        # (M14) the ChArUco calibration's route is Argus's, adapted with its authors' permission
+        f"<p>ChArUco calibration follows <b>Argus</b> (Jackson, Evangelista, Ray &amp; Hedrick 2016, "
+        f"<i>Biology Open</i> 5:1334&ndash;1342), adapted with its authors' permission.</p>"
         f"<p><a href='{update.PAGE}'>{update.PAGE.replace('https://', '')}</a></p>")
 
 

@@ -240,7 +240,7 @@ for text, ok in (("Body → Side-by-side Video…", False), ("3D → Calibrate a
                  ("File > Keep Exports Up to Date", False), ("Body → Export Joint Angles…", False),
                  ("File → Export → Body Joint Positions… / Export Joint Angles…", False),
                  ("File > Export > Keep Exports Up to Date", True), ("see 3D → Reconstruct).", True),
-                 ("**3D → Calibrate → Calibrate a Lens (checkerboard)…**", True),
+                 ("**3D → Calibrate → Calibrate a Lens (checkerboard or ChArUco)…**", True),
                  ("Help → About and Check for Updates", True), ("1 Open video → 2 Segment → 3 Skeleton → 4", True)):
     m = START.search(text)
     got = m is None or resolve(text, m.end(), m.group(1)) is None
@@ -281,7 +281,8 @@ def entries(path):
 
 
 assert [a for _, a in entries(["3D", "Sync"])] == [win.act_sync, win.act_offsets3d]
-assert [a for _, a in entries(["3D", "Calibrate"])] == [win.act_lens, win.act_load_lens, win.act_wand]
+assert [a for _, a in entries(["3D", "Calibrate"])] == [win.act_lens, win.act_load_lens, win.act_wand,
+                                                        win.act_charuco]          # (G221)
 assert [n for n, _ in entries(["3D"])][:3] == ["Cameras Overview…", "Sync", "Calibrate"], entries(["3D"])
 assert len(entries(["3D"])) == 8, [n for n, _ in entries(["3D"])]
 assert [a for _, a in entries(["Help"])][:4] == [win.act_manual, win.act_tour, by_text["Keyboard & Mouse Reference…"],

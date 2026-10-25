@@ -21,7 +21,8 @@ line at its top. Section 5 says why this licence was chosen.
 
 The repository contains **no third-party code, model weights or footage**:
 `.venv/` and `models/` are created on each user's computer and never
-committed (see `.gitignore`). Every model below is downloaded or supplied
+committed (see `.gitignore`). One method is adapted from another project, with
+its authors' consent: the ChArUco calibration follows Argus (section 2b). Every model below is downloaded or supplied
 there, under its own licence, the first time it is needed. There is no media
 in the repository: the tests generate their synthetic videos with
 `make_test_video.py`.
@@ -60,6 +61,12 @@ and AllTracker's MIT licence.
   repository or handed out with the app** unless a copy of the SAM License goes
   with them; the simple rule is that each lab requests access and downloads
   them itself.
+
+## 2b. Methods adapted from other projects
+
+| Project | What Kinetrace adapts | Licence of the project | Permission | Credit |
+|---|---|---|---|---|
+| **Argus** (`github.com/backyardbiomech/argus_gui`, `utils/calibrate_charuco.py` at commit f7a8f0c) | the ChArUco calibration route (3D → Calibrate → Calibrate Cameras with a ChArUco Board…, and the lens wizard's ChArUco board): which board frames count (at least 4 corners per camera, 6 shared between cameras, the 100 best by corner count and spread, 50 frames looked at), the board's long edge as the wand with the rest of its corners as extra points, and Argus's file formats (`camera_profile.txt`, `paired_pts-xypts.csv`, `unpaired_pts-xypts.csv`) | **GPL-3.0** | the Argus authors consented to this adaptation (2026-10-24). **No Argus code is copied**: Kinetrace's implementation is its own, on OpenCV's ChArUco detector and Kinetrace's own lens and wand solvers (`kinetrace/charuco.py` names each rule taken) | Help → About, the README, the manual and the wiki. Please cite: Jackson, B.E., Evangelista, D.J., Ray, D.D. and Hedrick, T.L. (2016). 3D for the people: multi-camera motion capture in the field with consumer-grade cameras and open source software. *Biology Open*, 5(9), 1334–1342. [doi:10.1242/bio.018713](https://doi.org/10.1242/bio.018713) |
 
 ## 3. Python packages
 

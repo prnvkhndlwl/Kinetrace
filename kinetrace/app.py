@@ -227,7 +227,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>View → Other cameras</td><td><b>Sync all views</b> (the default: every camera follows the playhead; a single step shows every camera's new picture at once) · <b>Active view only</b> (Ctrl+Shift+2, or untick <i>Sync all</i> in the CAMERAS panel: only the working camera reads its video; the others stay on the picture they last showed, veiled, until you tick Sync all again or click one to work in it — its guides still come from the others' tracks) ·<b>Only the working camera</b> (Ctrl+2: the others are hidden and stop decoding)</td></tr>
 <tr><td class=k>eye / title bar</td><td>the <b>eye</b> on a camera's line in CAMERAS shows / hides its view (hidden = not decoded; the others get the room); <b>drag a view's title bar</b> onto another view to move it there (only the screen changes, the cameras keep their numbers); right-click a title bar: hide it, show every camera, views back in camera order. <b>▶</b> on a camera's line opens its controls (Align here, offset, frame rate). With Track ▾ → Every camera, a <b>hidden camera is tracked too</b>, without being drawn: Track says "(n hidden)" and a warning names them</td></tr>
 <tr><td class=k>Ctrl+E</td><td><b>ALL CAMERAS — DLTdv8 xypts</b> writes one file for 3D reconstruction: row k = frame k of the reference camera (from 0), every camera sampled through its offset, landmarks matched across cameras <i>by name</i>, NaN where a camera has no data; top-left origin, first pixel = 1</td></tr>
-<tr><td class=k>3D menu</td><td><b>Cameras Overview</b> · <b>Sync ▸</b> <b>Sync Cameras (Sound / Motion)</b> (whole-frame offsets from the sound tracks or the pictures, with a noise filter), <b>Estimate Sub-frame Offsets</b> (fractional sync from the tracks) · <b>Calibrate ▸</b> <b>Calibrate a Lens (checkerboard)</b> (how a wide-angle lens bends the picture; opens with or without a video — with nothing open, save the lens file and attach it later), <b>Load a Lens Profile for Cameras</b>, <b>Calibrate Cameras with a Wand</b> · <b>Reconstruct 3D Landmarks</b> · <b>Re-track Disagreeing Stretches</b> (a camera's landmark put back on the other cameras' rays and re-tracked, before / after verdict) · <b>Carve Volume</b> · <b>Show 3D View</b>. A calibration comes in through File → Import → Calibration (a Kinetrace .kcal.json, DLT coefficients from DLTdv / easyWand / Argus, K + R/t, or a DLTdv8 project with its lens undistortion), a whole DLTdv8 project (videos, timing, calibration, clicks) through File → Import → DLTdv Project; calibrations, lens profiles and meshes go out through File → Export. Entries that need more (a video, a second camera, a calibration) open anyway and say what is missing</td></tr>
+<tr><td class=k>3D menu</td><td><b>Cameras Overview</b> · <b>Sync ▸</b> <b>Sync Cameras (Sound / Motion)</b> (whole-frame offsets from the sound tracks or the pictures, with a noise filter), <b>Estimate Sub-frame Offsets</b> (fractional sync from the tracks) · <b>Calibrate ▸</b> <b>Calibrate a Lens (checkerboard or ChArUco)</b> (how a wide-angle lens bends the picture; opens with or without a video — with nothing open, save the lens file and attach it later), <b>Load a Lens Profile for Cameras</b>, <b>Calibrate Cameras with a Wand</b>, <b>Calibrate Cameras with a ChArUco Board</b> (every camera's lens and the camera positions from one board all cameras filmed; the route Argus takes) · <b>Reconstruct 3D Landmarks</b> · <b>Re-track Disagreeing Stretches</b> (a camera's landmark put back on the other cameras' rays and re-tracked, before / after verdict) · <b>Carve Volume</b> · <b>Show 3D View</b>. A calibration comes in through File → Import → Calibration (a Kinetrace .kcal.json, DLT coefficients from DLTdv / easyWand / Argus, K + R/t, or a DLTdv8 project with its lens undistortion), a whole DLTdv8 project (videos, timing, calibration, clicks) through File → Import → DLTdv Project; calibrations, lens profiles and meshes go out through File → Export. Entries that need more (a video, a second camera, a calibration) open anyway and say what is missing</td></tr>
 <tr><td class=k>Ctrl+3</td><td>reconstruct all the 3D landmarks (matched by name across cameras) with the verdict and open the 3D view; the result also keeps itself up to date</td></tr>
 <tr><td class=k>Ctrl+4</td><td>carve the volume hull at this frame from every camera's silhouette</td></tr>
 <tr><td class=k>Ctrl+5</td><td>show / hide the 3D view (drag to orbit, wheel to zoom, middle-drag to pan, double-click to reset; with a calibration: the wand calibration layers - wand points, camera pyramids, fields of view, covered space - and a click on a wand end goes to its frame)</td></tr>
@@ -1936,10 +1936,10 @@ class MainWindow(QMainWindow):
         """3D menu: calibration -> sub-frame sync -> triangulation -> volume hull."""
         # 3D: calibration -> sub-frame sync -> triangulation -> volume hull
         m_3d = self.menuBar().addMenu("&3D")
-        self.act_lens = QAction("Calibrate a &Lens (checkerboard)…", self, triggered=self._lens_wizard)
-        self.act_lens.setToolTip("Measure how a lens bends the picture from a video of a printed checkerboard. "
-                                 "Needed for wide-angle / action cameras before a wand calibration; explains "
-                                 "when you need it and when you do not.")
+        self.act_lens = QAction("Calibrate a &Lens (checkerboard or ChArUco)…", self, triggered=self._lens_wizard)
+        self.act_lens.setToolTip("Measure how a lens bends the picture from a video of a printed checkerboard or "
+                                 "ChArUco board. Needed for wide-angle / action cameras before a wand calibration; "
+                                 "explains when you need it and when you do not.")
         # (G148) a camera's lens profile out to a file, and a file onto a camera, at any time
         self.act_export_lens = QAction("&Lens Profile…", self, triggered=self._export_lens_profile)
         self.act_export_lens.setToolTip("Save a camera's lens profile (from the checkerboard, GoPro's lens model or a\n"
@@ -1952,6 +1952,11 @@ class MainWindow(QMainWindow):
         self.act_wand = QAction("Calibrate Cameras with a &Wand…", self, triggered=self._wand_wizard)
         self.act_wand.setToolTip("Work out where the cameras are from a wand of known length waved in "
                                  "front of them — no MATLAB, no easyWand. Explains every step.")
+        # (G221) the lenses and the camera positions from one ChArUco board filmed by every camera
+        self.act_charuco = QAction("Calibrate Cameras with a &ChArUco Board…", self, triggered=self._charuco_wizard)
+        self.act_charuco.setToolTip("Every camera films the same printed ChArUco board at once: each camera's lens "
+                                    "(focal length, centre, distortion) and where the cameras are, together or "
+                                    "either alone. The route Argus takes (Jackson et al. 2016).")
         self.act_calib = QAction("&Calibration…", self, triggered=self._import_calibration)       # File → Import
         self.act_calib.setToolTip("A Kinetrace calibration (.kcal.json), DLT coefficients from DLTdv / "
                                   "easyWand / Argus (dltCoefs.csv), an easyWandData.mat, a DLTdv8 project, "
@@ -2014,7 +2019,7 @@ class MainWindow(QMainWindow):
         for a in (self.act_sync, self.act_offsets3d):
             m_sync.addAction(a)
         m_calibrate = m_3d.addMenu("&Calibrate")
-        for a in (self.act_lens, self.act_load_lens, None, self.act_wand):
+        for a in (self.act_lens, self.act_load_lens, None, self.act_wand, self.act_charuco):
             m_calibrate.addSeparator() if a is None else m_calibrate.addAction(a)
         for a in (None, self.act_recon, self.act_set_axes, self.act_retrack, self.act_hull, None, self.act_view3d):
             m_3d.addSeparator() if a is None else m_3d.addAction(a)
@@ -2298,6 +2303,7 @@ class MainWindow(QMainWindow):
         # the two wizards stay clickable: a first-time user must be able to open
         # them and be TOLD what to prepare, not meet a greyed-out entry
         self.act_wand.setEnabled(not tracking)
+        self.act_charuco.setEnabled(not tracking)
         self.act_lens.setEnabled(not tracking)
         self.act_export_cal.setEnabled(live3d)
         self.act_export_lens.setEnabled(live3d)      # (G148) clickable; it says when no camera has a profile
@@ -10941,24 +10947,58 @@ class MainWindow(QMainWindow):
         self._retimed(had_3d)
         return rec
 
+    def _apply_board_result(self, calibration, lenses: dict) -> None:
+        """(G221) The ChArUco wizard's Finish as ONE Ctrl+Z step: the fitted lens profiles
+        ({camera: profile}) and the calibration (None = "lenses only": the calibration stays) go in
+        together, and `_undo_timing_step` takes both back while they are still what this step left.
+        The offsets are not touched (recorded as they are, so the step's check holds)."""
+        p = self.project
+        if p is None or self.session is None:
+            return
+        while len(p.lenses) < p.n_views:
+            p.lenses.append(None)
+        self._set_undo_point(self.session.snapshot())
+        rec = {"offsets": list(p.offsets), "calibration": p.calibration, "wand_result": self._wand_result,
+               "lenses": list(p.lenses), "what": "the ChArUco calibration",
+               # what Ctrl+Z says it put back, and why the 3D result goes with it
+               "what_changed": " and ".join(w for w, on in (("the lens profiles", bool(lenses)),
+                                                            ("the calibration", calibration is not None)) if on),
+               "drop_reason": "the ChArUco calibration was taken back"}
+        self._set_lenses(lenses)
+        if calibration is not None:
+            p.calibration = calibration
+        rec["after"] = list(p.offsets)
+        rec["cal_after"] = p.calibration
+        rec["lenses_after"] = list(p.lenses)
+        self.__dict__["_undo_timing"] = rec
+        p.dirty = True
+
     def _undo_timing_step(self, timing: dict) -> bool | None:
-        """Put back the offsets (and calibration) an `_apply_offsets_undoable` step changed. None (and
-        nothing changed) when the offsets or the calibration were changed again since."""
+        """Put back the offsets (and calibration) an `_apply_offsets_undoable` step changed - and the
+        lens profiles of a ChArUco step (`_apply_board_result`). None (and nothing changed) when the
+        offsets, the calibration or those lenses were changed again since."""
         p = self.project
         if p is None or len(timing["offsets"]) != p.n_views:
             return False                  # the camera set changed since: the step no longer fits
         after = timing.get("after")
+        lenses_after = timing.get("lenses_after")
         if (after is not None and (len(after) != p.n_views
                                    or any(abs(a - b) > 1e-9 for a, b in zip(after, p.offsets))
                                    or p.calibration is not timing.get("cal_after"))):
+            return None
+        if lenses_after is not None and (len(lenses_after) != len(p.lenses)
+                                         or any(a is not b for a, b in zip(lenses_after, p.lenses))):
             return None
         had_3d = p.reconstruction is not None
         for i, o in enumerate(timing["offsets"]):
             p.set_offset(i, float(o))
         p.calibration = timing["calibration"]
+        if timing.get("lenses") is not None:
+            p.lenses[:] = list(timing["lenses"])
         self._wand_result = timing["wand_result"]
         p.dirty = True
-        self._drop_reconstruction("camera timing changed", had=had_3d and p.reconstruction is None)
+        self._drop_reconstruction(timing.get("drop_reason", "camera timing changed"),
+                                  had=had_3d and p.reconstruction is None)
         self._refresh_cameras()
         self._refresh_guides()
         return True
@@ -10975,9 +11015,16 @@ class MainWindow(QMainWindow):
                 p.sessions[v].restore(snap)
         self._undo_snap = None
         undone = self._undo_timing_step(timing) if timing is not None else False
-        if undone is None:
+        what = timing.get("what", "the wand calibration") if timing is not None else ""
+        if undone is None and timing.get("lenses") is not None:                                    # (G221)
+            said = (f"The calibration or the lenses were changed again after {what} set them: Undo leaves them "
+                    "as they are now", 8000)
+        elif undone is None:
             said = ("The offsets or the calibration were changed again after the wand calibration set them: Undo "
                     "leaves them as they are now", 8000)
+        elif undone and timing.get("lenses") is not None:
+            said = (f"Restored {timing.get('what_changed') or 'the lens profiles and the calibration'} from before "
+                    f"{what}", 8000)                                                                 # (G221)
         elif undone:
             said = ("Restored the camera offsets, and the calibration made from them, from before the wand "
                     "calibration", 8000)
@@ -12566,11 +12613,19 @@ class MainWindow(QMainWindow):
                 + ". Then export it here.")
             return
         v = p.active if p.active in have else have[0]
+        # (I323) every camera's lens in ONE Argus camera_profile.txt (what Argus Wand reads), lenses alone:
+        # no calibration needed
+        every = f"Every camera with a lens ({len(have)}) — one Argus camera_profile.txt"
         if len(have) > 1 or v != p.active:
             labels = [f"{p.name(k)} — {lens_label(p.lenses[k])}" for k in have]
+            if len(have) > 1:
+                labels.append(every)
             choice, ok = QInputDialog.getItem(self, "Export lens profile", "The lens profile of:", labels,
                                               have.index(v), False)
             if not ok or choice not in labels:
+                return
+            if choice == every:
+                self._export_argus_profiles(have)
                 return
             v = have[labels.index(choice)]
         prof = p.lenses[v]
@@ -12596,6 +12651,34 @@ class MainWindow(QMainWindow):
             "3D → Calibrate → Load a Lens Profile for Cameras… (or the lens wizard's <i>I already have a lens file…</i>), "
             "for this camera in another project or for cameras of the same model, lens, zoom and recording mode.",
             "success", 12000)
+
+    def _export_argus_profiles(self, have: list[int]) -> None:
+        """(I323) File -> Export -> Lens Profile… -> every camera: one camera_profile.txt as Argus's ChArUco
+        script writes it (a tab-separated line per camera, numbered as the project's cameras, pixels y up);
+        a fisheye lens is refused in a sentence and nothing is written."""
+        from kinetrace import calibio
+        p = self.project
+        start = Path(self._start_folder(str(Path(self.info.path).parent) if self.info else "")) / calibio.ARGUS_PROFILE_NAME
+        path, _flt = QFileDialog.getSaveFileName(self, "Export every camera's lens for Argus", str(start),
+                                                 "Argus camera profile (*.txt)")
+        if not path:
+            return
+        try:
+            calibio.write_argus_profiles(path, [(k + 1, p.lenses[k]) for k in have])
+        except calibio.CalibFormatError as e:
+            QMessageBox.warning(self, "Lens profiles not saved", cap_first(str(e)))
+            return
+        except Exception as e:      # noqa: BLE001 - a full drive, a read-only folder: said
+            QMessageBox.warning(self, "Lens profiles not saved", _plain_error(e, "The lens profiles could not be saved"))
+            return
+        gaps = [p.name(k) for k in range(p.n_views) if k not in have]
+        self.toast.show_message(
+            f"{len(have)} lens profiles saved as {Path(path).name} for Argus: each line is numbered as the "
+            "project's camera (" + ", ".join(f"{k + 1} {p.name(k)}" for k in have) + "), pixels counted y up as "
+            "Argus does. "
+            + (f"No line for {', '.join(gaps)} (no lens profile): a program that reads the lines in order rather "
+               "than by their number would give the later cameras the wrong lens. " if gaps else "")
+            + "3D → Calibrate → Load a Lens Profile for Cameras… reads it back.", "success", 14000)
 
     def _load_lens_profile(self) -> None:
         """3D -> Calibrate -> Load a Lens Profile for Cameras… (G148, G176): a saved profile (.klens.json, OpenCV, Argus: the
@@ -12776,6 +12859,54 @@ class MainWindow(QMainWindow):
             f"Wand calibration ({v}) is now this project's calibration.{offs} Save the project (Ctrl+S); "
             "<b>File → Export → Calibration</b> writes it for your animal projects. " + self.GUIDES_HINT,
             "success", 16000)
+
+    def _charuco_wizard(self):
+        """3D → Calibrate → Calibrate Cameras with a ChArUco Board (G221): every camera's lens and the
+        camera positions from one board filmed by all cameras at once, or either alone. Nothing changes
+        before Finish; Finish applies the lenses and the calibration as one Ctrl+Z."""
+        from kinetrace.charucowizard import CharucoWizard
+        p = self.project
+        if p is None or p.n_views < 1:
+            QMessageBox.information(
+                self, "Open the board videos first",
+                "ChArUco calibration works on the videos of your cameras filming the same printed board at once, "
+                "in ONE project:\n\n"
+                "1. File → Open Video… — the board video of the first camera.\n"
+                "2. In the CAMERAS panel on the right, ＋ Add video — the board video of each other camera; set "
+                "their offsets so they show the same instant (3D → Sync → Sync Cameras).\n"
+                "3. Then 3D → Calibrate → Calibrate Cameras with a ChArUco Board… again.\n\n"
+                "Kinetrace's printable board: 3D → Calibrate → Calibrate a Lens (checkerboard or ChArUco)…, "
+                "first page.")
+            return
+        if self.state != READY:
+            return
+        start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
+        wiz = CharucoWizard(self, p, start)
+        accepted = wiz.exec() == QDialog.Accepted
+        if not accepted or (wiz.result_calibration is None and not wiz.result_lenses):
+            return                       # Cancel: the lenses and the calibration stay as they were
+        cal = wiz.result_calibration
+        self._apply_board_result(cal, wiz.result_lenses)
+        if cal is not None:
+            for sv in p.sessions:            # (review) no wand drew this calibration: the old wand ends go
+                sv.ui_state.pop("wand_ends", None)
+            self._wand_result = (wiz.result, None)
+            self._wand_cal = p.calibration
+            self.__dict__["_wand_key"] = self._calib_key()
+            self._drop_reconstruction("a new calibration was made")
+            self._guides_on()
+        self._refresh_cameras()
+        self._apply_state()
+        lens_v = [str((pr.report or {}).get("verdict", "?")).upper() for pr in wiz.result_lenses.values()]
+        bits = []
+        if wiz.result_lenses:
+            bits.append(f"lens profiles for {len(wiz.result_lenses)} camera(s) ({', '.join(lens_v)})")
+        if cal is not None:
+            bits.append(f"the calibration ({str(wiz.result.report.get('verdict', '?')).upper()})")
+        self.toast.show_message(
+            "ChArUco board: " + " and ".join(bits) + " are now this project's (one Ctrl+Z takes them back). Save "
+            "the project (Ctrl+S); <b>File → Export → Lens Profile / Calibration</b> writes them for other programs."
+            + (" " + self.GUIDES_HINT if cal is not None else ""), "success", 16000)
 
     def _export_calibration(self):
         """File -> Export -> Calibration: the cameras for other programs, in the

@@ -147,6 +147,19 @@ that work can move freely between them. The two papers:
   body parts with deep learning. *Nature Neuroscience*, 21(9), 1281–1289.
   [doi:10.1038/s41593-018-0209-y](https://doi.org/10.1038/s41593-018-0209-y)
 
+Kinetrace's **ChArUco calibration** (each camera's lens and the camera
+positions from one printed ChArUco board) follows the route of
+[**Argus**](https://github.com/backyardbiomech/argus_gui)'s ChArUco script,
+adapted with its authors' permission: which board frames count, the board's
+edge used as a wand, and Argus's file formats, so the result can go on in Argus
+Wand. No Argus code is copied ([details](THIRD_PARTY_LICENSES.md)). If you use
+it, please cite:
+
+- Jackson, B. E., Evangelista, D. J., Ray, D. D., & Hedrick, T. L. (2016). 3D
+  for the people: multi-camera motion capture in the field with consumer-grade
+  cameras and open source software. *Biology Open*, 5(9), 1334–1342.
+  [doi:10.1242/bio.018713](https://doi.org/10.1242/bio.018713)
+
 ## Licence & privacy
 
 Free for any **non-commercial** use under the

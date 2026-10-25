@@ -110,6 +110,14 @@ MAP = [
     ([K + f for f in ("lens.py", "lenswizard.py", "lensattach.py", "boardreview.py")],
      ["verify_lens", "verify_lens_gui", "verify_lens_export", "verify_lens_turn", "verify_lens_attach",
       "verify_review_calib", "verify_camera_overview"]),
+    # (I321-I323) ChArUco boards: the board and its frame rules, the lens fit from them, the camera solve
+    ([K + "charuco.py"], ["verify_charuco", "verify_charuco_gui", "verify_lens", "verify_lens_gui", "verify_wand",
+                          "verify_wand_gui"]),
+    ([K + f for f in ("lens.py", "calibwizard.py", "wand.py", "calibio.py")], ["verify_charuco"]),
+    # (G220, G221) the board's boxes, the two wizards and the menu entries that open them
+    ([K + f for f in ("charucoui.py", "lenswizard.py", "boardreview.py", "calibwizard.py", "app.py")],
+     ["verify_charuco_gui"]),
+    ([K + "charucowizard.py"], ["verify_charuco", "verify_charuco_gui"]),
     ([K + "gpmf.py"], ["verify_gopro", "verify_lens_turn"]),
     ([K + f for f in ("sync.py", "audiosync.py", "syncdialog.py")], ["verify_sync"]),
     ([K + f for f in ("body.py", "bodypose.py", "bodyview.py")], ["verify_body", "verify_body_gui", "verify_review_body"]),

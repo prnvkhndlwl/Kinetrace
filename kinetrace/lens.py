@@ -73,10 +73,12 @@ def _board_tilt_deg(rvec) -> float:
     return float(np.degrees(np.arccos(min(1.0, abs(float(R[2, 2]))))))
 
 
-def fit_and_score(chosen, everything, pattern, square, size, model, max_views, base, rotation):
+def fit_and_score(chosen, everything, pattern, square, size, model, max_views, base, rotation, source=None):
     """(R35) The lens wizard's fit: `calibrate_lens` on the `chosen` boards, the board video's turn
-    recorded, and the per-board errors of THAT profile over `everything` -> (profile, errors)."""
-    prof = calibrate_lens(chosen, pattern, square, size, model, max_views=max_views, base=base)
+    recorded, and the per-board errors of THAT profile over `everything` -> (profile, errors).
+    `source` = the profile's label (None = calibrate_lens's checkerboard one; I321 a ChArUco board's)."""
+    more = {"source": source} if source is not None else {}
+    prof = calibrate_lens(chosen, pattern, square, size, model, max_views=max_views, base=base, **more)
     prof.rotation = rotation                       # how the board video's pictures were turned
     return prof, per_view_errors(everything, pattern, square, prof)
 
@@ -272,6 +274,11 @@ def _parse_argus(path: str | Path) -> list[tuple[int, LensProfile]]:
         # the raw 0-based image), and its database centres are (w - 1) / 2,
         # e.g. 1351.5 x 759.5 for 2704 x 1520. A -1 "1-based" shift here moved
         # the distortion centre a pixel up and left of where it was fitted.
+        if ar < 0:
+            # (I323) a y-UP line (Argus's ChArUco script, Kinetrace's all-camera camera_profile.txt):
+            # its matrix was turned for bottom-left pixels, cy' = h - cy and fy' = -fy; turned back
+            # (it read as a negative focal length before, a lens nothing could undistort with)
+            cy, ar = h - cy, -ar
         K = np.array([[f, 0.0, cx], [0.0, f * (ar or 1.0), cy], [0.0, 0.0, 1.0]])
         n = int(round(cam))
         out.append((n, LensProfile(int(w), int(h), K, np.array([k[0], k[1], k[2], k[3], k[4]]), False,
@@ -342,7 +349,8 @@ def read_lens_for(path: str | Path, view: int, cam_name: str = "") -> tuple[Lens
 def load_argus_profile(path: str | Path) -> list[LensProfile]:
     """An Argus / DLTdv camera profile text file: one camera per line,
     `cam f w h cx cy AR k1 k2 t1 t2 k3` (pinhole + OpenCV distortion). Pixels
-    are OpenCV's: 0-based, the principal point is taken as written (I75).
+    are OpenCV's: 0-based, the principal point is taken as written (I75); a
+    line with a negative AR is y-up (Argus's ChArUco script) and turned back (I323).
     The profiles come back in file order; `argus_profile_for` picks the line
     for one camera."""
     return [p for _, p in _parse_argus(path)]
@@ -787,6 +795,8 @@ def corner_zero_text(how: str, pattern: tuple[int, int]) -> str:
     if how == "colour":
         return ("corner 0 - the inner corner beside the black square, the same physical corner on every "
                 "board whose corner 0 was found this way.")
+    if how == "id":                                # (I321) a ChArUco corner is named by its markers
+        return "corner 0 - read from the board's markers (ChArUco): the same physical corner on every board."
     if how == "image":
         if not board_is_asymmetric(pattern):
             return ("corner 0 - simply the corner nearest the top-left of the picture: this board looks the same "
@@ -801,6 +811,9 @@ def orientation_summary(orient: list[str], pattern: tuple[int, int]) -> str:
     n = len(orient)
     if n == 0:
         return ""
+    if all(o == "id" for o in orient):             # (I321)
+        return (f"Every corner on all {n} boards was named by the board's markers (ChArUco), so the axes point "
+                "the same way along the board in every picture, even where only part of the board was seen.")
     cols, rows = int(pattern[0]), int(pattern[1])
     if not board_is_asymmetric(pattern):
         return (f"This board ({cols} x {rows} inner corners) looks the same turned 180 degrees, "
@@ -820,6 +833,9 @@ def board_features(corners: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     """A small descriptor of one view for diversity selection: centre (x, y)
     normalised, apparent size, and the two aspect/skew ratios of the board."""
     w, h = size
+    m = _seen(corners)
+    if m is not None:                              # (I321) a ChArUco view: the corners that were seen
+        corners = np.asarray(corners, np.float64).reshape(-1, 2)[m]
     c = corners.mean(axis=0)
     span = corners.max(axis=0) - corners.min(axis=0)
     cov = np.cov(corners.T)
@@ -900,6 +916,10 @@ class ScanResult:
     # (I275) GoPro footage: the camera's mounting tag OREN (U / D / L / R), "" otherwise; kept in the
     # board record for tracing only -- the turn comes from the decoder
     gopro_orientation: str = ""
+    # (I321) the ChArUco board scanned for (`charuco.BoardSpec`), None for a checkerboard; its views are
+    # the whole inner grid with NaN where a corner was not seen, `orient` "id" for each
+    board: object = None
+    note: str = ""          # (I321) a sentence about the scan (the older ChArUco layout was used, ...)
 
     def thumb_scale(self, i: int) -> float:
         """Pixels of thumbnail per pixel of video, for drawing corners on it."""
@@ -934,10 +954,14 @@ def video_turn(path: str | Path) -> tuple[tuple[int, int], int | None, str]:
 
 
 def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int = 240,
-               progress=None, should_cancel=None, downscale_max: int = 1280) -> ScanResult:
+               progress=None, should_cancel=None, downscale_max: int = 1280, board=None) -> ScanResult:
     """Look for the board in up to `max_candidates` frames spread over the
     video. Detection runs on a downscaled copy for speed, then the corners
-    are refined at full resolution. Own VideoCapture (one per thread)."""
+    are refined at full resolution. Own VideoCapture (one per thread).
+    `board` = a `charuco.BoardSpec` to look for a ChArUco board instead (I321;
+    `pattern` is then ignored: the board's inner corners are)."""
+    if board is not None:
+        return _scan_charuco(path, board, max_candidates, progress, should_cancel, downscale_max)
     from kinetrace.video_source import open_capture, seek_capture
     cap = open_capture(str(path))
     if not cap.isOpened():
@@ -988,6 +1012,72 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
         cap.release()
 
 
+def _scan_charuco(path, spec, max_candidates, progress, should_cancel, downscale_max) -> ScanResult:
+    """(I321) `scan_video` for a ChArUco board, found at full resolution (`downscale_max` is the
+    checkerboard's and is not used); a view is kept when a lens can use it (`charuco.usable_for_lens`: 6 corners,
+    not one line). The older OpenCV layout is tried on the first boards when it finds more corners
+    (`charuco.guess_legacy`). At most Argus's 100 best views are kept (R3, `charuco.best_frames`)."""
+    from kinetrace import charuco
+    from kinetrace.calib import even_indices
+    from kinetrace.video_source import open_capture, seek_capture
+    cap = open_capture(str(path))
+    if not cap.isOpened():
+        raise OSError(f"could not open {path}")
+    try:
+        (w, h), rotation = _capture_turn(cap)
+        n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+        if n <= 0:
+            raise OSError("the video reports no frames")
+        idx = even_indices(n, min(n, int(max_candidates)))
+        # (review) detected at FULL resolution, unlike the checkerboard: an ArUco marker needs far more pixels
+        # to decode than a corner needs to be found, and on a 1280-px copy of a 2.7K / 4K picture the boards in
+        # the far corners - where the lens is measured - lost half their corners or were missed
+
+        # which layout the printed board has, from up to 8 frames spread over the video
+        early = []
+        for f in even_indices(len(idx), min(8, len(idx))).tolist():
+            seek_capture(cap, str(path), int(idx[f]))
+            ok, bgr = cap.read()
+            if ok:
+                early.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
+        spec, note = charuco.guess_legacy(early, spec)
+        frames, views, thumbs = [], [], []
+        sample = None
+        for k, f in enumerate(idx.tolist()):
+            if should_cancel is not None and should_cancel():
+                break
+            seek_capture(cap, str(path), int(f))
+            ok, bgr = cap.read()
+            if not ok:
+                continue
+            det = charuco.detect(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), spec)
+            if det is not None:
+                pts, ids = det
+                view = charuco.padded(pts, ids, spec)
+                if charuco.usable_for_lens(view, spec):
+                    frames.append(int(f))
+                    views.append(view)
+                    tw = min(THUMB_MAX_W, bgr.shape[1])
+                    thumbs.append(cv2.resize(bgr, (tw, max(1, round(bgr.shape[0] * tw / bgr.shape[1]))),
+                                             interpolation=cv2.INTER_AREA))
+                    if sample is None:
+                        sample = bgr.copy()
+            if progress is not None:
+                progress((k + 1) / len(idx), f"frame {f}: {len(frames)} boards found")
+        keep = charuco.best_frames(views, (w, h))                # R3 (Argus)
+        if len(keep) < len(views):
+            note = (note + " " if note else "") + (f"{len(views)} boards were found; the {len(keep)} with the most "
+                                                   "corners spread widest are kept (Argus's rule).")
+        from kinetrace import gpmf
+        info = gpmf.read_safe(str(path), sensors=False)
+        return ScanResult((w, h), fps, n, len(idx), [frames[i] for i in keep], [views[i] for i in keep], sample,
+                          [thumbs[i] for i in keep], str(path), ["id"] * len(keep), rotation,
+                          info.orientation if info is not None else "", spec, note)
+    finally:
+        cap.release()
+
+
 def board_record(scan: ScanResult, used: list[int], pattern: tuple[int, int], square_m: float) -> dict:
     """Where a checkerboard fit's boards came from, for `LensProfile.board`: the video (file name and
     full path, picture size, its turn) and the VIDEO frame numbers of the boards the fit used (`used` =
@@ -1000,6 +1090,9 @@ def board_record(scan: ScanResult, used: list[int], pattern: tuple[int, int], sq
            "pattern": [int(v) for v in pattern], "square_m": float(square_m)}
     if scan.gopro_orientation:                      # (I275) GoPro's mounting tag, for tracing
         out["gopro_orientation"] = scan.gopro_orientation
+    if scan.board is not None:                      # (I321) a ChArUco board: what was printed
+        out["kind"] = "charuco"
+        out["charuco"] = scan.board.to_json()
     return out
 
 
@@ -1014,6 +1107,12 @@ def board_sentence(board: dict) -> str:
                 + (f", GoPro mounting tag {board['gopro_orientation']}" if board.get("gopro_orientation") else "")
                 + "); the boards it was measured on are not recorded.")
     fr = board.get("frames") or []
+    if board.get("kind") == "charuco" and board.get("charuco"):       # (I321)
+        from kinetrace.charuco import BoardSpec
+        return (f"Measured on {len(fr)} views of a {BoardSpec.from_json(board['charuco']).words()} in "
+                f"{board['video']} ({board['size'][0]} x {board['size'][1]}), at frames "
+                f"{', '.join(str(f) for f in fr)} (0 = the video's first frame). The file keeps the video's name, "
+                "path, these frames and the board, so the calibration can be checked again later.")
     return (f"Measured on {len(fr)} boards in {board['video']} ({board['size'][0]} x {board['size'][1]}), at frames "
             f"{', '.join(str(f) for f in fr)} (0 = the video's first frame). The file keeps the video's name, path "
             "and these frames, so the calibration can be checked again later.")
@@ -1029,6 +1128,24 @@ def _object_points(pattern: tuple[int, int], square: float) -> np.ndarray:
     return obj
 
 
+def _seen(corners) -> np.ndarray | None:
+    """(I321) The rows of a view that hold a corner, as a boolean mask - or None when every row
+    does. A checkerboard view always has every corner (None: the code below it runs exactly as it
+    always did); a ChArUco view (`charuco.padded`) is the whole inner grid with NaN where a corner
+    was not seen, in the same row-major order as `_object_points`."""
+    c = np.asarray(corners, np.float64).reshape(-1, 2)
+    ok = np.isfinite(c).all(axis=1)
+    return None if ok.all() else ok
+
+
+def _seen_points(corner_list) -> np.ndarray:
+    """(I321) Every seen corner of a list of views, (M, 2): the coverage numbers' points."""
+    pts = np.concatenate(corner_list)
+    if np.isfinite(pts).all():
+        return pts
+    return pts[np.isfinite(pts).all(axis=1)]
+
+
 def view_pose(corners: np.ndarray, pattern: tuple[int, int], square: float,
               prof: "LensProfile") -> tuple[np.ndarray, np.ndarray] | None:
     """Where the board was, for one view: (rvec, tvec) by solvePnP against the
@@ -1037,6 +1154,9 @@ def view_pose(corners: np.ndarray, pattern: tuple[int, int], square: float,
     were found in the wrong order, because its axes point somewhere silly."""
     obj = _object_points(pattern, square)
     img = np.asarray(corners, np.float64).reshape(-1, 1, 2)
+    m = _seen(corners)
+    if m is not None:                              # (I321) a ChArUco view: its seen corners only
+        obj, img = obj[m], img[m]
     if prof.fisheye:
         # undistort to pinhole pixels first; solvePnP has no fisheye model
         img = cv2.fisheye.undistortPoints(img, prof.K, prof.dist.reshape(4, 1)[:4],
@@ -1073,6 +1193,11 @@ def per_view_errors(corner_list: list[np.ndarray], pattern: tuple[int, int], squ
             pose = view_pose(c, pattern, square, prof)
             if pose is None:
                 continue
+            m = _seen(c)
+            if m is not None:                      # (I321) a ChArUco view: its seen corners only
+                proj = project_with(prof, obj[m], pose[0], pose[1])
+                out[i] = _rms_px(proj - np.asarray(c, np.float64).reshape(-1, 2)[m])
+                continue
             proj = project_with(prof, obj, pose[0], pose[1])
             d = proj - np.asarray(c, np.float64).reshape(-1, 2)
             out[i] = _rms_px(d)
@@ -1093,6 +1218,9 @@ def draw_board_review(bgr: np.ndarray, corners: np.ndarray, pattern: tuple[int, 
     img = bgr.copy()
     c = np.asarray(corners, np.float64).reshape(-1, 2) * float(scale)
     cols, rows = pattern
+    m = _seen(c)
+    if m is not None:
+        return _draw_seen_board(img, c, m, corners, pattern, square, prof, scale, axes, every)
     # Size the markers from the spacing between neighbouring corners, or on a
     # thumbnail of a distant board the dots merge into one green smear and
     # hide the very thing they are there to let you check.
@@ -1118,6 +1246,31 @@ def draw_board_review(bgr: np.ndarray, corners: np.ndarray, pattern: tuple[int, 
             cv2.arrowedLine(img, o, q, col, 2, cv2.LINE_AA, tipLength=0.25)
             cv2.putText(img, lab, (q[0] + 3, q[1] + 4), cv2.FONT_HERSHEY_SIMPLEX,
                         0.45, col, 1, cv2.LINE_AA)
+    return img
+
+
+def _draw_seen_board(img, c, m, corners, pattern, square, prof, scale, axes, every) -> np.ndarray:
+    """(I321) `draw_board_review` for a ChArUco view that missed corners: the seen corners, corner 0
+    ringed when seen, the board's axes from the seen corners. No first-row line: every corner is
+    named by its markers, so the order cannot be wrong. Draws on `img` (already a copy)."""
+    cols = int(pattern[0])
+    ids = np.nonzero(m)[0]
+    # marker size from the spacing of seen neighbours in a row
+    nb = [k for k in ids if (k % cols) + 1 < cols and m[k + 1]]
+    step = float(np.median([np.linalg.norm(c[k + 1] - c[k]) for k in nb])) if nb else 8.0
+    r = int(max(1, min(4, round(step / 4.0))))
+    for k in ids[::max(1, int(every))]:
+        cv2.circle(img, (int(round(c[k, 0])), int(round(c[k, 1]))), r, (70, 230, 120), -1, cv2.LINE_AA)
+    if m[0]:
+        cv2.circle(img, (int(round(c[0, 0])), int(round(c[0, 1]))), int(max(4, r * 2.5)), (60, 120, 255),
+                   max(1, r - 1), cv2.LINE_AA)
+    if axes and prof is not None:
+        for lab, a, b in board_axes(corners, pattern, square, prof):
+            o = tuple(np.round(a * float(scale)).astype(int))
+            q = tuple(np.round(b * float(scale)).astype(int))
+            col = AXIS_COLORS_BGR[lab]
+            cv2.arrowedLine(img, o, q, col, 2, cv2.LINE_AA, tipLength=0.25)
+            cv2.putText(img, lab, (q[0] + 3, q[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
     return img
 
 
@@ -1195,6 +1348,8 @@ def _fit_shape(corner_list, pattern, square, base: "LensProfile", fix: tuple = (
     on its corners undistorted with `base`."""
     from scipy.optimize import least_squares
     from scipy.sparse import lil_matrix
+    if any(_seen(c) is not None for c in corner_list):
+        return _fit_shape_seen(corner_list, pattern, square, base, fix)     # (I321) ChArUco views
     obj = _object_points(pattern, square)
     obj3 = obj.reshape(-1, 1, 3)
     D = np.asarray(base.dist, np.float64).reshape(4, 1)
@@ -1231,6 +1386,55 @@ def _fit_shape(corner_list, pattern, square, base: "LensProfile", fix: tuple = (
     r = sol.fun.reshape(-1, npt, 2)
     per_view = [_rms_px(rv) for rv in r]
     rms = _rms_px(r.reshape(-1, 2))
+    tilts = [_board_tilt_deg(sol.x[n_in + 6 * v:n_in + 6 * v + 3]) for v in range(len(imgs))]
+    return rms, K, np.asarray(base.dist, np.float64).ravel(), per_view, tilts
+
+
+def _fit_shape_seen(corner_list, pattern, square, base: "LensProfile", fix: tuple = (False, False)):
+    """(I321) `_fit_shape` for views that may miss corners: each board contributes the corners it
+    saw (its residual rows found by offset, not by one fixed count per board). Same model, solver
+    and returns."""
+    from scipy.optimize import least_squares
+    from scipy.sparse import lil_matrix
+    obj = _object_points(pattern, square)
+    D = np.asarray(base.dist, np.float64).reshape(4, 1)
+    K0 = base.K_square()
+    objs, imgs = [], []
+    for c in corner_list:
+        c = np.asarray(c, np.float64).reshape(-1, 2)
+        m = np.isfinite(c).all(axis=1)
+        objs.append(obj[m])
+        imgs.append(c[m])
+    x0 = [K0[0, 0]] + ([] if fix[0] else [K0[0, 2]]) + ([] if fix[1] else [K0[1, 2]])
+    n_in = len(x0)
+    for o, c in zip(objs, imgs):
+        und = cv2.fisheye.undistortPoints(c.reshape(-1, 1, 2), K0, D).reshape(-1, 2)
+        _ok, rv, tv = cv2.solvePnP(o, und, np.eye(3), None)
+        x0 += np.asarray(rv, np.float64).ravel().tolist() + np.asarray(tv, np.float64).ravel().tolist()
+    starts = np.concatenate([[0], np.cumsum([2 * len(c) for c in imgs])])
+
+    def K_of(x):
+        cx = K0[0, 2] if fix[0] else x[1]
+        cy = K0[1, 2] if fix[1] else x[1 + (0 if fix[0] else 1)]
+        return np.array([[x[0], 0.0, cx], [0.0, x[0], cy], [0.0, 0.0, 1.0]])
+
+    def res(x):
+        K = K_of(x)
+        out = []
+        for v, (o, c) in enumerate(zip(objs, imgs)):
+            q = x[n_in + 6 * v:n_in + 6 * v + 6]
+            pr, _ = cv2.fisheye.projectPoints(o.reshape(-1, 1, 3), q[:3], q[3:], K, D)
+            out.append((pr.reshape(-1, 2) - c).ravel())
+        return np.concatenate(out)
+    S = lil_matrix((int(starts[-1]), len(x0)), dtype=int)
+    for v in range(len(imgs)):
+        rows = slice(int(starts[v]), int(starts[v + 1]))
+        S[rows, :n_in] = 1
+        S[rows, n_in + 6 * v:n_in + 6 * v + 6] = 1
+    sol = least_squares(res, np.asarray(x0, np.float64), jac_sparsity=S, x_scale="jac", method="trf")
+    K = K_of(sol.x)
+    per_view = [_rms_px(sol.fun[int(starts[v]):int(starts[v + 1])].reshape(-1, 2)) for v in range(len(imgs))]
+    rms = _rms_px(sol.fun.reshape(-1, 2))
     tilts = [_board_tilt_deg(sol.x[n_in + 6 * v:n_in + 6 * v + 3]) for v in range(len(imgs))]
     return rms, K, np.asarray(base.dist, np.float64).ravel(), per_view, tilts
 
@@ -1310,6 +1514,8 @@ def _fisheye_flags() -> int:
 
 
 def _fit(corner_list, pattern, square, size, fisheye: bool):
+    if any(_seen(c) is not None for c in corner_list):
+        return _fit_seen(corner_list, pattern, square, size, fisheye)       # (I321) ChArUco views
     obj = _object_points(pattern, square)
     if fisheye:
         # the fisheye solver wants every view as a (1, N, k) float64 array
@@ -1337,6 +1543,43 @@ def _fit(corner_list, pattern, square, size, fisheye: bool):
             proj, _ = cv2.projectPoints(o, r, t, K, D)
             per_view.append(_rms_px(proj.reshape(-1, 2) - im.reshape(-1, 2)))
     tilts = [_board_tilt_deg(r) for r in rvecs]        # the board normal vs the optical axis
+    return float(rms), np.asarray(K, np.float64), np.asarray(dist, np.float64), per_view, tilts
+
+
+def _fit_seen(corner_list, pattern, square, size, fisheye: bool):
+    """(I321) `_fit` for views that may miss corners (a ChArUco board partly out of the picture or
+    covered): each view is fitted on the corners it saw, against those corners' own board
+    positions. The same solvers, flags and returns as `_fit`."""
+    obj = _object_points(pattern, square)
+    pairs = []
+    for c in corner_list:
+        c = np.asarray(c, np.float64).reshape(-1, 2)
+        m = np.isfinite(c).all(axis=1)
+        pairs.append((obj[m], c[m]))
+    if fisheye:
+        objs = [o.reshape(1, -1, 3) for o, _ in pairs]
+        imgs = [im.reshape(1, -1, 2) for _, im in pairs]
+        K = np.zeros((3, 3))
+        D = np.zeros((4, 1))
+        rms, K, D, rvecs, tvecs = cv2.fisheye.calibrate(
+            objs, imgs, size, K, D, flags=_fisheye_flags(),
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 60, 1e-7))
+        dist = D.ravel()
+        per_view = []
+        for o, im, r, t in zip(objs, imgs, rvecs, tvecs):
+            proj, _ = cv2.fisheye.projectPoints(o, r, t, K, D)
+            per_view.append(_rms_px(proj.reshape(-1, 2) - im.reshape(-1, 2)))
+    else:
+        objs = [o.astype(np.float32) for o, _ in pairs]
+        imgs = [im.astype(np.float32) for _, im in pairs]
+        flags = cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K3
+        rms, K, D, rvecs, tvecs = cv2.calibrateCamera(objs, imgs, size, None, None, flags=flags)
+        dist = D.ravel()
+        per_view = []
+        for o, im, r, t in zip(objs, imgs, rvecs, tvecs):
+            proj, _ = cv2.projectPoints(o, r, t, K, D)
+            per_view.append(_rms_px(proj.reshape(-1, 2) - im.reshape(-1, 2)))
+    tilts = [_board_tilt_deg(r) for r in rvecs]
     return float(rms), np.asarray(K, np.float64), np.asarray(dist, np.float64), per_view, tilts
 
 
@@ -1447,7 +1690,7 @@ def coverage_pct(corner_list: list[np.ndarray], size: tuple[int, int]) -> float:
     """Convex-hull area of every detected corner as % of the picture."""
     if not corner_list:
         return 0.0
-    return hull_area_pct(np.concatenate(corner_list).astype(np.float32), size[0], size[1])
+    return hull_area_pct(_seen_points(corner_list).astype(np.float32), size[0], size[1])
 
 
 def edge_reach_pct(corner_list: list[np.ndarray], size: tuple[int, int]) -> float:
@@ -1455,7 +1698,7 @@ def edge_reach_pct(corner_list: list[np.ndarray], size: tuple[int, int]) -> floa
     from the centre as % of the half-diagonal."""
     if not corner_list:
         return 0.0
-    pts = np.concatenate(corner_list)
+    pts = _seen_points(corner_list)
     c = np.array([(size[0] - 1) / 2.0, (size[1] - 1) / 2.0])
     return float(100.0 * np.max(np.linalg.norm(pts - c, axis=1)) / np.hypot(*c))
 
@@ -1489,7 +1732,10 @@ def lens_report(prof: LensProfile, views: list[np.ndarray], per_view: list[float
         good = ok = False
         reasons.append(f"Fit error {prof.rms:.2f} px is too high. Usual causes: the square count typed does "
                        "not match the printed board, the board is not flat, motion blur, or a wrong "
-                       "lens model (try the other one).")
+                       "lens model (try the other one)."
+                       # (I321) a ChArUco view with corners missing: its squares and sizes are typed too
+                       + (" For a ChArUco board, check the square and marker sizes typed against the print."
+                          if any(_seen(v) is not None for v in views) else ""))
     held = (f" ({n_total} frames, but the board was held still in some of them)" if n < n_total else "")
     if n >= 15:
         reasons.append(f"{n_total} views of the board were used"
@@ -1629,5 +1875,7 @@ def coverage_image(scan: ScanResult, chosen: list[int] | None = None, max_w: int
     for i, c in enumerate(scan.corners):
         col = (60, 220, 120) if i in use else (110, 110, 115)
         for x, y in c:
+            if not (np.isfinite(x) and np.isfinite(y)):        # (I321) a ChArUco corner not seen
+                continue
             cv2.circle(img, (int(x * sc), int(y * sc)), 1, col, -1)
     return img

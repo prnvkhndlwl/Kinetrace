@@ -401,6 +401,8 @@ check("Updates" in win.act_updates.text() and "Nothing is checked unless you ask
       "Check for Updates entry")
 html = updatedialog.about_html()
 check("biomechLab@CMC" in html and APP_VERSION in html and "PolyForm Noncommercial" in html, "About text")
+check("Argus" in html and "Jackson" in html and "permission" in html,
+      "(M14) About credits Argus for the ChArUco calibration")
 seen_about = {}
 
 
