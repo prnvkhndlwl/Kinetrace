@@ -10,9 +10,8 @@ Formats, recognised from their contents (`detect`), never from the name:
                         missing; one camera or all of them. First pixel = 1,
                         top-left (DLTdv8), or bottom-left when the
                         `*_pointnames.csv` sidecar says so (older DLTdv, Argus).
-                        DLTdv8a writes {name}_cam{j}_U / _V (I324): the same
-                        raw clicks under another letter; {name} is the
-                        project's point name (pt{i} unless edited by hand).
+                        DLTdv8a writes pt{i}_cam{j}_U / _V (I324): the same
+                        raw clicks under another letter.
     SLEAP analysis CSV  track, frame_idx, instance.score, {node}.x, {node}.y, {node}.score
                         (one track: Kinetrace follows one animal per video).
     Kinetrace tracks    a project folder's tracks/<landmark>.csv (frame, x, y[, confidence,
@@ -43,8 +42,8 @@ from kinetrace import projectfile
 KINDS = {"dlc": "DeepLabCut CSV", "dltdv": "DLTdv / Argus xypts CSV",
          "sleap": "SLEAP analysis CSV", "kinetrace": "Kinetrace tracks (tracks.csv, or one landmark's file)",
          "dvproject": "DLTdv8 project"}         # (I310) made by dltdvproject.imported, never read from a CSV
-# (I324) DLTdv8a: sprintf('%s_cam%s_U', pointName, cam) from its raw clicks (camud only at reconstruction)
-_XYPTS = re.compile(r"^(.+)_cam(\d+)_([xyuv])$", re.IGNORECASE)
+# (I324) DLTdv8a writes _U / _V from its raw clicks (camud only at reconstruction): the same pixels as _X / _Y
+_XYPTS = re.compile(r"^pt(\d+)_cam(\d+)_([xyuv])$", re.IGNORECASE)
 
 
 class TrackImportError(Exception):
@@ -213,19 +212,16 @@ def _read_dlc(path: Path, text: str) -> Imported:
 
 
 # ------------------------------------------------------------------ DLTdv / Argus
-def _sidecar(path: Path, n_pts: int, named: bool = False) -> tuple[list[str], bool, list[str]]:
+def _sidecar(path: Path, n_pts: int) -> tuple[list[str], bool, list[str]]:
     """(point names by index, bottom-left?, notes) from `<stem>_pointnames.csv`,
     read by its HEADER (I175), CSV-quoted:
       `index,name`   one camera: a row `pt<k>,<name>` per point, then `convention,...`;
       `name,cameras` all cameras: the `n_pts` rows after the header ARE the names in
                      order (whatever they are called: pt1, cam2, rows ...), then
-                     `convention,...`, `rows,...` and a `cam<k>,...` row per camera.
-    `named`: the column headers carry names other than pt<k> (I324); only the
-    sidecar's convention is used then."""
+                     `convention,...`, `rows,...` and a `cam<k>,...` row per camera."""
     side = path.with_name(path.stem + "_pointnames.csv")
     if not side.is_file():
-        called = "keep the names in the column headers" if named else "are named pt1, pt2, ..."
-        return [], False, [f"No {side.name} beside it: points {called} and the pixels are "
+        return [], False, [f"No {side.name} beside it: points are named pt1, pt2, ... and the pixels are "
                            "read as DLTdv8's (first pixel = 1, origin top-left)."]
     rows = _rows(_text(side))
     head = [c.strip().lower() for c in rows[0]][:2] if rows else []
@@ -247,7 +243,7 @@ def _sidecar(path: Path, n_pts: int, named: bool = False) -> tuple[list[str], bo
         names = [by_index.get(k, "") for k in range(1, (max(by_index) if by_index else 0) + 1)]
     flip = any(r and r[0].strip() == "convention" and "bottom-left" in ",".join(r[1:]).lower() for r in tail)
     notes = []
-    if not named and any(not n for n in names):                 # a blank name: the point keeps ptK
+    if any(not n for n in names):                               # a blank name: the point keeps ptK
         notes.append(f"{side.name} leaves some points unnamed: they are called pt<k>, k = their column number.")
     return names, flip, notes
 
@@ -255,20 +251,14 @@ def _sidecar(path: Path, n_pts: int, named: bool = False) -> tuple[list[str], bo
 def _read_dltdv(path: Path, text: str) -> Imported:
     rows = _rows(text)
     header = [c.strip() for c in rows[0]]
-    cols = [(m.group(1), int(m.group(2)), 0 if m.group(3).lower() in "xu" else 1, k)
-            for k, h in enumerate(header) if (m := _XYPTS.match(h))]
-    if not cols:
-        raise TrackImportError(f"{path.name}: no <point>_cam<j>_X / _Y (or DLTdv8's _U / _V) columns in its "
-                               "first line")
-    num = [re.fullmatch(r"pt(\d+)", nm, re.IGNORECASE) for nm, _, _, _ in cols]
-    named = not all(num)
-    if named:                   # (I324) the header's own names (hand-edited); points in the header's order
-        order = list(dict.fromkeys(nm for nm, _, _, _ in cols))
-        point = [order.index(nm) for nm, _, _, _ in cols]
-    else:                       # pt<k>: point k, names from the sidecar
-        point = [int(m.group(1)) - 1 for m in num]
-    idx = {(p, c, ax): k for p, (_, c, ax, k) in zip(point, cols)}
-    n_pts = max(point) + 1
+    idx = {}
+    for k, h in enumerate(header):
+        m = _XYPTS.match(h)
+        if m:
+            idx[(int(m.group(1)), int(m.group(2)), m.group(3).lower())] = k
+    if not idx:
+        raise TrackImportError(f"{path.name}: no pt<k>_cam<j>_X / _Y (or _U / _V) columns in its first line")
+    n_pts = max(p for p, _, _ in idx)
     n_cam = max(c for _, c, _ in idx)
     data = rows[1:]
     short = next((i for i, r in enumerate(data) if len(r) != len(header)), None)
@@ -279,9 +269,9 @@ def _read_dltdv(path: Path, text: str) -> Imported:
     colz = list(zip(*data)) if data else [()] * len(header)
     xy = np.full((n_cam, R, n_pts, 2), np.nan, np.float32)
     for (p, c, ax), k in idx.items():
-        xy[c - 1, :, p, ax] = _floats(colz[k], f"{path.name} {header[k]}")
-    names, flip, notes = _sidecar(path, n_pts, named)
-    names = order if named else [names[i] if i < len(names) and names[i] else f"pt{i + 1}" for i in range(n_pts)]
+        xy[c - 1, :, p - 1, 0 if ax in "xu" else 1] = _floats(colz[k], f"{path.name} {header[k]}")
+    names, flip, notes = _sidecar(path, n_pts)
+    names = [names[i] if i < len(names) and names[i] else f"pt{i + 1}" for i in range(n_pts)]
     conf = np.where(np.isfinite(xy).all(-1), 1.0, 0.0).astype(np.float32)
     return Imported("dltdv", names, xy, conf, pixel_origin=1.0, flip_y=flip,
                     rows="reference" if n_cam > 1 else "frames", notes=notes)
