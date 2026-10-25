@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QFormLayout, QGroupBox, 
 from kinetrace import charuco, theme
 from kinetrace import lens as _lens
 from kinetrace.charucoui import CharucoFields
+from kinetrace.calibwizard import _Cancelled
 from kinetrace.errors import plain_error
 from kinetrace.lenswizard import VERDICT_COLORS, _dim, stop_page_threads
 
@@ -232,13 +233,22 @@ class _RunThread(QThread):
     def cancel(self):
         self._cancel = True
 
+    def _note(self, f, m):
+        """The progress callback: a Cancel stops the run at its next step (a lens fit, a focal-length
+        guess, an adjustment pass), as the wand wizard's (I36) - `done()` then waits for a thread that is
+        ending, not for a whole solve."""
+        if self._cancel:
+            raise _Cancelled()
+        self.progress.emit(float(f), str(m))
+
     def run(self):
         from kinetrace import wand as _wand
         try:
-            out = calibrate_rig(self.project, self.scan, self.choice, self.existing,
-                                progress=lambda f, m: self.progress.emit(float(f), str(m)))
+            out = calibrate_rig(self.project, self.scan, self.choice, self.existing, progress=self._note)
             if not self._cancel:
                 self.finished_ok.emit(out)
+        except _Cancelled:
+            return
         except (_wand.WandError, ValueError) as e:
             self.error.emit(str(e))
         except Exception as e:      # noqa: BLE001

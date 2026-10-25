@@ -311,6 +311,18 @@ check("Restored the lens profiles and the calibration" in win.statusBar().curren
       or "Restored the lens profiles and the calibration" in str(getattr(win.toast, "text", lambda: "")()),
       "Ctrl+Z says what it put back", win.statusBar().currentMessage())
 
+# (review) a Cancel stops "Calibrate now" at its next step: the worker ends without a result
+done_ = []
+th_ = cwz._RunThread(p, cwz.charuco.scan_rig(p, sc.RIG_SPEC, n=30), "both", {})
+th_.finished_ok.connect(lambda out: done_.append(out))
+th_.cancel()
+t0_ = time.time()
+th_.start()
+th_.wait(30000)
+pump(0.1)
+check(th_.isFinished() and not done_ and time.time() - t0_ < 5,
+      "a cancelled Calibrate now ends at once, with no result", (th_.isFinished(), len(done_), time.time() - t0_))
+
 RIG.update(choice="lenses")
 win.act_charuco.trigger()
 pump(0.5)
