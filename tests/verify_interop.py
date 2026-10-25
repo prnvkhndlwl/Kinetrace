@@ -1,7 +1,8 @@
 """Other programs' files in and out of Kinetrace (no GPU).
 
 [1] 2D tracks (trackio.py): DeepLabCut CSV, DLTdv / Argus xypts (one camera,
-    all cameras, top-left and bottom-left, with and without the sidecar),
+    all cameras, top-left and bottom-left, with and without the sidecar;
+    DLTdv8a's own _U / _V header),
     SLEAP (1.x analysis CSV and sleap-io's sleap / instances / points / frames
     layouts), Kinetrace's own tracks.csv. Each is checked two ways: a file
     written by hand the way the other program writes it (a hand-computed
@@ -24,6 +25,7 @@
 
 Run: .venv\\Scripts\\python.exe tests\\verify_interop.py
 """
+import csv
 import os
 import shutil
 import sys
@@ -170,6 +172,51 @@ for c, s_ in enumerate((a, b)):
         check(not t.tracked[T - 5:].any() and t.tracked[:T - 5].all(),
               "camera B's frames come back through the offset (its last 5 frames are after camera A's end)")
 check(worst <= 5e-5 + 1e-4, "each camera's positions come back", f"max diff {worst}")
+
+
+# (I324) DLTdv8a writes its xypts header as 'pt<k>_cam<j>_U' / '_V' (the raw clicks, the same pixels as _X / _Y)
+def uv_twin(p, name):
+    """The same xypts file (and its sidecar) with DLTdv8a's _U / _V header: data rows untouched."""
+    with open(p, encoding="utf-8", newline="") as fh:
+        rows = list(csv.reader(fh))
+    rows[0] = [c[:-2] + {"_X": "_U", "_Y": "_V"}[c[-2:]] for c in rows[0]]
+    q = os.path.join(OUT, name)
+    with open(q, "w", encoding="utf-8", newline="") as fh:
+        csv.writer(fh).writerows(rows)
+    side = os.path.splitext(p)[0] + "_pointnames.csv"
+    if os.path.isfile(side):
+        shutil.copyfile(side, os.path.splitext(q)[0] + "_pointnames.csv")
+    return q
+
+
+def read_or_none(p):
+    try:
+        return trackio.read(p), ""
+    except trackio.TrackImportError as e:
+        return None, str(e)
+
+
+def same_import(a, b):
+    return (a.kind == b.kind and a.names == b.names and a.rows == b.rows and a.flip_y == b.flip_y
+            and a.pixel_origin == b.pixel_origin and a.notes == b.notes
+            and np.array_equal(a.xy, b.xy, equal_nan=True) and np.array_equal(a.conf, b.conf))
+
+
+p = os.path.join(OUT, "one_xypts.csv")
+imp_x = trackio.read(p)
+imp_u, err = read_or_none(uv_twin(p, "one_uv_xypts.csv"))
+check(imp_u is not None and same_import(imp_u, imp_x),
+      "DLTdv8a's _U / _V header (pt1_cam1_U ...) reads exactly like the same file with _X / _Y", err)
+if imp_u is not None:
+    s_x, s_u = session(), session()
+    trackio.apply(s_x, imp_x)
+    trackio.apply(s_u, imp_u)
+    check(np.array_equal(s_u.tracks, s_x.tracks, equal_nan=True) and np.array_equal(s_u.tracked, s_x.tracked)
+          and np.array_equal(s_u.confidence, s_x.confidence, equal_nan=True) and s_x.tracked.any(),
+          "and lands in a camera bit for bit the same")
+imp_u, err = read_or_none(uv_twin(os.path.join(OUT, "multi_xypts.csv"), "multi_uv_xypts.csv"))
+check(imp_u is not None and same_import(imp_u, trackio.read(os.path.join(OUT, "multi_xypts.csv"))),
+      "an all-cameras _U / _V file reads exactly like its _X / _Y twin", err)
 
 print("\n[1c] SLEAP")
 v14 = ("track,frame_idx,instance.score,head.x,head.y,head.score,tail.x,tail.y,tail.score\n"

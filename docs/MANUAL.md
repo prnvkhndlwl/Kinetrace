@@ -3290,6 +3290,9 @@ belong to first.
   DLTdv and Argus count up from the bottom edge — its `_pointnames.csv` file
   says which). Confidence comes along (DeepLabCut's likelihood, SLEAP's scores);
   instances you labelled by hand in SLEAP arrive as hand-placed.
+* DLTdv8 saves its points file with columns `pt1_cam1_U`, `pt1_cam1_V` … where
+  other programs write `pt1_cam1_X`, `pt1_cam1_Y`: the letters differ, the
+  numbers are the same clicks, and both are read.
 * A DLTdv / Argus file with several cameras goes into the cameras of your
   project in the file's order (add the videos first); otherwise the program
   asks which of the file's cameras is the one on screen.
