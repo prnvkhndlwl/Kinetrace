@@ -7,7 +7,11 @@
   restarts, and be at least as accurate as full-frame.
 - A target near the PICTURE border (the crop clipped against it) must keep its
   crop for the whole run: a crop side on the border is not an edge to escape
-  (I119: it used to restart every window, grow and drop ROI altogether).
+  (I119: it used to restart every window, grow and drop ROI altogether), and
+  its crop is the 768 x 576 minimum.
+- A long constellation at 4K (I325): CoTracker3's crop has the model's 4:3
+  shape (one side kept, the other grown, centred on the points; declined when
+  the padded crop is under 2x zoom); AllTracker's is the plain crop, exactly.
 Prerequisite: test4k.mp4 (regenerate with
   python make_test_video.py test4k.mp4 --frames 300 --size 3840x2160 --dots 4 --seed 7)."""
 import os

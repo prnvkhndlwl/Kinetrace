@@ -3712,8 +3712,8 @@ Selecting a point never starts the silhouette program on its own.
 **ROI** (bottom bar, on by default) — when your animal is small in a big frame,
 the program works on a zoomed-in crop so it can see more detail. It decides for
 itself whether that helps (only when the crop is at least twice as close). With
-CoTracker3 the crop always has the model's own picture shape (4:3), so a long
-animal is not squashed on its way into the model.
+CoTracker3 the crop has the model's own picture shape (4:3) wherever the picture
+leaves room for it, so a long animal is not squashed on its way into the model.
 
 **Follow** (bottom bar, off by default) — **the view stays exactly where you put
 it** unless you switch this on: nothing pans or zooms on its own, in any camera
