@@ -584,7 +584,8 @@ class VideoPage(QWizardPage):
         rot = display_rotation(s.video_path)
         if self.wiz.scan is not None:       # a board video filmed level fits a camera filmed on its side
             return lens.turn_needed(self.wiz.scan.size, self.wiz.scan.rotation, cam, rot, p.name(view),
-                                    "The checkerboard video has")[1]
+                                    "The ChArUco board video has" if self.wiz.scan.board is not None
+                                    else "The checkerboard video has")[1]
         prof = self.wiz.result_profile
         if prof is not None:
             fitted, why = lens.fit_profile(prof, cam, rot, p.name(view))

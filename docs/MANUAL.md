@@ -1840,8 +1840,8 @@ tracked near the edges would land in the wrong place in 3D by about that much.
 - **Not sure?** Do it once; the report tells you in pixels how much your lens
   bends the edges, and whether it matters.
 
-**3D → Calibrate → Calibrate a Lens (checkerboard)…** walks you through it, with or
-without a video open. Best is to have the project with your cameras open, so
+**3D → Calibrate → Calibrate a Lens (checkerboard or ChArUco)…** walks you through it, with or
+without a video open (a ChArUco board works too: see *With a ChArUco board instead* below). Best is to have the project with your cameras open, so
 the finished profile can be attached to one of them straight away (the wand
 wizard's *The cameras* page also has a **Calibrate…** button per camera that
 opens the same wizard). With nothing open, the wizard still runs — print the
@@ -1871,7 +1871,7 @@ close it without saving, the program offers to save it for you. The wizard:
    the black square beside them, so the axes stay attached to the board
    however it is held. Holding the board still does not help: what counts is
    how many *different* poses it was shown in, not how many frames.
-3. On the page *The checkerboard video*, press **Choose…** and pick that video.
+3. On the page *The board video*, press **Choose…** and pick that video.
    (The box starts with a video that is already open — usually the wand or
    animal recording, which has no board in it; replace it unless it is the
    board video.) Under *This is the lens of camera* pick the camera, check
@@ -1910,7 +1910,10 @@ close it without saving, the program offers to save it for you. The wizard:
    look at those frames. Forgot? **File → Export → Lens Profile…**
    saves any camera's profile at any time (however it was made: checkerboard,
    GoPro's lens model, a file), as a Kinetrace `.klens.json` or for other
-   programs (OpenCV `.yml` / `.json`, Argus `.txt` for a standard lens), and
+   programs (OpenCV `.yml` / `.json`, Argus `.txt` for a standard lens; with two or more
+   cameras profiled, the list also offers **Every camera with a lens — one Argus
+   camera_profile.txt**, a line per camera numbered as the project's cameras, pixels
+   counted y up as Argus Wand does), and
    **3D → Calibrate → Load a Lens Profile for Cameras…** puts a saved profile on as many
    cameras as you like in one go — a rig of 5 + 5 or 4 + 4 + 2 identical
    cameras needs one load per group. It lists every camera with what it
@@ -1934,6 +1937,30 @@ close it without saving, the program offers to save it for you. The wizard:
    9 more*. Leave it off for cameras with other lenses or zoom settings: the
    same picture size does not prove the same lens.
 
+**With a ChArUco board instead.** A ChArUco board is a checkerboard with a small
+marker printed in every white square. Each corner is named by the markers around
+it, so a board **half out of the picture, or partly covered by your hand, still
+counts** — pushing it into the picture's corners, where the lens bends most, is
+easy — and no corner can be taken for another. On the first page press **Save a
+ChArUco board to print…** (7 × 5 squares of 30 mm, markers 22 mm: it fits A4 and
+Letter; print at 100 % and measure a square). On *The board video* choose
+**ChArUco board (markers in the white squares)** under *Board*: the checkerboard's
+boxes give way to the ChArUco ones — *ChArUco squares* (squares across × down,
+counting squares, not corners), *Measured sizes* (one square and one marker, in
+the unit you pick) and *Marker dictionary* (the family of markers the board was
+printed with; Kinetrace's own board is DICT_4X4_50 — another program or website
+that made your board names it). A board that cannot exist (a marker bigger than
+its square, more markers than the dictionary has) is said in red at once, and
+*Find the boards* will not run. A board printed by an older program with an even
+number of rows uses OpenCV's older layout: the wizard notices and says so. Film it
+as above, but you no longer need to keep the whole board in the picture. On *Check
+the boards* a partly seen board shows the corners it had; its corners cannot be
+dragged (each is named by its markers, so none can be out of order): untick a
+board you do not trust. The rest — verdict, hand checks, *Attach to*, the lens
+file — is the same. The ChArUco route follows **Argus** (Jackson et al. 2016,
+*Biology Open*), adapted with its authors' permission; please cite it if you use
+it.
+
 **Two hand checks on the last page.** The report says how many pixels the
 lens curves the picture edges by: how far an edge pixel sits from where a
 straight-line lens would put it. That is the lens's own curvature, not an
@@ -1952,6 +1979,65 @@ sure* it fits both models to the very same boards, and when it leaves the
 fisheye out because it runs away at the edges, the report says so. The pixel
 limits in the verdicts are scaled by the picture's longer side, so a portrait
 video is judged like a landscape one.
+
+---
+
+### Lenses and cameras from one ChArUco board
+
+Instead of a checkerboard per camera and then a wand, **one printed ChArUco board
+filmed by all your cameras at once** can give both: each camera's lens (its focal
+length, centre and distortion) and where the cameras are. This is the route Argus
+takes (Jackson et al. 2016, *Biology Open*), adapted in Kinetrace with its
+authors' permission; please cite it if you use it.
+
+**What to film.** Use the biggest board you can print well (the board's long edge
+becomes the "wand": its length sets the size of the whole 3D world). Open the
+board videos of every camera as the cameras of one project and set their offsets
+(3D → Sync → Sync Cameras), exactly as for a wand. Move the board **slowly**
+through the space where the animal will be, its printed side towards the
+cameras, near and far, tilted, and into the corners of each picture — a board
+half out of a picture still counts there.
+
+**3D → Calibrate → Calibrate Cameras with a ChArUco Board…** opens a two-page
+wizard. Nothing changes in the project until you press the last button.
+
+1. *The ChArUco board*: type the board (squares across × down, the square and
+   marker you measured, the dictionary — as in the lens wizard), the stretch of
+   the recording to look in and how many instants (50 is Argus's choice; more
+   finds more boards but takes longer), and tick the cameras. Under **What to
+   calibrate** choose:
+   - **Lenses and camera positions** (recommended): each camera's lens from its
+     own boards, then the cameras placed with those lenses. Lens profiles the
+     cameras had are replaced.
+   - **Lenses only**: each camera gets the lens measured from its boards; the
+     calibration stays as it is.
+   - **Camera positions only**: the cameras keep the lens profiles they have (the
+     page names them); a camera without one is solved as a plain pinhole.
+
+   Press **Find the board**. Each camera's line says at how many instants it saw
+   the board and how many of those are good enough for its lens (15 or more is
+   good), and how many instants place the cameras (two or more cameras see a long
+   edge's two end corners and share at least 6 corners; at least 10, 30 or more is
+   good). A camera whose frame cannot be decoded is named, with the frame.
+   Changing the board, the stretch or the cameras afterwards asks for a new search.
+2. *Calibrate*: press **Calibrate now**. The report starts with the board — the
+   long edge used as the wand and its length (**hand check: measure that edge on
+   your printed board**) — then each lens's verdict, focal length, fit error and
+   coverage, and then the same calibration report as the wand wizard's (camera
+   spacing to check with a tape, reprojection errors, coverage). **Save for
+   Argus…** writes Argus's three files into a folder you choose: `camera_profile.txt`
+   (every camera's lens), `paired_pts-xypts.csv` (the board's long edge at each
+   instant, as a wand) and `unpaired_pts-xypts.csv` (every other corner two or more
+   cameras saw), with raw pixels counted y up as Argus does, cameras numbered in
+   the order the page lists them — to carry on in Argus Wand.
+
+The last button says what it will do — **Use these lenses and this
+calibration**, **Use these lenses** or **Use this calibration** — and **one Ctrl+Z**
+takes back the lenses and the calibration together. Cancel changes nothing. The
+offsets are never changed here, and the timing check and *Refine offsets with the
+wand* of the wand wizard are not offered (they need tracked wand ends): set the
+offsets well first. The world keeps the first camera's axes, with its origin among
+the board positions used; set your own axes afterwards with 3D → Set World Axes.
 
 ---
 
@@ -3806,8 +3892,8 @@ The error message gives you an exact `ffmpeg` command that converts it.
 lens it measures to one camera of the project that is open. Two ways to do it:
 
 - **With your experiment open** (the project with your cameras, or that
-  camera's own video): choose **3D → Calibrate → Calibrate a Lens (checkerboard)…**. On the
-  page *The checkerboard video*, press **Choose…** and pick the video of the
+  camera's own video): choose **3D → Calibrate → Calibrate a Lens (checkerboard or ChArUco)…**. On the
+  page *The board video*, press **Choose…** and pick the video of the
   board. The box starts out showing the camera's own video, which has no board
   in it. Say which camera the lens belongs to (the board video must have the
   same picture size as that camera), press *Find the boards*, and on the last
