@@ -136,8 +136,8 @@ os.remove(VID3)
 # ---- 4. a long constellation: CoTracker3's crop has the model's 4:3 shape (I325) ----
 # CoTracker3 resizes any crop to its fixed 512 x 384 input, so a crop of another shape reached it squashed: head to
 # tail lying top to bottom gave 768 x 1332, squashed 2.3x along the body, and on real 4K footage the mid-body point
-# slid down the tail. The crop is padded with picture to 4:3 around the same centre (its long side unchanged), and
-# the 2x zoom rule judges the padded crop. AllTracker keeps the picture's shape: its crop is today's, exactly.
+# slid down the tail. The side too short for 4:3 grows with picture around the same centre (the other side stays),
+# and the 2x zoom rule judges the padded crop. AllTracker keeps the picture's shape: its crop is today's, exactly.
 LONG = {"tall": [(1900.0, 400.0), (1900.0, 800.0), (1900.0, 1200.0)],
         "wide": [(1500.0, 1080.0), (2000.0, 1080.0), (2500.0, 1080.0)],
         "tall, under 2x once padded": [(1900.0, 300.0), (1900.0, 800.0), (1900.0, 1300.0)]}
@@ -159,7 +159,9 @@ for name, pts in LONG.items():
     assert c is not None, f"{name}: ROI must engage"
     cx0, cy0, cw, ch = c
     assert abs(cw * 384 - ch * 512) <= 512, f"{name}: CoTracker3 crop {cw} x {ch} is not the model's 4:3 shape (I325)"
-    assert max(cw, ch) == max(BBOX_CROP[name]), f"{name}: the padding changed the crop's long side ({cw} x {ch})"
+    bw, bh = BBOX_CROP[name]
+    assert cw >= bw and ch >= bh and (cw == bw or ch == bh), \
+        f"{name}: padding must keep one side and only grow the other ({bw} x {bh} -> {cw} x {ch})"
     assert 3840 / max(cw, ch) >= 2.0
     p = np.asarray(pts)
     assert abs(cx0 + cw / 2 - (p[:, 0].min() + p[:, 0].max()) / 2) <= 1.0 and \

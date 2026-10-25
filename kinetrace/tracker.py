@@ -883,11 +883,12 @@ class TrackingWorker(QThread):
 
     # -------------------------------------------------------------- segments
 
-    def _compute_crop(self, specs: list[PointSpec],
-                      seg_start: int | None = None) -> tuple[int, int, int, int] | None:
+    def _compute_crop(self, specs: list[PointSpec], seg_start: int | None = None,
+                      model_wh: tuple[int, int] | None = None) -> tuple[int, int, int, int] | None:
         """Fixed crop for one segment, or None for full-frame processing. With
         an segment, the crop covers its mask at the segment start too — the
-        crop follows the segment, not just the points."""
+        crop follows the segment, not just the points. `model_wh` = the point
+        model's fixed input (w, h): the crop is padded to its shape (I325)."""
         nw, nh = self._frame_wh
         if not self.roi or max(nw, nh) / 512.0 <= 1.5:
             return None
@@ -908,6 +909,13 @@ class TrackingWorker(QThread):
         grow = self._crop_growth  # widens after churn-y (short) segments
         cw = int(min(nw, max((x1 - x0) * (1 + 2 * ROI_MARGIN_FRAC), ROI_MIN_W) * grow))
         ch = int(min(nh, max((y1 - y0) * (1 + 2 * ROI_MARGIN_FRAC), ROI_MIN_H) * grow))
+        if model_wh is not None:
+            # (I325) CoTracker3 resizes any crop to its fixed input (512 x 384): a crop of another shape
+            # reached it squashed (head to tail lying top to bottom: 768 x 1332, 2.3x along the body, and a
+            # mid-body point slid down the tail on real 4K footage). The side too short for the model's shape
+            # grows with picture; the zoom rule below judges that padded crop. AllTracker keeps the picture's shape.
+            mw, mh = model_wh
+            cw, ch = min(nw, max(cw, round(ch * mw / mh))), min(nh, max(ch, round(cw * mh / mw)))
         if max(nw, nh) / max(cw, ch) < ROI_MIN_ZOOM:
             return None
         cx0 = centred_origin((x0 + x1) / 2, cw, nw)         # (R39) cw <= nw, ch <= nh
@@ -993,7 +1001,8 @@ class TrackingWorker(QThread):
         self._cur = self._first()
         q_seeds_arr = np.asarray(q_seeds, np.float32)   # (Q, 2) native px
 
-        crop = self._compute_crop(specs, seg_start)
+        crop = self._compute_crop(specs, seg_start,
+                                  None if use_at else (model.interp_shape[1], model.interp_shape[0]))
         if crop is not None:
             cx0, cy0, cw, ch = crop
         else:
