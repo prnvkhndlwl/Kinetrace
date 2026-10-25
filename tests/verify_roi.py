@@ -7,7 +7,11 @@
   restarts, and be at least as accurate as full-frame.
 - A target near the PICTURE border (the crop clipped against it) must keep its
   crop for the whole run: a crop side on the border is not an edge to escape
-  (I119: it used to restart every window, grow and drop ROI altogether).
+  (I119: it used to restart every window, grow and drop ROI altogether), and
+  its crop is the 768 x 576 minimum.
+- A long constellation at 4K (I325): CoTracker3's crop has the model's 4:3
+  shape (one side kept, the other grown, centred on the points; declined when
+  the padded crop is under 2x zoom); AllTracker's is the plain crop, exactly.
 Prerequisite: test4k.mp4 (regenerate with
   python make_test_video.py test4k.mp4 --frames 300 --size 3840x2160 --dots 4 --seed 7)."""
 import os
@@ -29,12 +33,12 @@ SCRATCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(SCRATCH, exist_ok=True)
 
 
-def run(vid, specs, n_frames, roi):
+def run(vid, specs, n_frames, roi, backend="cotracker3"):
     K = len(specs)
     tracks = np.full((n_frames, K, 2), np.nan, np.float32)
     emitted = np.zeros(n_frames, bool)
     w = TrackingWorker(vid, 0, None, None, FrameCache(400 * 1024 * 1024),
-                       n_frames, refine=True, specs=specs, roi=roi, autopause=False)
+                       n_frames, refine=True, specs=specs, roi=roi, autopause=False, point_backend=backend)
 
     def on_chunk(w0, tr, vi, cf, mem, fr):
         tracks[w0:w0 + tr.shape[0]] = tr
@@ -127,9 +131,56 @@ for corner, p in paths3.items():
     print(f"picture-border target ({corner}): {len(crops3)} segment(s), crop {crops3[0]}, "
           f"err mean {np.nanmean(e3):.2f} px")
     assert crops3[0] is not None, "ROI must engage on a small target at 1080p"
+    assert tuple(crops3[0][2:]) == (768, 576), f"the minimum crop is 768 x 576 (it is 4:3 already): {crops3[0]}"
     assert len(crops3) == 1, f"restart churn at the picture border: crops {crops3}"
     assert em3.all() and np.isfinite(tr3[:, 0, 0]).all()
     assert np.nanmean(e3) < 2.0, f"border target tracked badly ({np.nanmean(e3):.2f} px)"
 os.remove(VID3)
+
+# ---- 4. a long constellation: CoTracker3's crop has the model's 4:3 shape (I325) ----
+# CoTracker3 resizes any crop to its fixed 512 x 384 input, so a crop of another shape reached it squashed: head to
+# tail lying top to bottom gave 768 x 1332, squashed 2.3x along the body, and on real 4K footage the mid-body point
+# slid down the tail. The side too short for 4:3 grows with picture around the same centre (the other side stays),
+# and the 2x zoom rule judges the padded crop. AllTracker keeps the picture's shape: its crop is today's, exactly.
+LONG = {"tall": [(1900.0, 400.0), (1900.0, 800.0), (1900.0, 1200.0)],
+        "wide": [(1500.0, 1080.0), (2000.0, 1080.0), (2500.0, 1080.0)],
+        "tall, under 2x once padded": [(1900.0, 300.0), (1900.0, 800.0), (1900.0, 1300.0)]}
+BBOX_CROP = {"tall": (768, 1360), "wide": (1700, 576), "tall, under 2x once padded": (768, 1700)}   # before I325
+
+
+def first_crop(backend, pts):
+    specs = [PointSpec(i, np.asarray(p, np.float32)) for i, p in enumerate(pts)]
+    _out, log = with_crop_log(lambda: run(VID2, specs, 20, roi=True, backend=backend))
+    return log[0]
+
+
+for name, pts in LONG.items():
+    c = first_crop("cotracker3", pts)
+    print(f"CoTracker3, {name} constellation: crop {c}")
+    if name.startswith("tall, under"):
+        assert c is None, f"{name}: the crop padded to 4:3 is under 2x zoom, so ROI must decline (got {c})"
+        continue
+    assert c is not None, f"{name}: ROI must engage"
+    cx0, cy0, cw, ch = c
+    assert abs(cw * 384 - ch * 512) <= 512, f"{name}: CoTracker3 crop {cw} x {ch} is not the model's 4:3 shape (I325)"
+    bw, bh = BBOX_CROP[name]
+    assert cw >= bw and ch >= bh and (cw == bw or ch == bh), \
+        f"{name}: padding must keep one side and only grow the other ({bw} x {bh} -> {cw} x {ch})"
+    assert 3840 / max(cw, ch) >= 2.0
+    p = np.asarray(pts)
+    assert abs(cx0 + cw / 2 - (p[:, 0].min() + p[:, 0].max()) / 2) <= 1.0 and \
+        abs(cy0 + ch / 2 - (p[:, 1].min() + p[:, 1].max()) / 2) <= 1.0, f"{name}: crop {c} is not centred on the points"
+    mx, my = 0.12 * cw, 0.12 * ch
+    assert ((p[:, 0] > cx0 + mx) & (p[:, 0] < cx0 + cw - mx) & (p[:, 1] > cy0 + my) & (p[:, 1] < cy0 + ch - my)).all(), \
+        f"{name}: a seed starts in the crop's edge band ({c})"
+
+from kinetrace import alltracker_backend  # noqa: E402
+if alltracker_backend.available():
+    for name, pts in LONG.items():
+        c = first_crop("alltracker", pts)
+        print(f"AllTracker, {name} constellation: crop {c}")
+        assert c is not None and tuple(c[2:]) == BBOX_CROP[name], f"{name}: AllTracker's crop changed ({c})"
+else:
+    print("AllTracker is not installed here: its unchanged-crop check is skipped")
 
 print("ROI PASSED")
