@@ -2513,6 +2513,7 @@ class RunDriver(QThread):
     error = Signal(str)
     session_chunk = Signal(int, int, object, object, object)
     session_state = Signal(int, bool, int)
+    session_ready = Signal()                     # a session has its model and is tracking
     is_run_driver = True
 
     def __init__(self, primary, jobs):
@@ -2533,6 +2534,8 @@ class RunDriver(QThread):
         for i, job in enumerate(self.jobs):
             w = job.worker
             self._watch(w)
+            w.model_progress.connect(self.model_progress, direct)     # (review R1-M4) a session's first download
+            w.started_ok.connect(self.session_ready, direct)
             w.chunk_ready.connect(lambda w0, tr, vi, cf, _m, _f, i=i: self.session_chunk.emit(i, int(w0), tr, vi, cf),
                                   direct)
             w.source_gone = self._gone
@@ -2552,6 +2555,19 @@ class RunDriver(QThread):
     @private_model.setter
     def private_model(self, on) -> None:            # MultiTrackingWorker: every camera after the first (I141)
         self.primary.private_model = on
+
+    @property
+    def decode_failed_at(self):
+        """(review R1-M3) The first frame any of the run's workers could not decode (None = none)."""
+        fails = [w.decode_failed_at for w in [self.primary] + [j.worker for j in self.jobs]
+                 if getattr(w, "decode_failed_at", None) is not None]
+        return min(fails) if fails else None
+
+    @property
+    def decode_transient(self) -> bool:
+        f = self.decode_failed_at
+        return bool(f is not None and any(getattr(w, "decode_failed_at", None) == f and getattr(w, "decode_transient", False)
+                                          for w in [self.primary] + [j.worker for j in self.jobs]))
 
     @property
     def _autopause_reason(self) -> str:

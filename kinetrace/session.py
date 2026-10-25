@@ -739,12 +739,13 @@ class TrackingSession:
         restart writes, the click (x, y)), ...]). The one stretch rule (D3): clicks with up to two missing frames
         between them are one stretch; a tracker starts again once, at the stretch's LAST click, and writes up to
         the frame before the next stretch; nobody writes inside a stretch (the clicks are kept, the frames missing
-        between them stay as they are - Fill gaps fills them). Not the speed click right after a click on `start`
-        (`spots.reseed_frames`)."""
+        between them stay as they are - Fill gaps fills them). (A Moving spot's speed click right after a click
+        on `start` is no restart - `spots.reseed_frames` - but a point model has no speed click: clicks on the start
+        frame and the next one restart it at the next one, review R1-M1.)"""
         from kinetrace.spots import hand_stretches
         start, end = int(start), int(end)
         clicks = self.hand_clicks(pid, start, end)
-        sts = [st for st in hand_stretches(clicks) if st[-1] > start and st != [start, start + 1]]
+        sts = [st for st in hand_stretches(clicks) if st[-1] > start]
         restarts = []
         for i, st in enumerate(sts):
             last = sts[i + 1][0] - 1 if i + 1 < len(sts) else end - 1
@@ -778,6 +779,9 @@ class TrackingSession:
             b = g0 - 1
             if g1 + 1 < end and hand[b] and hand[g1 + 1] and g1 - g0 + 1 <= TEST_MAX_GAP:
                 skip.append((g0, g1, "between your clicks"))
+                continue
+            if self.occluded[g0:g1 + 1, pid].any():          # (review R1-I2) its own frames marked hidden
+                skip.append((g0, g1, "marked hidden"))
                 continue
             x, y = (float(v) for v in self.tracks[b, pid])
             if not self.tracked[b, pid]:

@@ -9925,21 +9925,23 @@ class MainWindow(QMainWindow):
             fw._kt_keep, fw._kt_own_pid = True, dict(first.own)
             fw._kt_own = [first.own.get(q) for q in fw.point_ids]
             fw._kt_hand = (first.frame, [], [])
+            fw._kt_restarts = 1
             w = fw
         if not jobs:
             return w
         drv = RunDriver(w, jobs)
-        drv._kt_restarts = len(jobs)
+        drv._kt_restarts = len(jobs) + int(getattr(w, "_kt_restarts", 0) or 0)     # (R1-M6) a promoted one counts
         return drv
 
     def _session_worker(self, s, frame: int, pids, n_end: int, backend: str, resume=(), live=None, primary=None,
-                        rows=None, decode: bool = False):
+                        rows=None, decode: bool = False, autopause: bool | None = None):
         """(I316, PR B) One tracker session for `pids` from their positions on `frame` (their clicks, or the frame
         before a gap), built as a run from that frame builds one: `_point_specs`, this run's model, ROI and
         Auto-pause; a held point kept on its animal's LIVE silhouette when `primary` segments it (`live` {animal:
         its index there}), else on the saved one. `resume` = its points with a later restart (cut, not stopped,
         where lost); `decode` = it reads its own frames and is drawn (a run's first), else the run's
-        (`CacheFirstSource`); `rows` = its first column as emitted (a head, D2)."""
+        (`CacheFirstSource`); `rows` = its first column as emitted (a head, D2); `autopause` None = the toolbar's
+        switch (a gap's run: always on, D9)."""
         from kinetrace.tracker import AnimalSpec, LiveMasks, TrackingWorker
         held: dict[int, set] = {}
         for q in pids:
@@ -9955,7 +9957,8 @@ class MainWindow(QMainWindow):
                                           constrain=set(qs)))
         return TrackingWorker(self.info.path, int(frame), None, None, self.cache, int(n_end), refine=True,
                               specs=self._point_specs(pids, s.positions_at(int(frame))), roi=self.btn_roi.isChecked(),
-                              autopause=self.btn_autopause.isChecked(), animals=animals or None, point_backend=backend,
+                              autopause=self.btn_autopause.isChecked() if autopause is None else bool(autopause),
+                              animals=animals or None, point_backend=backend,
                               resume_pids=set(resume) or None, cache_first=not decode, emit_frames=decode,
                               keep_rows=rows)
 
@@ -10020,11 +10023,12 @@ class MainWindow(QMainWindow):
         s = self.session
         items = sorted(c["items"], key=lambda it: it[1])
         q0, b0, a0, g0, _stop0 = items[0]
-        w = self._session_worker(s, b0, [q0], c["end"] + 1, c["model"], {q0}, decode=True)
+        # (D9, review R1-I1) Auto-pause on inside a gap: a point lost there is cut, never a guess written into it
+        w = self._session_worker(s, b0, [q0], c["end"] + 1, c["model"], {q0}, decode=True, autopause=True)
         w._kt_keep, w._kt_own_pid = True, {q0: (a0, g0)}
         w._kt_own = [(a0, g0)]
         w._kt_hand = (b0, [], [])
-        jobs = [SessionJob(b, self._session_worker(s, b, [q], stop + 1, c["model"], {q}), {q: (a, g)})
+        jobs = [SessionJob(b, self._session_worker(s, b, [q], stop + 1, c["model"], {q}, autopause=True), {q: (a, g)})
                 for q, b, a, g, stop in items[1:]]
         st["runs"] += 1
         st["items"] += len(items)
@@ -10548,6 +10552,7 @@ class MainWindow(QMainWindow):
         if getattr(w, "is_run_driver", False):
             w.session_chunk.connect(self._on_session_chunk)
             w.session_state.connect(self._on_session_state)
+            w.session_ready.connect(self._on_session_ready)
         self._run_hand = getattr(w, "_kt_hand", None)       # (I189)
         self._run_keep = bool(getattr(w, "_kt_keep", False))   # (I320)
         self._run_own = getattr(w, "_kt_own", None)
@@ -10571,8 +10576,13 @@ class MainWindow(QMainWindow):
         from kinetrace import downloads
         from kinetrace.segmenter import loaded_backends, preferred_backend
         parts, download = [], False
-        if getattr(w, "specs", None):
-            key = "alltracker" if getattr(w, "point_backend", "") == "alltracker" else "cotracker3"
+        keys = []
+        for wk in [w] + [j.worker for j in getattr(w, "jobs", [])]:       # (review R1-M4) a session's model too
+            if getattr(wk, "specs", None):
+                k = "alltracker" if getattr(wk, "point_backend", "") == "alltracker" else "cotracker3"
+                if k not in keys:
+                    keys.append(k)
+        for key in keys:
             f = downloads.FILES[key]
             if not (f.dest.is_file() and downloads.code_present(key)):
                 parts.append(f"Downloading {f.label} ({f.size / 1e6:.0f} MB)")
@@ -10685,6 +10695,11 @@ class MainWindow(QMainWindow):
             self._gate[int(i)] = max(self._gate[int(i)], int(w0) + int(tracks.shape[0]) - 1)
         self.timeline.refresh()
 
+    def _on_session_ready(self) -> None:
+        """(review R1-M4) A session has its model: a download card opened for it goes."""
+        _quiet_close(self._model_dialog)
+        self._model_dialog = None
+
     def _on_session_state(self, i, started, last):
         if started:
             self._gate[int(i)] = int(last)
@@ -10742,7 +10757,11 @@ class MainWindow(QMainWindow):
         p, s = self.project, self.session
         out = []
         if s is not None:
-            out += [s.points[q].name for q in (getattr(self, "_track_pids", None) or []) if 0 <= q < s.n_points]
+            pids = list(getattr(self, "_track_pids", None) or [])
+            drv = getattr(self, "_model_worker", None)
+            if getattr(drv, "is_run_driver", False):            # (review R1-M2) a joiner lives in its session only
+                pids += [q for j in drv.jobs for q in j.worker.point_ids]
+            out += [s.points[q].name for q in dict.fromkeys(pids) if 0 <= q < s.n_points]
         for v, run in (self._side or {}).items():
             if p is not None and v < p.n_views:
                 sv = p.sessions[v]

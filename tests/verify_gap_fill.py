@@ -147,6 +147,26 @@ GT = np.load(V600 + ".gt.npz")["gt"]
 GAPS = [(100, 129), (300, 309), (500, 519)]
 
 
+def section_plan():
+    print("[0] the plans, no GPU: a stretch marked hidden inside; clicks on the start frame and the next")
+    from kinetrace.session import TrackingSession
+    s = TrackingSession(V600, 600, 30.0, 640, 480)
+    q = s.add_point(0, float(GT[0, 0, 0]), float(GT[0, 0, 1]))
+    seed_track(s, GT, 200, [q])
+    s.clear_window([q], 80, 94)
+    s.set_occluded(85, q, True)                          # a frame of the empty stretch itself marked hidden
+    fill, skip = s.gap_plan(q, 0, 200)
+    check("[0] a stretch with a frame of its own marked hidden is skipped and named, not filled (review R1-I2)",
+          not any(a == 80 for _b, a, _g, _xy in fill) and any(a == 80 and why == "marked hidden" for a, _g, why in skip),
+          (fill, skip))
+    s2 = TrackingSession(V600, 600, 30.0, 640, 480)
+    p = s2.add_point(10, float(GT[10, 0, 0]), float(GT[10, 0, 1]))
+    s2.set_position(11, p, float(GT[11, 0, 0]), float(GT[11, 0, 1]))
+    own_last, restarts = s2.hand_plan(p, 10, 600)
+    check("[0] a point model clicked on the start frame and the next one restarts at the next one (review R1-M1)",
+          [r[0] for r in restarts] == [11] and own_last == 9, (own_last, restarts))
+
+
 def section_main():
     print("[1]-[4], [7] test600: three points, gaps of every kind")
     win = new_window(V600)
@@ -162,6 +182,8 @@ def section_main():
     s.clear_window([1], 200, 239)
     s.tracks[399, 2] = (2.0, 240.0)                      # [3] P3: at the picture's edge before its gap
     s.clear_window([2], 400, 420)
+    s.clear_window([2], 250, 259)                        # [3] P3: an empty stretch with a frame of its own hidden
+    s.set_occluded(254, 2, True)
     s.set_position(450, 0, float(GT[450, 0, 0]), float(GT[450, 0, 1]))     # [4] two clicks, two frames between
     s.set_position(453, 0, float(GT[453, 0, 0]), float(GT[453, 0, 1]))
     s.clear_window([0], 451, 452)
@@ -193,6 +215,8 @@ def section_main():
           [a.name for a, ok_ in zip(POINT_ARRAYS, same) if not ok_])
     check("[3] the stretch after a frame marked hidden is left empty", not s.tracked[200:240, 1].any())
     check("[3] the stretch after the point left the picture is left empty", not s.tracked[400:421, 2].any())
+    check("[3] an empty stretch with a frame of its own marked hidden is left empty (review R1-I2)",
+          not s.tracked[250:260, 2].any())
     check("[3] ... and the end says which were skipped and why",
           toasts.said("hidden") and toasts.said("left the picture"), toasts.msgs[-1:])
     check("[4] the two frames missing between two clicks are left (Fill gaps interpolates them)",
@@ -273,6 +297,16 @@ def section_gone():
     check(f"[5] dot A's gap was not guessed to the end: cut where the tracker reported it lost (data to {last}; a "
           "confident parked guess before that is the known limit of any run)", GONE <= last < T1 - 60, last)
     check("[5] dot B (no gap) is exactly as it was", lambda: np.array_equal(s.tracks[:, 1], pre.tracks[:, 1]))
+    win.activateWindow()
+    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    pump(0.3)
+    win.btn_autopause.setChecked(False)                  # the toolbar's switch off: inside a gap it is on anyway
+    ok = press_t(win)
+    s = win.session
+    last = int(np.flatnonzero(s.tracked[:, 0])[-1])
+    check(f"[5] with Auto-pause switched off the gap is still cut where the dot is lost (data to {last}; review R1-I1)",
+          ok and GONE <= last < T1 - 60, last)
+    win.btn_autopause.setChecked(True)
     close(win)
 
 
@@ -315,7 +349,7 @@ def section_long():
     close(win)
 
 
-for fn in (section_main, section_gone, section_long):
+for fn in (section_plan, section_main, section_gone, section_long):
     try:
         fn()
     except Exception as e:  # noqa: BLE001
