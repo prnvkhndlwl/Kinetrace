@@ -73,10 +73,12 @@ def _board_tilt_deg(rvec) -> float:
     return float(np.degrees(np.arccos(min(1.0, abs(float(R[2, 2]))))))
 
 
-def fit_and_score(chosen, everything, pattern, square, size, model, max_views, base, rotation):
+def fit_and_score(chosen, everything, pattern, square, size, model, max_views, base, rotation, source=None):
     """(R35) The lens wizard's fit: `calibrate_lens` on the `chosen` boards, the board video's turn
-    recorded, and the per-board errors of THAT profile over `everything` -> (profile, errors)."""
-    prof = calibrate_lens(chosen, pattern, square, size, model, max_views=max_views, base=base)
+    recorded, and the per-board errors of THAT profile over `everything` -> (profile, errors).
+    `source` = the profile's label (None = calibrate_lens's checkerboard one; I321 a ChArUco board's)."""
+    more = {"source": source} if source is not None else {}
+    prof = calibrate_lens(chosen, pattern, square, size, model, max_views=max_views, base=base, **more)
     prof.rotation = rotation                       # how the board video's pictures were turned
     return prof, per_view_errors(everything, pattern, square, prof)
 
@@ -1011,8 +1013,8 @@ def scan_video(path: str | Path, pattern: tuple[int, int], max_candidates: int =
 
 
 def _scan_charuco(path, spec, max_candidates, progress, should_cancel, downscale_max) -> ScanResult:
-    """(I321) `scan_video` for a ChArUco board: found on a downscaled copy, its corners refined at
-    full resolution; a view is kept when a lens can use it (`charuco.usable_for_lens`: 6 corners,
+    """(I321) `scan_video` for a ChArUco board, found at full resolution (`downscale_max` is the
+    checkerboard's and is not used); a view is kept when a lens can use it (`charuco.usable_for_lens`: 6 corners,
     not one line). The older OpenCV layout is tried on the first boards when it finds more corners
     (`charuco.guess_legacy`). At most Argus's 100 best views are kept (R3, `charuco.best_frames`)."""
     from kinetrace import charuco
@@ -1028,9 +1030,9 @@ def _scan_charuco(path, spec, max_candidates, progress, should_cancel, downscale
         if n <= 0:
             raise OSError("the video reports no frames")
         idx = even_indices(n, min(n, int(max_candidates)))
-        scale = min(1.0, downscale_max / max(w, h))
-        def small_of(gray):
-            return cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else gray
+        # (review) detected at FULL resolution, unlike the checkerboard: an ArUco marker needs far more pixels
+        # to decode than a corner needs to be found, and on a 1280-px copy of a 2.7K / 4K picture the boards in
+        # the far corners - where the lens is measured - lost half their corners or were missed
 
         # which layout the printed board has, from up to 8 frames spread over the video
         early = []
@@ -1038,7 +1040,7 @@ def _scan_charuco(path, spec, max_candidates, progress, should_cancel, downscale
             seek_capture(cap, str(path), int(idx[f]))
             ok, bgr = cap.read()
             if ok:
-                early.append(small_of(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)))
+                early.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY))
         spec, note = charuco.guess_legacy(early, spec)
         frames, views, thumbs = [], [], []
         sample = None
@@ -1049,15 +1051,9 @@ def _scan_charuco(path, spec, max_candidates, progress, should_cancel, downscale
             ok, bgr = cap.read()
             if not ok:
                 continue
-            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-            small = small_of(gray)
-            det = charuco.detect(small, spec)
+            det = charuco.detect(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), spec)
             if det is not None:
                 pts, ids = det
-                if scale < 1:
-                    pts = cv2.cornerSubPix(gray, (pts / scale).astype(np.float32).reshape(-1, 1, 2), (9, 9), (-1, -1),
-                                           (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 40, 0.001)
-                                           ).reshape(-1, 2).astype(np.float64)
                 view = charuco.padded(pts, ids, spec)
                 if charuco.usable_for_lens(view, spec):
                     frames.append(int(f))

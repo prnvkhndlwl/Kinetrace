@@ -72,6 +72,11 @@ def _off_thread(owner: QWidget, fn):
     return th.result
 
 
+def _source(scan) -> str | None:
+    """(I321) The label of a lens fitted from this scan: a ChArUco board's, else calibrate_lens's own."""
+    return "ChArUco board (Kinetrace)" if getattr(scan, "board", None) is not None else None
+
+
 def _dim(label: QLabel) -> QLabel:
     label.setWordWrap(True)
     label.setStyleSheet(f"color: {theme.TEXT_DIM};")
@@ -745,7 +750,8 @@ class ReviewPage(QWizardPage):
                 try:
                     # the errors of the profile that is SHOWN, not of the provisional fit auto_select made
                     prof, err = lens.fit_and_score([corners[i] for i in idx], corners, pattern, square, scan.size,
-                                                   model, max(len(idx), lens.MAX_VIEWS), base, scan.rotation)
+                                                   model, max(len(idx), lens.MAX_VIEWS), base, scan.rotation,
+                                                   _source(scan))
                 except Exception:                               # noqa: BLE001
                     prof = None
             return idx, err, why, prof
@@ -779,7 +785,7 @@ class ReviewPage(QWizardPage):
             # (G116) every ticked board is fitted: the boards were CHOSEN, so calibrate_lens must not
             # thin them to a 40-view spread behind a "Fitted from 120 boards"
             return lens.fit_and_score(chosen, everything, pattern, square, scan.size, model, len(chosen),
-                                      self.wiz.base_lens, scan.rotation)
+                                      self.wiz.base_lens, scan.rotation, _source(scan))
         try:
             prof, err = _off_thread(self.wiz, work)
         except Exception as exc:                                # noqa: BLE001
