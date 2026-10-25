@@ -239,6 +239,12 @@ if imp is not None:
           "no sidecar: the note says the names are the column headers'", " | ".join(imp.notes))
 imp, err = read_or_none(write("named_cam_xypts.csv", "left_cam_marker_cam1_U,left_cam_marker_cam1_V\n5,6\n"))
 check(imp is not None and imp.names == ["left_cam_marker"], "a name that itself holds '_cam' keeps it", err)
+p = write("named_side_xypts.csv", "pt2_cam1_U,pt2_cam1_V,head_cam1_U,head_cam1_V\n5,6,7,8\n")
+write("named_side_xypts_pointnames.csv", "index,name\npt1,snout\npt2,tail\n"
+      "convention,bottom-left origin; first pixel = 1\n")
+imp, err = read_or_none(p)
+check(imp is not None and imp.names == ["pt2", "head"] and imp.flip_y and not imp.notes,
+      "a named header with a sidecar: its convention is used, not its names; pt2 beside a name stays 'pt2'", err)
 
 print("\n[1c] SLEAP")
 v14 = ("track,frame_idx,instance.score,head.x,head.y,head.score,tail.x,tail.y,tail.score\n"
