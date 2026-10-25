@@ -10672,7 +10672,11 @@ class MainWindow(QMainWindow):
             p.lenses.append(None)
         self._set_undo_point(self.session.snapshot())
         rec = {"offsets": list(p.offsets), "calibration": p.calibration, "wand_result": self._wand_result,
-               "lenses": list(p.lenses), "what": "the ChArUco calibration"}
+               "lenses": list(p.lenses), "what": "the ChArUco calibration",
+               # what Ctrl+Z says it put back, and why the 3D result goes with it
+               "what_changed": " and ".join(w for w, on in (("the lens profiles", bool(lenses)),
+                                                            ("the calibration", calibration is not None)) if on),
+               "drop_reason": "the ChArUco calibration was taken back"}
         self._set_lenses(lenses)
         if calibration is not None:
             p.calibration = calibration
@@ -10706,7 +10710,8 @@ class MainWindow(QMainWindow):
             p.lenses[:] = list(timing["lenses"])
         self._wand_result = timing["wand_result"]
         p.dirty = True
-        self._drop_reconstruction("camera timing changed", had=had_3d and p.reconstruction is None)
+        self._drop_reconstruction(timing.get("drop_reason", "camera timing changed"),
+                                  had=had_3d and p.reconstruction is None)
         self._refresh_cameras()
         self._refresh_guides()
         return True
@@ -10731,7 +10736,8 @@ class MainWindow(QMainWindow):
             said = ("The offsets or the calibration were changed again after the wand calibration set them: Undo "
                     "leaves them as they are now", 8000)
         elif undone and timing.get("lenses") is not None:
-            said = (f"Restored the lens profiles and the calibration from before {what}", 8000)   # (G221)
+            said = (f"Restored {timing.get('what_changed') or 'the lens profiles and the calibration'} from before "
+                    f"{what}", 8000)                                                                 # (G221)
         elif undone:
             said = ("Restored the camera offsets, and the calibration made from them, from before the wand "
                     "calibration", 8000)
@@ -12378,10 +12384,14 @@ class MainWindow(QMainWindow):
         except Exception as e:      # noqa: BLE001 - a full drive, a read-only folder: said
             QMessageBox.warning(self, "Lens profiles not saved", _plain_error(e, "The lens profiles could not be saved"))
             return
+        gaps = [p.name(k) for k in range(p.n_views) if k not in have]
         self.toast.show_message(
-            f"{len(have)} lens profiles saved as {Path(path).name} for Argus: line n = camera n ("
-            + ", ".join(f"{k + 1} {p.name(k)}" for k in have) + "), pixels counted y up as Argus does. "
-            "3D → Calibrate → Load a Lens Profile for Cameras… reads it back.", "success", 12000)
+            f"{len(have)} lens profiles saved as {Path(path).name} for Argus: each line is numbered as the "
+            "project's camera (" + ", ".join(f"{k + 1} {p.name(k)}" for k in have) + "), pixels counted y up as "
+            "Argus does. "
+            + (f"No line for {', '.join(gaps)} (no lens profile): a program that reads the lines in order rather "
+               "than by their number would give the later cameras the wrong lens. " if gaps else "")
+            + "3D → Calibrate → Load a Lens Profile for Cameras… reads it back.", "success", 14000)
 
     def _load_lens_profile(self) -> None:
         """3D -> Calibrate -> Load a Lens Profile for Cameras… (G148, G176): a saved profile (.klens.json, OpenCV, Argus: the
@@ -12591,6 +12601,8 @@ class MainWindow(QMainWindow):
         cal = wiz.result_calibration
         self._apply_board_result(cal, wiz.result_lenses)
         if cal is not None:
+            for sv in p.sessions:            # (review) no wand drew this calibration: the old wand ends go
+                sv.ui_state.pop("wand_ends", None)
             self._wand_result = (wiz.result, None)
             self._wand_cal = p.calibration
             self.__dict__["_wand_key"] = self._calib_key()
