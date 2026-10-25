@@ -32,7 +32,7 @@ ICON_W, ICON_H = 34, 14
 
 def point_icon(meta, tag: str = "") -> QIcon:
     """A point's swatch: a filled square (tracked by appearance), a dotted outline (derived from
-    the silhouette) or a ring (a ball marker), and its tracker's tag (AT / CT / MS, G62)."""
+    the silhouette) or a ring (a ball marker), and its tracker's tag (AT / CT / MS / H, G62, G219)."""
     pm = QPixmap(ICON_W, ICON_H)
     pm.fill(Qt.transparent)
     p = QPainter(pm)

@@ -511,8 +511,10 @@ to bring the names back. The Track button always keeps its words.
   is filled when it has a silhouette and an outline when it has none yet; a
   small dot inside means its points are kept on its silhouette (section 14).
   Each point shows a small symbol saying how it is found (Step 4 below) and
-  **AT**, **CT** or **MS**: the tracker that follows it — AllTracker,
-  CoTracker3 or Moving spot (right-click → *Tracker* changes it).
+  **AT**, **CT**, **MS** or **H**: the tracker that follows it in the camera on
+  screen — AllTracker, CoTracker3, Moving spot, or **H** *Hand only* (no
+  tracker: Track leaves it alone and your clicks are its data). Right-click →
+  *Tracker* changes it, in every camera or *Only in this camera*.
 
   Above the tree: **＋ Animal** (a new animal, with no silhouette yet),
   **＋ Point** (a new point with no position yet, in the selected animal, else in
@@ -743,16 +745,39 @@ track its silhouette first, then select its points and track them.
   Selected on their own they do not run, and Track says so.
 
 Each point is followed by **its own tracker**, shown beside its name (**AT**
-AllTracker, **CT** CoTracker3, **MS** Moving spot). One Track press handles a
+AllTracker, **CT** CoTracker3, **MS** Moving spot, **H** Hand only). Each camera
+can give the same point a different one: right-click the point → *Tracker* →
+*Only in this camera* (a landmark that one camera sees large can use AllTracker
+there and Moving spot in a camera where it is only a dot); the entries above it
+give the tracker to every camera. LAYERS shows the tracker of the camera on
+screen, and the menu says when the cameras differ. One Track press handles a
 mix: Moving spot points, ball markers and silhouettes run together with the
 AllTracker *or* CoTracker3 points; if both AllTracker and CoTracker3 points are
-selected, they run **one after the other** over the same frames (the button
-says *2 passes*), and a point that stops ends the run for all of them, so every
-point of the run ends on the same frame. The pass that holds the head landmark
-goes first and makes the silhouettes; the second pass reuses them instead of
-outlining the animal a second time, so its on-body landmarks are kept on the
-same outlines. A pass whose points have no position on the frame you are on is
-left out, and the other still runs. One Ctrl+Z undoes it all.
+selected — in any camera of the press — they run **one after the other** over
+the same frames (the button says *2 passes*): first one model in every camera
+that uses it, then the other. In a camera, a point that stops ends the run for
+all of that camera's points, so every point of the run ends on the same frame
+there; a camera that has no point of the first model runs the second to its
+own end. The pass that holds the head landmark (in the camera you are working
+in) goes first and makes the silhouettes; the second pass reuses them instead
+of outlining the animal a second time, so its on-body landmarks are kept on the
+same outlines. In a camera whose head point uses the *other* model, the
+silhouette is made without its head, so the landmarks derived from it there
+are placed along the midline as when no head point is tracked: give the head
+the same tracker in every camera when they matter. A pass whose points have no position on the frame you are on is
+left out, and the other still runs. One Ctrl+Z undoes it all, in every camera.
+
+**Hand only (no tracker).** Right-click a point → *Tracker* → **Hand only** for
+a part you digitise yourself, frame by frame, while the others are tracked in
+the same press: Track never runs it (the status line names it) and your clicks
+are its data. The Track question does not count its clicks, a *Fresh run*
+never erases them, and 3D → Re-track Disagreeing Stretches leaves it to you.
+Select only such points and Track says so and starts nothing — unless *Every
+camera* is ticked (or you press Shift+T) and another camera gives them a
+tracker: then that camera tracks them and this one leaves them. It can be set
+for one camera only, like any tracker; it is never the project's point model.
+To switch tracking off for every point at once, use Track ▾ → **Manual — no
+tracker** instead (below).
 
 **Your clicks are the truth.** A frame you placed by hand is never changed by a
 tracking run: the run writes around it. A **Moving spot** point starts again
@@ -1749,6 +1774,9 @@ selected points (**Ctrl+A** selects all of them) are tracked in each camera that
 has them at this instant, **all cameras at the same time**, each one moving on live
 in its own view; a camera where a point was not placed is simply skipped for
 that point (with *View → Trails* on, each camera draws its trail as it goes).
+Each camera tracks a point with **its own tracker** (right-click → *Tracker* →
+*Only in this camera*), and a camera where the point is *Hand only* leaves it
+alone.
 **A hidden camera is tracked too** — one whose eye is off in CAMERAS, or every
 other camera with *Only the working camera* on — but it is not drawn, so you
 cannot watch the tracking there or stop it on a mistake you see. The Track button
@@ -3614,9 +3642,12 @@ sharper on high-contrast marks. **Moving spot** is only for a target small
 enough to be one point — a dot with no visible shape (see *Which point model
 should I use?* at the end of this section). If a track keeps drifting, try another one. The choice applies to the
 next run and can be changed at any time. It sets the tracker of the points
-selected at that moment (and the default for points that have none of their
-own); each point keeps its own, shown as AT / CT / MS on its row, and is saved
-with the project. Right-click a point's row → *Tracker* changes just that one.
+selected at that moment, in every camera (and the default for points that have
+none of their own, and for the points of a camera added later); each point keeps
+its own, shown as AT / CT / MS / H on its row, and is saved with the project.
+Right-click a point's row → *Tracker* changes just that one, in every camera or
+only in the camera on screen. *Hand only* is a choice for single points, never
+the point model.
 
 **Segmentation model** (the **▾** arrow on the Segment button) — which method
 draws the outline: **SAM 2.1 base+** (fast, a 617 MB download), **SAM 2.1
@@ -3659,9 +3690,10 @@ visible shape), use **Moving spot**.
 
 Three point models follow the points you click. The choice is in **Track ▾**
 (and **Help → Which Point Model Should I Use?** brings you here) and on each
-point's row (right-click → *Tracker*). **Every point has its own**, shown as
-AT / CT / MS beside its name and saved with the project, so one project can mix
-them: Track tracks each selected point with its own tracker.
+point's row (right-click → *Tracker*). **Every point has its own**, in each
+camera, shown as AT / CT / MS / H beside its name and saved with the project, so one
+project can mix them: Track tracks each selected point with its own tracker
+(and a point you would rather click yourself on every frame can be *Hand only*).
 
 | Your footage | Use | Clicking needed |
 |---|---|---|
@@ -3720,9 +3752,10 @@ right-click the point → *Test the point models on its clicks*:
    so. Fewer corrections win; on a tie AllTracker is recommended, because it
    needs no extra clicking.
 4. The button reads **Use … for** *your point* (for example *Use Moving spot
-   (bright spot, 6 px) for P1*) and gives the winner to **that point only**: its
-   row then shows AT / CT / MS, and the project's default and your other points
-   are not changed. For Moving spot it also keeps the settings it found on that
+   (bright spot, 6 px) for P1*) and gives the winner to **that point only, in the
+   camera you tested it in** (the test ran on that camera's clicks): its row then
+   shows AT / CT / MS, and the project's default, your other points and the
+   other cameras are not changed. For Moving spot it also keeps the settings it found on that
    point. Ctrl+Z takes it back.
 
 The program suggests this in two situations: when you have corrected a point

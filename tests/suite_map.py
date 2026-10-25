@@ -58,6 +58,11 @@ MAP = [
     ([K + f for f in ("session.py", "tracker.py", "spots.py", "app.py", "projectfile.py", "trackio.py",
                       "dltdvproject.py", "dltdvimport.py", "canvas.py", "timeline.py", "trackchoice.py")],
      ["verify_hand_truth", "verify_hand_truth_models"]),
+    # (G216, G219) a tracker per camera and "Hand only": the Tracker menu, the passes of a press over every
+    # camera's trackers, what a press leaves alone (pop-up counts, Fresh erase, 3D re-track, hints, DLC scorer)
+    ([K + f for f in ("app.py", "session.py", "projectfile.py", "project.py", "layers.py", "retrack.py",
+                      "tracker.py", "trackchoice.py", "pointtest.py")],
+     ["verify_tracker_per_camera", "verify_tracker_per_camera_models"]),
     # (G215) Manual mode: no tracker, a click lands where it was made and moves the playhead on
     ([K + f for f in ("app.py", "canvas.py", "session.py")], ["verify_manual_mode"]),
     # (G217) the Track pop-up replaced the "Re-track from here?" question (G101's check)

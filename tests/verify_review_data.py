@@ -598,7 +598,8 @@ def _():
     assert s.points[b].is_ball and s.points[b].ball_prompts == {0: [[2.0, 2.0, 1]]}
     assert s.points[g].kind == "group" and s.points[g].radius == 9.0
     assert (s.points[e].kind, s.points[e].shape, s.points[e].free, s.points[e].outline) == ("group", "circle", True, None)
-    assert s.points[e].tracker == "cotracker3", "the placeholder keeps its point's own tracker (G62)"
+    # (D8, G216) the tracker is chosen per camera: a point new to a camera gets the project's point model ("")
+    assert s.points[e].tracker == "", "the placeholder takes the project's point model, not another camera's choice"
     assert s.points[c].source == "track" and s.add_landmark("tip", "silhouette", "tip") == 7
     assert s.points[7].derived and s.points[7].spec == "tip"
     assert s.add_landmark("snout") == 8 and s.points[8].name == "snout (2)"

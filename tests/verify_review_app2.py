@@ -525,8 +525,12 @@ calls.clear()
 win._start_pass([1], True, False, segment=False, stops={0: 40}, quiet=True)
 check("G99 a semi-automatic pass is a step", calls and calls[0].get("step") is True, calls)
 calls.clear()
+win._start_pass([1], False, False, segment=False, stops={0: None}, quiet=True)
+check("I204 a pass 2 in a camera where the first pass did not get past the start does not run", not calls, calls)
+calls.clear()
 win._start_pass([1], False, False, segment=False, stops={3: 40}, quiet=True)
-check("I204 a pass 2 for a camera the first pass did not run in does not run unbounded", not calls, calls)
+check("I204 / D8 (R0-C2) a pass 2 in a camera the first pass did not run in runs, not bounded by another camera",
+      calls and calls[0].get("stop_after") is None, calls)
 
 # G100 / I202 / I203: the end of a two-pass run
 rec.clear()
@@ -733,12 +737,13 @@ win._undo_run()
 check("G68 and one Ctrl+Z puts it back in every camera", [sv.points[0].tracker for sv in p.sessions] == [""] * 3,
       [sv.points[0].tracker for sv in p.sessions])
 
-# ---- G68: the test's Use is one step across the cameras too
+# ---- G68: the test's Use is one step; (D8, review R0-M11) it sets the camera the test ran in only
 use = types.SimpleNamespace(model="cotracker3", settings=None, label="CoTracker3")
 win._apply_test_choice(0, use)
-check("G68 (setup) Use set the tracker in every camera", [sv.points[0].tracker for sv in p.sessions] == ["cotracker3"] * 3)
+check("G68 / D8 (setup) Use set the tracker in this camera only",
+      [sv.points[0].tracker for sv in p.sessions] == ["cotracker3", "", ""], [sv.points[0].tracker for sv in p.sessions])
 win._undo_run()
-check("G68 one Ctrl+Z puts the tracker back in every camera after Use",
+check("G68 one Ctrl+Z puts the tracker back after Use",
       [sv.points[0].tracker for sv in p.sessions] == [""] * 3, [sv.points[0].tracker for sv in p.sessions])
 
 # ---- G125 / G69: the automatic re-track
@@ -787,12 +792,17 @@ rec.clear()
 calls = []
 win._start_tracking = lambda **k: calls.append(k)
 win._passes = None
-win._start_pass([0], False, True, segment=False, stops={0: 40}, quiet=True)
+win._start_pass([0], False, True, segment=False, stops={0: 40, 1: None, 2: None}, quiet=True)
 check("I204 (setup) camA starts alone, bounded by its own first pass", len(calls) == 1 and calls[0].get("stop_after") == 40, calls)
-check("I204 a camera the first pass did not run in is not blamed for a missing position",
+check("I204 a camera where the first pass did not get past the start is not blamed for a missing position",
       "has no position" not in rec.text(), rec.text())
+# (D8, review R0-C2) a camera the first pass did not run in -- its points of the second pass's model -- runs
+# the second pass unbounded; the cameras it ran in stay bounded by their own end
+jobs = {j["view"]: j["stop"] for j in win._multi_jobs(False, names={name}, segment=False, stops={0: 40})}
+check("I204 / D8 the second pass: camA bounded by its own first pass, camB / camC (not in it) unbounded",
+      jobs == {0: 40, 1: None, 2: None}, jobs)
 calls.clear()
-win._start_pass([0], False, True, segment=False, stops={1: 40}, quiet=True)
+win._start_pass([0], False, True, segment=False, stops={0: None, 1: None, 2: None}, quiet=True)
 check("I204 a pass 2 that has no camera to run in does not run", not calls, calls)
 del win._start_tracking
 
