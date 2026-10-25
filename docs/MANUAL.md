@@ -3292,9 +3292,9 @@ belong to first.
   instances you labelled by hand in SLEAP arrive as hand-placed.
 * DLTdv8 saves its points file with columns `pt1_cam1_U`, `pt1_cam1_V` … where
   other programs write `pt1_cam1_X`, `pt1_cam1_Y`: the letters differ, the
-  numbers are the same clicks, and both are read. From DLTdv 8.4 a point you
-  named in DLTdv is saved under its name (`head_cam1_U`); it arrives under that
-  name.
+  numbers are the same clicks, and both are read. DLTdv calls its points pt1,
+  pt2 …; a points file whose columns carry other names (`head_cam1_U`, for
+  example after the names were edited by hand) arrives under those names.
 * A DLTdv / Argus file with several cameras goes into the cameras of your
   project in the file's order (add the videos first); otherwise the program
   asks which of the file's cameras is the one on screen.

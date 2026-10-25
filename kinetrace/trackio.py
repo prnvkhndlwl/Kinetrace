@@ -11,8 +11,8 @@ Formats, recognised from their contents (`detect`), never from the name:
                         top-left (DLTdv8), or bottom-left when the
                         `*_pointnames.csv` sidecar says so (older DLTdv, Argus).
                         DLTdv8a writes {name}_cam{j}_U / _V (I324): the same
-                        raw clicks under another letter, and since 8.4 the
-                        point's own name in place of pt{i}.
+                        raw clicks under another letter; {name} is the
+                        project's point name (pt{i} unless edited by hand).
     SLEAP analysis CSV  track, frame_idx, instance.score, {node}.x, {node}.y, {node}.score
                         (one track: Kinetrace follows one animal per video).
     Kinetrace tracks    a project folder's tracks/<landmark>.csv (frame, x, y[, confidence,
@@ -220,7 +220,7 @@ def _sidecar(path: Path, n_pts: int, named: bool = False) -> tuple[list[str], bo
       `name,cameras` all cameras: the `n_pts` rows after the header ARE the names in
                      order (whatever they are called: pt1, cam2, rows ...), then
                      `convention,...`, `rows,...` and a `cam<k>,...` row per camera.
-    `named`: the column headers carry the names (DLTdv 8.4+, I324); only the
+    `named`: the column headers carry names other than pt<k> (I324); only the
     sidecar's convention is used then."""
     side = path.with_name(path.stem + "_pointnames.csv")
     if not side.is_file():
@@ -262,7 +262,7 @@ def _read_dltdv(path: Path, text: str) -> Imported:
                                "first line")
     num = [re.fullmatch(r"pt(\d+)", nm, re.IGNORECASE) for nm, _, _, _ in cols]
     named = not all(num)
-    if named:                   # (I324) DLTdv 8.4+: the point's own name; points in the header's order
+    if named:                   # (I324) the header's own names (hand-edited); points in the header's order
         order = list(dict.fromkeys(nm for nm, _, _, _ in cols))
         point = [order.index(nm) for nm, _, _, _ in cols]
     else:                       # pt<k>: point k, names from the sidecar

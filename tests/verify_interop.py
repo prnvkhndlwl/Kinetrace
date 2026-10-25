@@ -2,7 +2,7 @@
 
 [1] 2D tracks (trackio.py): DeepLabCut CSV, DLTdv / Argus xypts (one camera,
     all cameras, top-left and bottom-left, with and without the sidecar;
-    DLTdv8a's own _U / _V header and DLTdv 8.4+ named points),
+    DLTdv8a's own _U / _V header and headers with other point names),
     SLEAP (1.x analysis CSV and sleap-io's sleap / instances / points / frames
     layouts), Kinetrace's own tracks.csv. Each is checked two ways: a file
     written by hand the way the other program writes it (a hand-computed
@@ -175,7 +175,7 @@ check(worst <= 5e-5 + 1e-4, "each camera's positions come back", f"max diff {wor
 
 
 # (I324) DLTdv8a writes its xypts header as '<point name>_cam<j>_U' / '_V' (the raw clicks, the same pixels as
-# _X / _Y) and, since 8.4, the point's own name in place of pt<k>
+# _X / _Y); <point name> is pt<k> unless the project's names were edited by hand
 def uv_twin(p, name):
     """The same xypts file (and its sidecar) with DLTdv8a's _U / _V header: data rows untouched."""
     with open(p, encoding="utf-8", newline="") as fh:
@@ -218,7 +218,7 @@ if imp_u is not None:
 imp_u, err = read_or_none(uv_twin(os.path.join(OUT, "multi_xypts.csv"), "multi_uv_xypts.csv"))
 check(imp_u is not None and same_import(imp_u, trackio.read(os.path.join(OUT, "multi_xypts.csv"))),
       "an all-cameras _U / _V file reads exactly like its _X / _Y twin", err)
-# DLTdv 8.4+: named points, DLTdv8a's own layout (point, camera, U then V) and printing (%.6f, NaN), no sidecar
+# other point names in the header, DLTdv8a's own layout (point, camera, U then V) and printing (%.6f, NaN), no sidecar
 p = write("named_xypts.csv",
           "head_cam1_U,head_cam1_V,head_cam2_U,head_cam2_V,tail tip_cam1_U,tail tip_cam1_V,tail tip_cam2_U,"
           "tail tip_cam2_V\n"
@@ -228,7 +228,7 @@ p = write("named_xypts.csv",
 imp, err = read_or_none(p)
 check(imp is not None and imp.kind == "dltdv" and imp.names == ["head", "tail tip"] and imp.n_cameras == 2
       and imp.rows == "reference" and np.array_equal(imp.xy[1, 2, 0], (12.5, 20.25)),
-      "DLTdv 8.4+ named points (head_cam1_U ...): the names come from the header, cameras from _cam<j>", err)
+      "other point names (head_cam1_U ...): the names come from the header, cameras from _cam<j>", err)
 if imp is not None:
     s = session()
     trackio.apply(s, imp, camera=0)
