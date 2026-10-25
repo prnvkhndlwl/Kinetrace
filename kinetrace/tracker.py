@@ -1604,7 +1604,7 @@ class TrackingWorker(QThread):
                     if cached is not None and cached[0] != key:
                         self._anchor_lost.discard(f)
                         self._anchor_verdict = None
-                    elif self._anchor_verdict is not None and self._anchor_verdict[0] < hook.handover:
+                    elif self._anchor_verdict is not None and self._anchor_verdict[0] < getattr(hook, "handover", -1):
                         self._anchor_verdict = None      # made on the run's own head, before the click (R2-M4)
             ml = self._midline_for(f, head)       # the midline is always shown / exported
             if ml is not None and len(ml.path) >= 2:
@@ -2589,6 +2589,7 @@ class RunDriver(QThread):
             return None
         try:
             free, _total = torch.cuda.mem_get_info()
+            free += torch.cuda.memory_reserved() - torch.cuda.memory_allocated()   # PyTorch's own free blocks (R2-N1)
         except Exception:      # noqa: BLE001 - no answer is no refusal
             return None
         need = peak * max(SESSION_GB.get(j.worker.point_backend, 0.2) for j in self.jobs) * 1e9

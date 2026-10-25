@@ -729,6 +729,24 @@ class TrackingSession:
         from kinetrace.spots import reseed_frames
         return reseed_frames(self.hand_clicks(pid, start, end), start)
 
+    def hand_plan(self, pid: int, start: int, end: int) -> tuple[int, list]:
+        """(I316, PR B) How a run from `start` (to `end`, exclusive) covers `pid` with the user's usable clicks
+        (`hand_clicks`): (the last frame the run's own tracker writes for it, [(restart frame, the last frame that
+        restart writes, the click (x, y)), ...]). The one stretch rule (D3): clicks with up to two missing frames
+        between them are one stretch; a tracker starts again once, at the stretch's LAST click, and writes up to
+        the frame before the next stretch; nobody writes inside a stretch (the clicks are kept, the frames missing
+        between them stay as they are - Fill gaps fills them). Not the speed click right after a click on `start`
+        (`spots.reseed_frames`)."""
+        from kinetrace.spots import hand_stretches
+        start, end = int(start), int(end)
+        clicks = self.hand_clicks(pid, start, end)
+        sts = [st for st in hand_stretches(clicks) if st[-1] > start and st != [start, start + 1]]
+        restarts = []
+        for i, st in enumerate(sts):
+            last = sts[i + 1][0] - 1 if i + 1 < len(sts) else end - 1
+            restarts.append((int(st[-1]), int(last), clicks[st[-1]]))
+        return (int(sts[0][0]) - 1 if sts else end - 1), restarts
+
     def data_frames(self, pid: int) -> np.ndarray:
         """Frames where `pid` has a position at all (ascending int64) — what
         "its first / last frame" means for navigation. Hand-marked hidden

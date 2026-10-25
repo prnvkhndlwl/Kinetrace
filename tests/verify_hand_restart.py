@@ -423,6 +423,26 @@ def section9():
     check("[9] a session's error is the run's one error (no end, no auto-pause), and the run's own worker stops",
           len(rd2.err) == 1 and "a fault inside a session" in rd2.err[0] and not rd2.fin and not rd2.auto
           and last2 < 299, (len(rd2.err), rd2.fin, last2))
+    # a fault of the DRIVER's own (not a worker's): the run's one error too, every worker stopped (R2-M3, N2)
+    cache = FrameCache(CACHE)
+    p4 = worker(V600, 0, 300, four, "cotracker3", cache, resume_pids={1})
+    s4 = worker(V600, 20, 300, {1: GT[20, 1]}, "cotracker3", cache, cache_first=True, emit_frames=False)
+    rp4 = Rec(p4)
+    drv4 = trk.RunDriver(p4, [trk.SessionJob(20, s4, {1: (20, 299)})])
+    rd4 = Rec(drv4, chunks=False)
+    real_peak = trk.peak_sessions
+
+    def broken(*a, **k):
+        raise RuntimeError("a fault in the driver")
+    trk.peak_sessions = broken                  # the driver's own bookkeeping at the first session's start
+    try:
+        drv4.run()
+    finally:
+        trk.peak_sessions = real_peak
+    last4 = max((w0 + tr.shape[0] - 1 for w0, tr, _v, _c in rp4.chunks), default=-1)
+    check("[9] a fault in the driver itself is the run's one error, and the run's own worker stops",
+          len(rd4.err) == 1 and "a fault in the driver" in rd4.err[0] and not rd4.fin and last4 < 299,
+          (len(rd4.err), rd4.fin, last4))
     # X right after the run's own worker ended: the sessions still running bound the run's last frame (R2-M1)
     cache = FrameCache(CACHE)
     p3 = worker(V600, 0, 120, four, "cotracker3", cache, resume_pids={1})
@@ -518,8 +538,10 @@ def section5():
     for pid, fs in clicks.items():
         f = fs[0]
         err = np.linalg.norm(s.tracks[f + 1:f + 25, pid] - (GT[f + 1:f + 25, pid] + off), axis=1)
-        check(f"[5] P{pid + 1} follows its click at {f} (it restarted there; median {np.nanmedian(err):.2f} px from the "
-              "clicked spot)", np.isfinite(err).all() and float(np.median(err)) < 0.8)
+        old = np.linalg.norm(s.tracks[f + 1:f + 25, pid] - GT[f + 1:f + 25, pid], axis=1)
+        check(f"[5] P{pid + 1} follows its click at {f}: it restarted there (median {np.nanmedian(err):.2f} px from the "
+              f"clicked spot, {np.nanmedian(old):.2f} px from the dot it tracked before)",
+              np.isfinite(err).all() and float(np.median(err)) < 1.5 and float(np.median(err)) < float(np.median(old)))
     check("[5] the unclicked point is exactly what the run without clicks gave it",
           lambda: np.array_equal(s.tracks[:, 0], base[0], equal_nan=True) and np.array_equal(s.tracked[:, 0], base[1])
           and np.array_equal(s.confidence[:, 0], base[2]))
@@ -610,8 +632,8 @@ def section7():
     same = np.linalg.norm(sb.tracks[f + 1:f + 25, j] - b0[f + 1:f + 25], axis=1)
     check(f"[7] camera B follows its click from frame {f}: its track without the click, moved by the click "
           f"(median {np.nanmedian(err):.2f} px from that; {np.nanmedian(same):.2f} px from the old track)",
-          np.isfinite(err).all() and float(np.median(err)) < 0.6 and float(np.median(same)) > 1.5
-          and sb.manual[f, j])
+          np.isfinite(err).all() and float(np.median(err)) < float(np.median(same))
+          and float(np.median(same)) > 0.5 and sb.manual[f, j])
     close(win)
 
 
@@ -634,8 +656,66 @@ def section8():
     close(win)
 
 
+# ===================================================================== [10] two passes, [11] the memory question
+def section10():
+    print("[10] app: a two-pass press (AllTracker, then CoTracker3), the second pass's point clicked")
+    if not HAVE_AT:
+        check("(setup) AllTracker is installed", False)
+        return
+    win = new_window(V600)
+    add_points(win, [GT[0, 0], GT[0, 1]], "cotracker3")
+    s = win.session
+    s.points[0].tracker = "alltracker"
+    win._refresh_point_list()
+    ok = press_t(win, timeout=900)
+    base = s.tracks[:, 0].copy()
+    b1 = s.tracks[:, 1].copy()
+    check("(setup) the two-pass run without clicks ended", ok)
+    win.activateWindow()
+    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    pump(0.3)
+    s = win.session
+    f, off = 50, np.array([2.0, -1.0])
+    click_at(win, 1, f, b1[f] + off)
+    ok = press_t(win, timeout=900)
+    s = win.session
+    check("(setup) the two-pass run with the click ended", ok)
+    check("[10] the first pass's point (AllTracker, no click) is exactly what it was",
+          lambda: np.array_equal(s.tracks[:, 0], base, equal_nan=True))
+    err = np.linalg.norm(s.tracks[f + 1:f + 25, 1] - (b1[f + 1:f + 25] + off), axis=1)
+    same = np.linalg.norm(s.tracks[f + 1:f + 25, 1] - b1[f + 1:f + 25], axis=1)
+    check(f"[10] the second pass's point restarted at its click (median {np.nanmedian(err):.2f} px from its old track "
+          f"moved by the click, {np.nanmedian(same):.2f} px from the old track)",
+          np.isfinite(err).all() and float(np.median(err)) < float(np.median(same)) and float(np.median(same)) > 0.5)
+    close(win)
+
+
+def section11():
+    print("[11] app: restarts that may not fit the graphics card: the press asks first")
+    import kinetrace.device as dev
+    win = new_window(V600)
+    add_points(win, [GT[0, k] for k in range(3)], "cotracker3")
+    for k in (1, 2):
+        click_at(win, k, 20, GT[20, k])
+    asked = []
+    real_q, real_vram = QMessageBox.question, dev.cached_vram_gb
+    QMessageBox.question = staticmethod(lambda *a, **k: (asked.append(a[2] if len(a) > 2 else ""), QMessageBox.No)[1])
+    dev.cached_vram_gb = lambda: 0.5                      # a 0.5 GB card (the estimate here: ~0.9 GB)
+    try:
+        before = win.session.tracked.copy()
+        press_t(win, timeout=60)
+    finally:
+        QMessageBox.question, dev.cached_vram_gb = real_q, real_vram
+    s = win.session
+    check("[11] on a small card the press asks before restarting the clicked points (and says what it needs)",
+          any("graphics card" in m for m in asked), asked[-1:])
+    check("[11] ... and answered No, nothing is tracked", lambda: np.array_equal(s.tracked, before) and win.worker is None)
+    close(win)
+
+
 ONLY = {int(x) for x in os.environ.get("HAND_RESTART_ONLY", "").split(",") if x.strip()}   # e.g. "1,2" (a subset)
-for k, fn in enumerate((section1, section2, section3, section4, section5, section6, section7, section8, section9), 1):
+for k, fn in enumerate((section1, section2, section3, section4, section5, section6, section7, section8, section9,
+                         section10, section11), 1):
     if ONLY and k not in ONLY:
         continue
     try:

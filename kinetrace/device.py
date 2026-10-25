@@ -442,6 +442,12 @@ def cached_device() -> str | None:
     return None if _cache is None else str(_cache["device"])
 
 
+def cached_vram_gb() -> float | None:
+    """The graphics card's memory (GB) found by an already-completed `probe()`, else None (no GPU, or not probed
+    yet): for GUI-thread callers that must not import torch (PR B: will a run's sessions fit?)."""
+    return float(_cache["vram_gb"]) if _cache is not None and _cache.get("vram_gb") else None
+
+
 def short_status(p: dict | None = None) -> str:
     """One sentence after the device label, for the status bar's tooltip."""
     p = p or probe()
