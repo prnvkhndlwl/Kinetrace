@@ -1,8 +1,8 @@
-"""Lens calibration wizard — 3D → Calibrate → Calibrate a Lens (checkerboard).
+"""Lens calibration wizard — 3D → Calibrate → Calibrate a Lens (checkerboard or ChArUco).
 
 For someone who has never heard the words "intrinsic" or "distortion": the
 pages say when a lens needs calibrating at all, hand out a printable
-checkerboard, tell the user how to film it, find the board in the video on
+checkerboard or ChArUco board (G220), tell the user how to film it, find the board in the video on
 their behalf, and end with a verdict in words plus a before / after picture.
 The result is a `lens.LensProfile` attached to one camera of the project
 (`project.lenses[view]`) and, optionally, a `.klens.json` file for other
@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QSpinBox, QTextBrowser, QVBoxLayout, QWidget, QWizard,
                                QWizardPage)
 
-from kinetrace import gpmf, lens, theme
+from kinetrace import charuco, gpmf, lens, theme
+from kinetrace.charucoui import CharucoFields
 from kinetrace.widgets import wrap_caption
 from kinetrace.errors import plain_error
 from kinetrace.video_source import display_rotation
@@ -106,9 +107,9 @@ class _LensThread(QThread):
     finished_ok = Signal(object)              # ScanResult
     error = Signal(str)
 
-    def __init__(self, video: str, pattern: tuple[int, int]):
+    def __init__(self, video: str, pattern: tuple[int, int], board: charuco.BoardSpec | None = None):
         super().__init__()
-        self.video, self.pattern = video, pattern
+        self.video, self.pattern, self.board = video, pattern, board
         self._cancel = False
 
     def cancel(self):
@@ -116,11 +117,19 @@ class _LensThread(QThread):
 
     def run(self):
         try:
+            # (G220) `board` only for a ChArUco board: a checkerboard scan is called as it always was
+            more = {"board": self.board} if self.board is not None else {}
             scan = lens.scan_video(self.video, self.pattern, max_candidates=240,
                                    progress=lambda f, m: self.progress.emit(0.85 * f, m),
-                                   should_cancel=lambda: self._cancel)
+                                   should_cancel=lambda: self._cancel, **more)
             if self._cancel:
                 self.error.emit("cancelled")
+                return
+            if len(scan.corners) < 3 and self.board is not None:          # (G220)
+                self.error.emit(f"the ChArUco board was found in only {len(scan.corners)} of {scan.n_scanned} "
+                                "frames looked at (at least 6 corners, not all in one line). Check the squares "
+                                "across and down and the marker dictionary against the printed board, and that "
+                                "the board is sharp in the video.")
                 return
             if len(scan.corners) < 3:
                 self.error.emit(f"the board was found in only {len(scan.corners)} of {scan.n_scanned} frames "
@@ -173,17 +182,43 @@ picture. Any rotation is fine: the program recognises the board's corners by the
 beside them, so its axes stay attached to the board however you turn it.</li>
 <li>Point the next page at that video. The program finds the board on its own.</li>
 </ol>
+<p><b>Or a ChArUco board</b> (a checkerboard with a small marker in every white square). Each corner is
+named by the markers around it, so a board <b>half out of the picture or partly covered by a hand still
+counts</b>: pushing it into the corners is easy. Print Kinetrace's (7 × 5 squares of 30&nbsp;mm, markers
+22&nbsp;mm, button below) or use your own and type its squares, sizes and dictionary on the next page.
+The same board filmed by all your cameras at once can also place the cameras (the 3D menu's Calibrate
+entries).</p>
 <p style="color:{theme.TEXT_DIM}">Method: OpenCV's pinhole + radial model, or the fisheye model for wide
-lenses (chosen automatically). The report's thresholds are conservative on purpose.</p>
+lenses (chosen automatically). The report's thresholds are conservative on purpose. The ChArUco route
+follows Argus (Jackson et al. 2016, Biology Open), adapted with its authors' permission.</p>
 """)
         lay.addWidget(t, 1)
         row = QHBoxLayout()
         self.btn_board = QPushButton("Save the checkerboard to print…")
         self.btn_board.clicked.connect(self._save_board)
         row.addWidget(self.btn_board)
+        self.btn_charuco = QPushButton("Save a ChArUco board to print…")
+        self.btn_charuco.clicked.connect(self._save_charuco)
+        row.addWidget(self.btn_charuco)
         self.note = _dim(QLabel(""))
         row.addWidget(self.note, 1)
         lay.addLayout(row)
+
+    def _save_charuco(self):
+        """(G220) Kinetrace's ChArUco board - the one the Video page's ChArUco boxes start with."""
+        start = (str(Path(self.wiz.start_dir) / "kinetrace_charuco.png") if self.wiz.start_dir
+                 else "kinetrace_charuco.png")
+        path, _ = QFileDialog.getSaveFileName(self, "Save ChArUco board", start, "PNG image (*.png)")
+        if not path:
+            return
+        spec = charuco.BoardSpec()
+        try:
+            wmm, hmm = charuco.save_board_png(path, spec)
+        except Exception as e:      # noqa: BLE001
+            self.note.setText(plain_error(e, "The ChArUco board could not be saved", short=True))
+            return
+        self.note.setText(f"Saved {Path(path).name}: {wmm:.0f} × {hmm:.0f} mm at 300 dpi ({spec.words()}) — print "
+                          "at 100 %, landscape, on A4 or Letter, and measure a square.")
 
     def _save_board(self):
         start = str(Path(self.wiz.start_dir) / "kinetrace_checkerboard.png") if self.wiz.start_dir else "kinetrace_checkerboard.png"
@@ -204,7 +239,7 @@ class VideoPage(QWizardPage):
     def __init__(self, wiz):
         super().__init__()
         self.wiz = wiz
-        self.setTitle("The checkerboard video")
+        self.setTitle("The board video")
         lay = QVBoxLayout(self)
         form = QFormLayout()
         prow = QWidget()
@@ -229,6 +264,19 @@ class VideoPage(QWizardPage):
             self.cam.addItem(self.wiz.project.name(i), i)
         self.cam.setToolTip("The camera this lens belongs to: the profile is attached to it")
         form.addRow("This is the lens of camera", self.cam)
+        # (G220) which board was filmed: a plain checkerboard or a ChArUco board
+        krow = QWidget()
+        kl = QHBoxLayout(krow)
+        kl.setContentsMargins(0, 0, 0, 0)
+        self.r_checker = QRadioButton("Checkerboard")
+        self.r_charuco = QRadioButton("ChArUco board (markers in the white squares)")
+        self.r_checker.setChecked(True)
+        kl.addWidget(self.r_checker)
+        kl.addWidget(self.r_charuco)
+        kl.addStretch(1)
+        form.addRow("Board", krow)
+        self.charuco = CharucoFields()
+        form.addRow(self.charuco)
         brow = QWidget()
         bl = QHBoxLayout(brow)
         bl.setContentsMargins(0, 0, 0, 0)
@@ -268,6 +316,10 @@ class VideoPage(QWizardPage):
         sl.addWidget(_dim(QLabel("measured with a ruler on the printed board")))
         sl.addStretch(1)
         form.addRow("One square", srow)
+        self._form = form
+        self._checker_rows = (brow, self.pattern_note, srow)
+        self.r_charuco.toggled.connect(self._board_kind_changed)
+        self.charuco.changed.connect(self._charuco_changed)
         mrow = QWidget()
         ml = QVBoxLayout(mrow)
         ml.setContentsMargins(0, 0, 0, 0)
@@ -320,6 +372,41 @@ class VideoPage(QWizardPage):
         # the GoPro header read per (video, size, mtime): Back / Next does not read the file again
         self._gopro_read: dict = {}
         self.cam.currentIndexChanged.connect(self._camera_changed)
+        self._board_kind_changed()
+
+    def board(self) -> charuco.BoardSpec | None:
+        """(G220) The ChArUco board typed; None for a checkerboard, or while the ChArUco boxes
+        describe a board that cannot exist (their red line says why)."""
+        return self.charuco.spec() if self.r_charuco.isChecked() else None
+
+    def _board_kind_changed(self, *_):
+        on = self.r_charuco.isChecked()
+        self._form.setRowVisible(self.charuco, on)
+        for w_ in self._checker_rows:
+            self._form.setRowVisible(w_, not on)
+        if not on:
+            self._pattern_changed()
+        self._forget_if_other_board()
+
+    def _charuco_changed(self):
+        self._forget_if_other_board()
+
+    def _forget_if_other_board(self):
+        """(G220, as G115) Boards found for another board are not this board's corners."""
+        scan = self.wiz.scan
+        if scan is None:
+            return
+        want = self.board() if self.r_charuco.isChecked() else None
+        if want is None and scan.board is None:
+            same = self.pattern() == tuple(self.wiz.pattern)
+        else:
+            same = want == scan.board
+        if same:
+            return
+        self.wiz.forget_scan()
+        self.wiz.result_profile = None
+        self.status.setText("The board changed: press 'Find the boards' again.")
+        self.completeChanged.emit()
 
     def initializePage(self):
         if self.wiz.default_view is not None and 0 <= self.wiz.default_view < self.cam.count():
@@ -369,7 +456,7 @@ class VideoPage(QWizardPage):
 
     def _pick(self):
         start = self.wiz.default_video or self.wiz.start_dir
-        path, _ = QFileDialog.getOpenFileName(self, "Checkerboard video", start,
+        path, _ = QFileDialog.getOpenFileName(self, "Board video (checkerboard or ChArUco)", start,
                                               "Videos (*.mp4 *.avi *.mov *.mkv *.m4v *.mpg);;All files (*)")
         if path:
             self.path.setText(path)
@@ -403,13 +490,17 @@ class VideoPage(QWizardPage):
         if not video or not Path(video).exists():
             self.status.setText("Choose the video of the board first.")
             return
+        board = self.board()
+        if self.r_charuco.isChecked() and board is None:
+            self.status.setText("The ChArUco board typed cannot exist: " + self.charuco.problem() + ".")
+            return
         self._lock_inputs(True)
         self.bar.setValue(0)
         self.wiz.result_profile = None
         self.wiz.forget_scan()
         self._loaded_path = None
         self.completeChanged.emit()
-        th = _LensThread(video, self.pattern())
+        th = _LensThread(video, board.pattern if board is not None else self.pattern(), board)
         th.progress.connect(lambda f, m: (self.bar.setValue(int(1000 * f)), self.status.setText(m)))
         th.finished_ok.connect(self._done)
         th.error.connect(self._fail)
@@ -420,8 +511,9 @@ class VideoPage(QWizardPage):
         """While the scan runs, the board size and its buttons stay as they were
         when it started (G115: a size changed mid-scan made OpenCV raise, or fitted
         boards found for another size)."""
-        for w_ in (self.btn_run, self.btn_load, self.cols, self.rows):
+        for w_ in (self.btn_run, self.btn_load, self.cols, self.rows, self.r_checker, self.r_charuco):
             w_.setEnabled(not scanning)
+        self.charuco.set_enabled_inputs(not scanning)
 
     def _fail(self, msg: str):
         self._lock_inputs(False)
@@ -433,12 +525,17 @@ class VideoPage(QWizardPage):
         self.wiz.scan = scan
         # (G115) the board size the scan USED, not whatever the boxes show now
         th = self._thread
-        self.wiz.pattern = tuple(th.pattern) if th is not None else self.pattern()
-        for box, v in ((self.cols, self.wiz.pattern[0]), (self.rows, self.wiz.pattern[1])):
-            box.blockSignals(True)                  # the boxes show the size the boards were found for
-            box.setValue(int(v))
-            box.blockSignals(False)
-        self._pattern_changed()
+        if scan.board is not None:
+            # (G220) a ChArUco scan: its board, the layout the scan found included
+            self.wiz.pattern = tuple(scan.board.pattern)
+            self.charuco.set_spec(scan.board)
+        else:
+            self.wiz.pattern = tuple(th.pattern) if th is not None else self.pattern()
+            for box, v in ((self.cols, self.wiz.pattern[0]), (self.rows, self.wiz.pattern[1])):
+                box.blockSignals(True)                  # the boxes show the size the boards were found for
+                box.setValue(int(v))
+                box.blockSignals(False)
+            self._pattern_changed()
         self._read_settings()
         self.wiz.result_profile = None          # the review page fits
         self.wiz.result_view = self._view()
@@ -449,10 +546,11 @@ class VideoPage(QWizardPage):
         """The square size and lens type as the boxes show them NOW: read when Next
         is pressed, not when the scan ended (G115: a fisheye chosen after the scan
         was ignored)."""
-        self.wiz.square = self.square_m()
+        scan = self.wiz.scan
+        # (G220) a ChArUco scan's square is its board's (typed on the ChArUco boxes)
+        self.wiz.square = scan.board.square_m if (scan is not None and scan.board is not None) else self.square_m()
         self.wiz.model = self.model()
         base = gpmf.lens_profile(self.wiz.gopro) if self.wiz.model == "gopro" else None
-        scan = self.wiz.scan
         if base is not None and scan is not None:
             # GoPro's model is in the STORED picture: turned to the board video's pictures when its
             # rotation tag turns them (a board filmed with the camera on its side)
@@ -466,6 +564,7 @@ class VideoPage(QWizardPage):
         scan = self.wiz.scan
         problem = self._size_problem()
         self.status.setText(f"{len(scan.corners)} boards found in {scan.n_scanned} frames. "
+                            + (f"{scan.note} " if scan.note else "")
                             + (problem if problem else "Press Next to look through them."))
 
     def _size_problem(self) -> str | None:
@@ -852,7 +951,7 @@ class LensWizard(QWizard):
     def __init__(self, parent, project, default_video: str = "", default_view: int | None = None,
                  start_dir: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("Calibrate a lens (checkerboard)")
+        self.setWindowTitle("Calibrate a lens (checkerboard or ChArUco)")
         self.setWizardStyle(QWizard.ModernStyle)
         self.setOption(QWizard.NoBackButtonOnStartPage, True)
         self.setMinimumSize(820, 640)

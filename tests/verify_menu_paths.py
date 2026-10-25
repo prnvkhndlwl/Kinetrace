@@ -240,7 +240,7 @@ for text, ok in (("Body → Side-by-side Video…", False), ("3D → Calibrate a
                  ("File > Keep Exports Up to Date", False), ("Body → Export Joint Angles…", False),
                  ("File → Export → Body Joint Positions… / Export Joint Angles…", False),
                  ("File > Export > Keep Exports Up to Date", True), ("see 3D → Reconstruct).", True),
-                 ("**3D → Calibrate → Calibrate a Lens (checkerboard)…**", True),
+                 ("**3D → Calibrate → Calibrate a Lens (checkerboard or ChArUco)…**", True),
                  ("Help → About and Check for Updates", True), ("1 Open video → 2 Segment → 3 Skeleton → 4", True)):
     m = START.search(text)
     got = m is None or resolve(text, m.end(), m.group(1)) is None

@@ -67,7 +67,7 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        # (I310, G211) File > Import > DLTdv Project
        "verify_dltdv_project",
        # (I321-I323, G220, G221) ChArUco boards: lens and camera calibration, Argus files
-       "verify_charuco",
+       "verify_charuco", "verify_charuco_gui",
        # (G177) the cameras at a glance: lens badges, Cameras Overview
        "verify_camera_overview",
        # (G178, X37) after an install: the closing words, the one-time pop-up, the Mac hand-over

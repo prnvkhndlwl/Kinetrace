@@ -36,6 +36,9 @@ from kinetrace.canvas import bgr_pixmap
 from kinetrace.widgets import wrap_caption
 
 TILE_W = 300                 # thumbnail width in the gallery
+# (G220) a ChArUco board's corners are named by its markers: nothing to drag into order
+CHARUCO_NO_EDIT = ("ChArUco board: every corner is named by the markers around it, so none can be in the wrong "
+                   "place in the order and there is nothing to drag. Untick a board you do not trust.")
 
 
 def pixmap(bgr: np.ndarray, width: int | None = None, max_w: int | None = None) -> QPixmap:
@@ -484,6 +487,9 @@ class BoardReview(QWidget):
                       self.scan.size)
             t.toggled.connect(self._on_toggle)
             t.opened.connect(self._edit)
+            if getattr(self.scan, "board", None) is not None:
+                t.pic.setToolTip(CHARUCO_NO_EDIT)
+                t.pic.setCursor(Qt.ArrowCursor)
             self.grid.addWidget(t, i // per_row, i % per_row, Qt.AlignTop | Qt.AlignLeft)
             self._tiles.append(t)
         # soak up the spare width on the right instead of spreading the tiles
@@ -578,6 +584,9 @@ class BoardReview(QWidget):
         the window. The editor opens when the frame arrives."""
         s = self.scan
         if s is None:
+            return
+        if getattr(s, "board", None) is not None:
+            self._summarise(CHARUCO_NO_EDIT)            # (G220) said, not a dead click
             return
         if not s.video:
             self._read_failed(i, "the scan does not say which video it came from")

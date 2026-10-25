@@ -1935,10 +1935,10 @@ class MainWindow(QMainWindow):
         """3D menu: calibration -> sub-frame sync -> triangulation -> volume hull."""
         # 3D: calibration -> sub-frame sync -> triangulation -> volume hull
         m_3d = self.menuBar().addMenu("&3D")
-        self.act_lens = QAction("Calibrate a &Lens (checkerboard)…", self, triggered=self._lens_wizard)
-        self.act_lens.setToolTip("Measure how a lens bends the picture from a video of a printed checkerboard. "
-                                 "Needed for wide-angle / action cameras before a wand calibration; explains "
-                                 "when you need it and when you do not.")
+        self.act_lens = QAction("Calibrate a &Lens (checkerboard or ChArUco)…", self, triggered=self._lens_wizard)
+        self.act_lens.setToolTip("Measure how a lens bends the picture from a video of a printed checkerboard or "
+                                 "ChArUco board. Needed for wide-angle / action cameras before a wand calibration; "
+                                 "explains when you need it and when you do not.")
         # (G148) a camera's lens profile out to a file, and a file onto a camera, at any time
         self.act_export_lens = QAction("&Lens Profile…", self, triggered=self._export_lens_profile)
         self.act_export_lens.setToolTip("Save a camera's lens profile (from the checkerboard, GoPro's lens model or a\n"
