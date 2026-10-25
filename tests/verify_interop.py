@@ -212,8 +212,9 @@ if imp_u is not None:
     s_x, s_u = session(), session()
     trackio.apply(s_x, imp_x)
     trackio.apply(s_u, imp_u)
-    check(np.array_equal(s_u.tracks, s_x.tracks) and np.array_equal(s_u.tracked, s_x.tracked)
-          and np.array_equal(s_u.confidence, s_x.confidence), "and lands in a camera bit for bit the same")
+    check(np.array_equal(s_u.tracks, s_x.tracks, equal_nan=True) and np.array_equal(s_u.tracked, s_x.tracked)
+          and np.array_equal(s_u.confidence, s_x.confidence, equal_nan=True) and s_x.tracked.any(),
+          "and lands in a camera bit for bit the same")
 imp_u, err = read_or_none(uv_twin(os.path.join(OUT, "multi_xypts.csv"), "multi_uv_xypts.csv"))
 check(imp_u is not None and same_import(imp_u, trackio.read(os.path.join(OUT, "multi_xypts.csv"))),
       "an all-cameras _U / _V file reads exactly like its _X / _Y twin", err)
