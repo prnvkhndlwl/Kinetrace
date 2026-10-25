@@ -787,7 +787,9 @@ tracker from each such click on, while every point you did not click there goes
 on exactly as it would have without your clicks; a **Moving spot** point starts
 again inside its run. When a point is lost before a later click of yours, it is
 cut where it was lost and picked up again at that click, instead of stopping the
-run; a point that has no position on the frame you start from joins the run at
+run (an AllTracker or CoTracker3 point is found lost by **Auto-pause**: with it
+off, the point is not cut, and its track up to your click is the tracker's best
+guess); a point that has no position on the frame you start from joins the run at
 its first click. When a point starts again the video waits a moment (its new
 tracker needs a few frames before its first positions) - it never goes back.
 Clicks on many points at once use more of the graphics card: when a press may
@@ -4051,10 +4053,11 @@ camera.
 
 **Auto-pause** — stopping tracking automatically when a body part is lost. The
 lost part's track is cut at the first frame where it became unreliable, so what
-is left can be trusted (your own clicks after it stay). A Moving spot point
-with a click of yours further on does not stop the run: it is cut where it was
-lost and picked up again at that click. (When the animal keeps its points on its
-silhouette, a part that leaves the outline stops the run the same way.)
+is left can be trusted (your own clicks after it stay). A point with a click of
+yours further on does not stop the run: it is cut where it was lost and picked up
+again at that click. (When the animal keeps its points on its silhouette, a part
+that leaves the outline stops the run the same way - or, with a click of yours
+further on, is cut and picked up again - whether Auto-pause is on or off.)
 
 **Ball marker** — a round marker (a wand ball, a reflective dot, a dropped
 ball) found in every frame by outlining it and fitting a circle; the circle's

@@ -22,6 +22,13 @@ App (real keys):
   [7] two cameras, a click in camera B only, a different tracker per camera: camera A as without the click,
       camera B from its click
   [8] the vanishing dot through the app: no stop, nothing in the hidden stretch, the dot from its click on
+  [12] a point with no position on the start frame joins at its click: alone (the run starts as its session), and
+       beside a Moving spot point with the project default AllTracker (its session uses ITS tracker, CoTracker3)
+  [13] a synthetic animal pair (SAM replaced by their true silhouettes): both heads clicked on one frame - each
+       animal's landmarks anchored on its own head's session; a Hand-only head anchors them on its clicks, and
+       between them they are measured without an anchor, never capped
+  [14] X after a point was cut, before its click: the frames after the stop keep their old data (D9 choice 2)
+  ([12]-[14] and [11]'s Track anyway / refusal: review findings #1, #3, #4 and nits, each failing on e5a5022)
 Every check FAILS on main (there is no RunDriver; a run writes round the clicks and a lost point stops it).
 Run: .venv\\Scripts\\python.exe tests\\verify_hand_restart.py
 """
@@ -319,7 +326,7 @@ def section4():
     rows: dict = {}
     sess = trk.TrackingWorker(vid, h, None, None, cache, n, refine=True,
                               specs=[trk.PointSpec(head, np.asarray(click, np.float32))], roi=True, autopause=False,
-                              cache_first=True, emit_frames=False, keep_rows=rows)
+                              cache_first=True, emit_frames=False, keep_rows={head: rows})
     hook = trk.head_hook(h, {h: click}, [(h, n - 1, rows)])
     prim = prim_worker(cache, resume_pids=set(), head_xy={head: hook})
     rp = Rec(prim)
@@ -711,11 +718,213 @@ def section11():
           any("graphics card" in m for m in asked), asked[-1:])
     check("[11] ... and answered No, nothing is tracked", lambda: np.array_equal(s.tracked, before) and win.worker is None)
     close(win)
+    # (review nits) "Track anyway" is the user's answer: the run does not refuse again; and the run's own refusal (the
+    # estimate fitted the card, its free memory at the start did not) is said in words, not as a crash
+    import torch
+    cu = torch.cuda
+    real_mem = (cu.mem_get_info, cu.memory_reserved, cu.memory_allocated)
+    real_w, real_c = QMessageBox.warning, QMessageBox.critical
+    shown = []
+    QMessageBox.warning = staticmethod(lambda *a, **k: (shown.append(("warning", a[1] if len(a) > 1 else "")),
+                                                        QMessageBox.Ok)[1])
+    QMessageBox.critical = staticmethod(lambda *a, **k: (shown.append(("critical", a[1] if len(a) > 1 else "")),
+                                                         QMessageBox.Ok)[1])
+    cu.mem_get_info = lambda *a: (int(1e7), int(8e10))       # 10 MB free when the run looks: short for any session
+    cu.memory_reserved = cu.memory_allocated = lambda *a: 0
+    try:
+        for anyway in (True, False):
+            win = new_window(V600)
+            add_points(win, [GT[0, k] for k in range(3)], "cotracker3")
+            for k in (1, 2):
+                click_at(win, k, 20, GT[20, k])
+            shown.clear()
+            dev.cached_vram_gb = (lambda: 0.5) if anyway else (lambda: 80.0)     # asks / fits the estimate
+            ok = press_t(win, timeout=300)
+            s = win.session
+            if anyway:
+                check("[11] answered Track anyway: the run does not refuse again, the clicked points are tracked to the "
+                      "end", ok and s.tracked[590:, 1].all() and s.tracked[590:, 2].all() and not shown, shown)
+            else:
+                check("[11] the run's own refusal (its free memory short) is said in words, not as a crash",
+                      ok and any(kd == "warning" and "memory" in t for kd, t in shown)
+                      and not any(kd == "critical" for kd, _t in shown), shown)
+            close(win)
+    finally:
+        QMessageBox.warning, QMessageBox.critical = real_w, real_c
+        dev.cached_vram_gb = real_vram
+        cu.mem_get_info, cu.memory_reserved, cu.memory_allocated = real_mem
 
 
-ONLY = {int(x) for x in os.environ.get("HAND_RESTART_ONLY", "").split(",") if x.strip()}   # e.g. "1,2" (a subset)
+# ===================================================================== [12] joiners
+def section12():
+    print("[12] app: a point with no position on the start frame joins at its click")
+    win = new_window(V600)
+    s = win.session
+    win._goto(30, force=True)
+    win._on_add(float(GT[30, 0, 0]), float(GT[30, 0, 1]))     # placed on frame 30 only
+    s.points[0].tracker = "cotracker3"
+    win._refresh_point_list()
+    click = s.tracks[30, 0].copy()
+    toasts = []
+    real_toast = win.toast.show_message
+    win.toast.show_message = lambda m, *a, **k: (toasts.append(str(m)), real_toast(m, *a, **k))
+    ok = press_t(win, start=0)
+    check("[12] one CoTracker3 point clicked on frame 30, Track from frame 0: the run starts (review #1: 'Nothing to "
+          "start from')", ok and not any("Nothing to start" in m for m in toasts), toasts[-2:])
+    err = np.linalg.norm(s.tracks[31:, 0] - GT[31:600, 0], axis=1)
+    check(f"[12] ... nothing before its click, the click exact, tracked from it to the end (median {np.nanmedian(err):.2f} "
+          "px)", lambda: not s.tracked[:30, 0].any() and np.array_equal(s.tracks[30, 0], click) and s.manual[30, 0]
+          and s.tracked[31:, 0].all() and float(np.median(err)) < 2.0)
+    close(win)
+    # beside a Moving spot point, the project default AllTracker: the joiner's session is ITS tracker's
+    win = new_window(V600)
+    s = win.session
+    win._on_add(float(GT[0, 1, 0]), float(GT[0, 1, 1]))
+    s.points[0].tracker = "spot"
+    j = s.add_point(30, float(GT[30, 0, 0]), float(GT[30, 0, 1]))     # placed on frame 30 only
+    s.points[j].tracker = "cotracker3"
+    win._refresh_point_list()
+    win._point_backend = "alltracker"
+    built = []
+    real_sw = win._session_worker
+
+    def rec(*a, **k):
+        w = real_sw(*a, **k)
+        built.append((list(w.point_ids), w.point_backend))
+        return w
+    win._session_worker = rec
+    press_t(win, start=0)
+    check("[12] a CoTracker3 point joining beside a Moving spot point (project default AllTracker) runs in a CoTracker3 "
+          "session (review #1: the default's model)", any(j in p_ for p_, _b in built)
+          and all(b == "cotracker3" for p_, b in built if j in p_), built)
+    close(win)
+
+
+# ===================================================================== [13] heads the run does not track itself
+class _TwoAnimalsSAM:
+    """SAM stand-in: the synthetic pair's true silhouettes (object id = the animal's place in the run + 1)."""
+
+    def __init__(self, ks):
+        self.ks = list(ks)
+
+    def new_session(self, start, size):
+        import _synth
+        from kinetrace import segmenter
+        w, h, ks = int(size[0]), int(size[1]), self.ks
+
+        class S:
+            def step(self, native, idx, prompts):
+                gts = _synth.gt_frame(int(idx))[1]
+                m = np.stack([cv2.resize(gts[k]["mask"].astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
+                              .astype(bool) for k in ks])
+                return segmenter.FrameMasks(int(idx), [i + 1 for i in range(len(ks))], m,
+                                            np.full(len(ks), 8.0, np.float32), (w, h), (_synth.W, _synth.H))
+        return S()
+
+
+def animals_window(ks, head_tracker="cotracker3"):
+    """The synthetic pair (`ks` of animals 0 and 1), each with its head on its true head on frame 0 and a
+    silhouette-derived tail tip; -> (window, {k: head pid}, {k: tip pid})."""
+    import _synth
+    vid = _synth.build_video(os.path.join(OUT, "synth_animals.mp4"))
+    win = new_window(vid)
+    s = win.session
+    heads, tips = {}, {}
+    for j, k in enumerate(ks):
+        g = _synth.gt_frame(0)[1][k]
+        a = s.ensure_animal() if j == 0 else s.segments[s.add_segment()]
+        a.add_click(0, float(g["centre"][0]), float(g["centre"][1]), True)
+        idx = s.n_segments - 1
+        hp = s.add_point(0, float(g["head"][0]), float(g["head"][1]), name="snout")
+        tp = s.add_landmark("tip", "silhouette", "tip")
+        s.move_points([hp, tp], idx)
+        s.points[hp].tracker = head_tracker
+        s.set_head(hp)
+        heads[k], tips[k] = hp, tp
+    win._refresh_point_list()
+    return win, heads, tips
+
+
+def section13():
+    print("[13] app: two heads clicked on one frame; a Hand-only head (D10)")
+    import _synth
+    real_seg = trk.get_segmenter
+    try:
+        trk.get_segmenter = lambda be, **k: _TwoAnimalsSAM([0, 1])
+        win, heads, tips = animals_window([0, 1])
+        s = win.session
+        h, n = 10, _synth.T
+        for k, hp in heads.items():
+            gh = _synth.gt_frame(h)[1][k]["head"]
+            click_at(win, hp, h, (float(gh[0]) + 1.0, float(gh[1])))
+        ok = press_t(win)
+        check("(setup) both animals were tracked", ok and len(win._run_segments()) == 2, win._run_segments())
+        for k in (0, 1):
+            cf = s.confidence[h + 16:n, tips[k]]
+            check(f"[13] both heads clicked on frame {h}: animal {k}'s tail tip is anchored on its own head's session, "
+                  f"not capped (median confidence {np.nanmedian(cf):.2f}; review #3)",
+                  np.isfinite(cf).sum() > 0.8 * (n - h - 16) and float(np.nanmedian(cf)) > trk.ANCHOR_LOST_CONF + 0.05)
+        close(win)
+        # a Hand-only head, clicked on every 10th frame: the midline starts at each click; between them it is
+        # measured without an anchor (as with no head point), never capped
+        trk.get_segmenter = lambda be, **k: _TwoAnimalsSAM([0])
+        win, heads, tips = animals_window([0], head_tracker="hand")
+        s = win.session
+        hp, clicks = heads[0], {}
+        for f in range(10, n, 10):
+            gh = _synth.gt_frame(f)[1][0]["head"]
+            clicks[f] = (float(gh[0]), float(gh[1]))
+            click_at(win, hp, f, clicks[f])
+        ok = press_t(win)
+        mid = s.seg_masks[0].midline
+        d = [float(np.linalg.norm(mid[f][0] - np.asarray(xy))) if f in mid else np.inf for f, xy in clicks.items()]
+        check("(setup) the animal was tracked to the end", ok and len(mid) >= n - 2, len(mid))
+        check(f"[13] a Hand-only head anchors its animal's midline on each frame it was clicked (median "
+              f"{np.median(d):.1f} px from the click; review #4)", float(np.median(d)) < 3.0, np.round(d, 1))
+        rest = [f for f in range(1, n) if f not in clicks]
+        cf = s.confidence[rest, tips[0]]
+        check(f"[13] ... and between its clicks the landmarks are not capped (median confidence {np.nanmedian(cf):.2f})",
+              float(np.nanmedian(cf)) > trk.ANCHOR_LOST_CONF + 0.05)
+        check("[13] ... its clicks are kept exactly", all(s.manual[f, hp] and np.array_equal(s.tracks[f, hp],
+                                                                                            np.float32(xy))
+                                                         for f, xy in clicks.items()))
+        close(win)
+    finally:
+        trk.get_segmenter = real_seg
+
+
+# ===================================================================== [14] X after a cut: the old data after the stop
+def section14():
+    print("[14] app: X after a point was cut, before its click")
+    win = new_window(VAN)
+    add_points(win, [(AX[0], AY[0]), (BX[0], BY[0])], "cotracker3")
+    s = win.session
+    old = (np.stack([AX, AY], axis=1) + 3.0).astype(np.float32)          # an older track of dot A, 3 px off
+    s.tracks[1:BACK, 0] = old[1:BACK]
+    s.tracked[1:BACK, 0] = s.visibility[1:BACK, 0] = True
+    s.confidence[1:BACK, 0] = 0.9
+    click_at(win, 0, BACK, (AX[BACK], AY[BACK]))
+    win.act_select_all.trigger()
+    win._goto(0, force=True)
+    pump(0.05)
+    win.activateWindow()
+    QTest.keyClick(win, Qt.Key_T)
+    wait(lambda: win.state != READY, 30)
+    wait(lambda: win.state == READY or win.current >= GONE + 45, 120)
+    QTest.keyClick(win, Qt.Key_X)
+    wait(lambda: win.state == READY and win.worker is None, 60)
+    stop = win.current
+    check("(setup) X stopped the run after dot A was lost and before its click", GONE + 30 < stop < BACK - 10, stop)
+    check(f"[14] dot A is cut from where it was lost to the stop (frame {stop})",
+          lambda: not s.tracked[GONE + 20:stop + 1, 0].any())
+    check("[14] ... and the frames after the stop keep their old data up to the click (D9 choice 2; it was erased)",
+          lambda: s.tracked[stop + 1:BACK, 0].all() and np.array_equal(s.tracks[stop + 1:BACK, 0], old[stop + 1:BACK]))
+    close(win)
+
+
+ONLY ={int(x) for x in os.environ.get("HAND_RESTART_ONLY", "").split(",") if x.strip()}   # e.g. "1,2" (a subset)
 for k, fn in enumerate((section1, section2, section3, section4, section5, section6, section7, section8, section9,
-                         section10, section11), 1):
+                         section10, section11, section12, section13, section14), 1):
     if ONLY and k not in ONLY:
         continue
     try:

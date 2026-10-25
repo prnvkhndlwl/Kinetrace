@@ -10,6 +10,8 @@ start is tracked from the frame before it, only when that frame is a usable posi
   [5] a dot that is gone for good: its gap is cut again where the tracker loses it, not guessed
   [6] 50 short gaps over a 5000-frame clip: only the frames around them are decoded
   [7] "Use this every time": the next press fills the gaps without asking; Track > When there is data ahead shows it
+  [8] the first press with data ahead counts the gaps without loading the tracker (torch) on the window's thread
+      (review #2: it froze the window with no "Starting the tracking engine" card, G46) - run first, in a fresh process
 Every check FAILS on the code before step 19 (there is no third choice). Run: .venv\\Scripts\\python.exe
 tests\\verify_gap_fill.py
 """
@@ -349,7 +351,41 @@ def section_long():
     close(win)
 
 
-for fn in (section_plan, section_main, section_gone, section_long):
+def section_torch():
+    print("[8] the first press with data ahead: the gap counts never load the tracker (torch) on the window's thread")
+    if "kinetrace.tracker" in sys.modules:
+        check("(setup) nothing has loaded the tracker before this section", False)
+        return
+    win = new_window(V600)
+    s = win.session
+    win._on_add(float(GT[0, 0, 0]), float(GT[0, 0, 1]))
+    seed_track(s, GT, 200, [0])
+    s.clear_window([0], 100, 129)
+    seen = []
+
+    def ask(self, info):
+        seen.append(("kinetrace.tracker" in sys.modules, int(info.get("gaps") or 0)))
+        return None                                   # cancelled: nothing runs
+    MainWindow._ask_track_choice = ask
+    try:
+        win.act_select_all.trigger()
+        win._goto(0, force=True)
+        pump(0.05)
+        win.activateWindow()
+        QTest.keyClick(win, Qt.Key_T)
+        pump(0.3)
+    finally:
+        MainWindow._ask_track_choice = STUB_ASK
+    check("(setup) the press asked, and its counts hold the gap", seen and seen[0][1] >= 1, seen)
+    check("[8] ... and the tracker was not loaded on the window's thread before it asked (review #2, G46: the "
+          "engine card loads it)", seen and not seen[0][0], seen)
+    close(win)
+
+
+ONLY = {x.strip() for x in os.environ.get("GAP_FILL_ONLY", "").split(",") if x.strip()}    # e.g. "torch,plan"
+for fn in (section_torch, section_plan, section_main, section_gone, section_long):
+    if ONLY and fn.__name__.replace("section_", "") not in ONLY:
+        continue
     try:
         fn()
     except Exception as e:  # noqa: BLE001

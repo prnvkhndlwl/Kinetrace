@@ -64,6 +64,9 @@ SEGMENT_COLORS: tuple[tuple[int, int, int], ...] = (ANIMAL_COLOR, (255, 159, 207
 # (D9 choice 3) "Only fill the gaps": a stretch is filled only when the position before it is this far (a share of the
 # picture's smaller side, 4 px at least) inside the picture - nearer, the point most likely left it
 GAP_EDGE_FRAC = 0.02
+# (PR B) frames a re-seed session tracks past the last one it owns: its last rows get a full window. Here, not in
+# tracker.py (which imports torch), because the Track press counts with it on the GUI thread (review #2, G46)
+SESSION_TAIL = 16
 
 # Reopening a project must restore the exact working state, not just tracks.
 DEFAULT_UI_STATE: dict = {

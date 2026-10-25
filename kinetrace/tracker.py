@@ -74,7 +74,7 @@ from kinetrace.pixels import centre_scale, centre_unscale, centred_origin
 from kinetrace.segmenter import (DEFAULT_BACKEND, MIDLINE_SAMPLES, Prompt, SegmentIdentity, bbox_diagonal,
                                      click_arrays, fit_within, get_segmenter, score_to_confidence, summarize_mask, working_size)
 from kinetrace.silhouette import extremity_roles, midline as silhouette_midline, oriented, resample
-from kinetrace.session import in_frame
+from kinetrace.session import SESSION_TAIL, in_frame  # noqa: F401 - SESSION_TAIL: the sessions' tail (re-exported)
 from kinetrace.video_source import CacheFirstSource, FrameCache, ReadAhead, VideoSource
 from kinetrace import paths as _paths
 
@@ -661,8 +661,9 @@ class TrackingWorker(QThread):
         # (`resume_cuts` {pid: frame}; nothing is emitted for it from there) and picked up again at that click
         # instead of stopping the run; `cache_first` = read the frames the run's own worker has just decoded
         # (`CacheFirstSource`); `emit_frames` False = no display frames (a session is not drawn); `head_xy`
-        # (D2) {head pid: `head_hook`} = an animal's head as a session tracks it from the head's click on; `keep_rows`
-        # {frame: xy} = this worker's FIRST column as it emits it, for such a hook
+        # (D2) {head pid: `head_hook`} = an animal's head as a session tracks it from the head's click on (or a
+        # Hand-only head's clicks, `hand_head_hook`); `keep_rows` {head pid: {frame: xy}} = those columns as this
+        # worker emits them, for such a hook (every head it tracks: two animals' heads clicked on one frame)
         self.resume_pids = {int(p) for p in (resume_pids or ())}
         self.resume_cuts: dict[int, int] = {}
         self.cache_first = bool(cache_first)
@@ -670,6 +671,7 @@ class TrackingWorker(QThread):
         self.head_xy = head_xy
         self.keep_rows = keep_rows
         self.model_pool = None          # a CoTracker3 session's model copies (RunDriver)
+        self.emitted_to = int(start_frame) - 1      # the last frame emitted (PR B: a cut ends there, `_resume_cuts`)
         self.source_gone = None         # set once the run's own worker has ended (RunDriver -> CacheFirstSource)
         self._pooled = None
         self._read_at = start_frame - 1     # the last frame a read loop has read (RunDriver keeps sessions behind it)
@@ -1592,6 +1594,7 @@ class TrackingWorker(QThread):
             if head_col is not None and np.isfinite(out_tr[i, head_col]).all():
                 head = out_tr[i, head_col]
             hook = self.head_xy.get(self.head_pid) if self.head_xy else None     # this animal's head (G149)
+            handed = False
             if hook is not None:
                 # (D2, PR B) from the head's click on, the head as ITS session tracks it (the click on a click
                 # frame); None while that session has not tracked frame f yet: the midline without an anchor,
@@ -1607,6 +1610,11 @@ class TrackingWorker(QThread):
                     elif self._anchor_verdict is not None and self._anchor_verdict[0] < getattr(hook, "handover", -1):
                         self._anchor_verdict = None      # made on the run's own head, before the click (R2-M4)
             ml = self._midline_for(f, head)       # the midline is always shown / exported
+            if hook is not None and head_col is None and not handed:
+                # (D2, D10) a head the run itself does not track - one that joins at its click, or a Hand-only one
+                # between its clicks - is no head on this frame: unanchored by design, as with no head point (never
+                # capped at ANCHOR_LOST_CONF)
+                self._anchor_lost.discard(f)
             if ml is not None and len(ml.path) >= 2:
                 summ["midline"] = self._w2n(resample(ml.path, MIDLINE_SAMPLES), scale)
             if not self.derived:
@@ -1942,9 +1950,11 @@ class TrackingWorker(QThread):
             autopause_check()
         self._check_animal_lost(w0, L)
         self._emit_masks(w0, L)
-        if self.keep_rows is not None and self.specs:      # (D2) a head session's rows, for the run's landmarks
+        for q, rows in (self.keep_rows or {}).items():     # (D2) a session's head columns, for the run's landmarks
+            c = self.point_ids.index(q)
             for i in range(L):
-                self.keep_rows[w0 + i] = out_tr[i, 0].copy() if np.isfinite(out_tr[i, 0]).all() else None
+                rows[w0 + i] = out_tr[i, c].copy() if np.isfinite(out_tr[i, c]).all() else None
+        self.emitted_to = max(self.emitted_to, w0 + L - 1)
         self.chunk_ready.emit(w0, out_tr, out_vi, out_cf, members, list(pending))
 
     # ---------------------------------------------------- the two read loops share these
@@ -2392,7 +2402,6 @@ class TrackingWorker(QThread):
 
 
 # =============================================================================== re-seed sessions (I316, PR B)
-SESSION_TAIL = 16           # frames a session tracks past the last one it owns: its last rows get a full window
 # GPU memory a session adds, measured at 4K on real footage (PR B step 20: AllTracker +9.4 GB for ~6 sessions live at
 # once, CoTracker3 +0.6 GB); a smaller picture needs less, so this errs high
 SESSION_GB = {"alltracker": 1.6, "cotracker3": 0.15}
@@ -2462,6 +2471,18 @@ def head_hook(handover: int, clicks: dict, owned: list):
     return hook
 
 
+def hand_head_hook(clicks: dict):
+    """(D10, PR B) An animal's Hand-only head (no tracker) for the run's silhouette landmarks, as `head_hook`: on a
+    frame the user clicked it, the click; elsewhere not handed over - the run has no head there, and the landmarks
+    are measured without an anchor, as for an animal with no head point."""
+    clicks = {int(f): np.asarray(xy, np.float32) for f, xy in clicks.items()}
+
+    def hook(f: int):
+        xy = clicks.get(int(f))
+        return xy is not None, xy
+    return hook
+
+
 def peak_sessions(spans) -> int:
     """The most of `spans` [(first frame, end frame exclusive), ...] live on one frame."""
     ev = sorted([(a, 1) for a, b in spans if b > a] + [(b, -1) for a, b in spans if b > a])
@@ -2527,6 +2548,8 @@ class RunDriver(QThread):
         self._gone = threading.Event()               # the primary has ended: sessions decode their own frames
         self._pool = ModelPool()
         self._res: dict[int, dict] = {}
+        self.insist = False          # the user answered "Track anyway" to the press's memory estimate: no refusal
+        self.refused = None          # the run's refusal for lack of GPU memory, in words (`_short_of_memory`)
         direct = Qt.DirectConnection
         for name in ("model_loading", "model_progress", "started_ok", "chunk_ready", "masks_ready", "balls_ready"):
             getattr(primary, name).connect(getattr(self, name), direct)
@@ -2603,8 +2626,8 @@ class RunDriver(QThread):
         windows are then in use, so the free memory left is what the sessions can have (R2-M2): a sentence when
         it is not enough, else None."""
         peak = peak_sessions(self.spans())
-        if not peak or not torch.cuda.is_available():
-            return None
+        if not peak or self.insist or not torch.cuda.is_available():
+            return None             # (review nit) the user answered "Track anyway" to the press's estimate
         try:
             free, _total = torch.cuda.mem_get_info()
             free += torch.cuda.memory_reserved() - torch.cuda.memory_allocated()   # PyTorch's own free blocks (R2-N1)
@@ -2649,6 +2672,7 @@ class RunDriver(QThread):
                         checked = True
                         short = self._short_of_memory()
                         if short is not None:
+                            self.refused = short          # the window says it in words (not as a crash)
                             self._res[id(prim)]["error"] = short
                             stopping = True
                             self._stop(live, primary=True)
@@ -2700,6 +2724,13 @@ class RunDriver(QThread):
         primary's last, or a stopped session's if lower (after X the clicked point has no newer rows)."""
         rp = self._res[id(self.primary)]
         started = [j for j in self.jobs if j.started]
+
+        def lowered(last: int) -> int:
+            for j in started:
+                r = self._res[id(j.worker)]
+                if j.stopped and r["last"] is not None:
+                    last = min(last, max(r["last"], j.frame - 1))
+            return last
         workers = [self.primary] + [j.worker for j in started]
         err = next((self._res[id(w)]["error"] for w in workers if self._res[id(w)]["error"] is not None), None)
         if err is not None:
@@ -2712,13 +2743,9 @@ class RunDriver(QThread):
             self._auto_worker = w
             self.autopaused.emit(*r["auto"])
             last = r["last"] if r["last"] is not None else r["auto"][0]
-            self.finished_ok.emit(int(last), True)
+            self.finished_ok.emit(int(lowered(last)), True)     # (review nit) a stopped session's frames too
             return
         last = rp["last"] if rp["last"] is not None else self.primary.start_frame - 1
-        paused = bool(rp["paused"] or self._pause)
-        for j in started:
-            r = self._res[id(j.worker)]
-            if j.stopped and r["last"] is not None:
-                last = min(last, max(r["last"], j.frame - 1))
-                paused = True
-        self.finished_ok.emit(int(last), paused)
+        paused = bool(rp["paused"] or self._pause or any(j.stopped and self._res[id(j.worker)]["last"] is not None
+                                                         for j in started))
+        self.finished_ok.emit(int(lowered(last)), paused)

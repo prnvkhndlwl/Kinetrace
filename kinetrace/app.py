@@ -47,7 +47,7 @@ from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_
 from kinetrace import gpmf, projectfile, recent, recovery, trackio
 from kinetrace.lens import lens_label
 from kinetrace.errors import cap_first, plain_error as _plain_error
-from kinetrace.session import TRACKER_NAMES, TrackingSession
+from kinetrace.session import SESSION_TAIL, TRACKER_NAMES, TrackingSession
 from kinetrace.viewgrid import ViewGrid, caption_for
 from kinetrace.skeletons import all_templates, save_user_template
 from kinetrace.theme import apply_theme
@@ -1197,9 +1197,11 @@ class MainWindow(QMainWindow):
             "for 16 frames in a row (a point hidden for a moment keeps its confidence, so ordinary\n"
             "occlusion does not trigger this). Its track is cut back to the first unreliable frame,\n"
             "the playhead jumps there and the point is selected: click where it really is, then\n"
-            "Track. Also stops when the segment is lost for 16 frames, or a ball marker is lost\n"
-            "inside the picture. Uncheck to always run to the end. (A landmark held on its animal's\n"
-            "silhouette that leaves it stops the run either way.)",
+            "Track. A point with a click of yours further on does not stop the run: it is cut where\n"
+            "it was lost and starts again at that click. Also stops when the segment is lost for 16\n"
+            "frames, or a ball marker is lost inside the picture. Uncheck to always run to the end\n"
+            "(a lost point is then not cut). A landmark held on its animal's silhouette that leaves it\n"
+            "stops the run - or, with a click ahead, is cut - either way.",
             checked=True)
 
         self.btn_roi = self._tool_button(
@@ -9047,7 +9049,6 @@ class MainWindow(QMainWindow):
         """(D9 choice 3, PR B) Point q's empty stretches after frame f in camera v (`gap_plan`), into the press's
         counts: the ones "Only fill the gaps" tracks (by an AllTracker / CoTracker3 point; a Moving spot point, a
         ball or a silhouette landmark is named and left to a normal run) and the ones it skips, with why."""
-        from kinetrace.tracker import SESSION_TAIL
         m = sv.points[q]
         if m.derived or m.is_ball:
             return
@@ -9816,10 +9817,11 @@ class MainWindow(QMainWindow):
         if not keep:
             pids = [q for q in pids if s.tracked[self.current, q]]     # no joiners either
         seeds = s.positions_at(self.current)
-        # (PR B) an AllTracker / CoTracker3 point with no position here joins at its click, in its session
-        model_join = [q for q in pids if not s.tracked[self.current, q] and self._tracker_of(q) in ("alltracker", "cotracker3")]
-        pids = [q for q in pids if q not in model_join]
         pids, ball_pids, spot_specs, backend = self._split_by_tracker(pids, seeds, quiet, model=model, rest=rest)
+        # (PR B) a point of this run's model with no position here joins at its click, in its own session: split
+        # with the others, so the run's model is its own tracker (review #1: not the project's default)
+        model_join = [q for q in pids if not s.tracked[self.current, q]]
+        pids = [q for q in pids if q not in model_join]
         specs = self._point_specs(pids, seeds)
         balls = self._ball_specs(ball_pids, seeds)
         seg = self._segment_specs(pids, scope, animal_ok, segment, specs)
@@ -9834,7 +9836,12 @@ class MainWindow(QMainWindow):
                 if first:
                     joined[sp.pid] = first[0]
         spot_specs = [sp for sp in spot_specs if s.tracked[self.current, sp.pid] or sp.pid in joined]
-        if not specs and not balls and not spot_specs and not seg.animals:
+        # (I316, PR B) each AllTracker / CoTracker3 point's clicks ahead: its own session from each, the run's
+        # tracker writing it up to the first (`hand_plan`); none in a Fresh run or a one-frame step. A point that
+        # joins at its click is only sessions (review #1: such a run starts too)
+        plan = ({q: pl for q in [sp.pid for sp in specs] + model_join
+                 if (pl := s.hand_plan(q, self.current, end))[1]} if keep and not step else {})
+        if not specs and not balls and not spot_specs and not seg.animals and not plan:
             self.toast.show_message(
                 f"Nothing to start from on frame {self.current}: place a point with <b>N</b>, a ball "
                 "with Point ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
@@ -9842,34 +9849,33 @@ class MainWindow(QMainWindow):
             return
         # (I316) each Moving spot point's usable clicks from the start frame on: it starts again at them
         hand = ({sp.pid: s.hand_clicks(sp.pid, self.current, end) for sp in spot_specs} if keep else None)
-        # (I316, PR B) each AllTracker / CoTracker3 point's clicks ahead: its own session from each, the run's
-        # tracker writing it up to the first (`hand_plan`); none in a Fresh run or a one-frame step
-        plan = ({q: pl for q in [sp.pid for sp in specs] + model_join
-                 if (pl := s.hand_plan(q, self.current, end))[1]} if keep and not step else {})
-        w = TrackingWorker(self.info.path, self.current, None, None,
-                           self.cache, end, refine=True,
-                           specs=specs,
-                           roi=self.btn_roi.isChecked(),
-                           autopause=self.btn_autopause.isChecked(),
-                           animals=seg.animals, derived=seg.derived,             # (G149) every segment
-                           point_backend=backend, balls=balls, spots=spot_specs,
-                           hand={q: c for q, c in (hand or {}).items() if c} or None,
-                           resume_pids=set(plan) or None)
-        # (I320) how this run's rows are written: round the hand-placed cells (keep), and a spot that joins
-        # at a later click from that click on only - its older data before it stays; (PR B) a point that starts
-        # again at a click up to the frame before its first restart
-        w._kt_keep = keep
-        own = {q: (joined[q], end - 1) for q in joined}
-        own.update({q: (self.current, pl[0]) for q, pl in plan.items() if q in w.point_ids})
-        w._kt_own = [own.get(q) for q in w.point_ids] if own else None
-        w._kt_own_pid = own
-        # the points hand-placed on the start frame: `write_segment` clears the flag of every row it
-        # writes, the start row (the user's click, position kept) included -- restored at the end of
-        # the run (I189), with its imported mark (I319)
-        w._kt_hand = (self.current, [q for q in pids + ball_pids + [sp.pid for sp in spot_specs]
-                                     if s.manual[self.current, q]],
-                      [q for q in pids + ball_pids + [sp.pid for sp in spot_specs]
-                       if s.manual[self.current, q] and s.imported[self.current, q]])
+        heads = self._unrun_heads(s, seg.animals, plan, end) if keep else {}
+        w = None                # (PR B) nothing of the run's own - only points that join at their clicks: no worker
+        if specs or balls or spot_specs or seg.animals:
+            w = TrackingWorker(self.info.path, self.current, None, None,
+                               self.cache, end, refine=True,
+                               specs=specs,
+                               roi=self.btn_roi.isChecked(),
+                               autopause=self.btn_autopause.isChecked(),
+                               animals=seg.animals, derived=seg.derived,             # (G149) every segment
+                               point_backend=backend, balls=balls, spots=spot_specs,
+                               hand={q: c for q, c in (hand or {}).items() if c} or None,
+                               resume_pids=set(plan) or None, head_xy=heads or None)
+            # (I320) how this run's rows are written: round the hand-placed cells (keep), and a spot that joins
+            # at a later click from that click on only - its older data before it stays; (PR B) a point that starts
+            # again at a click up to the frame before its first restart
+            w._kt_keep = keep
+            own = {q: (joined[q], end - 1) for q in joined}
+            own.update({q: (self.current, pl[0]) for q, pl in plan.items() if q in w.point_ids})
+            w._kt_own = [own.get(q) for q in w.point_ids] if own else None
+            w._kt_own_pid = own
+            # the points hand-placed on the start frame: `write_segment` clears the flag of every row it
+            # writes, the start row (the user's click, position kept) included -- restored at the end of
+            # the run (I189), with its imported mark (I319)
+            w._kt_hand = (self.current, [q for q in pids + ball_pids + [sp.pid for sp in spot_specs]
+                                         if s.manual[self.current, q]],
+                          [q for q in pids + ball_pids + [sp.pid for sp in spot_specs]
+                           if s.manual[self.current, q] and s.imported[self.current, q]])
         if plan:
             w = self._with_sessions(w, plan, backend, seg.animals, end)
             if w is None:
@@ -9886,38 +9892,37 @@ class MainWindow(QMainWindow):
         context); a point with a later restart is cut, not stopped, where it is lost (`resume_pids`). A held point
         is kept on its animal's LIVE silhouette when this run segments the animal (`LiveMasks`), else on the saved
         one. A segmented animal's head clicked (D2): the run's landmarks are measured from its sessions' head
-        (`head_hook`). A run whose own tracker has nothing of its own starts as its first session. -> the
-        `RunDriver`, or None when the user declines a run that may not fit the graphics card's memory."""
-        from kinetrace.tracker import SESSION_TAIL, RunDriver, SessionJob, head_hook, peak_sessions
+        (`head_hook`). A run with nothing of its own (`w` None: only points that join at their clicks) starts as its
+        first session. -> the `RunDriver` (or that session alone), or None when the user declines a run that may not
+        fit the graphics card's memory."""
+        from kinetrace.tracker import RunDriver, SessionJob, head_hook, peak_sessions
         s = self.session
         by_frame: dict[int, list] = {}
         for q, (_own_last, restarts) in plan.items():
             for i, (b, last, xy) in enumerate(restarts):
                 by_frame.setdefault(int(b), []).append((q, int(last), xy, i + 1 < len(restarts)))
-        live_segs = {a.index: j for j, a in enumerate(w.animals) if a.stored is None}
-        heads = {}
-        for a in w.animals:
-            hp = a.head_pid
-            if a.stored is None and hp is not None and hp in plan:
-                heads[hp] = {}
+        live_segs = {a.index: j for j, a in enumerate(animals) if a.stored is None}     # `animals` = w's, in order
+        heads = {a.head_pid for a in animals if a.stored is None and a.head_pid in plan}
         jobs, rows_of = [], {}
         for b in sorted(by_frame):
-            items = sorted(by_frame[b], key=lambda it: (it[0] not in heads, it[0]))    # a head first (`keep_rows`)
+            items = sorted(by_frame[b])
             pids = [it[0] for it in items]
             last = max(it[1] for it in items)
-            rows = {} if pids[0] in heads else None
+            # (review #3) the rows of EVERY head clicked here: two animals' heads clicked on one frame share a session
+            rows = {it[0]: {} for it in items if it[0] in heads} or None
             sw = self._session_worker(s, b, pids, min(end, last + 1 + SESSION_TAIL), backend,
                                       {it[0] for it in items if it[3]}, live=live_segs, primary=w, rows=rows)
-            assert rows is None or sw.specs[0].pid == pids[0], "a head session's first column is the head"   # (R2-M6)
             jobs.append(SessionJob(b, sw, {it[0]: (b, it[1]) for it in items}))
-            if rows is not None:
-                rows_of.setdefault(pids[0], []).append((b, next(it[1] for it in items if it[0] == pids[0]), rows))
+            for it in items:
+                if rows is not None and it[0] in rows:
+                    rows_of.setdefault(it[0], []).append((b, it[1], rows[it[0]]))
         if heads:
-            w.head_xy = {hp: head_hook(plan[hp][0] + 1, s.hand_clicks(hp, self.current, end), rows_of.get(hp, []))
-                         for hp in heads}
-        if not self._sessions_fit(peak_sessions([(j.frame, j.worker.n_frames) for j in jobs]), backend, s):
+            w.head_xy = {**(w.head_xy or {}), **{hp: head_hook(plan[hp][0] + 1, s.hand_clicks(hp, self.current, end),
+                                                               rows_of.get(hp, [])) for hp in heads}}
+        fit = self._sessions_fit(peak_sessions([(j.frame, j.worker.n_frames) for j in jobs]), backend, s)
+        if not fit:
             return None
-        if not w.specs and not w.animals and not w.balls and not w.spots and jobs:
+        if w is None and jobs:
             # nothing of the run's own: its first session is the run (it decodes and is drawn)
             first = jobs.pop(0)
             fw = first.worker
@@ -9930,8 +9935,28 @@ class MainWindow(QMainWindow):
         if not jobs:
             return w
         drv = RunDriver(w, jobs)
+        drv.insist = fit == "anyway"            # (review nit) the user's "Track anyway" is not overruled by the run
         drv._kt_restarts = len(jobs) + int(getattr(w, "_kt_restarts", 0) or 0)     # (R1-M6) a promoted one counts
         return drv
+
+    def _unrun_heads(self, s, animals: list, plan: dict, end: int) -> dict:
+        """(D2, D10, PR B) The head of each animal this run segments that the run itself does not track: a head that
+        joins at its click (in `plan`) becomes the animal's head - its sessions anchor the landmarks from its click
+        on (`_with_sessions`); a Hand-only head anchors them on each frame the user clicked it (review #4). Sets the
+        animals' `head_pid`; -> {Hand-only head: its hook}. Before such a head's first click, and between a Hand-only
+        head's clicks, the landmarks are measured without an anchor, as for an animal with no head point."""
+        from kinetrace.tracker import hand_head_hook
+        hooks = {}
+        for a in animals:
+            hp = s.head_pid(a.index)
+            if a.stored is not None or a.head_pid is not None or hp is None:
+                continue
+            if hp in plan:
+                a.head_pid = hp
+            elif self._hand_only(hp, s) and (clicks := s.hand_clicks(hp, self.current, end)):
+                a.head_pid = hp
+                hooks[hp] = hand_head_hook(clicks)
+        return hooks
 
     def _session_worker(self, s, frame: int, pids, n_end: int, backend: str, resume=(), live=None, primary=None,
                         rows=None, decode: bool = False, autopause: bool | None = None):
@@ -9940,7 +9965,7 @@ class MainWindow(QMainWindow):
         Auto-pause; a held point kept on its animal's LIVE silhouette when `primary` segments it (`live` {animal:
         its index there}), else on the saved one. `resume` = its points with a later restart (cut, not stopped,
         where lost); `decode` = it reads its own frames and is drawn (a run's first), else the run's
-        (`CacheFirstSource`); `rows` = its first column as emitted (a head, D2); `autopause` None = the toolbar's
+        (`CacheFirstSource`); `rows` {head pid: {}} = those columns as emitted (D2); `autopause` None = the toolbar's
         switch (a gap's run: always on, D9)."""
         from kinetrace.tracker import AnimalSpec, LiveMasks, TrackingWorker
         held: dict[int, set] = {}
@@ -9973,7 +9998,6 @@ class MainWindow(QMainWindow):
         rest goes on). Stretches close together run as one run (a primary and its sessions, `RunDriver`); the runs
         go one after another in frame order, each seeking to its first frame - the frames between them are never
         decoded. X stops them all; one Ctrl+Z undoes them; the end says what was filled and what was skipped."""
-        from kinetrace.tracker import SESSION_TAIL
         p = self.project
         clusters = []
         for v, items in sorted((info.get("gap_jobs") or {}).items()):
@@ -9995,7 +10019,9 @@ class MainWindow(QMainWindow):
             self._end_press()
             return
         views = sorted({c["view"] for c in clusters})
-        self._gaps = {"queue": sorted(clusters, key=lambda c: (c["view"] != p.active, c["view"], c["start"])),
+        order = ("alltracker", "cotracker3")             # one model's gaps in frame order, then the other's
+        self._gaps = {"queue": sorted(clusters, key=lambda c: (c["view"] != p.active, c["view"], order.index(c["model"]),
+                                                              c["start"])),
                       "snaps": {v: p.sessions[v].snapshot() for v in views}, "orig": (p.active, self.current),
                       "skipped": list(info.get("gap_skipped") or []), "runs": 0, "items": 0, "cuts": 0,
                       "stopped": False}
@@ -10075,27 +10101,28 @@ class MainWindow(QMainWindow):
             parts.append(f"… {len(skipped) - 6} more")
         return "; ".join(parts)
 
-    def _sessions_fit(self, peak: int, backend: str, s) -> bool:
+    def _sessions_fit(self, peak: int, backend: str, s) -> str:
         """(PR B, RE-I2) Would the most sessions live at once fit the graphics card? An estimate from the device
         probe's cached memory (the window never touches torch): the run's measured peak at 4K (AllTracker 11.7 GB,
         CoTracker3 2.7 GB, scaled down with the picture, at least a quarter) + per session SESSION_GB (measured at
         4K: about 1.6 / 0.15 GB).
-        Asks before a run that may not fit; the run checks the real free memory again when it starts."""
+        Asks before a run that may not fit; the run checks the real free memory again when it starts, unless the user
+        answered Track anyway. -> "fits", "anyway", or "" (the user declined)."""
         from kinetrace.device import cached_vram_gb
         from kinetrace.tracker import SESSION_GB
         vram = cached_vram_gb()
         if not peak or not vram:
-            return True
+            return "fits"
         frac = min(1.0, max(0.25, (s.width or 3840) * (s.height or 2160) / (3840 * 2160)))
         need = {"alltracker": 11.7, "cotracker3": 2.7}.get(backend, 2.7) * frac + peak * SESSION_GB.get(backend, 0.2)
         if need <= vram:
-            return True
-        return QMessageBox.question(
+            return "fits"
+        return "anyway" if QMessageBox.question(
             self, "Many restarts at once",
             f"Your clicks start the points again in up to {peak} tracker sessions at the same time: about "
             f"{need:.1f} GB on the graphics card, which has {vram:.1f} GB. It may run out of memory (the run then "
             "stops with a message, and everything tracked before is kept).\n\nTrack anyway?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes else ""
 
     def _run_targets(self, only_pids, segment):
         """What a run would start from on this frame: (scope = the points it covers, the scope's
@@ -10138,7 +10165,7 @@ class MainWindow(QMainWindow):
     def _model_joiners(self, s, pids, frame: int | None = None, model=None, rest: bool = True) -> list[int]:
         """(I316, PR B) The AllTracker / CoTracker3 points among `pids` with no position on `frame` (default: this
         one) that a run from there picks up at a later click of theirs: each joins the run at its click, in its
-        own session (`_reseed_jobs`). Of the pass `model` (`_in_pass`); not in a one-frame step."""
+        own session (`_with_sessions`). Of the pass `model` (`_in_pass`); not in a one-frame step."""
         if self._press_choice == "fresh" or self._track_mode == "semi":
             return []
         f = self.current if frame is None else int(frame)
@@ -10188,7 +10215,8 @@ class MainWindow(QMainWindow):
         # (I320, I316) the clicks ahead of the start: kept, and every point starts again at them (Moving spot in
         # its run, the point models each in its own session, PR B)
         later = ([q for q in pids if not s.points[q].derived and not s.points[q].is_ball
-                  and s.reseed_frames(q, self.current, s.n_frames)] if self._press_choice != "fresh" else [])
+                  and (s.reseed_frames(q, self.current, s.n_frames) if self._tracker_of(q, s) == "spot"
+                       else s.hand_plan(q, self.current, s.n_frames)[1])] if self._press_choice != "fresh" else [])
         ahead = "" if not later else " — your clicks ahead stay and each clicked point starts again at them"
         self.statusBar().showMessage(
             f"Tracking {' and '.join(parts)}" + (f" — {held}" if held else "") + ahead + by_hand
@@ -10558,7 +10586,7 @@ class MainWindow(QMainWindow):
         self._run_own = getattr(w, "_kt_own", None)
         self._autopause_info = None
         self._member_frames.clear()
-        self._run_start = self.current
+        self._run_start = int(getattr(w, "start_frame", self.current))  # (PR B) a lone joiner's run starts at its click
         self._fps_ema = 0.0
         self._last_emit_t = 0.0
         self.state = TRACKING
@@ -11134,7 +11162,9 @@ class MainWindow(QMainWindow):
 
     def _resume_cuts(self, w) -> int:
         """(I316, PR B) A point lost with a click ahead was cut where it was lost, not stopped: its rows from there to
-        the last frame that tracker owned are cleared (the clicks kept); its next session picks it up. -> how many."""
+        the last frame that tracker owned are cleared (the clicks kept); its next session picks it up. Never past the
+        last frame that tracker reached (`emitted_to`): after X or an error the frames beyond keep their old data
+        (D9 choice 2). -> how many."""
         s = self.session
         if s is None or w is None:
             return 0
@@ -11142,9 +11172,13 @@ class MainWindow(QMainWindow):
         prim = getattr(w, "primary", w)
         parts = [(prim, getattr(prim, "_kt_own_pid", {}) or {})] + [(j.worker, j.own) for j in getattr(w, "jobs", [])]
         for wk, own in parts:
+            reached = getattr(wk, "emitted_to", None)
             for pid, cut in (getattr(wk, "resume_cuts", None) or {}).items():
-                if 0 <= pid < s.n_points and pid in own and int(cut) <= own[pid][1]:
-                    s.clear_window([pid], int(cut), int(own[pid][1]), keep_hand=True)
+                if not (0 <= pid < s.n_points and pid in own):
+                    continue
+                hi = int(own[pid][1]) if reached is None else min(int(own[pid][1]), int(reached))
+                if int(cut) <= hi:
+                    s.clear_window([pid], int(cut), hi, keep_hand=True)
                     n += 1
         if n:
             self._refresh_overlay()
@@ -11209,6 +11243,8 @@ class MainWindow(QMainWindow):
 
     def _on_track_error(self, tb: str):
         self._end_press()                       # (R1-C2) an error ends the press's choice: no Fresh erase after it
+        restored = self._retrack is not None    # a re-track puts everything back below
+        refused = getattr(self.worker, "refused", None) if self.worker is not None else None
         if self._gaps is not None:
             self._gaps["stopped"] = True            # (D9) an error ends "Only fill the gaps"; what was filled stays
             QTimer.singleShot(0, self._gaps_next)
@@ -11231,6 +11267,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Re-tracking stopped on an error; everything was put back", 8000)
         if self.worker is not None:
             self.worker.wait(2000)
+            if not restored:
+                self._resume_cuts(self.worker)      # (PR B, review nit) a point cut with a click ahead: after an error too
             _retire(self.worker)        # (I133)
         self.worker = None
         self._restore_start_flags()          # (I189)
@@ -11238,6 +11276,12 @@ class MainWindow(QMainWindow):
         self._apply_state()
         self._track_label.setText("")
         self._refresh_animal_panel()
+        if refused:
+            # (PR B, review nit) not enough graphics-card memory for the restarts: the run's sentence, no traceback
+            self.toast.show_message(refused, "warn", 12000)
+            self.statusBar().showMessage("Stopped: not enough memory on the graphics card for the restarts", 12000)
+            QMessageBox.warning(self, "Not enough graphics card memory", refused)
+            return
         if decode_at is not None:
             # a damaged frame mid-video, not a failure of the model: everything
             # before it was emitted and is kept (I40)
@@ -14890,6 +14934,7 @@ class MainWindow(QMainWindow):
         # second pass of a two-pass run or the next re-track stretch used to begin inside closeEvent
         self._user_paused = True
         self._passes = None
+        self._gaps = None                    # (D9) nor the next "Only fill the gaps" run
         self._multi = None                   # closing: no camera after this one starts (G29)
         st = self._retrack
         self._retrack = None
