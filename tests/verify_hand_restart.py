@@ -168,7 +168,7 @@ def section1():
         base.run()
         check(f"(setup) {backend}: the run without clicks ends at {n - 1}", rb.fin and rb.fin[-1][0] == n - 1, rb.fin)
         for h in (1, 8, 16, 17):
-            click = (float(GT[h, 1, 0]) + 2.5, float(GT[h, 1, 1]) - 1.5)
+            click = (float(GT[h, 1, 0]) + 1.0, float(GT[h, 1, 1]) - 0.6)        # on the dot, off its centre
             cache = FrameCache(CACHE)
             prim = worker(V600, 0, n, four, backend, cache, resume_pids={1})
             sess = worker(V600, h, n, {1: click}, backend, cache, cache_first=True, emit_frames=False)
@@ -177,14 +177,17 @@ def section1():
             rd = Rec(drv, chunks=False)
             drv.run()
             row = rs.first_row(0, h)
+            c32 = np.asarray(click, np.float32)                 # tracks are stored as float32
             check(f"[1] {backend}, click at {h}: the session's row {h} is the click exactly",
-                  row is not None and float(row[0]) == click[0] and float(row[1]) == click[1],
+                  row is not None and np.array_equal(np.asarray(row, np.float32), c32),
                   None if row is None else tuple(float(v) for v in row))
             tr = rs.track(0, n)
-            off = np.array([2.5, -1.5])
+            off = np.array([1.0, -0.6])
             err = np.linalg.norm(tr[h + 1:] - (GT[h + 1:n, 1] + off), axis=1)
+            own = np.linalg.norm(rb.track(1, n)[h + 1:] - GT[h + 1:n, 1], axis=1)     # the tracker's own error there
             check(f"[1] {backend}, click at {h}: ... and it follows the clicked spot from there (median "
-                  f"{np.nanmedian(err):.2f} px)", np.isfinite(err).all() and float(np.median(err)) < 1.5)
+                  f"{np.nanmedian(err):.2f} px; the same tracker from frame 0 is {np.nanmedian(own):.2f} px off the dot)",
+                  np.isfinite(err).all() and float(np.median(err)) < float(np.median(own)) + 0.75)
             check(f"[1] {backend}, click at {h}: the run's own worker emits exactly what it emits with no click",
                   same_chunks(rp, rb), (len(rp.chunks), len(rb.chunks)))
             check(f"[1] {backend}, click at {h}: the run ends once, at {n - 1}, with no error",
@@ -245,7 +248,8 @@ def section2():
     check("[2] the run's worker cut dot A where it was lost (before the click)", cut is not None and GONE <= cut < BACK,
           cut)
     tr0 = rp.track(0, n)
-    check("[2] ... and emits nothing for it from the cut on", cut is not None and np.isnan(tr0[cut:]).all())
+    check("[2] ... and emits nothing for it once the loss is confirmed (16 frames after the cut; the app clears the "
+          "rows before)", cut is not None and np.isnan(tr0[cut + 16:]).all())
     trs = rs.track(0, n)
     err = np.linalg.norm(trs[BACK:] - np.stack([AX[BACK:n], AY[BACK:n]], axis=1), axis=1)
     check(f"[2] dot A is tracked again from the click to the end (median {np.nanmedian(err):.2f} px)",
@@ -314,7 +318,7 @@ def section4():
                               specs=[trk.PointSpec(head, np.asarray(click, np.float32))], roi=True, autopause=False,
                               cache_first=True, emit_frames=False, keep_rows=rows)
     hook = trk.head_hook(h, {h: click}, [(h, n - 1, rows)])
-    prim = prim_worker(cache, resume_pids=set(), head_xy=hook)
+    prim = prim_worker(cache, resume_pids=set(), head_xy={head: hook})
     rp = Rec(prim)
     drv = trk.RunDriver(prim, [trk.SessionJob(h, sess, {head: (h, n - 1)})])
     drv.run()
@@ -557,7 +561,10 @@ def section8():
     close(win)
 
 
-for fn in (section1, section2, section3, section4, section5, section6, section7, section8):
+ONLY = {int(x) for x in os.environ.get("HAND_RESTART_ONLY", "").split(",") if x.strip()}   # e.g. "1,2" (a subset)
+for k, fn in enumerate((section1, section2, section3, section4, section5, section6, section7, section8), 1):
+    if ONLY and k not in ONLY:
+        continue
     try:
         fn()
     except Exception as e:  # noqa: BLE001
