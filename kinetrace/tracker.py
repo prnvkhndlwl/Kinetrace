@@ -712,9 +712,10 @@ class TrackingWorker(QThread):
                 self._pooled = None
 
     def _open_source(self) -> VideoSource:
-        src = (CacheFirstSource(self.video_path, self.cache, self.source_gone) if self.cache_first   # (PR B)
-               else VideoSource(self.video_path, self.cache))
+        src = (CacheFirstSource(self.video_path, self.cache, self.source_gone, limit=self.n_frames) if self.cache_first
+               else VideoSource(self.video_path, self.cache))           # (PR B) a session's frames: the cache's
         src.seek(self.start_frame)
+        self.source_obj = src           # (what it read from: a session's `decoded` count)
         return src
 
     def _run_steps(self, src: VideoSource):
@@ -1600,9 +1601,11 @@ class TrackingWorker(QThread):
                     head = None if hx is None else np.asarray(hx, np.float32)
                     key = None if head is None else (round(float(head[0]), 1), round(float(head[1]), 1))
                     cached = self._mid_cache.get(f)
-                    if cached is None or cached[0] != key:
+                    if cached is not None and cached[0] != key:
                         self._anchor_lost.discard(f)
                         self._anchor_verdict = None
+                    elif self._anchor_verdict is not None and self._anchor_verdict[0] < hook.handover:
+                        self._anchor_verdict = None      # made on the run's own head, before the click (R2-M4)
             ml = self._midline_for(f, head)       # the midline is always shown / exported
             if ml is not None and len(ml.path) >= 2:
                 summ["midline"] = self._w2n(resample(ml.path, MIDLINE_SAMPLES), scale)
@@ -1766,8 +1769,13 @@ class TrackingWorker(QThread):
                     # does not guarantee the same spot). Stop the
                     # run at this frame instead, and invent nothing: this frame
                     # and the rest of the window are blank for this point.
-                    if self._exit_hit is None or f < self._exit_hit[0]:
-                        self._exit_hit = (f, landmark_pid[q])
+                    pid_q = landmark_pid[q]
+                    if pid_q in self.resume_pids:
+                        # (I316, PR B; review R2-I1) a click ahead: cut here, picked up again at that click - the
+                        # run goes on, with or without Auto-pause (the exit stop ignores that switch too)
+                        self.resume_cuts[pid_q] = min(f, self.resume_cuts.get(pid_q, f))
+                    elif self._exit_hit is None or f < self._exit_hit[0]:
+                        self._exit_hit = (f, pid_q)
                     tr[i:, q] = np.nan
                     continue
                 # within the band: outline jitter, nudge onto the silhouette
@@ -2448,6 +2456,7 @@ def head_hook(handover: int, clicks: dict, owned: list):
             if first <= f <= last:
                 return True, rows.get(f)
         return True, None
+    hook.handover = int(handover)
     return hook
 
 
@@ -2472,6 +2481,7 @@ class SessionJob:
     own: dict
     started: bool = False
     stopped: bool = False
+    done: bool = False
 
 
 class RunDriver(QThread):
@@ -2561,6 +2571,8 @@ class RunDriver(QThread):
         self._pause = True
         self.primary.request_pause()
         for job in self.jobs:
+            if job.started and not job.done:
+                job.stopped = True               # (R2-M1) its last bounds the run's, also after the primary's end
             job.worker.request_pause()
 
     def spans(self) -> list[tuple[int, int]]:
@@ -2569,7 +2581,9 @@ class RunDriver(QThread):
 
     def _short_of_memory(self) -> str | None:
         """(RE-I2) Is there GPU memory for the most sessions live at once? Asked HERE, on the run's own thread
-        (the window never touches torch): a sentence when there is not, else None."""
+        (the window never touches torch), when the first session is about to start - the run's own model and
+        windows are then in use, so the free memory left is what the sessions can have (R2-M2): a sentence when
+        it is not enough, else None."""
         peak = peak_sessions(self.spans())
         if not peak or not torch.cuda.is_available():
             return None
@@ -2580,9 +2594,10 @@ class RunDriver(QThread):
         need = peak * max(SESSION_GB.get(j.worker.point_backend, 0.2) for j in self.jobs) * 1e9
         if free >= need:
             return None
-        return (f"Tracking did not start: restarting your clicked points needs up to {peak} extra tracker sessions "
-                f"at once (about {need / 1e9:.1f} GB more on the graphics card), and only {free / 1e9:.1f} GB is "
-                "free. Close other programs that use the graphics card, or track fewer clicked points at once.")
+        return (f"Tracking stopped: restarting your clicked points needs up to {peak} extra tracker sessions at "
+                f"once (about {need / 1e9:.1f} GB more on the graphics card), and only {free / 1e9:.1f} GB is free. "
+                "Everything tracked so far is kept. Close other programs that use the graphics card, or track fewer "
+                "clicked points at once.")
 
     def run(self) -> None:
         for _ in self.steps():
@@ -2590,12 +2605,8 @@ class RunDriver(QThread):
 
     def steps(self):
         prim = self.primary
-        short = self._short_of_memory()
-        if short is not None:
-            self._res[id(prim)]["error"] = short
-            self.error.emit(short)
-            return
         gen = prim.steps()
+        checked = False
         live: list = []                              # [(job index, its generator)]
         pending = sorted(range(len(self.jobs)), key=lambda i: self.jobs[i].frame)
         frontier = prim.start_frame - 1
@@ -2615,6 +2626,14 @@ class RunDriver(QThread):
                     frontier = max(frontier, prim._read_at)
                 while (pending and not stopping and not self._pause
                        and (prim_done or self.jobs[pending[0]].frame <= frontier)):
+                    if not checked:
+                        checked = True
+                        short = self._short_of_memory()
+                        if short is not None:
+                            self._res[id(prim)]["error"] = short
+                            stopping = True
+                            self._stop(live, primary=True)
+                            break
                     i = pending.pop(0)
                     self.jobs[i].started = True
                     live.append((i, self.jobs[i].worker.steps()))
@@ -2628,6 +2647,7 @@ class RunDriver(QThread):
                         next(g)
                     except StopIteration:
                         live.remove(item)
+                        self.jobs[i].done = True
                         r = self._res[id(w)]
                         self.session_state.emit(i, False, r["last"] if r["last"] is not None else self.jobs[i].frame - 1)
                         if (r["error"] is not None or r["auto"] is not None) and not stopping:
@@ -2637,6 +2657,9 @@ class RunDriver(QThread):
                 if prim_done and not live:
                     break
                 yield
+        except Exception:      # noqa: BLE001 - (R2-M3) the driver's own fault: ONE error for the run, all stopped
+            self._res[id(prim)]["error"] = traceback.format_exc()
+            self.request_pause()
         finally:
             for _i, g in live:                         # only on an unexpected exit
                 g.close()

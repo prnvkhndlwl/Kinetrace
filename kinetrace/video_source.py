@@ -823,12 +823,14 @@ class CacheFirstSource:
     source's own capture, opened on the first miss. The same pixels either way, and a frame the run has
     decoded is not decoded twice. A read waits up to `wait_s` for the run's worker to file a frame before
     decoding it itself; once that worker has ended (`gone` set) nothing waits. Same contract as `VideoSource`
-    (sequential `read_next`, `seek`, `get_frame`, `close`; one owner at a time). `decoded` counts the frames it
-    had to decode itself."""
+    (sequential `read_next`, `seek`, `get_frame`, `close`; one owner at a time). `limit` = the session's end: its
+    read-ahead never decodes past it. `decoded` counts the frames it had to decode itself."""
 
-    def __init__(self, path: str, cache: FrameCache, gone: threading.Event | None = None, wait_s: float = 0.1):
+    def __init__(self, path: str, cache: FrameCache, gone: threading.Event | None = None, wait_s: float = 0.1,
+                 limit: int | None = None):
         self.path = path
         self.cache = cache
+        self.limit = limit
         self.gone = gone if gone is not None else threading.Event()
         self.wait_s = float(wait_s)
         self._own: VideoSource | None = None
@@ -851,14 +853,13 @@ class CacheFirstSource:
 
     def read_next(self) -> tuple[int, np.ndarray] | None:
         idx = self._pos
+        if self.limit is not None and idx >= self.limit:
+            return None                                 # the session's end: an end of file to its read loop
         rgb = self._cached(idx)
         if rgb is None:
-            src = self._source()
-            src.seek(idx)
-            nxt = src.read_next()
-            if nxt is None:
+            rgb = self._source().get_frame(idx)       # a read forward when it can, a seek only when it must (R2-M5)
+            if rgb is None:
                 return None
-            rgb = nxt[1]
             self.decoded += 1
         self._pos = idx + 1
         return idx, rgb

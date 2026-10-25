@@ -192,6 +192,9 @@ def section1():
                   same_chunks(rp, rb), (len(rp.chunks), len(rb.chunks)))
             check(f"[1] {backend}, click at {h}: the run ends once, at {n - 1}, with no error",
                   rd.fin == [(n - 1, False)] and not rd.err and not rd.auto, (rd.fin, rd.err[-1:], rd.auto))
+            check(f"[1] {backend}, click at {h}: the session decoded no frame itself (it read the run's)",
+                  getattr(getattr(sess, "source_obj", None), "decoded", -1) == 0,
+                  getattr(getattr(sess, "source_obj", None), "decoded", None))
 
 
 # ===================================================================== the vanishing dot
@@ -362,6 +365,76 @@ def section4():
         x, y = int(round(tr[f, 0])), int(round(tr[f, 1]))
         inside.append(np.isfinite(tr[f]).all() and 0 <= y < m.shape[0] and 0 <= x < m.shape[1] and bool(m[y, x]))
     check(f"[4] ... and stays on the body ({sum(inside)} of {len(inside)} frames)", all(inside))
+
+
+# ===================================================================== [9] the exit, a session's error, X at the end
+def section9():
+    print("[9] bare driver: a held point's exit with a click ahead; a session's error; X after the run's own end")
+    import _synth
+    vid = os.path.join(OUT, "synth_animals.mp4")
+    if not os.path.isfile(vid):
+        vid = _synth.build_video(vid)
+    n, h = 50, 12
+    g0 = _synth.gt_frame(0)[1][0]
+    s = TrackingSession(vid, _synth.T, 25.0, _synth.W, _synth.H)
+    held = s.add_point(0, 40.0, 40.0, name="eye")             # placed on the background: it leaves the body at once
+    s.ensure_animal()
+    s.animal.add_click(0, float(g0["centre"][0]), float(g0["centre"][1]), True)
+    animal = trk.AnimalSpec({0: list(s.animal.prompts[0])}, {}, None)
+
+    def prim(cache, **kw):
+        return trk.TrackingWorker(vid, 0, None, None, cache, n, refine=True,
+                                  specs=[trk.PointSpec(held, np.array([40.0, 40.0], np.float32))], roi=True,
+                                  autopause=False, animal=animal, constrain_pids=[held], on_body_pids=[held], **kw)
+    base = prim(FrameCache(CACHE))
+    rb = Rec(base)
+    base.run()
+    check("(setup) without a click a held point that leaves its silhouette stops the run (exit), Auto-pause off",
+          rb.auto and getattr(base, "_autopause_reason", "") == "exit", (rb.auto, getattr(base, "_autopause_reason", "")))
+    cache = FrameCache(CACHE)
+    p1 = prim(cache, resume_pids={held})
+    eye_h = _synth.gt_frame(h)[1][0]["eye"]
+    sess = trk.TrackingWorker(vid, h, None, None, cache, n, refine=True,
+                              specs=[trk.PointSpec(held, np.asarray(eye_h, np.float32))], roi=True, autopause=False,
+                              stored_masks=trk.LiveMasks(p1, 0), constrain_pids=[held], on_body_pids=[held],
+                              cache_first=True, emit_frames=False)
+    rs = Rec(sess)
+    drv = trk.RunDriver(p1, [trk.SessionJob(h, sess, {held: (h, n - 1)})])
+    rd = Rec(drv, chunks=False)
+    drv.run()
+    cut = p1.resume_cuts.get(held)
+    check("[9] with a click ahead the exit is a cut, not a stop: the run ends at the clip's end (review R2-I1)",
+          rd.fin == [(n - 1, False)] and not rd.auto and cut is not None and cut <= h, (rd.fin, rd.auto, cut))
+    check("[9] ... and the held point is tracked from its click on", np.isfinite(rs.track(0, n)[h:]).all())
+    # a session's error is the run's ONE error, and the run stops
+    cache = FrameCache(CACHE)
+    four = {k: GT[0, k] for k in range(4)}
+    p2 = worker(V600, 0, 300, four, "cotracker3", cache, resume_pids={1})
+    s2 = worker(V600, 20, 300, {1: GT[20, 1]}, "cotracker3", cache, cache_first=True, emit_frames=False)
+
+    def boom(*a, **k):
+        raise RuntimeError("a fault inside a session")
+    s2._segment_steps = boom
+    rp2 = Rec(p2)
+    drv2 = trk.RunDriver(p2, [trk.SessionJob(20, s2, {1: (20, 299)})])
+    rd2 = Rec(drv2, chunks=False)
+    drv2.run()
+    last2 = max((w0 + tr.shape[0] - 1 for w0, tr, _v, _c in rp2.chunks), default=-1)
+    check("[9] a session's error is the run's one error (no end, no auto-pause), and the run's own worker stops",
+          len(rd2.err) == 1 and "a fault inside a session" in rd2.err[0] and not rd2.fin and not rd2.auto
+          and last2 < 299, (len(rd2.err), rd2.fin, last2))
+    # X right after the run's own worker ended: the sessions still running bound the run's last frame (R2-M1)
+    cache = FrameCache(CACHE)
+    p3 = worker(V600, 0, 120, four, "cotracker3", cache, resume_pids={1})
+    s3 = worker(V600, 60, 120, {1: GT[60, 1]}, "cotracker3", cache, cache_first=True, emit_frames=False)
+    drv3 = trk.RunDriver(p3, [trk.SessionJob(60, s3, {1: (60, 119)})])
+    rd3 = Rec(drv3, chunks=False)
+    rs3 = Rec(s3)
+    p3.finished_ok.connect(lambda *_a: drv3.request_pause(), Qt.DirectConnection)
+    drv3.run()
+    s3_last = max((w0 + tr.shape[0] - 1 for w0, tr, _v, _c in rs3.chunks), default=-1)
+    check("[9] X right after the run's own worker ended: the run says paused, at the session's last frame",
+          rd3.fin and rd3.fin[0][1] and rd3.fin[0][0] == s3_last < 119, (rd3.fin, s3_last))
 
 
 # ===================================================================== app helpers
@@ -562,7 +635,7 @@ def section8():
 
 
 ONLY = {int(x) for x in os.environ.get("HAND_RESTART_ONLY", "").split(",") if x.strip()}   # e.g. "1,2" (a subset)
-for k, fn in enumerate((section1, section2, section3, section4, section5, section6, section7, section8), 1):
+for k, fn in enumerate((section1, section2, section3, section4, section5, section6, section7, section8, section9), 1):
     if ONLY and k not in ONLY:
         continue
     try:
