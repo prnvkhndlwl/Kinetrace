@@ -12320,11 +12320,19 @@ class MainWindow(QMainWindow):
                 + ". Then export it here.")
             return
         v = p.active if p.active in have else have[0]
+        # (I323) every camera's lens in ONE Argus camera_profile.txt (what Argus Wand reads), lenses alone:
+        # no calibration needed
+        every = f"Every camera with a lens ({len(have)}) — one Argus camera_profile.txt"
         if len(have) > 1 or v != p.active:
             labels = [f"{p.name(k)} — {lens_label(p.lenses[k])}" for k in have]
+            if len(have) > 1:
+                labels.append(every)
             choice, ok = QInputDialog.getItem(self, "Export lens profile", "The lens profile of:", labels,
                                               have.index(v), False)
             if not ok or choice not in labels:
+                return
+            if choice == every:
+                self._export_argus_profiles(have)
                 return
             v = have[labels.index(choice)]
         prof = p.lenses[v]
@@ -12350,6 +12358,30 @@ class MainWindow(QMainWindow):
             "3D → Calibrate → Load a Lens Profile for Cameras… (or the lens wizard's <i>I already have a lens file…</i>), "
             "for this camera in another project or for cameras of the same model, lens, zoom and recording mode.",
             "success", 12000)
+
+    def _export_argus_profiles(self, have: list[int]) -> None:
+        """(I323) File -> Export -> Lens Profile… -> every camera: one camera_profile.txt as Argus's ChArUco
+        script writes it (a tab-separated line per camera, numbered as the project's cameras, pixels y up);
+        a fisheye lens is refused in a sentence and nothing is written."""
+        from kinetrace import calibio
+        p = self.project
+        start = Path(self._start_folder(str(Path(self.info.path).parent) if self.info else "")) / calibio.ARGUS_PROFILE_NAME
+        path, _flt = QFileDialog.getSaveFileName(self, "Export every camera's lens for Argus", str(start),
+                                                 "Argus camera profile (*.txt)")
+        if not path:
+            return
+        try:
+            calibio.write_argus_profiles(path, [(k + 1, p.lenses[k]) for k in have])
+        except calibio.CalibFormatError as e:
+            QMessageBox.warning(self, "Lens profiles not saved", cap_first(str(e)))
+            return
+        except Exception as e:      # noqa: BLE001 - a full drive, a read-only folder: said
+            QMessageBox.warning(self, "Lens profiles not saved", _plain_error(e, "The lens profiles could not be saved"))
+            return
+        self.toast.show_message(
+            f"{len(have)} lens profiles saved as {Path(path).name} for Argus: line n = camera n ("
+            + ", ".join(f"{k + 1} {p.name(k)}" for k in have) + "), pixels counted y up as Argus does. "
+            "3D → Calibrate → Load a Lens Profile for Cameras… reads it back.", "success", 12000)
 
     def _load_lens_profile(self) -> None:
         """3D -> Calibrate -> Load a Lens Profile for Cameras… (G148, G176): a saved profile (.klens.json, OpenCV, Argus: the

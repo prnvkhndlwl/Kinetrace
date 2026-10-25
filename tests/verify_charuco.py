@@ -335,6 +335,66 @@ except ValueError as e:
     said = str(e)
 check("at least 10" in said, "a rig seen by one camera only is refused in words", said)
 
+# ------------------------------------------------------------------ [4] Argus's files
+print("[4] Argus's files")
+from kinetrace import calibio  # noqa: E402
+
+prof_path = os.path.join(SCRATCH, "charuco_camera_profile.txt")
+lens_list = [(v + 1, out["lenses"][v]) for v in range(3)]
+calibio.write_argus_profiles(prof_path, lens_list)
+lines = open(prof_path, encoding="utf-8").read().splitlines()
+cols = [ln.split("\t") for ln in lines]
+check(len(lines) == 3 and all(len(c) == 12 for c in cols) and [c[0] for c in cols] == ["1", "2", "3"],
+      "camera_profile.txt: a tab-separated line per camera, 12 columns, numbered 1..3", lines[:1])
+p0 = out["lenses"][0]
+c0 = cols[0]
+check(c0[2:4] == [str(RW), str(RH)] and all(len(x.split(".")[1]) == 6 for x in (c0[1], *c0[4:])),
+      "integers plain, every other number to 6 decimals (as Argus)", c0)
+check(abs(float(c0[5]) - (RH - p0.K[1, 2])) < 1e-6 and abs(float(c0[6]) + p0.K[1, 1] / p0.K[0, 0]) < 1e-6
+      and abs(float(c0[4]) - p0.K[0, 2]) < 1e-6,
+      "y up as Argus's ChArUco script: cy' = h - cy, the aspect ratio negative", c0[4:7])
+check(np.allclose([float(x) for x in c0[7:]], np.pad(p0.dist, (0, 5))[:5], atol=1e-6),
+      "distortion k1 k2 p1 p2 k3 as fitted")
+back = _lens.load_argus_profile(prof_path)
+check(len(back) == 3 and all(np.allclose(back[k].K, out["lenses"][k].K, atol=2e-6)
+                             and np.allclose(back[k].dist, np.pad(out["lenses"][k].dist, (0, 5))[:5], atol=2e-6)
+                             for k in range(3)),
+      "Kinetrace reads the y-up file back to the same lenses (to the file's 6 decimals)")
+one, which = _lens.argus_profile_for(prof_path, 1, "cam2")
+check(one is not None and "camera 2" in which and np.allclose(one.K, out["lenses"][1].K, atol=2e-6),
+      "camera 2's line goes to camera 2")
+calibio.write_argus_profiles(prof_path, lens_list, flip_y=False)
+c0n = open(prof_path, encoding="utf-8").read().splitlines()[0].split("\t")
+check(abs(float(c0n[5]) - p0.K[1, 2]) < 1e-6 and float(c0n[6]) > 0, "flip_y=False: top-left, as written")
+fish = _lens.LensProfile(RW, RH, np.array([[300.0, 0, 320], [0, 300.0, 240], [0, 0, 1]]), np.zeros(4), True)
+try:
+    calibio.write_argus_profiles(prof_path, [(1, fish)])
+    said = ""
+except calibio.CalibFormatError as e:
+    said = str(e)
+check("fisheye" in said, "a fisheye lens is refused in words", said)
+
+files = calibio.write_argus_xypts(SCRATCH, wand_uv, bg_uv, scan.sizes)
+paired = open(files[0], encoding="utf-8").read().splitlines()
+unp = open(files[1], encoding="utf-8").read().splitlines()
+check(os.path.basename(files[0]) == "paired_pts-xypts.csv" and os.path.basename(files[1]) == "unpaired_pts-xypts.csv",
+      "Argus's file names")
+check(paired[0].split(",")[:4] == ["pt1_cam1_x", "pt1_cam1_y", "pt1_cam2_x", "pt1_cam2_y"]
+      and paired[0].split(",")[6:8] == ["pt2_cam1_x", "pt2_cam1_y"] and len(paired[0].split(",")) == 12,
+      "paired header: pt1 in every camera, then pt2", paired[0])
+check(unp[0].split(",") == [f"pt1_cam{c}_{a}" for c in (1, 2, 3) for a in ("x", "y")], "unpaired header", unp[0])
+check(len(paired) - 1 == len(wand_uv) and len(unp) - 1 == len(bg_uv), "a row per board instant / per extra corner")
+P = np.genfromtxt(files[0], delimiter=",", skip_header=1).reshape(-1, 2, 3, 2)      # [row, end, camera, xy]
+P[..., 1] = np.array([h for _w, h in scan.sizes])[None, None, :] - P[..., 1]
+raw = np.transpose(wand_uv, (0, 2, 1, 3))
+same = np.isnan(P) == np.isnan(raw)
+check(same.all() and np.allclose(P[~np.isnan(P)], raw[~np.isnan(raw)], atol=1e-6),
+      "paired points: raw pixels, y' = h - y, nan where unseen")
+B = np.genfromtxt(files[1], delimiter=",", skip_header=1).reshape(-1, 3, 2)
+B[..., 1] = np.array([h for _w, h in scan.sizes])[None, :] - B[..., 1]
+check((np.isnan(B) == np.isnan(bg_uv)).all() and np.allclose(B[~np.isnan(B)], bg_uv[~np.isnan(bg_uv)], atol=1e-6),
+      "unpaired points the same")
+
 if FAILS:
     print(f"FAILED: {len(FAILS)} check(s): " + "; ".join(FAILS))
     sys.exit(1)

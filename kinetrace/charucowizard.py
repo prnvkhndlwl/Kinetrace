@@ -574,7 +574,45 @@ class RunPage(QWizardPage):
         self.completeChanged.emit()
 
     def _save_argus(self):
-        """(I323) Argus's files - added with the Argus writers."""
+        """(I323) Argus's three files into a folder, as its ChArUco script writes them: the board corners
+        (paired_pts-xypts.csv, unpaired_pts-xypts.csv: raw pixels, y up) and camera_profile.txt (every
+        camera's lens - the fitted ones, or the cameras' own for "positions only"), cameras numbered 1..C
+        in the scan's order."""
+        from PySide6.QtWidgets import QFileDialog
+
+        from kinetrace import calibio
+        w = self.wiz
+        scan = w.scan
+        if scan is None:
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Save for Argus: choose a folder", w.start_dir)
+        if not folder:
+            return
+        written, notes = [], []
+        try:
+            wand_uv, _L, bg_uv, _fr, _bf = charuco.pairs_and_extras(scan)
+            written += calibio.write_argus_xypts(folder, wand_uv, bg_uv, scan.sizes)
+        except Exception as e:      # noqa: BLE001 - a read-only folder, a full drive: said on the page
+            self.status.setText(plain_error(e, "The Argus files could not be saved", short=True))
+            return
+        lenses = [(k + 1, w.result_lenses.get(v) or w.usable_lens(v)) for k, v in enumerate(scan.cameras)]
+        missing = [scan.names[n - 1] for n, prof in lenses if prof is None]
+        if missing:
+            notes.append(f"{calibio.ARGUS_PROFILE_NAME} is not written: {', '.join(missing)} "
+                         f"{'has' if len(missing) == 1 else 'have'} no lens profile")
+        else:
+            path = Path(folder) / calibio.ARGUS_PROFILE_NAME
+            try:
+                calibio.write_argus_profiles(path, lenses)
+                written.append(str(path))
+            except calibio.CalibFormatError as e:
+                notes.append(f"{calibio.ARGUS_PROFILE_NAME} is not written: {e}")
+            except Exception as e:      # noqa: BLE001
+                notes.append(plain_error(e, f"{calibio.ARGUS_PROFILE_NAME} could not be saved", short=True))
+        cams = ", ".join(f"{k + 1} = {nm}" for k, nm in enumerate(scan.names))
+        self.status.setText("Saved for Argus: " + ", ".join(Path(x).name for x in written)
+                            + f" (cameras {cams}; pixels y up, as Argus counts them)."
+                            + "".join(f" {n[0].upper() + n[1:]}." for n in notes))
 
     def isComplete(self) -> bool:
         w = self.wiz

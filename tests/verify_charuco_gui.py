@@ -266,6 +266,9 @@ def drive_rig(self):
     wait_thread(rp)
     RIG["report"] = rp.report.toPlainText()
     RIG["complete"] = rp.isComplete()
+    if RIG.get("argus_dir"):
+        click(rp.btn_argus)
+        RIG["argus_status"] = rp.status.text()
     if RIG["cancel"]:
         click(self.button(QWizard.CancelButton))
     else:
@@ -314,10 +317,38 @@ pump(0.5)
 check(RIG.get("finish_text") == "Use these lenses", "lenses only: Finish says so", RIG.get("finish_text"))
 check(all(x is not None for x in p.lenses) and p.calibration is None,
       "lenses only: lenses attached, the calibration left as it was")
+
+# (I323) File -> Export -> Lens Profile... -> every camera: one Argus camera_profile.txt, lenses alone
+from PySide6.QtWidgets import QInputDialog  # noqa: E402
+from kinetrace import lens as _lens  # noqa: E402
+
+argus_prof = os.path.join(SCRATCH, "charuco_gui_camera_profile.txt")
+if os.path.exists(argus_prof):
+    os.remove(argus_prof)
+ITEMS = []
+QInputDialog.getItem = staticmethod(lambda *a, **k: (ITEMS.append(list(a[3])), (a[3][-1], True))[1])
+QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (argus_prof, ""))
+win.act_export_lens.trigger()
+pump(0.2)
+check(ITEMS and ITEMS[-1][-1].startswith("Every camera with a lens (3)"),
+      "Export > Lens Profile offers every camera as one Argus file", ITEMS[-1:] or None)
+back = _lens.load_argus_profile(argus_prof) if os.path.exists(argus_prof) else []
+check(len(back) == 3 and all(np.allclose(back[k].K, p.lenses[k].K, atol=2e-6) for k in range(3)),
+      "the Argus file holds the three lenses and reads back to them")
+
+# "Save for Argus..." in the wizard, then Cancel: the files are written, the project is not changed
+argus_dir = os.path.join(SCRATCH, "charuco_gui_argus")
+os.makedirs(argus_dir, exist_ok=True)
+for fn in os.listdir(argus_dir):
+    os.remove(os.path.join(argus_dir, fn))
+QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: argus_dir)
 before_l, before_c = list(p.lenses), p.calibration
-RIG.update(choice="both", cancel=True)
+RIG.update(choice="both", cancel=True, argus_dir=argus_dir)
 win.act_charuco.trigger()
 pump(0.5)
+check(sorted(os.listdir(argus_dir)) == ["camera_profile.txt", "paired_pts-xypts.csv", "unpaired_pts-xypts.csv"]
+      and "1 = cam1" in RIG.get("argus_status", ""),
+      "Save for Argus writes Argus's three files and says which camera is which", RIG.get("argus_status"))
 check(all(a is b for a, b in zip(before_l, p.lenses)) and p.calibration is before_c,
       "Cancel after a run changes nothing")
 

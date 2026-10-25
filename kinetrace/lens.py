@@ -272,6 +272,11 @@ def _parse_argus(path: str | Path) -> list[tuple[int, LensProfile]]:
         # the raw 0-based image), and its database centres are (w - 1) / 2,
         # e.g. 1351.5 x 759.5 for 2704 x 1520. A -1 "1-based" shift here moved
         # the distortion centre a pixel up and left of where it was fitted.
+        if ar < 0:
+            # (I323) a y-UP line (Argus's ChArUco script, Kinetrace's all-camera camera_profile.txt):
+            # its matrix was turned for bottom-left pixels, cy' = h - cy and fy' = -fy; turned back
+            # (it read as a negative focal length before, a lens nothing could undistort with)
+            cy, ar = h - cy, -ar
         K = np.array([[f, 0.0, cx], [0.0, f * (ar or 1.0), cy], [0.0, 0.0, 1.0]])
         n = int(round(cam))
         out.append((n, LensProfile(int(w), int(h), K, np.array([k[0], k[1], k[2], k[3], k[4]]), False,
@@ -342,7 +347,8 @@ def read_lens_for(path: str | Path, view: int, cam_name: str = "") -> tuple[Lens
 def load_argus_profile(path: str | Path) -> list[LensProfile]:
     """An Argus / DLTdv camera profile text file: one camera per line,
     `cam f w h cx cy AR k1 k2 t1 t2 k3` (pinhole + OpenCV distortion). Pixels
-    are OpenCV's: 0-based, the principal point is taken as written (I75).
+    are OpenCV's: 0-based, the principal point is taken as written (I75); a
+    line with a negative AR is y-up (Argus's ChArUco script) and turned back (I323).
     The profiles come back in file order; `argus_profile_for` picks the line
     for one camera."""
     return [p for _, p in _parse_argus(path)]

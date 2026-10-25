@@ -730,6 +730,73 @@ def write_lens(profile, path) -> None:
     _fs_save(fs, path)
 
 
+ARGUS_PROFILE_NAME = "camera_profile.txt"
+ARGUS_PAIRED_NAME = "paired_pts-xypts.csv"
+ARGUS_UNPAIRED_NAME = "unpaired_pts-xypts.csv"
+
+
+def write_argus_profiles(path, lenses, flip_y: bool = True) -> None:
+    """(I323) Every camera's lens as ONE Argus camera_profile.txt, the way Argus's ChArUco script
+    (utils/calibrate_charuco.py) writes it: one tab-separated line per camera, `cam fx w h cx cy AR
+    k1 k2 p1 p2 k3`, the camera numbered from 1 in `lenses` order, floats to 6 decimals. With `flip_y`
+    (Argus's default) the camera matrix is turned to y-up pixels to match its bottom-left point files:
+    cy' = h - cy and fy' = -fy, so AR is negative (`lens._parse_argus` turns such a line back).
+    `lenses` = [(camera number, LensProfile)]; a fisheye lens is refused in a sentence (Argus holds
+    the standard model only)."""
+    lines = []
+    for n, prof in lenses:
+        if prof.fisheye:
+            raise CalibFormatError(f"camera {n}'s lens is a fisheye model; an Argus profile holds the standard "
+                                   "(pinhole + radial) model only: measure that lens with the standard model, or "
+                                   "export it as .yml / .json")
+        K = np.asarray(prof.K, np.float64)
+        w, h = int(prof.width), int(prof.height)
+        fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+        if flip_y:
+            cy, fy = h - cy, -fy
+        d = np.pad(np.asarray(prof.dist, np.float64).ravel(), (0, 5))[:5]
+        lines.append("\t".join([str(int(n)), f"{fx:.6f}", str(w), str(h), f"{cx:.6f}", f"{cy:.6f}", f"{fy / fx:.6f}",
+                                *(f"{v:.6f}" for v in d)]))
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+
+
+def write_argus_xypts(folder, wand_uv, bg_uv, sizes, flip_y: bool = True) -> list[str]:
+    """(I323) Board corners as Argus's paired / unpaired points files (what its ChArUco script hands
+    Argus Wand): paired_pts-xypts.csv = one row per board instant, the two wand ends (`pt1`, `pt2`)
+    in every camera (`pt1_cam1_x, pt1_cam1_y, ... pt2_camC_y`); unpaired_pts-xypts.csv = one row per
+    other corner seen by two or more cameras (`pt1_cam1_x ...`). RAW pixels (Argus straightens them
+    with the profile), `nan` where a camera did not see the point; with `flip_y` y' = h - y (Argus's
+    bottom-left), else Kinetrace's top-left. `wand_uv` (F, C, 2, 2), `bg_uv` (B, C, 2), `sizes`
+    [(w, h)] per camera. -> the paths written."""
+    C = len(sizes)
+    wand_uv = np.asarray(wand_uv, np.float64).reshape(-1, C, 2, 2)
+    bg_uv = np.asarray(bg_uv, np.float64).reshape(-1, C, 2)
+    hs = np.array([float(h) for _w, h in sizes])
+
+    def flip(a):
+        """One row, camera first ((C, 2, 2) wand ends or (C, 2) points): y' = h - y per camera."""
+        a = np.array(a, np.float64, copy=True)
+        if flip_y:
+            a[..., 1] = hs.reshape((-1,) + (1,) * (a.ndim - 2)) - a[..., 1]
+        return a
+
+    def fmt(v):
+        return "nan" if not np.isfinite(v) else f"{v:.6f}"
+    folder = Path(folder)
+    out = []
+    head = ",".join(f"pt{k}_cam{c + 1}_{ax}" for k in (1, 2) for c in range(C) for ax in ("x", "y"))
+    rows = [",".join(fmt(v) for v in np.transpose(flip(w), (1, 0, 2)).ravel()) for w in wand_uv]
+    p1 = folder / ARGUS_PAIRED_NAME
+    p1.write_text("\n".join([head, *rows]) + "\n", encoding="utf-8", newline="\n")
+    out.append(str(p1))
+    head1 = ",".join(f"pt1_cam{c + 1}_{ax}" for c in range(C) for ax in ("x", "y"))
+    rows1 = [",".join(fmt(v) for v in flip(b).ravel()) for b in bg_uv]
+    p2 = folder / ARGUS_UNPAIRED_NAME
+    p2.write_text("\n".join([head1, *rows1]) + "\n", encoding="utf-8", newline="\n")
+    out.append(str(p2))
+    return out
+
+
 def read_lens(path, view: int = 0):
     """A lens profile: Kinetrace .klens.json, OpenCV .yml / .json, or an Argus
     profile (.txt; the line for camera `view`). (R19) The dispatch is
