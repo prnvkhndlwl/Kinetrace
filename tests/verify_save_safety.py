@@ -447,7 +447,8 @@ def _i330():
 class FakeWorker:
     """What `_on_track_finished_run` reads from a finished TrackingWorker (no thread, no model): the end of a
     run that auto-paused is handed to the app's own end-of-run code, as the worker's finished signal does.
-    (No CPU tracker here leaves unreliable frames after the frame it stops at, so a real run has no cut.)"""
+    (The cut needs frames emitted past the stop, which the model trackers' windows make; this suite runs
+    without model weights.)"""
 
     def __init__(self, pids, last):
         self.point_ids = list(pids)

@@ -1160,6 +1160,10 @@ def _rollback(root: Path, pending: dict) -> None:
     hist = root / HISTORY_DIR
     pending = _history_paths(root, pending, "pending.json")
     for rel in pending.get("added", []):
+        if (root / SAVING_DIR / rel).exists():
+            # (I326) still staged: it never went in, so what is at `rel` is not this save's -- after a rename
+            # by letter case (`snout` -> `Snout`) it IS the old `snout.csv` on NTFS / APFS
+            continue
         try:
             (root / rel).unlink()
         except FileNotFoundError:
