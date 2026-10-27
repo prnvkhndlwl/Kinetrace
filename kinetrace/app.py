@@ -10975,12 +10975,13 @@ class MainWindow(QMainWindow):
         self._member_frames.clear()
         self.canvas.clear_group_members()
 
-    def _end_run(self) -> bool:
+    def _end_run(self, autosave: bool = True) -> bool:
         """What the end of EVERY run shares, finished or error (I241, R8): back to READY, the
         paused / step flags reset (an error never reset `_user_paused`: after X during a first-use
         download the next pause or auto-pause counted as an X), the models dialog closed (a run
         paused while loading left it up), Ctrl+Z back on for the snapshot the run kept (an error
-        left it off), per-run caches dropped, and the autosave. Returns whether it was a step."""
+        left it off), per-run caches dropped, and the autosave -- which a finished run makes itself,
+        after its cuts (`autosave` False, I333). Returns whether it was a step."""
         step_run = self._step_run
         self.state = READY
         self._step_run = False
@@ -10993,7 +10994,8 @@ class MainWindow(QMainWindow):
         self._budget_key = None                 # (I306) the windows `_launch_run` set to none come back
         self._rebudget_caches()
         self.act_undo.setEnabled(self._undo_snap is not None)
-        self._autosave()  # before the guidance message — 'Saved ✓' must not clobber it
+        if autosave:
+            self._autosave()  # before the guidance message — 'Saved ✓' must not clobber it
         return step_run
 
     def _restore_start_flags(self) -> None:
@@ -11058,6 +11060,10 @@ class MainWindow(QMainWindow):
             if user_pause and was_paused:
                 self._gaps["stopped"] = True        # (D9) X stops every gap run still to come
             QTimer.singleShot(0, self._gaps_next)
+        # (I333) the recovery copy once the run's end has made its cuts (the auto-pause cut, the segments'
+        # ends, a Fresh run's erase, a pass's record): one written before them brought the cut frames back
+        if self.state != TRACKING:
+            self._autosave()
 
     def _on_track_finished_impl(self, last: int, was_paused: bool, user_stop: bool = False):
         if self.worker is None:
@@ -11091,7 +11097,7 @@ class MainWindow(QMainWindow):
         _retire(self.worker)
         self.worker = None
         self._restore_start_flags()         # before the autosave (I189)
-        step_run = self._end_run()
+        step_run = self._end_run(autosave=False)    # (I333) the autosave comes after the cuts: _on_track_finished
         self._refresh_animal_panel()
         self._segments_ended(seg_ended, seg_holds, last,
                              say=not (self._autopause_info is not None and self._autopause_info[1] < 0))

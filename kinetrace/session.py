@@ -1582,13 +1582,16 @@ class TrackingSession:
         if len(cols) == 0:
             return 0
         keep = self._hand_cells(rows, cols) if keep_hand else None
+        # (I334) "hidden here" is the user's mark, not tracked data: a cut the app makes keeps it, as a run's
+        # own write does (`write_segment` never touches it); the user's own Delete / Clear removes it
+        arrays = [a for a in POINT_ARRAYS if not (keep_hand and a.name == "occluded")]
         if keep is None or not keep.any():
             n = int(self.tracked[rows, cols].sum())
-            for a in POINT_ARRAYS:
+            for a in arrays:
                 getattr(self, a.name)[rows, cols] = a.fill
         else:
             n = int((self.tracked[rows, cols] & ~keep).sum())
-            for a in POINT_ARRAYS:
+            for a in arrays:
                 arr = getattr(self, a.name)
                 cur = arr[rows, cols]
                 arr[rows, cols] = np.where(keep[..., None] if cur.ndim == 3 else keep, cur, a.fill)
