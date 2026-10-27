@@ -198,7 +198,7 @@ try:
     # the first segment ends in an ROI restart at which the only point has no valid position
     # (the run's loops are step generators since I141: the stubs return at once)
     def _segment_stub(src, *a):
-        return "restart", 40, [None]
+        return "restart", 40, [None], 40              # (I335) + the frame the restart starts on
         yield                                           # noqa: unreachable -- makes it a generator
 
     def _animal_stub(src, start):
