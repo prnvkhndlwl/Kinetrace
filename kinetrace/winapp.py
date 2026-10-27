@@ -246,10 +246,14 @@ def ico_bytes(images: list[tuple[int, bytes]]) -> bytes:
 
 
 def write_icon(dest: Path) -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QBuffer, QIODevice
     from PySide6.QtGui import QGuiApplication
-    app = QGuiApplication.instance() or QGuiApplication([])     # noqa: F841 - QImage needs one
+    app = QGuiApplication.instance()                           # QImage needs one
+    if app is None:
+        # a process of its own (run.bat's rebuild, the installer): no screen needed. Never in the running app:
+        # the variable also moves its settings and recovery folders to the test ones (recovery.py, I332)
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        app = QGuiApplication([])                               # noqa: F841
     from kinetrace import appicon
     images = []
     for s in ICON_SIZES:

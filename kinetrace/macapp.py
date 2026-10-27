@@ -126,9 +126,13 @@ def _icns(dest: Path) -> bool:
     """appicon at the sizes macOS wants, packed by iconutil (part of every macOS)."""
     if shutil.which("iconutil") is None:
         return False
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtGui import QGuiApplication
-    app = QGuiApplication.instance() or QGuiApplication([])     # noqa: F841 - QImage needs one
+    app = QGuiApplication.instance()                           # QImage needs one
+    if app is None:
+        # a process of its own: no screen needed. Never in a running app: the variable also moves its settings
+        # and recovery folders to the test ones (recovery.py, I332)
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        app = QGuiApplication([])                               # noqa: F841
     from kinetrace import appicon
     with tempfile.TemporaryDirectory() as tmp:
         iconset = Path(tmp) / "Kinetrace.iconset"
