@@ -86,6 +86,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_layers",
        # (G168-G172) many cameras on screen and their order; (I265) Save during a run
        "verify_camera_views", "verify_save_during_run",
+       # (I326-I334) save / open / recovery safety (the 2026-10-25 sweep's PR 1)
+       "verify_save_safety",
        # (I266) a video that decodes differently on another computer: the fingerprint, exact seeks
        "verify_fingerprint", "verify_fingerprint_gui", "verify_decode_identity",
        # (I271, I300-I304, G199, G200) camera timing from the wand: refine, checks, pending offsets, the picture

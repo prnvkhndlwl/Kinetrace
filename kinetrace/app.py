@@ -9147,7 +9147,7 @@ class MainWindow(QMainWindow):
             self._refresh_overlay()
             self._refresh_companions()          # the other cameras' views (the 3D result follows by itself)
             self.timeline.refresh()
-            self._autosave()                    # `_end_run` saved the copy before this erase
+            self._autosave()                    # a press of several passes / cameras ends here, after its runs' copies
             self.statusBar().showMessage(
                 f"Fresh run: everything of these points after frame {first} was erased too (clicks included) — "
                 "Ctrl+Z brings it back", 9000)
@@ -10975,12 +10975,13 @@ class MainWindow(QMainWindow):
         self._member_frames.clear()
         self.canvas.clear_group_members()
 
-    def _end_run(self) -> bool:
+    def _end_run(self, autosave: bool = True) -> bool:
         """What the end of EVERY run shares, finished or error (I241, R8): back to READY, the
         paused / step flags reset (an error never reset `_user_paused`: after X during a first-use
         download the next pause or auto-pause counted as an X), the models dialog closed (a run
         paused while loading left it up), Ctrl+Z back on for the snapshot the run kept (an error
-        left it off), per-run caches dropped, and the autosave. Returns whether it was a step."""
+        left it off), per-run caches dropped, and the autosave -- which a finished run makes itself,
+        after its cuts (`autosave` False, I333). Returns whether it was a step."""
         step_run = self._step_run
         self.state = READY
         self._step_run = False
@@ -10993,7 +10994,8 @@ class MainWindow(QMainWindow):
         self._budget_key = None                 # (I306) the windows `_launch_run` set to none come back
         self._rebudget_caches()
         self.act_undo.setEnabled(self._undo_snap is not None)
-        self._autosave()  # before the guidance message — 'Saved ✓' must not clobber it
+        if autosave:
+            self._autosave()  # (the error path) before its message — 'Saved ✓' must not clobber it
         return step_run
 
     def _restore_start_flags(self) -> None:
@@ -11058,6 +11060,12 @@ class MainWindow(QMainWindow):
             if user_pause and was_paused:
                 self._gaps["stopped"] = True        # (D9) X stops every gap run still to come
             QTimer.singleShot(0, self._gaps_next)
+        # (I333) the recovery copy once the run's end has made its cuts (the auto-pause cut, the segments'
+        # ends, a lone Fresh run's erase): one written before them brought the cut frames back. (A two-pass /
+        # every-camera press trims and erases later, in `_passes_finish` / `_multi_finish`: the copy catches up
+        # there after a Fresh erase, otherwise at the next 30 s tick -- not covered here, a known follow-up.)
+        if self.state != TRACKING:
+            self._autosave()
 
     def _on_track_finished_impl(self, last: int, was_paused: bool, user_stop: bool = False):
         if self.worker is None:
@@ -11091,7 +11099,7 @@ class MainWindow(QMainWindow):
         _retire(self.worker)
         self.worker = None
         self._restore_start_flags()         # before the autosave (I189)
-        step_run = self._end_run()
+        step_run = self._end_run(autosave=False)    # (I333) the autosave comes after the cuts: _on_track_finished
         self._refresh_animal_panel()
         self._segments_ended(seg_ended, seg_holds, last,
                              say=not (self._autopause_info is not None and self._autopause_info[1] < 0))
@@ -11752,6 +11760,8 @@ class MainWindow(QMainWindow):
         p = self.project
         if p is None or not p.dirty:
             return
+        if self._saving:
+            return                             # (I330) a save is writing (_saving_guard): the next tick catches up
         sig = self._signature()
         if sig == self._recovery_sig:
             return
@@ -11875,6 +11885,12 @@ class MainWindow(QMainWindow):
             self._project_dir = path.resolve()        # videos are found relative to the folder itself
         if self._signature() == sig:          # nothing changed while it was writing
             self.project.dirty = False
+        for x in self.project.sessions:
+            # (I327) a landmark whose file was missing on open and that had data now has its file again: from
+            # here on it is saved (and cleared, and removed) like any other
+            x.missing_files = {n for n in x.missing_files
+                               if (q := x.pid_by_name(n)) is not None
+                               and not (x.tracked[:, q].any() or x.occluded[:, q].any())}
         recovery.discard(self._project_id)
         self._recovery_sig = None
         self._remember_project(path, self._project_id)        # (G205) File → Open Recent
@@ -12659,11 +12675,15 @@ class MainWindow(QMainWindow):
     def _open_project_impl(self, path: str, recovered: dict | None, pname: str, discard: bool = False):
         """Open a project in five steps (R9): read it, decide about unsaved work, work out where its
         files are, find and read every camera's video, adopt it once the working camera is open."""
-        self._leave_project(discard)
+        # (I329) Discard drops the open project's unsaved work only once the new one is really opening
+        # (`_attach_with_card`): a project that cannot be read, or a video not located, keeps it in recovery
+        discard_pid = self._project_id if discard and self.project is not None else None
+        if not discard:
+            self._leave_project()
         got = self._read_project(path, pname)
         if got is None:
             return
-        plan = self._decide_unsaved_work(path, recovered, pname, *got)
+        plan = self._decide_unsaved_work(path, recovered, pname, *got, discard_pid=discard_pid)
         self._set_project_home(path, recovered, plan)
         proj = plan.proj
         located = self._locate_project_videos(proj)
@@ -12687,7 +12707,8 @@ class MainWindow(QMainWindow):
             self._first_frame_arrived()
         tok = self._busy_push(f"Opening {pname}", f"{n} camera{'s' if n != 1 else ''} read; building the "
                               "project…")
-        self._attach_with_card(ainfo, lambda info: self._adopt_opened_project(info, plan, located, infos), tok)
+        self._attach_with_card(ainfo, lambda info: self._adopt_opened_project(info, plan, located, infos), tok,
+                               discard=discard)
 
     def _read_project(self, path: str, pname: str):
         """Step 1 of opening a project: read it off the GUI thread (the card's spinner keeps turning,
@@ -12703,12 +12724,13 @@ class MainWindow(QMainWindow):
         return None
 
     def _decide_unsaved_work(self, path: str, recovered: dict | None, pname: str, proj: Project, state: dict,
-                             meta: dict) -> _OpenPlan:
+                             meta: dict, discard_pid: str | None = None) -> _OpenPlan:
         """Step 2: what the project opens as -- the file as it was saved, a recovery copy the user
         chose (`recovered`), or this file's unsaved changes / another copy's, after asking. Returns
         the plan: the project to adopt (re-read from the recovery copy when it was chosen), its id and
         the save it came from, where Save goes, whether it is unsaved, and a recovery to set aside
-        once its copy is open (I209)."""
+        once its copy is open (I209). `discard_pid`: the open project's work the user chose to
+        Discard (I329), still in recovery until the open commits -- never offered back."""
         pid = str(meta.get("project_id") or projectfile.new_id())
         saved_at = meta.get("saved_at")
         file_path: Path | None = Path(path)
@@ -12728,7 +12750,7 @@ class MainWindow(QMainWindow):
                     file_path, saved_at = None, None
             unsaved = True
         else:
-            found = recovery.find(pid)
+            found = recovery.find(pid) if pid != discard_pid else None
             if found is not None and not found.get("damaged"):
                 # (I168) a recovery made by a session that had a camera left out holds fewer cameras
                 # than this file: it is not "this project's unsaved changes" (Yes by default)
@@ -12841,7 +12863,30 @@ class MainWindow(QMainWindow):
             self.project.dirty = True
         if plan.decline_after is not None:
             recovery.decline(plan.decline_after)      # (I209) the copy is open: now the old recovery is set aside
+        self._say_read_problems()
         QTimer.singleShot(0, lambda: self._apply_layout(plan.state.get("layout")))
+
+    def _say_read_problems(self) -> None:
+        """(I327 / I328) What the open found wrong but opened anyway, in one notice, said once: a landmark
+        whose file is missing (it opens empty, and Save writes no empty file in its place) and notes or
+        events outside the video (kept as they are)."""
+        p = self.project
+        if p is None:
+            return
+        said = [(f"{p.name(i)}: " if p.n_views > 1 else "") + t
+                for i, x in enumerate(p.sessions) for t in x.read_problems]
+        for x in p.sessions:
+            x.read_problems = []
+        if not said:
+            return
+        more = f"\n• … and {len(said) - 12} more" if len(said) > 12 else ""
+        QMessageBox.warning(
+            self, "Some of this project's files need a look",
+            "The project opened, but:\n\n• " + "\n• ".join(said[:12]) + more + "\n\nNothing in the project folder "
+            "was changed. A landmark whose file is missing stays empty, and Save writes no empty file in its place: "
+            "if the file was moved, or a sync folder is still bringing it back, close without saving, put it back "
+            "and open the project again. Notes and events outside the video are kept exactly as they are; if one "
+            "is a typo, correct it in that camera's notes.csv / events.csv.")
 
     def _adopt_project(self, proj: Project, located: dict | None = None,
                        infos: dict | None = None):
@@ -15082,6 +15127,8 @@ class MainWindow(QMainWindow):
             while self.worker is not None and not self.worker.wait(100) and time.time() < t_end:
                 QApplication.processEvents()
             QApplication.processEvents()
+        else:
+            self._user_paused = False        # (I331) nothing ran: no pause is pending (a Cancel keeps the window)
         if self._overlay is not None:
             if self._overlay.isRunning():
                 self._overlay.request_cancel()

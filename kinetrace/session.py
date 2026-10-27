@@ -447,6 +447,10 @@ class TrackingSession:
         # Not data the user edits: making one does not mark the project changed; it is saved with it.
         self.fingerprint = None
         self.fingerprint_problem = ""   # a saved fingerprint that could not be read: why (said once)
+        # (I327 / I328) what opening found wrong but opened anyway -- a landmark's file missing, a note or an
+        # event outside the video: said once by the app, never saved
+        self.read_problems: list[str] = []
+        self.missing_files: set[str] = set()    # (I327) landmarks whose file was missing: no empty file in its place
         self.current_frame = 0  # persisted so projects reopen where the user left off
         self.ui_state: dict = dict(DEFAULT_UI_STATE)
         self.data_version = 0   # bumped on every mutation (timeline repaint/cache key)
@@ -1578,13 +1582,16 @@ class TrackingSession:
         if len(cols) == 0:
             return 0
         keep = self._hand_cells(rows, cols) if keep_hand else None
+        # (I334) "hidden here" is the user's mark, not tracked data: a cut the app makes keeps it, as a run's
+        # own write does (`write_segment` never touches it); the user's own Delete / Clear removes it
+        arrays = [a for a in POINT_ARRAYS if not (keep_hand and a.name == "occluded")]
         if keep is None or not keep.any():
             n = int(self.tracked[rows, cols].sum())
-            for a in POINT_ARRAYS:
+            for a in arrays:
                 getattr(self, a.name)[rows, cols] = a.fill
         else:
             n = int((self.tracked[rows, cols] & ~keep).sum())
-            for a in POINT_ARRAYS:
+            for a in arrays:
                 arr = getattr(self, a.name)
                 cur = arr[rows, cols]
                 arr[rows, cols] = np.where(keep[..., None] if cur.ndim == 3 else keep, cur, a.fill)

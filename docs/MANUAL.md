@@ -1346,6 +1346,10 @@ select the point and press **Shift+X** (or right-click the marker → *Hidden on
 this frame (keep, do not export)*). The position stays in the project, so you can
 unmark it (**Shift+X** again), but it is left **blank in every export**, ignored
 by 3D, and never written over by a curve fill (*Keyframe digitizing*, above).
+A run that keeps your clicks never takes the mark away either, not even when
+auto-pause cuts the track after a lost point; a **Fresh** run, which replaces
+everything after its start (your clicks too), takes it with the rest. Otherwise
+only you remove it (Shift+X again, or Delete / Clear).
 Hidden frames show hatched on the timeline (never red: a frame you marked hidden is
 dealt with, so **J** does not stop there either), the marker becomes a crossed ring and
 its name reads *(hidden)*. Each mark is one **Ctrl+Z** step.
@@ -2876,6 +2880,21 @@ in and every toggle. Opening it (**File → Open Project…**, **Ctrl+Shift+O**:
 go into the project folder and choose its `kinetrace.json`) puts you back
 exactly where you were.
 
+**If a file in the project was changed by hand,** the project still opens and
+one notice, *Some of this project's files need a look*, lists what it found:
+
+* **A landmark's file is missing** (say `tracks/tail.csv` was moved or deleted):
+  the landmark opens with no positions. Save does not write an empty file in its
+  place until the landmark has positions again, so if a sync folder (OneDrive,
+  Dropbox) is still bringing the file back, close without saving, wait for it
+  and open the project again.
+* **A note or an event lies outside the video** (frame 500 in a 100-frame
+  video, a typo in `notes.csv` or `events.csv`): it is named by its row and kept
+  exactly as it is; correct the row in that file if it is a typo.
+
+Hand check: delete one landmark's CSV from a closed copy of a project and open
+it; the notice names that file, and after Save the file is still absent.
+
 **Your last projects are one click away.** **File → Open Recent** lists the
 last 10 projects you opened or saved, newest first (hover over one to see its
 full path); the same list appears on the empty window when the program starts,
@@ -2943,7 +2962,9 @@ point). If what changed was put back (Ctrl+Z), it says nothing differs any
 more. **Save** writes the
 project, **Discard** drops the unsaved work, **Cancel** keeps the program open.
 Opening another video or project asks the same question (Cancel then opens
-nothing). Closing that question any other way keeps the unsaved work for File → Recover
+nothing; Discard drops the unsaved work only once the new one has opened, so a
+project that cannot be read leaves your work, and its recovery copy, as they
+were). Closing that question any other way keeps the unsaved work for File → Recover
 Unsaved Work…. Moving through the video, zooming and switching toggles are not
 changes that need saving: close without saving and the project still opens where
 you left it.
@@ -4147,7 +4168,8 @@ camera.
 
 **Auto-pause** — stopping tracking automatically when a body part is lost. The
 lost part's track is cut at the first frame where it became unreliable, so what
-is left can be trusted (your own clicks after it stay). A point with a click of
+is left can be trusted (your own clicks after it stay, and so do the frames you
+marked hidden). A point with a click of
 yours further on does not stop the run: it is cut where it was lost and picked up
 again at that click. (When the animal keeps its points on its silhouette, a part
 that leaves the outline stops the run the same way - or, with a click of yours

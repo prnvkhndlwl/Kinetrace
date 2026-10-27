@@ -381,6 +381,9 @@ class Table:
 class Frozen:
     """Everything a save writes, detached from the live objects."""
     files: dict = field(default_factory=dict)      # zip member -> str (text) or np.ndarray (npy)
+    # (I327) the files a save neither writes nor removes: a landmark whose file was missing on open and that
+    # has no data yet -- if a sync folder brings the file back meanwhile, it stays where it is
+    leave: set = field(default_factory=set)
 
 
 def _point_row(p, file: str) -> list:
@@ -439,7 +442,7 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
         files["lenses.json"] = _json(_clean_json([None if l is None else l.to_json() for l in project.lenses]))
     _freeze_reconstruction(files, project.reconstruction, folders, binary_tracks)
     for i, s in enumerate(project.sessions):
-        _freeze_camera(files, f"cameras/{folders[i]}", s, binary_tracks)
+        _freeze_camera(files, f"cameras/{folders[i]}", s, binary_tracks, fz.leave)
     if not binary_tracks:
         files["README.txt"] = _readme(project.names, folders)
     return fz
@@ -494,7 +497,7 @@ def _freeze_reconstruction(files: dict, r, folders: list[str], binary_tracks: bo
             files[f"reconstruction/points/{f}"] = ("p3", arrays, j, int(r.t0), cams_px)
 
 
-def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
+def _freeze_camera(files: dict, d: str, s, binary_tracks: bool, leave: set | None = None) -> None:
     st = s.ui_state
     sel = int(st.get("selected", -1))
     scope = {}                                  # the run scope (G103), only when the app has recorded one
@@ -523,6 +526,10 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
             files[f"{d}/{k}.npy"] = v
     else:
         for j, p in enumerate(s.points):        # one readable table per landmark (I145)
+            if p.name in s.missing_files and not (arrays["tracked"][:, j].any() or arrays["occluded"][:, j].any()):
+                if leave is not None:       # (I327) its file was missing on open and it has nothing yet: no empty
+                    leave.add(f"{d}/tracks/{lfiles[j]}")    # file in its place, nor a removal of one brought back
+                continue
             files[f"{d}/tracks/{lfiles[j]}"] = ("lm", arrays, j, bool(p.is_ball))
     files[f"{d}/events.csv"] = ("events", [[e.name, e.start, e.end, _hex(e.color), e.note, e.author]
                                            for e in s.events])
@@ -1160,6 +1167,10 @@ def _rollback(root: Path, pending: dict) -> None:
     hist = root / HISTORY_DIR
     pending = _history_paths(root, pending, "pending.json")
     for rel in pending.get("added", []):
+        if (root / SAVING_DIR / rel).exists():
+            # (I326) still staged: it never went in, so what is at `rel` is not this save's -- after a rename
+            # by letter case (`snout` -> `Snout`) it IS the old `snout.csv` on NTFS / APFS
+            continue
         try:
             (root / rel).unlink()
         except FileNotFoundError:
@@ -1263,7 +1274,10 @@ def _write_folder_locked(frozen: Frozen, root: Path, fsync: bool, yield_gil) -> 
     try:
         return _write_folder_steps(frozen, root, index, old_saved, new_saved, fsync, yield_gil)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)         # whatever happened, nothing is left aside
+        # whatever happened, nothing is left aside -- unless a rollback that failed itself left pending.json:
+        # then .saving/ is what tells the next open which files never went in (I326, review)
+        if not (root / HISTORY_DIR / "pending.json").is_file():
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 @dataclass
@@ -1292,7 +1306,8 @@ def _plan(frozen: Frozen, root: Path, index: dict) -> tuple[dict, list[str], set
         entry = index.get(rel)
         same = rel != META and entry is not None and entry[2] == digest and _unchanged_on_disk(root / rel, entry)
         items[rel] = _Item(content, digest, entry, same)
-    removed = sorted(r for r in _own_files(root, index) if r not in frozen.files)
+    leave = {_key(r) for r in getattr(frozen, "leave", ())}          # (I327)
+    removed = sorted(r for r in _own_files(root, index) if r not in frozen.files and _key(r) not in leave)
     gone = {_key(r) for r in removed}
     case_news = {r for r in frozen.files if _key(r) in gone}
     return items, removed, case_news
@@ -1986,9 +2001,12 @@ def _read_point(cols: dict, n: int, i: int, where: str):
 
 def _read_camera(src: _Source, d: str, s) -> None:
     points, pfiles = _read_points(src, d)
-    arr, points = _read_tracks(src, d, points, pfiles, s.n_frames)
+    arr, points, missing = _read_tracks(src, d, points, pfiles, s.n_frames)
     index = {p.name: i for i, p in enumerate(points)}
     s.points = points
+    for name, rel in missing:                       # (I327) opened empty, and said
+        s.missing_files.add(name)
+        s.read_problems.append(f"{rel}: the file of landmark '{name}' is missing, so it opens with no positions")
     from kinetrace.session import POINT_ARRAYS
     for a in POINT_ARRAYS:                          # (R15)
         setattr(s, a.name, arr[a.name])
@@ -2026,10 +2044,11 @@ def _read_points(src: _Source, d: str) -> tuple[list, list]:
     return points, pfiles
 
 
-def _read_tracks(src: _Source, d: str, points: list, pfiles: list, T: int) -> tuple[dict, list]:
+def _read_tracks(src: _Source, d: str, points: list, pfiles: list, T: int) -> tuple[dict, list, list]:
     """The positions: dense .npy in recovery files, one CSV per landmark in
     projects, one long tracks.csv in format 1. -> (the T x N arrays, the points
-    -- a landmark file points.csv does not name adds one)."""
+    -- a landmark file points.csv does not name adds one -- and [(name, file)]
+    of the landmarks whose file is missing, I327)."""
     if src.has(f"{d}/tracks.npy"):
         from kinetrace.session import POINT_ARRAYS
         # (R15) an array the copy does not have (written before it existed: `imported`, I319) is that
@@ -2040,7 +2059,7 @@ def _read_tracks(src: _Source, d: str, points: list, pfiles: list, T: int) -> tu
             if v.shape[0] != T or v.shape[1] != len(points):
                 raise ProjectFileError(f"{d}/{k}.npy: shape {v.shape} does not match {T} frames x "
                                        f"{len(points)} points")
-        return arr, points
+        return arr, points, []
     if src.has_dir(f"{d}/tracks") or not src.has(f"{d}/tracks.csv"):
         derived = landmark_files([p.name for p in points])
         named = [f"{d}/tracks/{(pfiles[j] if j < len(pfiles) and pfiles[j].strip() else derived[j]).strip()}"
@@ -2052,12 +2071,15 @@ def _read_tracks(src: _Source, d: str, points: list, pfiles: list, T: int) -> tu
                 named.append(rel)
                 known.add(_key(rel))
         arr = _empty_tracks(T, len(points))
+        missing = []
         for j, rel in enumerate(named):
             if src.has(rel):
                 _fill_landmark(arr, j, src.load_table(rel, _parse_landmark, LANDMARK_COLS, _LM_KINDS), T, rel)
-        return arr, points
+            else:
+                missing.append((points[j].name, rel))
+        return arr, points, missing
     cols, n = src.table(f"{d}/tracks.csv", ("frame", "point", "x", "y"), TRACK_COLS[4:])
-    return tracks_from_table(cols, n, points, T, f"{d}/tracks.csv")
+    return (*tracks_from_table(cols, n, points, T, f"{d}/tracks.csv"), [])
 
 
 def _new_point(raw_name: str, k: int):
@@ -2067,7 +2089,10 @@ def _new_point(raw_name: str, k: int):
 
 
 def _read_events_notes(src: _Source, d: str, s) -> None:
+    """events.csv / notes.csv. A row outside the video (a hand edit, I328) is kept exactly as it is and
+    said: one hand-made typo must not lock the project, nor be changed behind the user's back."""
     from kinetrace.session import Event
+    last = s.n_frames - 1
     if src.has(f"{d}/events.csv"):
         cols, n = src.table(f"{d}/events.csv", ("name", "start", "end"), EVENT_COLS[3:])
         for i in range(n):
@@ -2076,6 +2101,10 @@ def _read_events_notes(src: _Source, d: str, s) -> None:
                 a, b = int(cols["start"][i]), int(cols["end"][i])
             except ValueError:
                 raise ProjectFileError(f"{where}: start / end must be whole numbers") from None
+            if not (0 <= min(a, b) and max(a, b) <= last):
+                s.read_problems.append(f"{where}: the event '{_clean_name(cols['name'][i])}' runs from frame "
+                                       f"{min(a, b)} to {max(a, b)}, outside the video (frames 0 to {last}); "
+                                       "it is kept as it is")
             s.events.append(Event(_clean_name(cols["name"][i]), min(a, b), max(a, b),
                                   _rgb(cols["color"][i], where) if cols.get("color") else (255, 200, 0),
                                   (cols.get("note") or [""] * n)[i], (cols.get("author") or [""] * n)[i]))
@@ -2088,6 +2117,9 @@ def _read_events_notes(src: _Source, d: str, s) -> None:
                 except ValueError:
                     raise ProjectFileError(f"{d}/notes.csv row {i + 2}: the frame {cols['frame'][i]!r} must be a "
                                            "whole number") from None
+                if not 0 <= frame <= last:
+                    s.read_problems.append(f"{d}/notes.csv row {i + 2}: the note at frame {frame} is outside the "
+                                           f"video (frames 0 to {last}); it is kept as it is")
                 s.notes[frame] = {"text": cols["text"][i], "author": (cols.get("author") or [""] * n)[i],
                                   "time": (cols.get("time") or [""] * n)[i]}
 
