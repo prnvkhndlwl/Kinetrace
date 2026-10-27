@@ -545,7 +545,7 @@ class OpenCVUndistort:
     def to_json(self) -> dict:
         d = {"kind": self.kind, "K": self.K.tolist(), "dist": self.dist.tolist(),
              "fisheye": self.fisheye}
-        if not np.allclose(self.P, self.K):
+        if not np.array_equal(self.P, self.K):      # (I343) any difference: a reopened model is the same bits
             d["P"] = self.P.tolist()
         return d
 
