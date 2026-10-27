@@ -49,8 +49,9 @@ Robustness layers on top of the base pipeline (all per-run configurable):
   auto-pause detector needs to stop at failures without pausing on ordinary
   occlusion.
 - Appearance re-anchor (PointMeta.anchor, opt-in): an NCC template captured
-  at the user's seed snaps the track back when a strong match disagrees —
-  catches slow drift on distinct rigid features. Off by default because it
+  at the user's seed snaps the track back when a strong match disagrees with
+  it by more than ANCHOR_SNAP_PX (1 px; below that LK's position is kept, I338)
+  — catches slow drift on distinct rigid features. Off by default because it
   changes the "track the placed location" semantics.
 """
 
@@ -120,6 +121,9 @@ ROI_GROW_FACTOR = 1.5
 # appearance re-anchor
 ANCHOR_TEMPLATE = 25             # native-px template side (odd)
 ANCHOR_MIN_CORR = 0.75           # NCC peak needed before a snap is trusted
+ANCHOR_SNAP_PX = 1.0             # (I338) snap only when the match is this far (native px) from the track:
+                                 # an agreeing match differs <= 0.1 px, a 40 % look change moves it <= 0.4
+                                 # px; LK's own position is the more precise one below this
 
 # decode read-ahead of the point-tracking loop, in frames (I134): one model step's
 # worth, so the decoder keeps going through each model / LK burst instead of
@@ -2417,7 +2421,7 @@ class TrackingWorker(QThread):
         the initial guess. Accept only within `gate` px of the CoTracker
         prediction — the gate both bounds LK drift and re-anchors the chain.
         Anchor points additionally snap to their seed-appearance NCC peak
-        when the match is strong.
+        when the match is strong AND more than ANCHOR_SNAP_PX away (I338).
         """
         grays = dict(gray_hist)
         gate = self._gate
@@ -2457,7 +2461,11 @@ class TrackingWorker(QThread):
                         continue
                     snapped = self._reanchor(g1, tpl, out[i][q])
                     if snapped is not None:
-                        out[i][q] = snapped + self._template_frac.get(sp.pid, 0.0)
+                        snapped = snapped + self._template_frac.get(sp.pid, 0.0)
+                        # (I338) only a match that DISAGREES moves the track: below the threshold the
+                        # track (LK's sub-pixel result) is the more precise of the two
+                        if np.linalg.norm(snapped - out[i][q]) > ANCHOR_SNAP_PX:
+                            out[i][q] = snapped
             self._refined[f] = out[i].copy()
         _drop_before(self._refined, w0 - 2)        # keep the chain buffer bounded
         return out
