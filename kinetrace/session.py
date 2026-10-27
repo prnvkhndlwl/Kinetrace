@@ -451,6 +451,10 @@ class TrackingSession:
         # event outside the video: said once by the app, never saved
         self.read_problems: list[str] = []
         self.missing_files: set[str] = set()    # (I327) landmarks whose file was missing: no empty file in its place
+        # (I336) {region name: {frame: 2 x 2 rotation-scale}}: how far each region had turned / shrunk against its
+        # drawn outline, from the runs of this session; a Track resumed there samples it as it is. Not saved (a
+        # reopened project resumes from the drawn outline); any undo forgets it
+        self.region_pose: dict[str, dict[int, np.ndarray]] = {}
         self.current_frame = 0  # persisted so projects reopen where the user left off
         self.ui_state: dict = dict(DEFAULT_UI_STATE)
         self.data_version = 0   # bumped on every mutation (timeline repaint/cache key)
@@ -1641,6 +1645,7 @@ class TrackingSession:
         # A body track is restored whether or not there was one: undoing the
         # very first pose run has to be able to take it back to nothing.
         self.body = snap.body.copy() if snap.body is not None else None
+        self.region_pose = {}           # (I336) the runs it came from may be undone
         self._touch()
 
     def restore_cells(self, snap: Snapshot, pids, f0: int, f1: int) -> None:

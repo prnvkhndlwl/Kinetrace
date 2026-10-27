@@ -370,8 +370,11 @@ def section3():
           f"restarts at {run.restarts})", np.isfinite(e[:61]).all() and np.nanmax(e[:61]) < 5.0, run.err)
     if not check("(setup) a restart after the turn", s1 is not None):
         return
-    after = e[s1:]
-    check(f"[3] the centre keeps following the bar after the restart at {s1} (median "
+    # up to the clip's last 16 frames: no restart is taken there (a tracking rule), so the bar, at 30 px / frame,
+    # runs out of the last crop around frame 111 whatever the region's shape
+    end = BT - 1 - CONF_PAUSE_RUN
+    after = e[s1:end + 1]
+    check(f"[3] the centre keeps following the bar after the restart at {s1}, to frame {end} (median "
           f"{np.nanmedian(after):.2f}, max {np.nanmax(after) if np.isfinite(after).any() else float('nan'):.2f} "
           f"px; frame 90: {e[90]:.1f} px)",
           np.isfinite(after).all() and float(np.median(after)) < 5.0 and float(np.max(after)) < 10.0)

@@ -147,6 +147,9 @@ class PointSpec:
     radius: float = 0.0              # group region radius, native px
     anchor: bool = False             # appearance re-anchor opt-in (points only)
     outline: np.ndarray | None = None  # rect/polygon region: (M, 2) vertex OFFSETS from the seed
+    # (I336) a region started where it has turned / shrunk: its 2 x 2 rotation-scale against the DRAWN outline
+    # (`radius` / `outline` above are already that pose); the run reports its poses against the drawn outline
+    pose: np.ndarray | None = None
 
 
 @dataclass
@@ -393,13 +396,15 @@ def sample_members(center: np.ndarray, radius: float, w: int, h: int,
 
 def fit_group(seed_pts: np.ndarray, seed_center: np.ndarray, cur_pts: np.ndarray,
               conf_m: np.ndarray, vis_m: np.ndarray, radius: float,
-              frame_wh: tuple[int, int]) -> tuple[np.ndarray, bool, float]:
+              frame_wh: tuple[int, int], pose: dict | None = None) -> tuple[np.ndarray, bool, float]:
     """Robust center of a member constellation for one frame.
 
     Similarity fit (translation+rotation+scale, RANSAC) from the seed
     constellation when enough members survive; falls back to the median
     member displacement (handles deformation, at reduced confidence).
     Returns (center (2,) float32, visible, confidence in [0,1]).
+    `pose` (I336), when given, receives "R": the fit's 2 x 2 rotation-scale
+    from the seed constellation, when the similarity fit was used.
     """
     M = len(seed_pts)
     fw, fh = frame_wh
@@ -418,6 +423,8 @@ def fit_group(seed_pts: np.ndarray, seed_center: np.ndarray, cur_pts: np.ndarray
             if inl.sum() >= GROUP_RANSAC_MIN_INLIERS and 0.33 < scale < 3.0:
                 center = (A[:, :2] @ np.asarray(seed_center, np.float64)
                           + A[:, 2]).astype(np.float32)
+                if pose is not None:
+                    pose["R"] = A[:, :2].copy()
                 conf = float(inl.sum() / M) * float(np.median(conf_m[valid][inl]))
                 visible = bool(np.mean(vis_m[valid][inl]) > 0.5)
                 return center, visible, min(conf, 1.0)
@@ -430,6 +437,9 @@ def fit_group(seed_pts: np.ndarray, seed_center: np.ndarray, cur_pts: np.ndarray
     conf = 0.6 * float(valid.mean()) * float(np.median(conf_m[valid]))
     visible = bool(np.mean(vis_m[valid]) > 0.5)
     return center, visible, min(conf, 1.0)
+
+
+_EYE2 = np.eye(2)
 
 
 def _drop_before(d: dict, first_kept) -> None:
@@ -630,6 +640,13 @@ class TrackingWorker(QThread):
         # ahead): not asked again there, blank from that frame on; the app names them at the run's end
         self.hidden_at_restart: list[tuple[int, int]] = []
         self._crop_reach = None     # (I335) (frames, {pid: positions}) the next segment's crop must cover
+        # (I336) regions: {pid: {frame: 2 x 2 rotation-scale}} against the outline the run was GIVEN (the app
+        # composes it with the pose it started from), the pose a restart turns the outline by, and each
+        # region's pose so far (its segment's outline against the given one)
+        self.region_pose: dict[int, dict[int, np.ndarray]] = {}
+        self._restart_pose: dict[int, np.ndarray] = {}
+        self._pose_acc: dict[int, np.ndarray] = {sp.pid: np.asarray(sp.pose, np.float64) for sp in self.specs
+                                                 if sp.kind == "group" and sp.pose is not None}
         # animal layer state (per run)
         self._seg = None
         self._sxy = None               # (sx, sy) native / working, set by the first segmented frame (I61)
@@ -833,10 +850,20 @@ class TrackingWorker(QThread):
             # valid position there stay blank until the user re-places them (the
             # OOB invariant)
             new_specs, new_cols = [], []
+            turned, self._restart_pose = self._restart_pose, {}
             for sp, k, pos in zip(specs, col_idx, next_seeds):
                 if pos is not None:
+                    radius, outline = sp.radius, sp.outline
+                    R = turned.get(sp.pid)
+                    if R is not None:
+                        # (I336) a region is sampled again as it is NOW: its outline turned and scaled by the
+                        # fit on the restart frame (the drawn one put most members on the background)
+                        radius = float(sp.radius * np.hypot(R[0, 0], R[0, 1]))
+                        if outline is not None:
+                            outline = (np.asarray(outline, np.float64) @ R.T).astype(np.float32)
+                        self._pose_acc[sp.pid] = R @ self._pose_acc.get(sp.pid, _EYE2)
                     new_specs.append(PointSpec(sp.pid, np.asarray(pos, np.float32),
-                                               sp.kind, sp.radius, sp.anchor, sp.outline))
+                                               sp.kind, radius, sp.anchor, outline))
                     new_cols.append(k)
             if not new_specs:
                 if self._can_still_give_data(last_emitted) and last_emitted + 1 < self.n_frames:
@@ -1179,6 +1206,7 @@ class TrackingWorker(QThread):
 
             out_tr, out_vi, out_cf = _empty_cols(L, K)
             members: dict[int, np.ndarray] = {}
+            row_pose: dict[int, list] = {}      # (I336) region pid -> the fit's rotation-scale per row
             for a, om in enumerate(out_map):
                 k = col_idx[a]
                 if om[0] == "point":
@@ -1189,12 +1217,22 @@ class TrackingWorker(QThread):
                 else:
                     sl, seed_m, seed_c = om[1], om[2], om[3]
                     members[k] = tr[:, sl].copy()
+                    pid = specs[a].pid
+                    acc = self._pose_acc.get(pid, _EYE2)
+                    poses = row_pose[pid] = [None] * L
                     for i in range(L):
+                        pose = {}
                         c, v, g = fit_group(seed_m, seed_c, tr[i, sl], cf[i, sl],
-                                            vi[i, sl], specs[a].radius, self._frame_wh)
+                                            vi[i, sl], specs[a].radius, self._frame_wh, pose)
                         out_tr[i, k] = c
                         out_vi[i, k] = v
                         out_cf[i, k] = g
+                        # (I336) the region's turn / size on this frame, against its drawn outline
+                        poses[i] = pose.get("R")
+                        if poses[i] is None:
+                            self.region_pose.get(pid, {}).pop(w0 + i, None)
+                        else:
+                            self.region_pose.setdefault(pid, {})[w0 + i] = (poses[i] @ acc).astype(np.float32)
             if first_seg and w0 == self.start_frame:
                 # the seed frame is user ground truth — keep it exact
                 out_tr[0, :n_track] = self.seed_xy
@@ -1238,6 +1276,9 @@ class TrackingWorker(QThread):
                     self._plan_restart(w0, out_tr, out_vi, out_cf, specs, col_idx, seg_start, result)
                     if result["restart"]:
                         restart_seeds = result.pop("seeds")
+                        # (I336) each region's pose on the restart row: the next segment samples it turned
+                        r = result["restart_at"] - w0
+                        self._restart_pose = {pid: p[r] for pid, p in row_pose.items() if p[r] is not None}
 
         # decode runs a couple of frames ahead on its own thread, overlapping
         # with the segment + model steps below. Same frames in the same order

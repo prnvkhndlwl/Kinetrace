@@ -9839,7 +9839,7 @@ class MainWindow(QMainWindow):
         # with the others, so the run's model is its own tracker (review #1: not the project's default)
         model_join = [q for q in pids if not s.tracked[self.current, q]]
         pids = [q for q in pids if q not in model_join]
-        specs = self._point_specs(pids, seeds)
+        specs = self._point_specs(pids, seeds, self.current)
         balls = self._ball_specs(ball_pids, seeds)
         seg = self._segment_specs(pids, scope, animal_ok, segment, specs)
         end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
@@ -9999,7 +9999,7 @@ class MainWindow(QMainWindow):
                 animals.append(AnimalSpec(index=k, name=s.segments[k].name, stored=src, on_body=set(qs),
                                           constrain=set(qs)))
         return TrackingWorker(self.info.path, int(frame), None, None, self.cache, int(n_end), refine=True,
-                              specs=self._point_specs(pids, s.positions_at(int(frame))), roi=self.btn_roi.isChecked(),
+                              specs=self._point_specs(pids, s.positions_at(int(frame)), int(frame)), roi=self.btn_roi.isChecked(),
                               autopause=self.btn_autopause.isChecked() if autopause is None else bool(autopause),
                               animals=animals or None, point_backend=backend,
                               resume_pids=set(resume) or None, cache_first=not decode, emit_frames=decode,
@@ -10298,14 +10298,35 @@ class MainWindow(QMainWindow):
         o = np.asarray(meta.outline, np.float32).reshape(-1, 2)
         return o - o.mean(axis=0)
 
-    def _point_specs(self, pids, seeds) -> list:
-        """The appearance-tracked points' `PointSpec`s, seeded from their positions on this frame."""
+    def _point_specs(self, pids, seeds, frame: int) -> list:
+        """The appearance-tracked points' `PointSpec`s, seeded from their positions on `frame`. A region
+        a run of this session has seen turn or shrink there is sampled as it is there (I336: the drawn
+        outline put most of its members on the background)."""
         from kinetrace.tracker import PointSpec
         s = self.session
-        return [PointSpec(pid, seeds[pid].astype(np.float32).copy(),
-                          s.points[pid].kind, s.points[pid].radius,
-                          s.points[pid].anchor, self._region_offsets(s.points[pid]))
-                for pid in pids]
+        specs = []
+        for pid in pids:
+            m = s.points[pid]
+            radius, outline = m.radius, self._region_offsets(m)
+            pose = (s.region_pose.get(m.name, {}).get(int(frame))
+                    if m.kind == "group" and 0 <= frame < s.n_frames and s.tracked[frame, pid] else None)
+            if pose is not None:
+                radius = float(m.radius * np.hypot(pose[0, 0], pose[0, 1]))
+                if outline is not None:
+                    outline = (outline.astype(np.float64) @ pose.T).astype(np.float32)
+            specs.append(PointSpec(pid, seeds[pid].astype(np.float32).copy(), m.kind, radius, m.anchor, outline,
+                                   pose))
+        return specs
+
+    def _keep_region_poses(self, w) -> None:
+        """(I336) A finished run's region poses (against the drawn outlines), for a Track resumed later in
+        this session."""
+        s = self.session
+        if s is None or w is None:
+            return
+        for pid, poses in (getattr(w, "region_pose", None) or {}).items():
+            if 0 <= pid < s.n_points and poses:
+                s.region_pose.setdefault(s.points[pid].name, {}).update(poses)
 
     def _ball_specs(self, ball_pids, seeds) -> list:
         """Ball markers: SAM segments them, a circle is fitted, the centre is the
@@ -11105,6 +11126,7 @@ class MainWindow(QMainWindow):
         cuts = self._run_cuts = self._resume_cuts(self.worker)       # (PR B) a lost point with a click ahead
         restarts = int(getattr(self.worker, "_kt_restarts", 0) or 0)
         hidden = list(getattr(getattr(self.worker, "primary", self.worker), "hidden_at_restart", None) or [])
+        self._keep_region_poses(getattr(self.worker, "primary", self.worker))      # (I336)
         _retire(self.worker)
         self.worker = None
         self._restore_start_flags()         # before the autosave (I189)
