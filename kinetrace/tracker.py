@@ -49,8 +49,9 @@ Robustness layers on top of the base pipeline (all per-run configurable):
   auto-pause detector needs to stop at failures without pausing on ordinary
   occlusion.
 - Appearance re-anchor (PointMeta.anchor, opt-in): an NCC template captured
-  at the user's seed snaps the track back when a strong match disagrees —
-  catches slow drift on distinct rigid features. Off by default because it
+  at the user's seed snaps the track back when a strong match disagrees with
+  it by more than ANCHOR_SNAP_PX (1 px; below that LK's position is kept, I338)
+  — catches slow drift on distinct rigid features. Off by default because it
   changes the "track the placed location" semantics.
 """
 
@@ -100,10 +101,24 @@ POINT_BACKENDS = ("cotracker3", "alltracker")
 # length is the separator, so keep >= 2x the occlusion worst case.
 CONF_PAUSE_THRESHOLD = 0.25
 CONF_PAUSE_RUN = 16
+EMITTED_KEEP = 64     # (I337) frames of emitted rows kept, to blank a lost dip back to its first frame
 
 # region groups
 GROUP_MIN_FIT_RADIUS = 6.0   # below this the members are too close for a fit
 GROUP_RANSAC_MIN_INLIERS = 3
+# (I336) a region is laid out again in its fitted pose only once it has really turned or changed size: below
+# both, its outline as it is (the fit's angle / scale are never exactly 0 / 1, and re-sampling an unturned
+# region would change its coordinates for nothing). A 10:1 bar's members start leaving it at ~7 deg.
+REGION_TURN_DEG = 5.0
+REGION_SCALE_TOL = 0.10
+
+
+def region_turned(R) -> bool:
+    """(I336) Has a region with this 2 x 2 rotation-scale (against its outline) turned or resized enough to
+    be sampled again in that pose?"""
+    R = np.asarray(R, np.float64)
+    return (abs(float(np.degrees(np.arctan2(R[1, 0], R[0, 0])))) >= REGION_TURN_DEG
+            or abs(float(np.hypot(R[0, 0], R[0, 1])) - 1.0) > REGION_SCALE_TOL)
 
 # ROI zoom
 ROI_MIN_W, ROI_MIN_H = 768, 576  # never crop tighter than this (over-zoom is useless)
@@ -119,6 +134,9 @@ ROI_GROW_FACTOR = 1.5
 # appearance re-anchor
 ANCHOR_TEMPLATE = 25             # native-px template side (odd)
 ANCHOR_MIN_CORR = 0.75           # NCC peak needed before a snap is trusted
+ANCHOR_SNAP_PX = 1.0             # (I338) snap only when the match is this far (native px) from the track:
+                                 # an agreeing match differs <= 0.1 px, a 40 % look change moves it <= 0.4
+                                 # px; LK's own position is the more precise one below this
 
 # decode read-ahead of the point-tracking loop, in frames (I134): one model step's
 # worth, so the decoder keeps going through each model / LK burst instead of
@@ -142,6 +160,9 @@ class PointSpec:
     radius: float = 0.0              # group region radius, native px
     anchor: bool = False             # appearance re-anchor opt-in (points only)
     outline: np.ndarray | None = None  # rect/polygon region: (M, 2) vertex OFFSETS from the seed
+    # (I336) a region started where it has turned / shrunk: its 2 x 2 rotation-scale against the DRAWN outline
+    # (`radius` / `outline` above are already that pose); the run reports its poses against the drawn outline
+    pose: np.ndarray | None = None
 
 
 @dataclass
@@ -388,13 +409,15 @@ def sample_members(center: np.ndarray, radius: float, w: int, h: int,
 
 def fit_group(seed_pts: np.ndarray, seed_center: np.ndarray, cur_pts: np.ndarray,
               conf_m: np.ndarray, vis_m: np.ndarray, radius: float,
-              frame_wh: tuple[int, int]) -> tuple[np.ndarray, bool, float]:
+              frame_wh: tuple[int, int], pose: dict | None = None) -> tuple[np.ndarray, bool, float]:
     """Robust center of a member constellation for one frame.
 
     Similarity fit (translation+rotation+scale, RANSAC) from the seed
     constellation when enough members survive; falls back to the median
     member displacement (handles deformation, at reduced confidence).
     Returns (center (2,) float32, visible, confidence in [0,1]).
+    `pose` (I336), when given, receives "R": the fit's 2 x 2 rotation-scale
+    from the seed constellation, when the similarity fit was used.
     """
     M = len(seed_pts)
     fw, fh = frame_wh
@@ -413,6 +436,8 @@ def fit_group(seed_pts: np.ndarray, seed_center: np.ndarray, cur_pts: np.ndarray
             if inl.sum() >= GROUP_RANSAC_MIN_INLIERS and 0.33 < scale < 3.0:
                 center = (A[:, :2] @ np.asarray(seed_center, np.float64)
                           + A[:, 2]).astype(np.float32)
+                if pose is not None:
+                    pose["R"] = A[:, :2].copy()
                 conf = float(inl.sum() / M) * float(np.median(conf_m[valid][inl]))
                 visible = bool(np.mean(vis_m[valid][inl]) > 0.5)
                 return center, visible, min(conf, 1.0)
@@ -425,6 +450,9 @@ def fit_group(seed_pts: np.ndarray, seed_center: np.ndarray, cur_pts: np.ndarray
     conf = 0.6 * float(valid.mean()) * float(np.median(conf_m[valid]))
     visible = bool(np.mean(vis_m[valid]) > 0.5)
     return center, visible, min(conf, 1.0)
+
+
+_EYE2 = np.eye(2)
 
 
 def _drop_before(d: dict, first_kept) -> None:
@@ -616,6 +644,22 @@ class TrackingWorker(QThread):
         self._autopause_hit: tuple[int, int] | None = None
         self._autopause_reason = ""          # "exit" | "lowconf" | "lost" | "switched" | "spot": what the app says
         self._exit_hit: tuple[int, int] | None = None   # (frame, pid) of the first landmark to leave the segment
+        # (I337) the rows last emitted, by frame (EMITTED_KEEP frames: every column + the group members), and the
+        # columns a window has just declared lost {column: first frame of the dip}: rows before the window are
+        # sent again blank (`_with_blank_back`)
+        self._emitted: dict[int, tuple] = {}
+        self._blank_back: dict[int, int] = {}
+        # (I335) [(pid, frame)]: points hidden when an ROI restart could not wait (auto-pause off, no click
+        # ahead): not asked again there, blank from that frame on; the app names them at the run's end
+        self.hidden_at_restart: list[tuple[int, int]] = []
+        self._crop_reach = None     # (I335) (frames, {pid: positions}) the next segment's crop must cover
+        # (I336) regions: {pid: {frame: 2 x 2 rotation-scale}} against the outline the run was GIVEN (the app
+        # composes it with the pose it started from), the pose a restart turns the outline by, and each
+        # region's pose so far (its segment's outline against the given one)
+        self.region_pose: dict[int, dict[int, np.ndarray]] = {}
+        self._restart_pose: dict[int, np.ndarray] = {}
+        self._pose_acc: dict[int, np.ndarray] = {sp.pid: np.asarray(sp.pose, np.float64) for sp in self.specs
+                                                 if sp.kind == "group" and sp.pose is not None}
         # animal layer state (per run)
         self._seg = None
         self._sxy = None               # (sx, sy) native / working, set by the first segmented frame (I61)
@@ -738,6 +782,9 @@ class TrackingWorker(QThread):
                     # need their own copy (same weights, so the same numbers; I141)
                     import copy
                     model = copy.deepcopy(model)
+        if self._pause:
+            self._end_before_start()      # (I339) X during the model load: nothing read, nothing emitted
+            return
 
         probe = src.get_frame(self.start_frame)
         if probe is None:
@@ -768,6 +815,9 @@ class TrackingWorker(QThread):
             # video's start, the ones after it -- up to the VIDEO's end, not the run's (I194;
             # read here, before the read loops seek back to the start frame)
             self._spot_run.prefill(src.get_frame)
+        if self._pause:
+            self._end_before_start()      # (I339) X during SAM's load / the set-up
+            return
         if not self.specs:
             # animal / balls / spots only: no point tracker — segment every frame, derive landmarks
             self.started_ok.emit()
@@ -809,18 +859,30 @@ class TrackingWorker(QThread):
         first_seg = True
         last_emitted = self.start_frame - 1
         while True:
-            reason, last_emitted, next_seeds = yield from self._segment_steps(
+            reason, last_emitted, next_seeds, restart_at = yield from self._segment_steps(
                 src, model, device, seg_start, specs, col_idx, first_seg, last_emitted)
             if reason != "restart":
                 break
             # transparent ROI re-seed: continue from our own predictions at the
-            # last emitted frame; points with no valid position there stay
-            # blank until the user re-places them (the OOB invariant)
+            # restart frame (the last emitted one, or the latest one before it on
+            # which every point was in view: `_plan_restart`, I335); points with no
+            # valid position there stay blank until the user re-places them (the
+            # OOB invariant)
             new_specs, new_cols = [], []
+            turned, self._restart_pose = self._restart_pose, {}
             for sp, k, pos in zip(specs, col_idx, next_seeds):
                 if pos is not None:
+                    radius, outline = sp.radius, sp.outline
+                    R = turned.get(sp.pid)
+                    if R is not None and region_turned(R):
+                        # (I336) a region is sampled again as it is NOW: its outline turned and scaled by the
+                        # fit on the restart frame (the drawn one put most members on the background)
+                        radius = float(sp.radius * np.hypot(R[0, 0], R[0, 1]))
+                        if outline is not None:
+                            outline = (np.asarray(outline, np.float64) @ R.T).astype(np.float32)
+                        self._pose_acc[sp.pid] = R @ self._pose_acc.get(sp.pid, _EYE2)
                     new_specs.append(PointSpec(sp.pid, np.asarray(pos, np.float32),
-                                               sp.kind, sp.radius, sp.anchor, sp.outline))
+                                               sp.kind, radius, sp.anchor, outline))
                     new_cols.append(k)
             if not new_specs:
                 if self._can_still_give_data(last_emitted) and last_emitted + 1 < self.n_frames:
@@ -833,10 +895,10 @@ class TrackingWorker(QThread):
                     # past the last tracked frame (I257).
                     last_emitted = yield from self._animal_only_steps(src, last_emitted + 1)
                 break
-            if last_emitted - seg_start < ROI_GROW_SEGMENT:
+            if restart_at - seg_start < ROI_GROW_SEGMENT:
                 self._crop_growth *= ROI_GROW_FACTOR  # crop too tight for the motion
             specs, col_idx = new_specs, new_cols
-            seg_start = last_emitted
+            seg_start = restart_at
             first_seg = False
 
         if self._autopause_hit is not None:
@@ -844,6 +906,12 @@ class TrackingWorker(QThread):
         else:
             self._raise_read_failure()
         self.finished_ok.emit(last_emitted, self._pause or self._autopause_hit is not None)
+
+    def _end_before_start(self) -> None:
+        """(I339) Paused before the run started (the window has already ended it): finish as a pause before any
+        frame -- no `started_ok`, no frame read, nothing emitted. The models just loaded stay in their
+        process-wide caches, so the next Track starts warm."""
+        self.finished_ok.emit(self.start_frame - 1, True)
 
     def _can_still_give_data(self, frame: int) -> bool:
         """Can anything in this run still give data after `frame`, with no point
@@ -920,15 +988,21 @@ class TrackingWorker(QThread):
         nw, nh = self._frame_wh
         if not self.roi or max(nw, nh) / 512.0 <= 1.5:
             return None
+        # (I335) a restart from an earlier frame covers where the points have been from there to the last
+        # frame emitted, not only its seeds: they go on moving while the window is tracked again
+        reach, self._crop_reach = self._crop_reach, None
+        frames, seen = (reach if reach is not None and seg_start == reach[0][0] else ([seg_start], {}))
         pts = []
         for sp in specs:
             r = sp.radius if sp.kind == "group" else 0.0
-            pts += [(sp.seed[0] - r, sp.seed[1] - r), (sp.seed[0] + r, sp.seed[1] + r)]
+            for p in [sp.seed] + list(seen.get(sp.pid, ())):
+                pts += [(p[0] - r, p[1] - r), (p[0] + r, p[1] + r)]
         for st in self._segs:              # every segment's mask at the segment start (G149)
-            summ = st.summ.get(seg_start) if seg_start is not None else None
-            if summ is not None and summ["area"] > 0:
-                x0, y0, x1, y1 = summ["bbox"]
-                pts += [(x0, y0), (x1, y1)]
+            for f in (frames if seg_start is not None else ()):
+                summ = st.summ.get(f)
+                if summ is not None and summ["area"] > 0:
+                    x0, y0, x1, y1 = summ["bbox"]
+                    pts += [(x0, y0), (x1, y1)]
         if not pts:
             return None
         pts = np.asarray(pts, np.float64)
@@ -987,11 +1061,57 @@ class TrackingWorker(QThread):
             return (tracks[0].cpu().numpy(), vis[0].cpu().numpy(),
                     conf_f[0].cpu().numpy().astype(np.float32))
 
+    def _plan_restart(self, w0: int, out_tr: np.ndarray, out_vi: np.ndarray, out_cf: np.ndarray,
+                      specs: list[PointSpec], col_idx: list[int], seg_start: int, result: dict) -> None:
+        """(I335) Where an ROI restart starts, and from which seeds. A restart asks the model again for every
+        point on its first frame, from the picture there: a point HIDDEN on that frame is learned from whatever
+        covers it and followed from then on at full confidence. So the restart starts on the latest row of this
+        window after the segment's own start (every restart moves forward) on which every point that is in the
+        picture on the last row is usable: in the picture, visible and confident. The last row qualifying =
+        the restart as it always was, bit for bit; an earlier row = the frames from there are read and tracked
+        again (the session keeps the last write). With no such row it starts on the last row, but a point
+        hidden there is not asked again: Auto-pause on -> the run stops on it (reason "hidden"), or a point with
+        a click ahead is cut there and picked up at its click (I316); Auto-pause off -> blank from there and
+        named at the run's end (`hidden_at_restart`).
+        Sets result["restart"] with "seeds" and "restart_at", or `_autopause_hit`."""
+        nw, nh = self._frame_wh
+        L = out_tr.shape[0]
+        cols = [col_idx[a] for a in range(len(specs))]
+        inside = np.array([[bool(in_frame(out_tr[i, k], nw, nh)) for k in cols] for i in range(L)], bool)
+        usable = inside & out_vi[:, cols] & (out_cf[:, cols] >= CONF_PAUSE_THRESHOLD)
+        need = inside[-1]
+        row = next((i for i in range(L - 1, -1, -1) if w0 + i > seg_start and usable[i][need].all()), None)
+        hidden = []
+        if row is None:
+            row = L - 1
+            hidden = [a for a in range(len(specs)) if need[a] and not usable[row, a]]
+        f = w0 + row
+        # a point out of the picture on the last row is dropped, as it always was (reviewer: an earlier row must
+        # not bring back a point that has left, nor re-ask the model for one that was hidden there)
+        seeds = [out_tr[row, k].copy() if inside[row, a] and need[a] else None for a, k in enumerate(cols)]
+        for a in hidden:
+            pid = specs[a].pid
+            seeds[a] = None
+            if pid in self.resume_pids:
+                self.resume_cuts.setdefault(pid, f)     # a click ahead: picked up there (I316)
+            elif not self.autopause:
+                self.hidden_at_restart.append((pid, f))
+            else:
+                if self._autopause_hit is None:
+                    self._autopause_hit = (f, pid)
+                    self._autopause_reason = "hidden"
+                return
+        # the next crop covers the rows from the restart to the last one emitted (`_compute_crop`)
+        self._crop_reach = (list(range(f, w0 + L)),
+                            {specs[a].pid: [out_tr[i, k] for i in range(row, L) if inside[i, a]]
+                             for a, k in enumerate(cols) if seeds[a] is not None})
+        result.update(restart=True, seeds=seeds, restart_at=f)
+
     def _segment_steps(self, src: VideoSource, model, device: str, seg_start: int,
                        specs: list[PointSpec], col_idx: list[int], first_seg: bool,
                        last_emitted: int):
         """(A generator: yields after every frame, I141.) One online-model segment (fixed queries, fixed crop). Returns
-        (reason, last_emitted, restart_seeds) with reason in
+        (reason, last_emitted, restart_seeds, restart_at: the frame the next segment starts on, I335) with reason in
         {"eof", "pause", "autopause", "restart"}. Emitted arrays keep the
         run's original column count; specs[a] fills column col_idx[a]."""
         use_at = self.point_backend == "alltracker"
@@ -1113,6 +1233,7 @@ class TrackingWorker(QThread):
 
             out_tr, out_vi, out_cf = _empty_cols(L, K)
             members: dict[int, np.ndarray] = {}
+            row_pose: dict[int, list] = {}      # (I336) region pid -> the fit's rotation-scale per row
             for a, om in enumerate(out_map):
                 k = col_idx[a]
                 if om[0] == "point":
@@ -1123,12 +1244,22 @@ class TrackingWorker(QThread):
                 else:
                     sl, seed_m, seed_c = om[1], om[2], om[3]
                     members[k] = tr[:, sl].copy()
+                    pid = specs[a].pid
+                    acc = self._pose_acc.get(pid, _EYE2)
+                    poses = row_pose[pid] = [None] * L
                     for i in range(L):
+                        pose = {}
                         c, v, g = fit_group(seed_m, seed_c, tr[i, sl], cf[i, sl],
-                                            vi[i, sl], specs[a].radius, self._frame_wh)
+                                            vi[i, sl], specs[a].radius, self._frame_wh, pose)
                         out_tr[i, k] = c
                         out_vi[i, k] = v
                         out_cf[i, k] = g
+                        # (I336) the region's turn / size on this frame, against its drawn outline
+                        poses[i] = pose.get("R")
+                        if poses[i] is None:
+                            self.region_pose.get(pid, {}).pop(w0 + i, None)
+                        else:
+                            self.region_pose.setdefault(pid, {})[w0 + i] = (poses[i] @ acc).astype(np.float32)
             if first_seg and w0 == self.start_frame:
                 # the seed frame is user ground truth — keep it exact
                 out_tr[0, :n_track] = self.seed_xy
@@ -1169,12 +1300,12 @@ class TrackingWorker(QThread):
                               | ((pts[:, 1] < cy0 + my) & (cy0 > 0))
                               | ((pts[:, 1] > cy0 + ch - my) & (cy0 + ch < nh))))
                 if near.any():
-                    result["restart"] = True
-                    restart_seeds = []
-                    for a in range(len(specs)):
-                        p = out_tr[-1, col_idx[a]]
-                        good = bool(in_frame(p, nw, nh))
-                        restart_seeds.append(p.copy() if good else None)
+                    self._plan_restart(w0, out_tr, out_vi, out_cf, specs, col_idx, seg_start, result)
+                    if result["restart"]:
+                        restart_seeds = result.pop("seeds")
+                        # (I336) each region's pose on the restart row: the next segment samples it turned
+                        r = result["restart_at"] - w0
+                        self._restart_pose = {pid: p[r] for pid, p in row_pose.items() if p[r] is not None}
 
         # decode runs a couple of frames ahead on its own thread, overlapping
         # with the segment + model steps below. Same frames in the same order
@@ -1192,7 +1323,8 @@ class TrackingWorker(QThread):
                         read_end = seg_start + n
                     break
                 abs_idx, native = nxt
-                self._read_at = abs_idx
+                # (I335) a restart from an earlier row reads frames again: the run has read up to here already
+                self._read_at = max(self._read_at, abs_idx)
                 self._side_steps(abs_idx, native)
                 model_frame = model_input_of(native)
                 window.append(model_frame)
@@ -1200,7 +1332,8 @@ class TrackingWorker(QThread):
                     gray_hist.append((abs_idx, cv2.cvtColor(native, cv2.COLOR_RGB2GRAY)))
                     if abs_idx == self.start_frame and first_seg and anchor_q:
                         self._capture_templates(gray_hist[-1][1], specs)
-                if self.emit_frames:
+                if self.emit_frames and abs_idx >= last_emitted:
+                    # (I335) frames before the last one shown are not sent again: the canvas never steps back
                     pending.append((abs_idx, display_of(native, model_frame)))
                 n += 1
                 if use_at:
@@ -1281,7 +1414,7 @@ class TrackingWorker(QThread):
             reason = "pause"
         else:
             reason = "eof"
-        return reason, result["last"], restart_seeds
+        return reason, result["last"], restart_seeds, result.get("restart_at")
 
     @staticmethod
     def _at_rows(out) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1959,12 +2092,52 @@ class TrackingWorker(QThread):
             autopause_check()
         self._check_animal_lost(w0, L)
         self._emit_masks(w0, L)
+        w0, out_tr, out_vi, out_cf, members = self._with_blank_back(w0, out_tr, out_vi, out_cf, members)
+        L = out_tr.shape[0]
         for q, rows in (self.keep_rows or {}).items():     # (D2) a session's head columns, for the run's landmarks
             c = self.point_ids.index(q)
             for i in range(L):
                 rows[w0 + i] = out_tr[i, c].copy() if np.isfinite(out_tr[i, c]).all() else None
+        for i in range(L):                                 # (I337) what the session now holds, by frame
+            self._emitted[w0 + i] = (out_tr[i].copy(), out_vi[i].copy(), out_cf[i].copy(),
+                                     {k: m[i].copy() for k, m in members.items()})
+        _drop_before(self._emitted, w0 + L - EMITTED_KEEP)
         self.emitted_to = max(self.emitted_to, w0 + L - 1)
         self.chunk_ready.emit(w0, out_tr, out_vi, out_cf, members, list(pending))
+
+    def _with_blank_back(self, w0: int, out_tr: np.ndarray, out_vi: np.ndarray, out_cf: np.ndarray,
+                         members: dict) -> tuple:
+        """(I337) A point this window declared lost is blank from the first frame of its dip, wherever the dip
+        falls in the 8-frame windows: the dip's rows before `w0` were written by earlier windows, so they are
+        sent again in front of this window's rows -- exactly as last sent (`_emitted`), the lost columns blank.
+        The session keeps the last write of each frame, so nothing else changes. Without a declaration this
+        window: the chunk as it is."""
+        back, self._blank_back = self._blank_back, {}
+        start = w0
+        while back and start - 1 >= min(back.values()) and start - 1 in self._emitted:
+            start -= 1
+        if start == w0:
+            return w0, out_tr, out_vi, out_cf, members
+        rows = [self._emitted[f] for f in range(start, w0)]
+        n = w0 - start
+        p_tr = np.stack([r[0] for r in rows])
+        p_vi = np.stack([r[1] for r in rows])
+        p_cf = np.stack([r[2] for r in rows])
+        for k, first in back.items():
+            sl = slice(max(first, start) - start, n)
+            p_tr[sl, k] = np.nan
+            p_vi[sl, k] = False
+            p_cf[sl, k] = 0.0
+        joined = {}
+        for k, m in members.items():                   # a display overlay: a row of another shape = no members
+            pre = np.full((n,) + m.shape[1:], np.nan, m.dtype)
+            for i, r in enumerate(rows):
+                mm = r[3].get(k)
+                if mm is not None and mm.shape == m.shape[1:]:
+                    pre[i] = mm
+            joined[k] = np.concatenate([pre, m])
+        return (start, np.concatenate([p_tr, out_tr]), np.concatenate([p_vi, out_vi]),
+                np.concatenate([p_cf, out_cf]), joined)
 
     # ---------------------------------------------------- the two read loops share these
 
@@ -2209,8 +2382,12 @@ class TrackingWorker(QThread):
           auto-pause off, because it is about what the data MEANS, not about
           interrupting the user.
 
-        The first CONF_PAUSE_RUN frames of a dip are kept: while it could still
-        be an occlusion, the coordinates are the best estimate available.
+        While a dip is undecided (shorter than CONF_PAUSE_RUN frames) its rows are
+        emitted as they are: it could still be an occlusion, and the coordinates are
+        the best estimate available. Once the point is declared lost, the WHOLE dip is
+        blanked back to its first frame, whatever its place in the 8-frame windows:
+        the rows earlier windows wrote are sent again blank (`_with_blank_back`, I337;
+        it used to depend on the window phase, 9-16 of the first 16 frames).
         Overlap rows are rewritten by each window, so each frame is counted once.
 
         A lost point counts as recovered only after CONF_PAUSE_RUN consecutive
@@ -2283,11 +2460,14 @@ class TrackingWorker(QThread):
                         if (self._gone_run[sp.pid] >= CONF_PAUSE_RUN
                                 and sp.pid not in self._lost):
                             self._lost.add(sp.pid)
-                            # blank back to the start of the run, as far as this
-                            # window still reaches (the session overwrites
-                            # overlap rows, so for those it is not too late)
+                            # blank back to the start of the run: this window's rows
+                            # here; the rows earlier windows wrote are sent again
+                            # blank by `_finish_chunk` (I337: the whole dip, whatever
+                            # its place in the windows)
                             start = max(self._gone_start[sp.pid], w0)
                             blank(slice(start - w0, i + 1), k)
+                            if self._gone_start[sp.pid] < w0:
+                                self._blank_back[k] = min(self._blank_back.get(k, w0), self._gone_start[sp.pid])
                     else:
                         self._gone_run[sp.pid] = 0
                         if sp.pid in self._lost:
@@ -2364,7 +2544,7 @@ class TrackingWorker(QThread):
         the initial guess. Accept only within `gate` px of the CoTracker
         prediction — the gate both bounds LK drift and re-anchors the chain.
         Anchor points additionally snap to their seed-appearance NCC peak
-        when the match is strong.
+        when the match is strong AND more than ANCHOR_SNAP_PX away (I338).
         """
         grays = dict(gray_hist)
         gate = self._gate
@@ -2404,7 +2584,11 @@ class TrackingWorker(QThread):
                         continue
                     snapped = self._reanchor(g1, tpl, out[i][q])
                     if snapped is not None:
-                        out[i][q] = snapped + self._template_frac.get(sp.pid, 0.0)
+                        snapped = snapped + self._template_frac.get(sp.pid, 0.0)
+                        # (I338) only a match that DISAGREES moves the track: below the threshold the
+                        # track (LK's sub-pixel result) is the more precise of the two
+                        if np.linalg.norm(snapped - out[i][q]) > ANCHOR_SNAP_PX:
+                            out[i][q] = snapped
             self._refined[f] = out[i].copy()
         _drop_before(self._refined, w0 - 2)        # keep the chain buffer bounded
         return out

@@ -47,7 +47,9 @@ GPU = ["audit_sweep", "verify_balls", "verify_animal", "verify_tracker", "verify
        # (I316, I318, PR B) AllTracker / CoTracker3 points start again at the clicks: a session per restart
        "verify_hand_restart",
        # (D9 choice 3, G217, PR B) Only fill the gaps: nothing that exists is touched
-       "verify_gap_fill"]
+       "verify_gap_fill",
+       # (I335-I339) restarts with a hidden point / a turned region, blanking, re-anchor, the first pause
+       "verify_tracker_restarts"]
 # verify_pythonw is in no group on purpose: it must be launched DETACHED (Start-Process,
 # no output redirect) or the stderr guard it checks cannot fail; see CLAUDE.md
 CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery", "verify_interop", "verify_shared_landmarks", "verify_multiview", "verify_loading", "verify_stress", "verify_3d", "verify_wand", "verify_lens", "verify_body",

@@ -451,6 +451,10 @@ class TrackingSession:
         # event outside the video: said once by the app, never saved
         self.read_problems: list[str] = []
         self.missing_files: set[str] = set()    # (I327) landmarks whose file was missing: no empty file in its place
+        # (I336) {region name: {frame: 2 x 2 rotation-scale}}: how far each region had turned / shrunk against its
+        # drawn outline, from the runs of this session; a Track resumed there samples it as it is. Not saved (a
+        # reopened project resumes from the drawn outline); any undo forgets it
+        self.region_pose: dict[str, dict[int, np.ndarray]] = {}
         self.current_frame = 0  # persisted so projects reopen where the user left off
         self.ui_state: dict = dict(DEFAULT_UI_STATE)
         self.data_version = 0   # bumped on every mutation (timeline repaint/cache key)
@@ -549,6 +553,7 @@ class TrackingSession:
                               kind=kind, radius=float(radius),
                               shape=shape if shape in ("circle", "rect", "polygon") else "circle",
                               outline=None if outline is None else [[float(a), float(b)] for a, b in outline])
+        self.region_pose.pop(self.points[pid].name, None)   # (I336) a deleted region's poses are not this one's
         self.set_position(frame, pid, x, y)
         return pid
 
@@ -625,6 +630,7 @@ class TrackingSession:
         template does not bring it back through the skeleton (I234)."""
         k = self.segment_of(pid)
         part = self.part_name(pid) if k is not None else None
+        self.region_pose.pop(self.points[pid].name, None)       # (I336)
         self._keep_columns([i for i in range(self.n_points) if i != pid])
         del self.points[pid]
         sk = self.segments[k].skeleton if k is not None else None
@@ -661,7 +667,12 @@ class TrackingSession:
             if not desired.startswith(a + " "):
                 desired = qualified(a, formula_safe(desired))
         name = self.unique_name(desired, exclude_pid=pid)
+        old = self.points[pid].name
         self.points[pid].name = name
+        poses = self.region_pose.pop(old, None)                 # (I336) a region's poses follow its name
+        self.region_pose.pop(name, None)
+        if poses:
+            self.region_pose[name] = poses
         if k is not None:
             self._rename_part(k, old_part, self.part_name(pid))
         self._touch()
@@ -1641,6 +1652,7 @@ class TrackingSession:
         # A body track is restored whether or not there was one: undoing the
         # very first pose run has to be able to take it back to nothing.
         self.body = snap.body.copy() if snap.body is not None else None
+        self.region_pose = {}           # (I336) the runs it came from may be undone
         self._touch()
 
     def restore_cells(self, snap: Snapshot, pids, f0: int, f1: int) -> None:
