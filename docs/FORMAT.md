@@ -206,6 +206,9 @@ it has one) is in **part** names — the points themselves are named `<animal>
 
 `events.csv`: `name, start, end, color, note, author` (frames, inclusive).
 `notes.csv`: `frame, text, author, time`.
+A row whose frames lie outside the video (a hand edit) is kept as it is and named in a notice when the
+project opens; it is never refused, moved or dropped. A landmark whose `tracks/<file>` is missing opens
+empty, with the same notice, and gets no file until it has data again.
 
 ### `state.json` and `view.json`
 
