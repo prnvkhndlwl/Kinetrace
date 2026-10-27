@@ -93,13 +93,13 @@ uv2[:, 3] = np.nan
 uv2[0, :5] = np.nan
 xyz2, res2, n2, _ = triangulate_batch(np.stack([c.coefs for c in cams]), uv2)
 assert n2[1] == 5 and n2[0] == 0 and np.isnan(xyz2[0]).all() and np.isfinite(xyz2[1]).all()
-# outlier guard: a wrecked camera is dropped when max_residual is set
+# (I347) the drop-worst option is gone: a wrecked camera stays in the cell and its residual says so
 uv3 = (uv + noise).copy()
 uv3[:, 2] += 40.0
-_, r3, n3, _ = triangulate_batch(np.stack([c.coefs for c in cams]), uv3, 2, max_residual=3.0)
-assert (n3 == 5).all() and r3.mean() < 1.5, (n3.mean(), r3.mean())
+_, r3, n3, _ = triangulate_batch(np.stack([c.coefs for c in cams]), uv3, 2)
+assert (n3 == 6).all() and r3.mean() > 3.0, (n3.mean(), r3.mean())
 print(f"triangulation OK: 0.5 px noise -> {err.mean() * 1e3:.2f} mm mean error, residual formula, "
-      "missing views, outlier guard")
+      "missing views, a wrecked camera shows in the residual")
 
 # ---- undistortion models ---------------------------------------------------
 # a synthetic fisheye-ish radial distortion, sampled on a grid -> LWM control points

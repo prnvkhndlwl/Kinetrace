@@ -1896,14 +1896,17 @@ def sample_tracks_at(ct: np.ndarray, local_t: np.ndarray) -> np.ndarray:
     return out
 
 
-def triangulate_batch(coefs: np.ndarray, uv: np.ndarray, min_cams: int = 2,
-                      max_residual: float = float("inf")):
+def triangulate_batch(coefs: np.ndarray, uv: np.ndarray, min_cams: int = 2):
     """Vectorised `triangulate` over many cells. coefs (C, 11); uv (..., C, 2)
     with NaN where a camera did not see the point. Returns xyz (..., 3),
     residual (...), n_cams (...), per-camera errors (..., C). Cells with fewer
-    than `min_cams` views are NaN. With `max_residual` the worst camera is
-    dropped (once per pass, up to C - min_cams passes) while a cell's
-    residual exceeds it — a cheap guard against one bad view."""
+    than `min_cams` views are NaN.
+
+    (I347) A camera's own error does not say which camera is wrong: a camera that alone fixes a
+    direction (two cameras side by side and one from the side) absorbs its own mistake (+50 px in the
+    side camera: 0.06 px for it, 1.19 px for each good one). The "drop the worst camera" option that
+    acted on that was used by no part of the app and is gone; Re-track blames by leave-one-out
+    (`retrack._blame`)."""
     Ls = np.asarray(coefs, np.float64)
     if Ls.ndim == 2 and Ls.shape[0] == 11 and Ls.shape[1] != 11:
         Ls = Ls.T
@@ -1920,44 +1923,35 @@ def triangulate_batch(coefs: np.ndarray, uv: np.ndarray, min_cams: int = 2,
     A2 = np.stack([v * Ls[:, 8] - Ls[:, 4], v * Ls[:, 9] - Ls[:, 5], v * Ls[:, 10] - Ls[:, 6]], -1)
     b1 = Ls[:, 3] - u
     b2 = Ls[:, 7] - v
-    xyz = np.full((M, 3), np.nan)
-    resid = np.full(M, np.nan)
-    err = np.full((M, C), np.nan)
-    for _ in range(max(C - min_cams, 0) + 1):
-        w = use.astype(np.float64)[..., None]                    # (M, C, 1)
-        AtA = (np.einsum("mci,mcj->mij", A1 * w, A1) + np.einsum("mci,mcj->mij", A2 * w, A2))
-        Atb = (np.einsum("mci,mc->mi", A1 * w, b1) + np.einsum("mci,mc->mi", A2 * w, b2))
-        n = use.sum(1)
-        ok = n >= min_cams
-        X = np.full((M, 3), np.nan)
-        if ok.any():
-            # (I305) a cell's answer depends on that cell alone: a singular cell goes to `lstsq` by itself
-            # (it used to send EVERY cell of the batch there), so a few cells solved on their own give the
-            # same bits as the whole result
-            try:
-                X[ok] = np.linalg.solve(AtA[ok], Atb[ok][..., None])[..., 0]
-            except np.linalg.LinAlgError:
-                for m in np.nonzero(ok)[0]:
-                    try:
-                        X[m] = np.linalg.solve(AtA[m], Atb[m][..., None])[..., 0]
-                    except np.linalg.LinAlgError:
-                        X[m] = np.linalg.lstsq(AtA[m], Atb[m], rcond=None)[0]
-        # (I305) element by element, not `X @ Ls.T`: a one-row matrix product takes another BLAS path and
-        # changed a cell's error in the last bit, so a cell recomputed alone must not depend on the batch
-        x0, x1, x2 = X[:, 0, None], X[:, 1, None], X[:, 2, None]
-        den = x0 * Ls[:, 8] + x1 * Ls[:, 9] + x2 * Ls[:, 10] + 1.0          # (M, C)
-        pu = (x0 * Ls[:, 0] + x1 * Ls[:, 1] + x2 * Ls[:, 2] + Ls[:, 3]) / den
-        pv = (x0 * Ls[:, 4] + x1 * Ls[:, 5] + x2 * Ls[:, 6] + Ls[:, 7]) / den
-        e = np.hypot(pu - u, pv - v)
-        e[~use] = np.nan
-        r = np.sqrt(np.nansum(e ** 2, axis=1) / np.maximum(2 * n - 3, 1))
-        r[~ok] = np.nan
-        xyz, resid, err = X, r, e
-        bad = ok & (r > max_residual) & (n > min_cams)
-        if not bad.any():
-            break
-        worst = np.nanargmax(np.where(use, e, -1.0), axis=1)
-        use[bad, worst[bad]] = False
+    w = use.astype(np.float64)[..., None]                    # (M, C, 1)
+    AtA = (np.einsum("mci,mcj->mij", A1 * w, A1) + np.einsum("mci,mcj->mij", A2 * w, A2))
+    Atb = (np.einsum("mci,mc->mi", A1 * w, b1) + np.einsum("mci,mc->mi", A2 * w, b2))
+    n = use.sum(1)
+    ok = n >= min_cams
+    X = np.full((M, 3), np.nan)
+    if ok.any():
+        # (I305) a cell's answer depends on that cell alone: a singular cell goes to `lstsq` by itself
+        # (it used to send EVERY cell of the batch there), so a few cells solved on their own give the
+        # same bits as the whole result
+        try:
+            X[ok] = np.linalg.solve(AtA[ok], Atb[ok][..., None])[..., 0]
+        except np.linalg.LinAlgError:
+            for m in np.nonzero(ok)[0]:
+                try:
+                    X[m] = np.linalg.solve(AtA[m], Atb[m][..., None])[..., 0]
+                except np.linalg.LinAlgError:
+                    X[m] = np.linalg.lstsq(AtA[m], Atb[m], rcond=None)[0]
+    # (I305) element by element, not `X @ Ls.T`: a one-row matrix product takes another BLAS path and
+    # changed a cell's error in the last bit, so a cell recomputed alone must not depend on the batch
+    x0, x1, x2 = X[:, 0, None], X[:, 1, None], X[:, 2, None]
+    den = x0 * Ls[:, 8] + x1 * Ls[:, 9] + x2 * Ls[:, 10] + 1.0          # (M, C)
+    pu = (x0 * Ls[:, 0] + x1 * Ls[:, 1] + x2 * Ls[:, 2] + Ls[:, 3]) / den
+    pv = (x0 * Ls[:, 4] + x1 * Ls[:, 5] + x2 * Ls[:, 6] + Ls[:, 7]) / den
+    e = np.hypot(pu - u, pv - v)
+    e[~use] = np.nan
+    r = np.sqrt(np.nansum(e ** 2, axis=1) / np.maximum(2 * n - 3, 1))
+    r[~ok] = np.nan
+    xyz, resid, err = X, r, e
     n_cams = use.sum(1)
     n_cams[~np.isfinite(resid)] = 0
     return (xyz.reshape(lead + (3,)), resid.reshape(lead), n_cams.reshape(lead),
@@ -2024,13 +2018,13 @@ class _Prepared:
             self.ct.append(ct)
         return self
 
-    def triangulate(self, uv: np.ndarray, min_cams: int = 2, max_residual: float = float("inf")):
+    def triangulate(self, uv: np.ndarray, min_cams: int = 2):
         """`triangulate_batch` over the calibrated cameras of `uv` (..., C views, 2); the per-camera
         errors come back with one column per view (NaN for a camera that is not calibrated). With
         every camera calibrated this IS `triangulate_batch(self.coefs, uv, ...)`."""
         if len(self.used) == self.n_views:
-            return triangulate_batch(self.coefs, uv, min_cams, max_residual)
-        xyz, resid, ncams, err_u = triangulate_batch(self.coefs, uv[..., self.used, :], min_cams, max_residual)
+            return triangulate_batch(self.coefs, uv, min_cams)
+        xyz, resid, ncams, err_u = triangulate_batch(self.coefs, uv[..., self.used, :], min_cams)
         err = np.full(err_u.shape[:-1] + (self.n_views,), np.nan, err_u.dtype)
         err[..., self.used] = err_u
         return xyz, resid, ncams, err
@@ -2061,18 +2055,16 @@ class _Prepared:
 
 def reconstruct(sessions: list, calib: Calibration, rates: list[float], offsets: list[float],
                 t_range: tuple[int, int], names: list[str] | None = None,
-                min_cams: int = 2, max_residual: float = float("inf"),
-                _prep: "_Prepared | None" = None) -> Reconstruction:
+                min_cams: int = 2, _prep: "_Prepared | None" = None) -> Reconstruction:
     """Triangulate every landmark (matched BY NAME across views) at every
     integer reference frame in t_range (inclusive). Views without the
     landmark, or without data at that instant, simply drop out; a point needs
-    `min_cams` views. `max_residual`: drop the worst camera while the residual
-    exceeds it and >= min_cams remain (a cheap outlier guard)."""
+    `min_cams` views."""
     prep = _prep or _Prepared(sessions, calib, names)
     t0, t1 = int(t_range[0]), int(t_range[1])
     t = np.arange(t0, max(t1 + 1, t0))
     uv = prep.samples(rates, offsets, t)
-    xyz, resid, ncams, err = prep.triangulate(uv, min_cams, max_residual)
+    xyz, resid, ncams, err = prep.triangulate(uv, min_cams)
     return Reconstruction(t0, prep.names, xyz, resid, ncams.astype(np.int32), calib.unit,
                           err.astype(np.float32))
 
