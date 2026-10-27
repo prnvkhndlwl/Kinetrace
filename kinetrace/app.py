@@ -14305,6 +14305,22 @@ class MainWindow(QMainWindow):
             scene.unit = r.unit
         # (G201) the chosen world
         scene.world = p.calibration.world if p.calibration is not None else None
+        # (G224) a mirror-image (left-handed) world is drawn as the room looks, and the window says so
+        cal_m = p.calibration
+        if cal_m is not None and cal_m.n_calibrated >= 2:
+            key = self.__dict__.get("_mirror_key")
+            if key is None or key[0] is not cal_m:
+                try:
+                    from kinetrace.calib import world_is_left_handed
+                    lh = bool(world_is_left_handed(cal_m))
+                except Exception:      # noqa: BLE001 - a calibration it cannot judge is drawn as it is
+                    lh = False
+                key = (cal_m, lh)
+                self.__dict__["_mirror_key"] = key
+            scene.mirrored = key[1]
+        if scene.mirrored:
+            info += (" · mirrored (left-handed) world, as easyWand / DLTdv make it: drawn as the room looks; "
+                     "3D → Set World Axes gives it right-handed axes")
         if p.calibration is not None:
             views = [v for v in p.calibration.views() if v < p.n_views]      # (I273) calibrated cameras
             scene.cameras = np.array([p.calibration.camera(v).center() for v in views]).reshape(-1, 3)

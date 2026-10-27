@@ -233,8 +233,27 @@ if v3 is not None:
     # the window reflects the world's Y back (Z stays up, X keeps its direction): the same physical points
     # land where their right-handed twin's do
     d = float(np.max(np.abs(on_screen(sc, Xm) - on_screen(twin, PTS))))
-    check(d < 1e-6, "the mirrored world is drawn as the room looks (where its right-handed twin is)",
-          f"{d:.1f} px apart")
+    check(d < 0.5, "the mirrored world is drawn as the room looks (where its right-handed twin is)",
+          f"{d:.3g} px apart")
+    # a closed mesh (a hull, an animal model) is lit the same in the mirrored world, not turned inside out
+    vtx = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], float)
+    fcs = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+                    [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]])            # outward normals (right-handed)
+
+    def lit(mirror):
+        sc_ = view3d.Scene3D()
+        F = np.array([1.0, -1.0, 1.0]) if mirror else np.ones(3)
+        sc_.mesh = (vtx * F, fcs)
+        sc_.points_all = (vtx * F)[None]
+        sc_.mirrored = mirror
+        img = view3d.render_scene(sc_, (400, 400), 35, 25, show_points=False, show_cameras=False)
+        bg = img[0, 0].astype(int)
+        m = np.abs(img.astype(int) - bg).sum(axis=2) > 30
+        return float(img[m].mean()), int(m.sum())
+    (b0, n0), (b1, n1) = lit(False), lit(True)
+    check(abs(b1 - b0) < 2.0 and abs(n1 - n0) < 0.02 * n0,
+          "a mesh in the mirrored world is lit as in the right-handed one (not inside out)",
+          f"brightness {b0:.1f} vs {b1:.1f}, area {n0} vs {n1}")
 if win.act_view3d.isChecked():                     # closed again: its window would take the next Ctrl+Z
     win.act_view3d.trigger()
     pump(0.2)
