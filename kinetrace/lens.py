@@ -34,7 +34,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from kinetrace.calib import OpenCVUndistort
+from kinetrace.calib import UNDISTORT_SANE_PX, OpenCVUndistort
 
 DEFAULT_PATTERN = (9, 6)        # inner corners (columns, rows) = 10 x 7 squares
 DEFAULT_SQUARE_MM = 24.0
@@ -150,7 +150,10 @@ class LensProfile:
         the inverse does not converge and OpenCV returns the sentinel
         (-1000000, -1000000), which once reached the report as "the edges
         are bent by 1417199 px" on a real GoPro clip (the board had
-        reached 69 % of the way to the corners). A border pixel counts as
+        reached 69 % of the way to the corners). A standard fit can also FOLD
+        inside the picture (I345: it turns back on itself, two raw positions
+        undistort to one): the model's undistortion is NaN at and past the
+        fold (`calib.fold_radius`). A border pixel counts as
         described by the model when its undistorted position is finite, not
         the sentinel, comes back within a few pixels when re-distorted, and
         its ray leaves the optical axis by less than `MAX_RAY_DEG` (a
@@ -169,7 +172,7 @@ class LensProfile:
         with np.errstate(invalid="ignore", over="ignore"):
             back = model.distort(und)
             finite = np.isfinite(und).all(axis=1)
-            sane = finite & (np.abs(und).max(axis=1) < 1e5)
+            sane = finite & (np.abs(und).max(axis=1) < UNDISTORT_SANE_PX)    # (and past a fold: NaN, I345)
             rt = np.linalg.norm(np.nan_to_num(back, nan=1e9) - border, axis=1)
             cx, cy = self.principal
             r_und = np.hypot(und[:, 0] - cx, und[:, 1] - cy)

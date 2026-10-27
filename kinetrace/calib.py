@@ -483,11 +483,49 @@ def match_dltdv_lenses(lenses: list, sizes: list) -> tuple[list, str]:
     return out, note
 
 
+UNDISTORT_SANE_PX = 1e5      # (I344) beyond this an undistorted coordinate is cv2's failure sentinel, not a point
+
+
+def fold_radius(dist, fisheye: bool = False) -> float:
+    """(I345) Where an OpenCV lens model stops growing outward, as a NORMALISED undistorted radius (inf = it
+    never does). A standard model maps r to r (1 + k1 r^2 + k2 r^4 + k3 r^6): past the first root of its
+    derivative 1 + 3 k1 r^2 + 5 k2 r^4 + 7 k3 r^6 the picture folds back, two raw positions undistort to one
+    and a round trip can land on the wrong one. A fisheye maps the ray angle t to t (1 + k1 t^2 + ... k4 t^8):
+    the same with 1 + 3 k1 t^2 + 5 k2 t^4 + 7 k3 t^6 + 9 k4 t^8, returned as tan(t). Tangential terms are left
+    out (p1, p2; they move the fold little and only off the axes); a rational / thin-prism model (more than five
+    coefficients in use) is not judged here (inf) and keeps only the round-trip checks."""
+    d = np.asarray(dist, np.float64).ravel()
+    if fisheye:
+        k = np.pad(d, (0, 4))[:4]
+        coef = [9.0 * k[3], 7.0 * k[2], 5.0 * k[1], 3.0 * k[0], 1.0]
+    else:
+        if len(d) > 5 and np.any(d[5:] != 0):
+            return float("inf")
+        k = np.pad(d, (0, 5))[:5]
+        coef = [7.0 * k[4], 5.0 * k[1], 3.0 * k[0], 1.0]
+    coef = np.trim_zeros(np.asarray(coef), "f")
+    if len(coef) <= 1 or not np.isfinite(coef).all():
+        return float("inf")
+    roots = np.roots(coef)                                   # in r^2 (t^2)
+    s = [float(z.real) for z in roots if abs(z.imag) <= 1e-9 * max(1.0, abs(z.real)) and z.real > 0]
+    if not s:
+        return float("inf")
+    x = float(np.sqrt(min(s)))
+    if fisheye:
+        return float(np.tan(x)) if x < np.pi / 2 else float("inf")
+    return x
+
+
 class OpenCVUndistort:
     """Brown–Conrady / OpenCV model: camera matrix K and distortion
     coefficients (k1, k2, p1, p2[, k3 ...]). Undistorted points are returned
     in the same pixel frame (P = K), which is what a DLT fitted on
-    `cv2.undistortPoints(..., P=K)` output expects."""
+    `cv2.undistortPoints(..., P=K)` output expects.
+
+    (I344, I345) Like the LWM / DLTdv models, a point the model does not describe undistorts to NaN: cv2's
+    failure sentinel (a coordinate beyond `UNDISTORT_SANE_PX`; the fisheye solver returns (-1e6, -1e6) where
+    the model has no inverse) and anything at or past the model's fold (`fold_radius`). Every other point is
+    exactly cv2's result."""
     kind = "opencv"
     # (I73) OpenCV's standard-model point undistortion is a fixed-point
     # iteration that stops after 5 steps unless told otherwise: far from
@@ -510,6 +548,7 @@ class OpenCVUndistort:
         # or a "square" camera matrix (fx = fy) when a downstream solver with a
         # single focal length per camera (the wand core) consumes them
         self.P = self.K if P is None else np.asarray(P, np.float64).reshape(3, 3)
+        self.fold = fold_radius(self.dist, self.fisheye)       # (I345) normalised; inf = no fold
 
     def undistort(self, pts: np.ndarray) -> np.ndarray:
         import cv2
@@ -522,6 +561,15 @@ class OpenCVUndistort:
             else:
                 u = cv2.undistortPoints(p[ok], self.K, self.dist, None, None, self.P, self.CRITERIA)
             out[ok] = u.reshape(-1, 2)
+            with np.errstate(invalid="ignore", over="ignore"):
+                bad = np.abs(out).max(axis=1) >= UNDISTORT_SANE_PX          # (I344) the sentinel
+                fold = getattr(self, "fold", None)          # (a model made without __init__: a copy, a pickle)
+                if fold is None:
+                    fold = self.fold = fold_radius(self.dist, self.fisheye)
+                if np.isfinite(fold):                                      # (I345) past the fold
+                    hom = np.column_stack([out, np.ones(len(out))]) @ np.linalg.inv(self.P).T
+                    bad |= np.hypot(hom[:, 0] / hom[:, 2], hom[:, 1] / hom[:, 2]) >= fold
+            out[bad] = np.nan
         return out
 
     def distort(self, pts: np.ndarray) -> np.ndarray:
