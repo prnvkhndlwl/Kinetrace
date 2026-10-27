@@ -85,9 +85,9 @@ def click(w):
 
 
 def ctrl_z():
-    win.activateWindow()
-    win.canvas.setFocus()
-    QTest.keyClick(win.canvas, Qt.Key_Z, Qt.ControlModifier)
+    win.activateWindow()                     # a closed wizard leaves no active window (offscreen)
+    pump(0.1)
+    QTest.keyClick(win.canvas.viewport(), Qt.Key_Z, Qt.ControlModifier)
     pump(0.3)
 
 
@@ -213,6 +213,9 @@ Xm = PTS * np.array([1.0, -1.0, 1.0])               # the same four points in th
 p.calibration = cal_m
 p.reconstruction = Reconstruction(0, [f"p{j}" for j in range(4)], np.repeat(Xm[None], 30, 0),
                                   np.zeros((30, 4)), np.full((30, 4), 2), "m")
+if win.act_view3d.isChecked():                     # (the sub-frame estimate above showed its 3D result)
+    win.act_view3d.trigger()
+    pump(0.2)
 win.act_view3d.trigger()                           # 3D -> Show 3D View
 pump(0.5)
 v3 = win.view3d
@@ -232,6 +235,7 @@ if v3 is not None:
     d = float(np.max(np.abs(on_screen(sc, Xm) - on_screen(twin, PTS))))
     check(d < 1e-6, "the mirrored world is drawn as the room looks (where its right-handed twin is)",
           f"{d:.1f} px apart")
+if win.act_view3d.isChecked():                     # closed again: its window would take the next Ctrl+Z
     win.act_view3d.trigger()
     pump(0.2)
 

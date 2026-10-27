@@ -72,14 +72,15 @@ def lens_turn_unknown(prof, session) -> bool:
                                    display_rotation(session.video_path)))
 
 
-def share_targets(project, view: int, prof=None) -> tuple[list[int], list[int]]:
+def share_targets(project, view: int, prof=None, lenses=None) -> tuple[list[int], list[int]]:
     """The other cameras a lens profile of camera `view` can be shared with
     (G40: identical cameras, one checkerboard calibration): every camera with
     the same picture size -- or the same pictures turned, a camera filmed on its
     side (`lens_for_camera` turns the profile for it). Returns (without a
     profile, with a DIFFERENT one) - the second only after the user agrees.
-    `prof` = the profile (default: the one attached to `view`)."""
-    lenses = list(getattr(project, "lenses", []) or [])
+    `prof` = the profile (default: the one attached to `view`); `lenses` = the profiles to read (default:
+    the project's; the wand wizard's pending ones, G223)."""
+    lenses = list((getattr(project, "lenses", []) if lenses is None else lenses) or [])
     if prof is None:
         prof = lenses[view] if view < len(lenses) else None
     fill, replace = [], []
@@ -754,7 +755,7 @@ class CamerasPage(QWizardPage):
         ticked = set(self.wiz.views())
         for c in range(p.n_views):
             self.lens_grid.addWidget(QLabel(p.name(c) + ("" if c in ticked else " (not in this run)")), c, 0)
-            prof = p.lenses[c] if c < len(p.lenses) else None
+            prof = self.wiz.lenses[c] if c < len(self.wiz.lenses) else None        # (G223) pending until Finish
             s = p.sessions[c]
             fitted, bad = lens_for_camera(prof, s, p.name(c))
             bad = bad if fitted is None else None
@@ -767,8 +768,8 @@ class CamerasPage(QWizardPage):
                 text = f"{prof.summary()}; for {int(prof.width)}×{int(prof.height)} pictures"
                 if " line" in str(prof.source) or "(line " in str(prof.source):    # (I282) "its only line" too
                     text += f" ({prof.source})"
-                twins = [p.name(j) for j in range(p.n_views) if j != c and j < len(p.lenses)
-                         and _lens.same_profile(p.lenses[j], prof)]
+                twins = [p.name(j) for j in range(p.n_views) if j != c and j < len(self.wiz.lenses)
+                         and _lens.same_profile(self.wiz.lenses[j], prof)]
                 if twins:
                     text += f" — the same profile as {', '.join(twins)}"
             lab = _dim(QLabel(text))
@@ -785,7 +786,8 @@ class CamerasPage(QWizardPage):
             b3.clicked.connect(lambda _=False, k=c: self._remove_lens(k))
             # identical cameras share one checkerboard calibration (G40)
             b4 = QPushButton("Use for all")
-            fill, replace = share_targets(p, c) if (prof is not None and not bad) else ([], [])
+            fill, replace = (share_targets(p, c, lenses=self.wiz.lenses) if (prof is not None and not bad)
+                             else ([], []))
             b4.setEnabled(bool(fill or replace))
             b4.setToolTip(
                 f"Use {p.name(c)}'s lens profile for every other camera with {s.width}×{s.height} pictures "
@@ -833,8 +835,7 @@ class CamerasPage(QWizardPage):
             for k in views:          # + the cameras it is shared with (G40), each turned to its own video
                 mine = fitted if k == v else lens_for_camera(prof, p.sessions[k], p.name(k))[0]
                 if mine is not None:
-                    p.lenses[k] = mine
-            p.dirty = True
+                    self.wiz.lenses[k] = mine            # (G223) pending: the project changes at Finish
             self._refresh_lens_rows()
             if bad and v < len(self.lens_labels):   # turned for a camera filmed on its side: said
                 self.lens_labels[v].setText(self.lens_labels[v].text() + " — " + bad)
@@ -849,7 +850,7 @@ class CamerasPage(QWizardPage):
         prof = self.usable_lens(c)
         if prof is None:
             return
-        fill, replace = share_targets(p, c)
+        fill, replace = share_targets(p, c, lenses=self.wiz.lenses)
         if replace:
             names = ", ".join(p.name(k) for k in replace)
             ans = QMessageBox.question(
@@ -861,10 +862,8 @@ class CamerasPage(QWizardPage):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if ans != QMessageBox.Yes:
                 replace = []
-        for k in fill + replace:
-            p.lenses[k] = lens_for_camera(prof, p.sessions[k], p.name(k))[0]   # turned for a turned video
-        if fill or replace:
-            p.dirty = True
+        for k in fill + replace:              # (G223) pending; turned for a turned video
+            self.wiz.lenses[k] = lens_for_camera(prof, p.sessions[k], p.name(k))[0]
         self._refresh_lens_rows()
 
     def _load_lens(self, c: int):
@@ -893,17 +892,14 @@ class CamerasPage(QWizardPage):
         if fitted is None:
             self._refuse_lens(c, bad)
             return
-        p.lenses[c] = fitted
-        p.dirty = True
+        self.wiz.lenses[c] = fitted                       # (G223) pending: the project changes at Finish
         self._refresh_lens_rows()
         if (bad or read) and c < len(self.lens_labels):     # turned for a camera filmed on its side: said
             self.lens_labels[c].setText(self.lens_labels[c].text() + "".join(" — " + t for t in (read, bad) if t))
 
     def _remove_lens(self, c: int):
-        p = self.wiz.project
-        if c < len(p.lenses):
-            p.lenses[c] = None
-            p.dirty = True
+        if c < len(self.wiz.lenses):
+            self.wiz.lenses[c] = None                     # (G223) pending: Cancel leaves the project's lens
         self._refresh_lens_rows()
 
     def usable_lens(self, c: int):
@@ -911,7 +907,7 @@ class CamerasPage(QWizardPage):
         (I31: a profile attached elsewhere at another size is shown on its row as not used, never
         solved with)."""
         p = self.wiz.project
-        prof = p.lenses[c] if c < len(p.lenses) else None
+        prof = self.wiz.lenses[c] if c < len(self.wiz.lenses) else None
         if prof is None or c >= p.n_views:
             return None
         return lens_for_camera(prof, p.sessions[c], p.name(c))[0]
@@ -2297,6 +2293,9 @@ class WandWizard(QWizard):
         self.setOption(QWizard.NoBackButtonOnStartPage, True)
         self.setMinimumSize(760, 620)
         self.project = project
+        # (G223) the lens rows of the Cameras page change THIS copy; the app applies it at Finish with the
+        # calibration made with it (one Ctrl+Z); Cancel leaves the project's lenses as they were
+        self.lenses = list(project.lenses) + [None] * max(0, project.n_views - len(project.lenses))
         self.start_dir = start_dir
         self.result = None
         self.gravity = None

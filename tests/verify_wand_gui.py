@@ -591,29 +591,30 @@ wz = new_wizard(P_axes)
 goto(wz, wz.page_cams)
 pc = wz.page_cams
 QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (big_path, ""))
+# (G223) the lens rows change the wizard's pending copy (`wz.lenses`); the project gets it at Finish
 pc._load_lens(0)
-assert P_axes.lenses[0] is None, "a 1280x960 profile must not be attached to a 640x480 camera"
+assert wz.lenses[0] is None, "a 1280x960 profile must not be attached to a 640x480 camera"
 assert "1280" in pc.lens_labels[0].text() and "640" in pc.lens_labels[0].text(), pc.lens_labels[0].text()
 QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (argus, ""))
 pc._load_lens(2)
 # the SAME rule as the lens wizard (lens.argus_profile_for): the file's camera numbers decide
-assert P_axes.lenses[2] is None and "no line for camera 3" in pc.lens_labels[2].text(), pc.lens_labels[2].text()
+assert wz.lenses[2] is None and "no line for camera 3" in pc.lens_labels[2].text(), pc.lens_labels[2].text()
 pc._load_lens(1)
-assert P_axes.lenses[1] is not None and "camera 2" in P_axes.lenses[1].source, P_axes.lenses[1].source
-assert abs(P_axes.lenses[1].f_square - FOCAL[1]) < 1e-9
+assert wz.lenses[1] is not None and "camera 2" in wz.lenses[1].source, wz.lenses[1].source
+assert abs(wz.lenses[1].f_square - FOCAL[1]) < 1e-9
 QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (ok_path, ""))
 pc._load_lens(0)
-assert P_axes.lenses[0] is not None and "640" in pc.lens_labels[0].text()
+assert wz.lenses[0] is not None and "640" in pc.lens_labels[0].text()
 # a wrong-size profile attached elsewhere is shown and NOT used
-P_axes.lenses[3] = big
+wz.lenses[3] = big
 pc._refresh_lens_rows()
 assert "NOT used" in pc.lens_labels[3].text() and pc.usable_lens(3) is None and pc.lens_models()[3] is None
 QFileDialog.getOpenFileName = _orig_open
 print("lens profiles: wrong size refused / flagged, Argus lines matched to cameras OK")
 
 # ---- (I35) the distortion tick is honoured for the cameras without a profile ------------
-P_axes.lenses[3] = None
-P_axes.lenses[1] = None                               # profile on cam1 only
+wz.lenses[3] = None
+wz.lenses[1] = None                               # profile on cam1 only
 pc._refresh_lens_rows()
 pc.distort.setChecked(True)
 assert pc.distortion_per_camera() == [False, True, True, True]
@@ -638,7 +639,7 @@ for _ in range(2):
     wz.back()
     pump(0.02)
 for c in range(N_CAM):
-    P_axes.lenses[c] = lens_mod.LensProfile(W, H, Kc[c], np.zeros(5), False, 0.2, 30, "test")
+    wz.lenses[c] = lens_mod.LensProfile(W, H, Kc[c], np.zeros(5), False, 0.2, 30, "test")
 pc._refresh_lens_rows()
 assert not pc.distort.isEnabled() and pc.distortion_per_camera() == [False] * N_CAM
 close_wizard(wz)

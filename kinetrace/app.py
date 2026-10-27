@@ -11501,10 +11501,16 @@ class MainWindow(QMainWindow):
         return rec
 
     def _apply_board_result(self, calibration, lenses: dict) -> None:
-        """(G221) The ChArUco wizard's Finish as ONE Ctrl+Z step: the fitted lens profiles
-        ({camera: profile}) and the calibration (None = "lenses only": the calibration stays) go in
-        together, and `_undo_timing_step` takes both back while they are still what this step left.
-        The offsets are not touched (recorded as they are, so the step's check holds)."""
+        """(G221) The ChArUco wizard's Finish as ONE Ctrl+Z step (`_apply_calibration_step`)."""
+        self._apply_calibration_step(calibration, lenses, "the ChArUco calibration",
+                                     "the ChArUco calibration was taken back")
+
+    def _apply_calibration_step(self, calibration, lenses: dict, what: str, drop_reason: str) -> None:
+        """(G221, G222) A new calibration as ONE Ctrl+Z step: the lens profiles ({camera: profile}, may be
+        empty) and the calibration (None = "lenses only": the calibration stays) go in together, and
+        `_undo_timing_step` takes both back while they are still what this step left. The ChArUco
+        wizard's Finish and File > Import > Calibration. The offsets are not touched (recorded as they
+        are, so the step's check holds)."""
         p = self.project
         if p is None or self.session is None:
             return
@@ -11512,11 +11518,11 @@ class MainWindow(QMainWindow):
             p.lenses.append(None)
         self._set_undo_point(self.session.snapshot())
         rec = {"offsets": list(p.offsets), "calibration": p.calibration, "wand_result": self._wand_result,
-               "lenses": list(p.lenses), "what": "the ChArUco calibration",
+               "lenses": list(p.lenses), "what": what,
                # what Ctrl+Z says it put back, and why the 3D result goes with it
                "what_changed": " and ".join(w for w, on in (("the lens profiles", bool(lenses)),
                                                             ("the calibration", calibration is not None)) if on),
-               "drop_reason": "the ChArUco calibration was taken back"}
+               "drop_reason": drop_reason}
         self._set_lenses(lenses)
         if calibration is not None:
             p.calibration = calibration
@@ -13104,7 +13110,10 @@ class MainWindow(QMainWindow):
         dlg = CalibrationDialog(self, list(p.names), self._view_sizes(), start)
         if dlg.exec() != QDialog.Accepted or dlg.result_calibration is None:
             return
-        p.calibration = dlg.result_calibration
+        # (G222) one Ctrl+Z step, as the wand and ChArUco wizards' Finish: importing over a good
+        # calibration could not be taken back
+        self._apply_calibration_step(dlg.result_calibration, {}, "importing the calibration",
+                                     "the imported calibration was taken back")
         self._wand_result = (None, None)   # the last wand run's report is not this calibration's (I33)
         self._drop_reconstruction("a new calibration was imported")      # (I242)
         p.dirty = True
@@ -13417,13 +13426,29 @@ class MainWindow(QMainWindow):
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
         wiz = WandWizard(self, p, start)
         accepted = wiz.exec() == QDialog.Accepted
-        self._refresh_cameras()          # its lens rows may have changed the lenses, accepted or not (G177)
+        self._refresh_cameras()          # (G177) the CAMERAS panel; its lens rows are pending until Finish (G223)
         if not accepted or wiz.result_calibration is None:
             return                       # (I303) Cancel: the offsets and the calibration stay as they were
         # (I303) the offsets the wizard calibrated at (pending until now) go in WITH the calibration made at
         # them: one Ctrl+Z step for both, a fresh one for this Finish
         before = list(p.offsets)
         rec = self._apply_offsets_undoable(wiz.result_offsets) if wiz.result_offsets is not None else None
+        # (G223) the lens rows' changes were pending in the wizard (`wiz.lenses`): they go in now, in the SAME
+        # Ctrl+Z step as the offsets and the calibration made with them
+        old_lenses = list(p.lenses) + [None] * max(0, p.n_views - len(p.lenses))
+        changed = {c: wiz.lenses[c] for c in range(min(p.n_views, len(wiz.lenses)))
+                   if wiz.lenses[c] is not old_lenses[c]}
+        if changed:
+            if rec is None:                      # no offset moved: a step of its own for the lenses
+                self._set_undo_point(self.session.snapshot())
+                rec = {"offsets": list(p.offsets), "calibration": p.calibration, "wand_result": self._wand_result,
+                       "after": list(p.offsets)}
+                self.__dict__["_undo_timing"] = rec
+            self._set_lenses(changed)
+            moved = any(abs(a - b) > 1e-12 for a, b in zip(before, p.offsets))
+            rec.update(lenses=old_lenses, lenses_after=list(p.lenses), what="the wand calibration",
+                       what_changed="the lens profiles, the calibration" + (" and the offsets" if moved else ""),
+                       drop_reason="the wand calibration was taken back")
         p.calibration = wiz.result_calibration
         self._wand_result = (wiz.result, wiz.gravity)
         self._wand_cal = p.calibration                          # (G185) its picture comes from the run
