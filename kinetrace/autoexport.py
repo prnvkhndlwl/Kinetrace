@@ -74,10 +74,9 @@ def _fingerprint(index: dict, prefixes: tuple, *extra: str) -> str:
 
 
 def _write_points_in_camera_world(calibio, project, path: str) -> None:
-    """xyzpts.csv in the world the exported cameras (File -> Export -> Calibration) are in:
-    mirrored in Z for a left-handed easyWand / DLTdv calibration, the file's origin
-    restored for a K + R/t import. The probe is the one the export dialog takes,
-    so the two agree (I170)."""
+    """xyzpts.csv (DLTdv) in the world of the dltCoefs.csv File -> Export -> Calibration
+    writes beside it: the DLT coefficients' own (I340; `write_points3d` keeps the "dltdv"
+    kind there whatever the models say, so this matches Ctrl+E's DLTdv xyzpts)."""
     import numpy as np
     rec = project.reconstruction
     probe = (np.nanmedian(rec.xyz.reshape(-1, 3), axis=0) if np.isfinite(rec.xyz).any() else None)

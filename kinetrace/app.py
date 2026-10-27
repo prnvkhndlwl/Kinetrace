@@ -14648,7 +14648,8 @@ class MainWindow(QMainWindow):
     def _points_models(self):
         """(I170) The exported cameras' models for the 3D points that go out beside them: 3D points are
         ALWAYS written through `calibio.write_points3d(..., models=)`, so a left-handed calibration's
-        points are in the same (mirrored) world as the cameras Export Calibration writes. The probe is
+        points are in the same (mirrored) world as the cameras Export Calibration writes (the DLTdv
+        xyzpts excepted, I340: they pair with the dltCoefs.csv, in the DLT's own world). The probe is
         the median of the finite points (as in Export Calibration). Returns (models or None, note)."""
         from kinetrace import calibio
         p = self.project
@@ -14763,9 +14764,18 @@ class MainWindow(QMainWindow):
                 notes.append(f"{left_out} instant(s) before reference frame 0 were left out: a DLTdv xyzpts "
                              "file starts at frame 0.")
             if models is not None and (models.mirrored or np.any(models.shift)):
-                notes.append("The 3D points are in the same world as the cameras Export Calibration writes"
-                             + (" -- a mirrored (left-handed) one; 3D -> Set World Axes… first gives the "
-                                "calibration a right-handed world" if models.mirrored else "") + ".")
+                if key == "xyz_dltdv":                  # (I340) the DLTdv pair keeps the DLT's own world
+                    notes.append("The DLTdv xyzpts are in the calibration's own world, the one of the "
+                                 "dltCoefs.csv that File → Export → Calibration writes (use the two together). "
+                                 "The Anipose / OpenCV / MATLAB / Blender cameras of this calibration are "
+                                 + ("mirrored in Z" if models.mirrored else "in the calibration file's origin")
+                                 + ": pair those with the 3D landmarks as Anipose or Kinetrace CSV.")
+                else:
+                    notes.append("The 3D points are in the same world as the cameras Export Calibration writes"
+                                 + (" -- a mirrored (left-handed) one; 3D -> Set World Axes… first gives the "
+                                    "calibration a right-handed world" if models.mirrored else "")
+                                 + " (not the dltCoefs.csv's: export the 3D landmarks as DLTdv xyzpts for "
+                                   "that one).")
         elif key in ("sil_json", "sil_png"):
             # (G151m) every segment with silhouettes, one file / folder each (a "_<segment>" suffix
             # when there are several); it used to be the active segment's alone

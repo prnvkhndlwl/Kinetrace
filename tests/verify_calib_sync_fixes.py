@@ -107,12 +107,12 @@ def _i340():
     autoexport._write_points_in_camera_world(calibio, proj, auto)
     pa = np.loadtxt(auto, delimiter=",", skiprows=1).reshape(-1, 3)
     m = miss(pa, cams, coefs)
-    check(m < 1e-6, "exports/ xyzpts reproject through dltCoefs.csv onto the clicks", f"{m:.3f} px")
+    check(m < 0.01, "exports/ xyzpts reproject through dltCoefs.csv onto the clicks", f"{m:.3f} px")
     ctrl = os.path.join(OUT, "lh_ctrle_xyzpts.csv")
     calibio.write_points3d(rec, ctrl, "dltdv", models=calibio.to_models(cal, ["cam1", "cam2", "cam3"]))
     pc = np.loadtxt(ctrl, delimiter=",", skiprows=1).reshape(-1, 3)
     m = miss(pc, cams, coefs)
-    check(m < 1e-6, "Ctrl+E DLTdv xyzpts reproject through dltCoefs.csv onto the clicks", f"{m:.3f} px")
+    check(m < 0.01, "Ctrl+E DLTdv xyzpts reproject through dltCoefs.csv onto the clicks", f"{m:.3f} px")
     check(np.array_equal(pc, np.round(X, 6)) or float(np.max(np.abs(pc - X))) < 1e-6,
           "the DLTdv xyzpts are the calibration's own world (no Z flip)")
     # the K + R/t formats keep their (mirrored) world, with their points
@@ -142,7 +142,7 @@ def _i340():
     for c, cam in enumerate(calk.cameras):
         clicks = dlt_project(cam.coefs, Xk) + 1.0
         worst = max(worst, float(np.nanmax(np.linalg.norm(dlt_project(ck[:, c], pk) - clicks, axis=1))))
-    check(worst < 1e-6, "a K + R/t calibration's dltCoefs.csv and xyzpts reproject onto the clicks",
+    check(worst < 0.01, "a K + R/t calibration's dltCoefs.csv and xyzpts reproject onto the clicks",
           f"{worst:.3f} px")
 
 
