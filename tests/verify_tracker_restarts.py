@@ -339,8 +339,9 @@ def section2():
           run.err)
     if run.auto:
         f = run.auto[0][0]
-        eb = np.linalg.norm(run.tracks[:on - 6, 1] - B0, axis=1)
-        check(f"[2] B's track before the cover is kept (max {np.nanmax(eb):.2f} px over 0-{on - 7})",
+        clear = on - 4                  # the cover (20 px / frame) starts to overlap B about 4.7 frames before `on`
+        eb = np.linalg.norm(run.tracks[:clear, 1] - B0, axis=1)
+        check(f"[2] B's track before the cover is kept (max {np.nanmax(eb):.2f} px over 0-{clear - 1})",
               np.isfinite(eb).all() and float(np.max(eb)) < 3.0)
     off_run = Run(path, specs(), OT, roi=True, autopause=False)
     hid = list(getattr(off_run.worker, "hidden_at_restart", None) or [])

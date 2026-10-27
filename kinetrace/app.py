@@ -801,12 +801,20 @@ _STOP_TEXTS = {
         status=("Auto-paused: the model lost {name} at frame {frame} (low confidence; its track is cut "
                 "there). Click where it really is and press Track — or turn Auto-pause off to run "
                 "through")),
+    "hidden": dict(       # (I335) hidden when the ROI zoom moved: re-asking the model there learns the cover
+        short="{name} was hidden when the zoomed view moved", ms=15000,
+        toast=("Auto-paused: <b>{name}</b> was hidden at frame {frame}, just when the tracker had to move its "
+               "zoomed view (ROI) to keep up with the points, so its track is cut there{kept}. Starting it again "
+               "on that frame would have made it follow whatever covered it. Go to a frame where it is visible "
+               "again, click where it is and press Track — or turn <b>ROI</b> off (bottom bar) for this stretch."),
+        status="Auto-paused: {name} was hidden when the zoomed view moved at frame {frame}"),
 }
 
 
 def _stop_short(reason: str, name: str) -> str:
     """How the every-camera summary names a stop (`_STOP_TEXTS` `short`): by the worker's reason."""
-    return _STOP_TEXTS[reason if reason in ("exit", "spot", "switched") else "unreliable"]["short"].format(name=name)
+    return _STOP_TEXTS[reason if reason in ("exit", "spot", "switched", "hidden")
+                       else "unreliable"]["short"].format(name=name)
 
 
 class MainWindow(QMainWindow):
@@ -11096,6 +11104,7 @@ class MainWindow(QMainWindow):
         # dropping the last reference to a running QThread aborts the app (I133)
         cuts = self._run_cuts = self._resume_cuts(self.worker)       # (PR B) a lost point with a click ahead
         restarts = int(getattr(self.worker, "_kt_restarts", 0) or 0)
+        hidden = list(getattr(getattr(self.worker, "primary", self.worker), "hidden_at_restart", None) or [])
         _retire(self.worker)
         self.worker = None
         self._restore_start_flags()         # before the autosave (I189)
@@ -11177,6 +11186,14 @@ class MainWindow(QMainWindow):
             self.toast.show_message(
                 "Moving spot stopped (auto-pause is off, so the run went on for the rest): " + ", ".join(parts)
                 + ". Their tracks end there. Select one, click it where it is and press Track.", "warn", 15000)
+        hid = [(pid, f) for pid, f in hidden if s is not None and 0 <= pid < s.n_points]
+        if hid:
+            # (I335) auto-pause off: a point hidden when the zoomed view moved was not started again there
+            parts = [f"<b>{s.points[pid].name}</b> at frame {f}" for pid, f in hid]
+            self.toast.show_message(
+                "Hidden when the zoomed view (ROI) moved, so not tracked on from there (auto-pause is off, so "
+                "the run went on): " + ", ".join(parts) + ". Their tracks end there. Go to a frame where one "
+                "is visible, click where it is and press Track.", "warn", 15000)
 
     def _resume_cuts(self, w) -> int:
         """(I316, PR B) A point lost with a click ahead was cut where it was lost, not stopped: its rows from there to
@@ -11240,8 +11257,8 @@ class MainWindow(QMainWindow):
             return "ball"
         if reason == "spot" and known:
             return "spot"
-        if reason == "exit":
-            return "exit"
+        if reason in ("exit", "hidden"):
+            return reason
         return "unreliable"
 
     def _say_stop(self, kind: str, name: str, frame: int, why: str = "missing") -> None:

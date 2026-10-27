@@ -626,6 +626,10 @@ class TrackingWorker(QThread):
         # sent again blank (`_with_blank_back`)
         self._emitted: dict[int, tuple] = {}
         self._blank_back: dict[int, int] = {}
+        # (I335) [(pid, frame)]: points hidden when an ROI restart could not wait (auto-pause off, no click
+        # ahead): not asked again there, blank from that frame on; the app names them at the run's end
+        self.hidden_at_restart: list[tuple[int, int]] = []
+        self._crop_reach = None     # (I335) (frames, {pid: positions}) the next segment's crop must cover
         # animal layer state (per run)
         self._seg = None
         self._sxy = None               # (sx, sy) native / working, set by the first segmented frame (I61)
@@ -819,13 +823,15 @@ class TrackingWorker(QThread):
         first_seg = True
         last_emitted = self.start_frame - 1
         while True:
-            reason, last_emitted, next_seeds = yield from self._segment_steps(
+            reason, last_emitted, next_seeds, restart_at = yield from self._segment_steps(
                 src, model, device, seg_start, specs, col_idx, first_seg, last_emitted)
             if reason != "restart":
                 break
             # transparent ROI re-seed: continue from our own predictions at the
-            # last emitted frame; points with no valid position there stay
-            # blank until the user re-places them (the OOB invariant)
+            # restart frame (the last emitted one, or the latest one before it on
+            # which every point was in view: `_plan_restart`, I335); points with no
+            # valid position there stay blank until the user re-places them (the
+            # OOB invariant)
             new_specs, new_cols = [], []
             for sp, k, pos in zip(specs, col_idx, next_seeds):
                 if pos is not None:
@@ -843,10 +849,10 @@ class TrackingWorker(QThread):
                     # past the last tracked frame (I257).
                     last_emitted = yield from self._animal_only_steps(src, last_emitted + 1)
                 break
-            if last_emitted - seg_start < ROI_GROW_SEGMENT:
+            if restart_at - seg_start < ROI_GROW_SEGMENT:
                 self._crop_growth *= ROI_GROW_FACTOR  # crop too tight for the motion
             specs, col_idx = new_specs, new_cols
-            seg_start = last_emitted
+            seg_start = restart_at
             first_seg = False
 
         if self._autopause_hit is not None:
@@ -930,15 +936,21 @@ class TrackingWorker(QThread):
         nw, nh = self._frame_wh
         if not self.roi or max(nw, nh) / 512.0 <= 1.5:
             return None
+        # (I335) a restart from an earlier frame covers where the points have been from there to the last
+        # frame emitted, not only its seeds: they go on moving while the window is tracked again
+        reach, self._crop_reach = self._crop_reach, None
+        frames, seen = (reach if reach is not None and seg_start == reach[0][0] else ([seg_start], {}))
         pts = []
         for sp in specs:
             r = sp.radius if sp.kind == "group" else 0.0
-            pts += [(sp.seed[0] - r, sp.seed[1] - r), (sp.seed[0] + r, sp.seed[1] + r)]
+            for p in [sp.seed] + list(seen.get(sp.pid, ())):
+                pts += [(p[0] - r, p[1] - r), (p[0] + r, p[1] + r)]
         for st in self._segs:              # every segment's mask at the segment start (G149)
-            summ = st.summ.get(seg_start) if seg_start is not None else None
-            if summ is not None and summ["area"] > 0:
-                x0, y0, x1, y1 = summ["bbox"]
-                pts += [(x0, y0), (x1, y1)]
+            for f in (frames if seg_start is not None else ()):
+                summ = st.summ.get(f)
+                if summ is not None and summ["area"] > 0:
+                    x0, y0, x1, y1 = summ["bbox"]
+                    pts += [(x0, y0), (x1, y1)]
         if not pts:
             return None
         pts = np.asarray(pts, np.float64)
@@ -997,11 +1009,55 @@ class TrackingWorker(QThread):
             return (tracks[0].cpu().numpy(), vis[0].cpu().numpy(),
                     conf_f[0].cpu().numpy().astype(np.float32))
 
+    def _plan_restart(self, w0: int, out_tr: np.ndarray, out_vi: np.ndarray, out_cf: np.ndarray,
+                      specs: list[PointSpec], col_idx: list[int], seg_start: int, result: dict) -> None:
+        """(I335) Where an ROI restart starts, and from which seeds. A restart asks the model again for every
+        point on its first frame, from the picture there: a point HIDDEN on that frame is learned from whatever
+        covers it and followed from then on at full confidence. So the restart starts on the latest row of this
+        window after the segment's own start (every restart moves forward) on which every point that is in the
+        picture on the last row is usable: in the picture, visible and confident. The last row qualifying =
+        the restart as it always was, bit for bit; an earlier row = the frames from there are read and tracked
+        again (the session keeps the last write). With no such row it starts on the last row, but a point
+        hidden there is not asked again: Auto-pause on -> the run stops on it (reason "hidden"), or a point with
+        a click ahead is cut there and picked up at its click (I316); Auto-pause off -> blank from there and
+        named at the run's end (`hidden_at_restart`).
+        Sets result["restart"] with "seeds" and "restart_at", or `_autopause_hit`."""
+        nw, nh = self._frame_wh
+        L = out_tr.shape[0]
+        cols = [col_idx[a] for a in range(len(specs))]
+        inside = np.array([[bool(in_frame(out_tr[i, k], nw, nh)) for k in cols] for i in range(L)], bool)
+        usable = inside & out_vi[:, cols] & (out_cf[:, cols] >= CONF_PAUSE_THRESHOLD)
+        need = inside[-1]
+        row = next((i for i in range(L - 1, -1, -1) if w0 + i > seg_start and usable[i][need].all()), None)
+        hidden = []
+        if row is None:
+            row = L - 1
+            hidden = [a for a in range(len(specs)) if need[a] and not usable[row, a]]
+        f = w0 + row
+        seeds = [out_tr[row, k].copy() if inside[row, a] else None for a, k in enumerate(cols)]
+        for a in hidden:
+            pid = specs[a].pid
+            seeds[a] = None
+            if not self.autopause:
+                self.hidden_at_restart.append((pid, f))
+            elif pid in self.resume_pids:
+                self.resume_cuts.setdefault(pid, f)
+            else:
+                if self._autopause_hit is None:
+                    self._autopause_hit = (f, pid)
+                    self._autopause_reason = "hidden"
+                return
+        # the next crop covers the rows from the restart to the last one emitted (`_compute_crop`)
+        self._crop_reach = (list(range(f, w0 + L)),
+                            {specs[a].pid: [out_tr[i, k] for i in range(row, L) if inside[i, a]]
+                             for a, k in enumerate(cols) if seeds[a] is not None})
+        result.update(restart=True, seeds=seeds, restart_at=f)
+
     def _segment_steps(self, src: VideoSource, model, device: str, seg_start: int,
                        specs: list[PointSpec], col_idx: list[int], first_seg: bool,
                        last_emitted: int):
         """(A generator: yields after every frame, I141.) One online-model segment (fixed queries, fixed crop). Returns
-        (reason, last_emitted, restart_seeds) with reason in
+        (reason, last_emitted, restart_seeds, restart_at: the frame the next segment starts on, I335) with reason in
         {"eof", "pause", "autopause", "restart"}. Emitted arrays keep the
         run's original column count; specs[a] fills column col_idx[a]."""
         use_at = self.point_backend == "alltracker"
@@ -1179,12 +1235,9 @@ class TrackingWorker(QThread):
                               | ((pts[:, 1] < cy0 + my) & (cy0 > 0))
                               | ((pts[:, 1] > cy0 + ch - my) & (cy0 + ch < nh))))
                 if near.any():
-                    result["restart"] = True
-                    restart_seeds = []
-                    for a in range(len(specs)):
-                        p = out_tr[-1, col_idx[a]]
-                        good = bool(in_frame(p, nw, nh))
-                        restart_seeds.append(p.copy() if good else None)
+                    self._plan_restart(w0, out_tr, out_vi, out_cf, specs, col_idx, seg_start, result)
+                    if result["restart"]:
+                        restart_seeds = result.pop("seeds")
 
         # decode runs a couple of frames ahead on its own thread, overlapping
         # with the segment + model steps below. Same frames in the same order
@@ -1202,7 +1255,8 @@ class TrackingWorker(QThread):
                         read_end = seg_start + n
                     break
                 abs_idx, native = nxt
-                self._read_at = abs_idx
+                # (I335) a restart from an earlier row reads frames again: the run has read up to here already
+                self._read_at = max(self._read_at, abs_idx)
                 self._side_steps(abs_idx, native)
                 model_frame = model_input_of(native)
                 window.append(model_frame)
@@ -1210,7 +1264,8 @@ class TrackingWorker(QThread):
                     gray_hist.append((abs_idx, cv2.cvtColor(native, cv2.COLOR_RGB2GRAY)))
                     if abs_idx == self.start_frame and first_seg and anchor_q:
                         self._capture_templates(gray_hist[-1][1], specs)
-                if self.emit_frames:
+                if self.emit_frames and abs_idx >= last_emitted:
+                    # (I335) frames before the last one shown are not sent again: the canvas never steps back
                     pending.append((abs_idx, display_of(native, model_frame)))
                 n += 1
                 if use_at:
@@ -1291,7 +1346,7 @@ class TrackingWorker(QThread):
             reason = "pause"
         else:
             reason = "eof"
-        return reason, result["last"], restart_seeds
+        return reason, result["last"], restart_seeds, result.get("restart_at")
 
     @staticmethod
     def _at_rows(out) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
