@@ -769,6 +769,9 @@ class TrackingWorker(QThread):
                     # need their own copy (same weights, so the same numbers; I141)
                     import copy
                     model = copy.deepcopy(model)
+        if self._pause:
+            self._end_before_start()      # (I339) X during the model load: nothing read, nothing emitted
+            return
 
         probe = src.get_frame(self.start_frame)
         if probe is None:
@@ -799,6 +802,9 @@ class TrackingWorker(QThread):
             # video's start, the ones after it -- up to the VIDEO's end, not the run's (I194;
             # read here, before the read loops seek back to the start frame)
             self._spot_run.prefill(src.get_frame)
+        if self._pause:
+            self._end_before_start()      # (I339) X during SAM's load / the set-up
+            return
         if not self.specs:
             # animal / balls / spots only: no point tracker — segment every frame, derive landmarks
             self.started_ok.emit()
@@ -887,6 +893,12 @@ class TrackingWorker(QThread):
         else:
             self._raise_read_failure()
         self.finished_ok.emit(last_emitted, self._pause or self._autopause_hit is not None)
+
+    def _end_before_start(self) -> None:
+        """(I339) Paused before the run started (the window has already ended it): finish as a pause before any
+        frame -- no `started_ok`, no frame read, nothing emitted. The models just loaded stay in their
+        process-wide caches, so the next Track starts warm."""
+        self.finished_ok.emit(self.start_frame - 1, True)
 
     def _can_still_give_data(self, frame: int) -> bool:
         """Can anything in this run still give data after `frame`, with no point

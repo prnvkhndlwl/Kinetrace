@@ -33,7 +33,7 @@ MAP = [
                           "verify_silhouette_loops", "verify_loop_track"]),
     # (I335-I339) ROI restarts with a hidden point / a turned region, lost-point blanking, the re-anchor, the
     # first pause (a run's start and end in the window, the region's pose on a resumed Track)
-    ([K + f for f in ("tracker.py", "app.py", "session.py")], ["verify_tracker_restarts"]),
+    ([K + f for f in ("tracker.py", "app.py", "session.py", "alltracker_backend.py")], ["verify_tracker_restarts"]),
     # (R37, R39) pixel-centre arithmetic: every user's suites
     ([K + "pixels.py"], ["verify_tracker", "verify_review_tracking", "verify_4k", "verify_roi", "verify_balls",
                          "verify_segmenter", "verify_animal", "verify_animal_gui", "verify_segments_sam",

@@ -563,6 +563,23 @@ class _ChoiceMenu(QMenu):
         super().keyPressEvent(ev)
 
 
+def _cut(sender, receiver, pairs) -> None:
+    """(I339) Disconnect `sender`'s signals from `receiver`'s slots, each pair "signal:slot"; one that is not
+    connected (or a signal this sender lacks) is skipped, quietly: PySide6 warns where it cannot disconnect."""
+    import warnings
+    for pair in pairs:
+        sig, slot = pair.split(":")
+        s = getattr(sender, sig, None)
+        if s is None:
+            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            try:
+                s.disconnect(getattr(receiver, slot))
+            except (RuntimeError, TypeError):
+                pass
+
+
 class _SideRun(QObject):
     """One camera of a simultaneous every-camera run (I141). It records how the
     camera's run ended; for a camera other than the working one (`write`) it also
@@ -570,6 +587,11 @@ class _SideRun(QObject):
     and keeps its frames for its tile -- the working camera keeps the full live
     pipeline. A QObject in the GUI thread, so the worker's signals (emitted on the
     tracking thread) arrive here queued, in order."""
+
+    # (I339) what `__init__` connects, for `_cut` when the run ends before it started
+    SLOTS = ("autopaused:on_autopaused", "finished_ok:on_finished", "error:on_error", "chunk_ready:on_chunk",
+             "masks_ready:on_masks", "balls_ready:on_balls", "session_chunk:on_session_chunk",
+             "session_state:on_session_state")
 
     def __init__(self, win, view: int, worker, start: int, write: bool):
         super().__init__(win)
@@ -836,6 +858,7 @@ class MainWindow(QMainWindow):
         self._hotkeys_dlg = None
         self._else_cache = None
         self._budget_key = None              # (I306) who decoded at the last frame-budget split
+        self._run_started = True             # (I339) False while a run's worker still loads its models
         self._point_list_project = None
         self._hidden_warned = None
         self._user_paused = False
@@ -9791,6 +9814,34 @@ class MainWindow(QMainWindow):
             self.btn_track.setText("Pausing…")
             self.btn_track.setEnabled(False)
             self.worker.request_pause()
+            if not self._run_started:
+                self._end_unstarted_run()
+
+    # (I339) what a run's worker sends this window, as `_launch_run` connects it
+    _RUN_SLOTS = ("balls_ready:_on_ball_radii", "model_loading:_on_model_loading",
+                  "model_progress:_on_model_progress", "started_ok:_on_track_started", "masks_ready:_on_masks",
+                  "chunk_ready:_on_chunk", "autopaused:_on_autopaused", "finished_ok:_on_track_finished",
+                  "error:_on_track_error", "session_chunk:_on_session_chunk",
+                  "session_state:_on_session_state", "session_ready:_on_session_ready")
+
+    def _end_unstarted_run(self) -> None:
+        """(I339) X / Space before the run started: its worker is still loading its models, which cannot be
+        interrupted (1.7-2 s the first time in a session). The run ends in the window NOW, as a pause before
+        any frame. The worker is disconnected first -- it has sent nothing but its loading signals yet, so no
+        row is lost -- and retired without waiting (`_on_track_finished_run`); it finishes its load on its own
+        thread, ends without reading a frame (`TrackingWorker._end_before_start`), and the model stays in the
+        process-wide cache for the next Track. An every-camera run: every camera's worker is let go the same way
+        and each camera ends as paused before any frame (`_multi_parallel_done`, as when they all stop)."""
+        _cut(self._model_worker, self, self._RUN_SLOTS)
+        st = self._multi
+        if st is None:
+            self._on_track_finished(self._run_start - 1, True)
+            return
+        _cut(self.worker, self, ("finished:_multi_parallel_done",))
+        for _v, run in st.get("runs", []):
+            _cut(run.worker, run, _SideRun.SLOTS)
+            run.last, run.paused = run.start - 1, True
+        self._multi_parallel_done()
 
     def _start_tracking(self, stop_after: int | None = None, only_pids=None, quiet: bool = False,
                         build_only: bool = False, segment: bool | None = None, step: bool = False,
@@ -10628,6 +10679,7 @@ class MainWindow(QMainWindow):
         self._run_start = int(getattr(w, "start_frame", self.current))  # (PR B) a lone joiner's run starts at its click
         self._fps_ema = 0.0
         self._last_emit_t = 0.0
+        self._run_started = False               # (I339) until the worker says it has its models and reads
         self.state = TRACKING
         self._apply_state()
         self._track_label.setText("starting…")
@@ -10712,6 +10764,10 @@ class MainWindow(QMainWindow):
             self.session.write_ball_radii(rows)
 
     def _on_track_started(self):
+        snd = self.sender()
+        if snd is not None and snd is not self._model_worker:
+            return                  # (I339) a run already ended in the window (X during its load)
+        self._run_started = True
         _quiet_close(self._model_dialog)
         self._model_dialog = None
         self.statusBar().showMessage(f"Tracking from frame {self.current}… press X or the "
@@ -11111,7 +11167,8 @@ class MainWindow(QMainWindow):
             self._fresh_erase({view: last}, user_stop)
 
     def _on_track_finished_run(self, last: int, was_paused: bool):
-        self.worker.wait(2000)
+        if self._run_started:           # (I339) a worker still loading its models is retired as it is
+            self.worker.wait(2000)
         reason = getattr(self.worker, "_autopause_reason", "")
         ball_ended = dict(getattr(self.worker, "_ball_ended", {}) or {})
         spot_ended = dict(getattr(self.worker, "_spot_ended", {}) or {})

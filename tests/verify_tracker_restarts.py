@@ -16,6 +16,7 @@ sweep's PR 2: dev/work/2026-10-27-tracker-restarts). GPU for [1]-[3], [6], [7]; 
       level, and still snaps a track that is more than ~1 px off.
   [6] I339, its own fresh process (no model loaded yet): T, then X as soon as the run starts: the window is
       back to READY in < 1 s with nothing written; the next T tracks normally.
+  [6b] I339, the same with Track > Every camera on two 4K cameras (its own fresh process; 1.53 s before).
   [7] I336: after a run over the turning bar, Track pressed again (QTest T) on the turned bar samples the
       region's members on the bar (today on the drawn, unturned rectangle: 4 of 17 on the bar).
 Every check FAILS on 393f21e.
@@ -35,10 +36,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(1, HERE)
-COLD = "--cold" in sys.argv
+COLD = next((a for a in sys.argv[1:] if a in ("--cold", "--cold-every")), None)   # [6] / [6b], own process
 OUT = os.path.join(HERE, "out", "tracker_restarts")
 MEDIA = os.path.join(OUT, "media")              # the synthetic clips, kept between runs (deterministic)
-RUN = os.path.join(OUT, "cold" if COLD else "run")
+RUN = os.path.join(OUT, COLD.lstrip("-") if COLD else "run")
 shutil.rmtree(RUN, ignore_errors=True)
 os.makedirs(RUN, exist_ok=True)
 os.makedirs(MEDIA, exist_ok=True)
@@ -496,6 +497,44 @@ def section6():
     close(win)
 
 
+def section6b():
+    print("[6b] I339: the same with Track > Every camera, two 4K cameras (its own process)")
+    second = os.path.join(MEDIA, "second4k.mp4")
+    if not os.path.exists(second):
+        import importlib
+        from pathlib import Path
+        importlib.import_module("make_test_video").generate(Path(second), 60, 3840, 2160, 3, 8, 30.0)
+    gt = np.load(V4K + ".gt.npz")["gt"]
+    gt2 = np.load(second + ".gt.npz")["gt"]
+    win = new_window(V4K)
+    win._on_add(float(gt[0, 0, 0]), float(gt[0, 0, 1]))
+    win._add_view(second)
+    wait(lambda: not win._loading, 60)
+    win._refresh_companions()
+    pump(0.5)
+    win._set_active_view(1)
+    win._on_add(float(gt2[0, 0, 0]), float(gt2[0, 0, 1]))
+    win._set_active_view(0)
+    win._refresh_point_list()
+    win.act_select_all.trigger()
+    win._goto(0, force=True)
+    pump(0.3)
+    win.activateWindow()
+    QTest.keyClick(win, Qt.Key_T, Qt.ShiftModifier)
+    started = wait(lambda: win.state == TRACKING, 60)
+    every = win._multi is not None and len(win._multi.get("runs", [])) == 2
+    t0 = time.time()
+    QTest.keyClick(win.canvas.viewport(), Qt.Key_X)
+    done = wait(lambda: win.state == READY and win.worker is None and win._multi is None, 30)
+    dt = time.time() - t0
+    p = win.project
+    n = [int(p.sessions[v].tracked[1:].sum()) for v in range(p.n_views)]
+    check(f"(setup) an every-camera run started in both cameras ({started}, {every})", started and every)
+    check(f"[6b] X during the model load: back to READY in {dt:.2f} s (< 1 s)", started and done and dt < 1.0)
+    check(f"[6b] nothing was written in either camera (frames after the click: {n})", n == [0, 0])
+    close(win)
+
+
 # ===================================================================== [7] a resumed Track on the turned bar
 def section7():
     print("[7] I336: Track pressed again on the turned bar uses its current turn")
@@ -546,22 +585,24 @@ def finish(name):
 
 
 if COLD:
+    fn = section6 if COLD == "--cold" else section6b
     try:
-        section6()
+        fn()
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
-        check("(section6 ran to its end)", False, repr(e))
-    finish("verify_tracker_restarts [6]")
+        check(f"({fn.__name__} ran to its end)", False, repr(e))
+    finish(f"verify_tracker_restarts [{fn.__name__[7:]}]")
 
 ONLY = {int(x) for x in os.environ.get("TRACKER_RESTARTS_ONLY", "").split(",") if x.strip()}
 if not ONLY or 6 in ONLY:
-    # first, before this process loads any model: [6] needs a cold start
-    p = subprocess.run([sys.executable, os.path.abspath(__file__), "--cold"], capture_output=True, text=True,
-                       errors="replace", timeout=1800)
-    print(p.stdout.rstrip(), flush=True)
-    if p.returncode != 0 and p.stderr.strip():
-        print(p.stderr.strip()[-2000:], flush=True)
-    check("[6] the cold-start checks (own process) passed", p.returncode == 0, f"exit {p.returncode}")
+    # first, before this process loads any model: [6] / [6b] need a cold start, each in a fresh process
+    for flag, tag in (("--cold", "[6]"), ("--cold-every", "[6b]")):
+        p = subprocess.run([sys.executable, os.path.abspath(__file__), flag], capture_output=True, text=True,
+                           errors="replace", timeout=1800)
+        print(p.stdout.rstrip(), flush=True)
+        if p.returncode != 0 and p.stderr.strip():
+            print(p.stderr.strip()[-2000:], flush=True)
+        check(f"{tag} the cold-start checks (own process) passed", p.returncode == 0, f"exit {p.returncode}")
 for k, fn in ((1, section1), (2, section2), (3, section3), (4, section4), (5, section5), (7, section7)):
     if ONLY and k not in ONLY:
         continue
