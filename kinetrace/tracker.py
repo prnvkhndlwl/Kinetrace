@@ -100,6 +100,7 @@ POINT_BACKENDS = ("cotracker3", "alltracker")
 # length is the separator, so keep >= 2x the occlusion worst case.
 CONF_PAUSE_THRESHOLD = 0.25
 CONF_PAUSE_RUN = 16
+EMITTED_KEEP = 64     # (I337) frames of emitted rows kept, to blank a lost dip back to its first frame
 
 # region groups
 GROUP_MIN_FIT_RADIUS = 6.0   # below this the members are too close for a fit
@@ -616,6 +617,11 @@ class TrackingWorker(QThread):
         self._autopause_hit: tuple[int, int] | None = None
         self._autopause_reason = ""          # "exit" | "lowconf" | "lost" | "switched" | "spot": what the app says
         self._exit_hit: tuple[int, int] | None = None   # (frame, pid) of the first landmark to leave the segment
+        # (I337) the rows last emitted, by frame (EMITTED_KEEP frames: every column + the group members), and the
+        # columns a window has just declared lost {column: first frame of the dip}: rows before the window are
+        # sent again blank (`_with_blank_back`)
+        self._emitted: dict[int, tuple] = {}
+        self._blank_back: dict[int, int] = {}
         # animal layer state (per run)
         self._seg = None
         self._sxy = None               # (sx, sy) native / working, set by the first segmented frame (I61)
@@ -1959,12 +1965,52 @@ class TrackingWorker(QThread):
             autopause_check()
         self._check_animal_lost(w0, L)
         self._emit_masks(w0, L)
+        w0, out_tr, out_vi, out_cf, members = self._with_blank_back(w0, out_tr, out_vi, out_cf, members)
+        L = out_tr.shape[0]
         for q, rows in (self.keep_rows or {}).items():     # (D2) a session's head columns, for the run's landmarks
             c = self.point_ids.index(q)
             for i in range(L):
                 rows[w0 + i] = out_tr[i, c].copy() if np.isfinite(out_tr[i, c]).all() else None
+        for i in range(L):                                 # (I337) what the session now holds, by frame
+            self._emitted[w0 + i] = (out_tr[i].copy(), out_vi[i].copy(), out_cf[i].copy(),
+                                     {k: m[i].copy() for k, m in members.items()})
+        _drop_before(self._emitted, w0 + L - EMITTED_KEEP)
         self.emitted_to = max(self.emitted_to, w0 + L - 1)
         self.chunk_ready.emit(w0, out_tr, out_vi, out_cf, members, list(pending))
+
+    def _with_blank_back(self, w0: int, out_tr: np.ndarray, out_vi: np.ndarray, out_cf: np.ndarray,
+                         members: dict) -> tuple:
+        """(I337) A point this window declared lost is blank from the first frame of its dip, wherever the dip
+        falls in the 8-frame windows: the dip's rows before `w0` were written by earlier windows, so they are
+        sent again in front of this window's rows -- exactly as last sent (`_emitted`), the lost columns blank.
+        The session keeps the last write of each frame, so nothing else changes. Without a declaration this
+        window: the chunk as it is."""
+        back, self._blank_back = self._blank_back, {}
+        start = w0
+        while back and start - 1 >= min(back.values()) and start - 1 in self._emitted:
+            start -= 1
+        if start == w0:
+            return w0, out_tr, out_vi, out_cf, members
+        rows = [self._emitted[f] for f in range(start, w0)]
+        n = w0 - start
+        p_tr = np.stack([r[0] for r in rows])
+        p_vi = np.stack([r[1] for r in rows])
+        p_cf = np.stack([r[2] for r in rows])
+        for k, first in back.items():
+            sl = slice(max(first, start) - start, n)
+            p_tr[sl, k] = np.nan
+            p_vi[sl, k] = False
+            p_cf[sl, k] = 0.0
+        joined = {}
+        for k, m in members.items():                   # a display overlay: a row of another shape = no members
+            pre = np.full((n,) + m.shape[1:], np.nan, m.dtype)
+            for i, r in enumerate(rows):
+                mm = r[3].get(k)
+                if mm is not None and mm.shape == m.shape[1:]:
+                    pre[i] = mm
+            joined[k] = np.concatenate([pre, m])
+        return (start, np.concatenate([p_tr, out_tr]), np.concatenate([p_vi, out_vi]),
+                np.concatenate([p_cf, out_cf]), joined)
 
     # ---------------------------------------------------- the two read loops share these
 
@@ -2209,8 +2255,12 @@ class TrackingWorker(QThread):
           auto-pause off, because it is about what the data MEANS, not about
           interrupting the user.
 
-        The first CONF_PAUSE_RUN frames of a dip are kept: while it could still
-        be an occlusion, the coordinates are the best estimate available.
+        While a dip is undecided (shorter than CONF_PAUSE_RUN frames) its rows are
+        emitted as they are: it could still be an occlusion, and the coordinates are
+        the best estimate available. Once the point is declared lost, the WHOLE dip is
+        blanked back to its first frame, whatever its place in the 8-frame windows:
+        the rows earlier windows wrote are sent again blank (`_with_blank_back`, I337;
+        it used to depend on the window phase, 9-16 of the first 16 frames).
         Overlap rows are rewritten by each window, so each frame is counted once.
 
         A lost point counts as recovered only after CONF_PAUSE_RUN consecutive
@@ -2283,11 +2333,14 @@ class TrackingWorker(QThread):
                         if (self._gone_run[sp.pid] >= CONF_PAUSE_RUN
                                 and sp.pid not in self._lost):
                             self._lost.add(sp.pid)
-                            # blank back to the start of the run, as far as this
-                            # window still reaches (the session overwrites
-                            # overlap rows, so for those it is not too late)
+                            # blank back to the start of the run: this window's rows
+                            # here; the rows earlier windows wrote are sent again
+                            # blank by `_finish_chunk` (I337: the whole dip, whatever
+                            # its place in the windows)
                             start = max(self._gone_start[sp.pid], w0)
                             blank(slice(start - w0, i + 1), k)
+                            if self._gone_start[sp.pid] < w0:
+                                self._blank_back[k] = min(self._blank_back.get(k, w0), self._gone_start[sp.pid])
                     else:
                         self._gone_run[sp.pid] = 0
                         if sp.pid in self._lost:

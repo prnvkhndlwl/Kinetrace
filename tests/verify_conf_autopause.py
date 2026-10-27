@@ -66,8 +66,9 @@ def blank_sim(gone_frames, T=264):   # 264: the last window ends on the last fra
 
 
 # gone 100..140 then back; an 8-frame dip at 60..67 is occlusion-length and never blanked.
-# The loss is declared at 115; frames 100..103 were emitted a window earlier, too late to
-# blank (the kept head of a dip), everything from 104 on must stay blank -- including the
+# The loss is declared at 115; frames 100..103 were emitted a window earlier: `_finish_chunk`
+# sends them again blank (I337; this drives `_check_autopause` alone, so it is checked in
+# verify_tracker_restarts [4]); everything from 104 on must stay blank -- including the
 # frames just before the recovery, which the next window re-emits (they came back once)
 s1 = blank_sim(set(range(60, 68)) | set(range(100, 141)))
 assert np.isfinite(s1[:100, 0]).all(), "a short dip must not be blanked"
