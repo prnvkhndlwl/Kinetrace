@@ -443,9 +443,11 @@ def pairs_and_extras(scan: RigScan) -> tuple[np.ndarray, float, np.ndarray, np.n
     """What the wand solver takes, from a rig scan (R2, R4):
     (wand_uv (F, C, 2, 2), wand length in metres, bg_uv (B, C, 2), frame_ids (F,) reference frames,
     bg_frames (B,) the reference frame of each extra point). A frame counts when at least two
-    cameras saw the board and the cameras that saw it share at least R2's 6 ids; its wand is the
-    first long-edge pair (R4) seen by two or more cameras; every other corner seen by two or more
-    cameras is an extra point. RAW (lens-uncorrected) pixels, NaN where unseen."""
+    cameras saw the board (R1: >= 4 corners each) and some PAIR of them shares at least R2's 6 ids
+    (I355: it used to need 6 ids shared by EVERY such camera, so one camera grazing the board vetoed a
+    frame two others saw whole); only the cameras that share 6 ids with another one take part in that
+    frame. Its wand is the first long-edge pair (R4) seen by two or more of them; every other corner
+    seen by two or more of them is an extra point. RAW (lens-uncorrected) pixels, NaN where unseen."""
     spec = scan.spec
     pairs = long_edge_pairs(spec)
     C = len(scan.sizes)
@@ -455,9 +457,15 @@ def pairs_and_extras(scan: RigScan) -> tuple[np.ndarray, float, np.ndarray, np.n
         cams = np.nonzero(seen.sum(axis=1) >= MIN_CORNERS_SEEN)[0]
         if len(cams) < 2:
             continue
-        shared = seen[cams].all(axis=0)
-        if int(shared.sum()) < MIN_SHARED_IDS:
+        # (I355) R2 per pair: the cameras linked to another by >= 6 shared ids; nobody else takes part
+        common = (seen[cams][:, None, :] & seen[cams][None, :, :]).sum(axis=2)            # (k, k) shared ids
+        np.fill_diagonal(common, 0)
+        linked = cams[(common >= MIN_SHARED_IDS).any(axis=1)]
+        if len(linked) < 2:
             continue
+        keep = np.zeros(C, bool)
+        keep[linked] = True
+        seen = seen & keep[:, None]
         pick = None
         for a, b in pairs:
             both = seen[:, a] & seen[:, b]
