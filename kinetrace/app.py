@@ -12659,11 +12659,15 @@ class MainWindow(QMainWindow):
     def _open_project_impl(self, path: str, recovered: dict | None, pname: str, discard: bool = False):
         """Open a project in five steps (R9): read it, decide about unsaved work, work out where its
         files are, find and read every camera's video, adopt it once the working camera is open."""
-        self._leave_project(discard)
+        # (I329) Discard drops the open project's unsaved work only once the new one is really opening
+        # (`_attach_with_card`): a project that cannot be read, or a video not located, keeps it in recovery
+        discard_pid = self._project_id if discard and self.project is not None else None
+        if not discard:
+            self._leave_project()
         got = self._read_project(path, pname)
         if got is None:
             return
-        plan = self._decide_unsaved_work(path, recovered, pname, *got)
+        plan = self._decide_unsaved_work(path, recovered, pname, *got, discard_pid=discard_pid)
         self._set_project_home(path, recovered, plan)
         proj = plan.proj
         located = self._locate_project_videos(proj)
@@ -12687,7 +12691,8 @@ class MainWindow(QMainWindow):
             self._first_frame_arrived()
         tok = self._busy_push(f"Opening {pname}", f"{n} camera{'s' if n != 1 else ''} read; building the "
                               "project…")
-        self._attach_with_card(ainfo, lambda info: self._adopt_opened_project(info, plan, located, infos), tok)
+        self._attach_with_card(ainfo, lambda info: self._adopt_opened_project(info, plan, located, infos), tok,
+                               discard=discard)
 
     def _read_project(self, path: str, pname: str):
         """Step 1 of opening a project: read it off the GUI thread (the card's spinner keeps turning,
@@ -12703,12 +12708,13 @@ class MainWindow(QMainWindow):
         return None
 
     def _decide_unsaved_work(self, path: str, recovered: dict | None, pname: str, proj: Project, state: dict,
-                             meta: dict) -> _OpenPlan:
+                             meta: dict, discard_pid: str | None = None) -> _OpenPlan:
         """Step 2: what the project opens as -- the file as it was saved, a recovery copy the user
         chose (`recovered`), or this file's unsaved changes / another copy's, after asking. Returns
         the plan: the project to adopt (re-read from the recovery copy when it was chosen), its id and
         the save it came from, where Save goes, whether it is unsaved, and a recovery to set aside
-        once its copy is open (I209)."""
+        once its copy is open (I209). `discard_pid`: the open project's work the user chose to
+        Discard (I329), still in recovery until the open commits -- never offered back."""
         pid = str(meta.get("project_id") or projectfile.new_id())
         saved_at = meta.get("saved_at")
         file_path: Path | None = Path(path)
@@ -12728,7 +12734,7 @@ class MainWindow(QMainWindow):
                     file_path, saved_at = None, None
             unsaved = True
         else:
-            found = recovery.find(pid)
+            found = recovery.find(pid) if pid != discard_pid else None
             if found is not None and not found.get("damaged"):
                 # (I168) a recovery made by a session that had a camera left out holds fewer cameras
                 # than this file: it is not "this project's unsaved changes" (Yes by default)
