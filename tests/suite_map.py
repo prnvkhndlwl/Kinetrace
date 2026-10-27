@@ -15,7 +15,7 @@ GUI = ["verify_gui", "verify_oob", "verify_keys_follow", "verify_timeline_events
        "verify_sweep_fixes", "verify_review_app1", "verify_review_app2", "verify_review_app3", "verify_review_leftovers",
        "verify_review_ui", "verify_camera_views", "verify_tour"]
 SAVE = ["verify_projectfile", "verify_recovery", "verify_loading", "verify_open_replace", "verify_review_persist",
-        "verify_save_during_run"]
+        "verify_save_during_run", "verify_save_safety"]
 INSTALL = ["verify_portable", "verify_install_paths", "verify_update", "verify_downloads", "verify_crashlog",
            "verify_welcome", "verify_winapp", "verify_review_infra"]
 FALLBACK = ["verify_core", "verify_stress", "verify_sweep_fixes"]
@@ -89,6 +89,8 @@ MAP = [
     ([K + "recent.py", K + "app.py", K + "canvas.py"], ["verify_recent"]),
     ([K + "cameraoverview.py"], ["verify_camera_overview", "verify_camera_views"]),
     ([K + f for f in ("projectfile.py", "recovery.py", "csvpool.py", "autoexport.py")], SAVE),
+    # (I326-I334) the open / autosave / end-of-run / close paths, the app's own cuts, the shortcut's icon
+    ([K + f for f in ("app.py", "session.py", "winapp.py", "macapp.py")], ["verify_save_safety"]),
     ([K + "paths.py"], SAVE),            # (R43) every save / autosave replaces through paths.replace_retry
     # video
     ([K + "video_source.py", K + "framecheck.py", K + "fingerprint.py"],
