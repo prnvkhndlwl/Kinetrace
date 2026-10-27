@@ -368,7 +368,8 @@ def _i349():
         if (removed[0] & {40, 41} or removed[1] & {40, 41}) and not (removed[2] & {40, 41}):
             good_blamed += 1
     check(good_blamed == 0, "an ambiguous cell never blames a good camera alone", f"{good_blamed} of 40")
-    check(bad_kept == 0, "the +50 px frames are never kept", f"{bad_kept} of 40")
+    check(bad_kept == 0, "the +50 px frames are dropped (with every camera of an ambiguous cell)",
+          f"kept in {bad_kept} of 40")
     from kinetrace import retrack
     check(getattr(calib, "BLAME_MARGIN", None) == 1.5 and "BLAME_MARGIN" in inspect.getsource(retrack._blame),
           "one 'clearly the culprit' margin shared with Re-track")

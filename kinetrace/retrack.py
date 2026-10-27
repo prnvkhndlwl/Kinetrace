@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from kinetrace.calib import epipolar_polyline, intersect_polylines
+from kinetrace.calib import BLAME_MARGIN, epipolar_polyline, intersect_polylines
 
 MIN_RUN = 3             # frames: shorter runs are noise, not a slide
 GAP_JOIN = 2            # runs separated by <= this many clean frames are one stretch
@@ -237,7 +237,7 @@ def _blame(project, stretches: list[Stretch], threshold_px) -> list[Stretch]:
         # (it used to accept whichever of "half the full residual" and "half the band" was LARGER,
         # so the others could still disagree beyond the band and be called "agreeing")
         agree = vrest[bv] <= thr[bv] and (not np.isfinite(vfull[bv]) or vrest[bv] <= 0.5 * vfull[bv])
-        clear = len(order) == 1 or vrest[order[1]] > 1.5 * vrest[bv]
+        clear = len(order) == 1 or vrest[order[1]] > BLAME_MARGIN * vrest[bv]           # (I349) one margin
         for st in g:
             if st.view == bv and agree and clear:
                 continue

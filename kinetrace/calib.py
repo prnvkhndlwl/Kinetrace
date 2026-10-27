@@ -2073,6 +2073,8 @@ MAX_SCAN_INSTANTS = 6000     # estimate_offsets looks at no more than this many 
 MAX_SCORE_INSTANTS = 500     # ... and scores the search on at most this many MOVING ones (G76)
 ROBUST_CAP_K = 4.0           # estimate_offsets(robust=True): a cell counts at most this x the starting median (I271)
 MIN_OWN_CELLS = 30           # (I302) a camera judged on fewer of its own scored cells reads at most "weak"
+BLAME_MARGIN = 1.5           # (I349) one camera is "the one" when every other leave-one-out residual is above
+                             # this x its own (Re-track's `_blame` and the robust offset search share it)
 
 
 def reference_span(f_lo: int, f_hi: int, rate: float, offset: float) -> tuple[int, int]:
@@ -2292,14 +2294,23 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
         cap[0] = ROBUST_CAP_K * float(np.median(r0)) if len(r0) and np.median(r0) > 0 else float("inf")
 
     def cost(o, mask=None):
-        """The mean residual over the scored cells (only those of `mask`, (T, N), when given: I302)."""
+        """The mean residual over the scored cells (only those of `mask`, (T, N), when given: I302).
+        (I348) At an offset where a scored observation has no data (the search reaches beyond the window
+        `stable_cells` checked: pass 2, Powell, the sharpness probes) the cost is NOT DEFINED (inf): a
+        mean over fewer cells could look lower by losing cells instead of fitting them."""
         if cancelled is not None and cancelled():
             raise _SearchCancelled()
-        r = residuals(o)
-        r = r[np.isfinite(r) if mask is None else (mask & np.isfinite(r))]
+        uv = prep.samples(rates, o, t, use[0])
+        lost = use[0] & ~np.isfinite(uv).all(axis=-1)                         # (T, N, C)
+        if mask is not None:
+            lost &= mask[..., None]
         done[0] += 1
         if progress is not None:
             progress(min(done[0], total - 1), total)
+        if lost.any():
+            return float("inf")
+        _, r, _, _ = prep.triangulate(uv, 2)
+        r = r[np.isfinite(r) if mask is None else (mask & np.isfinite(r))]
         if not len(r):
             return float("inf")
         return float(np.minimum(r, cap[0]).mean()) if np.isfinite(cap[0]) else float(r.mean())
@@ -2373,8 +2384,16 @@ def _drop_bad_observations(prep: "_Prepared", rates, offs, t_all: np.ndarray, ch
         _, rc, _, _ = prep.triangulate(u, 2)
         loo[:, c] = np.where(seen[:, c] & np.isfinite(rc), rc, np.inf)
     for m in range(len(ti)):
-        if seen[m].sum() >= 3 and np.isfinite(loo[m]).any():
-            blame = [int(np.argmin(loo[m]))]
+        order = np.argsort(loo[m], kind="stable")
+        # (I349) one camera is blamed only when it is CLEARLY the one: leaving it out settles the cell and
+        # leaving out any other camera does not (the next residual above half the full one and BLAME_MARGIN x
+        # the smallest, Re-track's margin). When the error lies along the other cameras' epipolar lines every
+        # leave-one-out residual is noise and the argmin picked a good camera by chance -- then every camera
+        # that saw the cell loses it
+        full = float(r[ti[m], ni[m]])
+        if (seen[m].sum() >= 3 and np.isfinite(loo[m, order[0]])
+                and loo[m, order[1]] > BLAME_MARGIN * loo[m, order[0]] and loo[m, order[1]] > 0.5 * full):
+            blame = [int(order[0])]
         else:
             blame = [int(c) for c in np.nonzero(seen[m])[0]]
         for c in blame:
