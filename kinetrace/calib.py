@@ -177,6 +177,13 @@ def dlt_from_camera(K: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray:
     return np.concatenate([P[0], P[1], P[2, :3]])
 
 
+def dlt_column_calibrated(c) -> bool:
+    """(I341) The one rule for a DLTdv `dltcoef` column: DLTdv keeps a column of zeros (or NaN) for a video it
+    has no calibration for, so only 11 finite numbers, not all zero, are a calibrated camera."""
+    c = np.asarray(c, np.float64).ravel()
+    return bool(c.size == 11 and np.isfinite(c).all() and np.any(c != 0))
+
+
 # ------------------------------------------------------------ undistortion
 
 
@@ -811,7 +818,10 @@ class Calibration:
         camera (a header row is tolerated). `sizes` = (width, height) per
         camera when known."""
         raw = np.genfromtxt(str(path), delimiter=",")
-        raw = np.atleast_2d(raw)
+        # (I342) a flat result is ONE camera: a column (one number per line) or a row of 11
+        raw = raw.reshape(-1, 1) if raw.ndim == 1 else raw
+        if raw.shape[0] > 1 and not np.isfinite(raw[0]).any():
+            raw = raw[1:]                    # (I342) the header row, before the orientation is guessed
         if raw.shape[0] != 11 and raw.shape[1] == 11:
             raw = raw.T
         if raw.shape[0] == 12:               # header row became NaN
@@ -876,7 +886,7 @@ class Calibration:
         ud = m.get("udExport")
         if ud is None:
             raise ValueError(f"{Path(path).name}: not a DLTdv project (no udExport)")
-        coefs = np.asarray(ud.data.dltcoef, np.float64)
+        coefs = np.asarray(ud.data.dltcoef, np.float64).reshape(11, -1)    # (I341) one camera squeezes to 1-D
         sizes = np.atleast_2d(np.asarray(ud.data.movsizes)).astype(int)   # rows: (h, w)
         n = coefs.shape[1]
         cams = [CameraCalibration(coefs[:, c].copy(), int(sizes[c, 1]), int(sizes[c, 0]), NoUndistort(),
@@ -921,6 +931,9 @@ class Calibration:
                              "GoPro-style lens. Save the project again from DLTdv8 (its own MATLAB v7.3 "
                              "format is read in full), or import the cameras' lens profiles another way "
                              "before trusting the 3D.")
+        # (I341) a column DLTdv keeps for a video it has no calibration for is a camera that is NOT calibrated,
+        # as the v7.3 reader (`dltdvproject.calibrated`) has it
+        cams = [cam if dlt_column_calibrated(coefs[:, c]) else None for c, cam in enumerate(cams)]
         cal = Calibration(cams, source=Path(path).name)
         cal.notes = notes
         return cal

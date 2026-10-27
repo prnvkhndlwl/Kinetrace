@@ -32,7 +32,8 @@ from pathlib import Path
 
 import numpy as np
 
-from kinetrace.calib import Calibration, CameraCalibration, LWMUndistort, NoUndistort, match_dltdv_lenses
+from kinetrace.calib import (Calibration, CameraCalibration, LWMUndistort, NoUndistort, dlt_column_calibrated,
+                             match_dltdv_lenses)
 from kinetrace.project import half_up
 
 MAX_BYTES = 2 * 1024 ** 3          # the dense block of clicked rows (rows x points x videos x 2 x 8 bytes)
@@ -82,8 +83,7 @@ class DLTdvProject:
         return int(self.clicked(v).sum())
 
     def calibrated(self, v: int) -> bool:
-        c = self.dltcoef[:, v]
-        return bool(np.isfinite(c).all() and np.any(c != 0))
+        return dlt_column_calibrated(self.dltcoef[:, v])          # (I341) the one rule, v7 and v7.3 alike
 
     def calibration(self) -> Calibration:
         """The DLT cameras in DLTdv's own convention (first pixel 1, y down; stated by the file), each with its
@@ -313,8 +313,8 @@ def _read_v7(path) -> DLTdvProject:
     if hasattr(d, "camd") and hasattr(d, "dltcoef"):
         try:     # the lenses (and their sentences) exactly as File > Import > Calibration has read them (I102)
             cal = Calibration.load_dltdv_project(path)
-            if len(cal.cameras) == V:
-                lenses = [cam.undistort for cam in cal.cameras]
+            if len(cal.cameras) == V:      # (I341) a video DLTdv did not calibrate has no camera: no lens
+                lenses = [cam.undistort if cam is not None else NoUndistort() for cam in cal.cameras]
             notes += cal.notes
         except Exception as e:  # noqa: BLE001 - the clicks still import; SAY the lenses did not
             notes.append(f"The project's lens undistortion could not be read ({type(e).__name__}: {e}), so every "
