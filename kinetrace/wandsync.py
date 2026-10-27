@@ -100,6 +100,8 @@ AGREE_FLOOR = 0.1           # ... and never closer than this (frames; steady syn
 FINE_WINDOWS = 6            # a drift or a jump seen in three windows is looked at again in this many
 EVEN_SHARE = 0.33           # window steps of one sign within this share of each other = a drift; one
                             # step under this share of the other = a jump
+JUMP_MIN_FRAMES = 0.5       # (I353) a dropped / repeated frame is a whole-frame step: a smaller step between
+                            # windows is no "jump" (the 3-window check and the fine one alike)
 MIN_CHECK_FRAMES = 30       # wand frames a half / window needs before its estimate counts
 SPEED_SUSPECT_RATIO = 2.0   # fastest-quarter / slowest-quarter wand-length error: sync suspect (speed_check)
 SPEED_OK_RATIO = 1.5        # ... above this "may be slightly off"; clean synthetic rigs read 1.2-1.3
@@ -307,7 +309,7 @@ def _line_or_step(x: np.ndarray, y: np.ndarray):
             best = (rss, k)
     rss_step, k = best
     step = float(y[k:].mean() - y[:k].mean())
-    if rss_step < 0.5 * rss_line and abs(step) >= 0.5:
+    if rss_step < 0.5 * rss_line and abs(step) >= JUMP_MIN_FRAMES:
         return "jump", step, (float(x[k - 1]), float(x[k]))
     if rss_line < 0.5 * rss_step:
         return "drift", float(k1), None
@@ -348,7 +350,7 @@ def _window_check(rv, cal, a: str, b: str, frames, progress=None, cancelled=None
             continue
         if np.sign(d1) == np.sign(d2) and small >= EVEN_SHARE * big:
             shape = ("drift", (o_e - o_s) / max(centres[2] - centres[0], 1.0), None)
-        elif small < EVEN_SHARE * big:
+        elif small < EVEN_SHARE * big and big >= JUMP_MIN_FRAMES:   # (I353) a 0.13-frame step is no dropped frame
             k = 0 if abs(d1) >= abs(d2) else 1
             shape = ("jump", d1 if k == 0 else d2, (centres[k], centres[k + 1]))
         else:
