@@ -381,6 +381,9 @@ class Table:
 class Frozen:
     """Everything a save writes, detached from the live objects."""
     files: dict = field(default_factory=dict)      # zip member -> str (text) or np.ndarray (npy)
+    # (I327) the files a save neither writes nor removes: a landmark whose file was missing on open and that
+    # has no data yet -- if a sync folder brings the file back meanwhile, it stays where it is
+    leave: set = field(default_factory=set)
 
 
 def _point_row(p, file: str) -> list:
@@ -439,7 +442,7 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
         files["lenses.json"] = _json(_clean_json([None if l is None else l.to_json() for l in project.lenses]))
     _freeze_reconstruction(files, project.reconstruction, folders, binary_tracks)
     for i, s in enumerate(project.sessions):
-        _freeze_camera(files, f"cameras/{folders[i]}", s, binary_tracks)
+        _freeze_camera(files, f"cameras/{folders[i]}", s, binary_tracks, fz.leave)
     if not binary_tracks:
         files["README.txt"] = _readme(project.names, folders)
     return fz
@@ -494,7 +497,7 @@ def _freeze_reconstruction(files: dict, r, folders: list[str], binary_tracks: bo
             files[f"reconstruction/points/{f}"] = ("p3", arrays, j, int(r.t0), cams_px)
 
 
-def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
+def _freeze_camera(files: dict, d: str, s, binary_tracks: bool, leave: set | None = None) -> None:
     st = s.ui_state
     sel = int(st.get("selected", -1))
     scope = {}                                  # the run scope (G103), only when the app has recorded one
@@ -524,7 +527,9 @@ def _freeze_camera(files: dict, d: str, s, binary_tracks: bool) -> None:
     else:
         for j, p in enumerate(s.points):        # one readable table per landmark (I145)
             if p.name in s.missing_files and not (arrays["tracked"][:, j].any() or arrays["occluded"][:, j].any()):
-                continue        # (I327) its file was missing on open and it has nothing yet: no empty file in its place
+                if leave is not None:       # (I327) its file was missing on open and it has nothing yet: no empty
+                    leave.add(f"{d}/tracks/{lfiles[j]}")    # file in its place, nor a removal of one brought back
+                continue
             files[f"{d}/tracks/{lfiles[j]}"] = ("lm", arrays, j, bool(p.is_ball))
     files[f"{d}/events.csv"] = ("events", [[e.name, e.start, e.end, _hex(e.color), e.note, e.author]
                                            for e in s.events])
@@ -1269,7 +1274,10 @@ def _write_folder_locked(frozen: Frozen, root: Path, fsync: bool, yield_gil) -> 
     try:
         return _write_folder_steps(frozen, root, index, old_saved, new_saved, fsync, yield_gil)
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)         # whatever happened, nothing is left aside
+        # whatever happened, nothing is left aside -- unless a rollback that failed itself left pending.json:
+        # then .saving/ is what tells the next open which files never went in (I326, review)
+        if not (root / HISTORY_DIR / "pending.json").is_file():
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 @dataclass
@@ -1298,7 +1306,8 @@ def _plan(frozen: Frozen, root: Path, index: dict) -> tuple[dict, list[str], set
         entry = index.get(rel)
         same = rel != META and entry is not None and entry[2] == digest and _unchanged_on_disk(root / rel, entry)
         items[rel] = _Item(content, digest, entry, same)
-    removed = sorted(r for r in _own_files(root, index) if r not in frozen.files)
+    leave = {_key(r) for r in getattr(frozen, "leave", ())}          # (I327)
+    removed = sorted(r for r in _own_files(root, index) if r not in frozen.files and _key(r) not in leave)
     gone = {_key(r) for r in removed}
     case_news = {r for r in frozen.files if _key(r) in gone}
     return items, removed, case_news

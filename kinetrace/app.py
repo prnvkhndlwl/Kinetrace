@@ -11883,6 +11883,12 @@ class MainWindow(QMainWindow):
             self._project_dir = path.resolve()        # videos are found relative to the folder itself
         if self._signature() == sig:          # nothing changed while it was writing
             self.project.dirty = False
+        for x in self.project.sessions:
+            # (I327) a landmark whose file was missing on open and that had data now has its file again: from
+            # here on it is saved (and cleared, and removed) like any other
+            x.missing_files = {n for n in x.missing_files
+                               if (q := x.pid_by_name(n)) is not None
+                               and not (x.tracked[:, q].any() or x.occluded[:, q].any())}
         recovery.discard(self._project_id)
         self._recovery_sig = None
         self._remember_project(path, self._project_id)        # (G205) File → Open Recent

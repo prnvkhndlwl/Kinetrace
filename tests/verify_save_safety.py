@@ -195,11 +195,24 @@ def same_state(a, b):
                                         for k in a)
 
 
+def change(p, kind):
+    """The edit before the save: a case-only rename of a landmark ('landmark'), of the camera folder
+    ('camera'), or landmark a deleted AND snout renamed by case ('delete+rename': two files go aside)."""
+    if kind == "landmark":
+        p.rename_landmark("snout", "Snout")
+    elif kind == "camera":
+        p.names[0] = "Cam1"
+    else:
+        s = p.sessions[0]
+        s.remove_point(s.pid_by_name("a"))
+        p.rename_landmark("snout", "Snout")
+
+
 def faulted_save(p, root, k, mode):
     """pf.save with the k-th file move of its commit failing: mode "raise" = an error (the commit's own
-    rollback runs), "crash" = a power cut (no rollback; .saving/ and .history/pending.json stay behind for
+    rollback runs), "double" = an error whose rollback fails too, "crash" = a power cut (no rollback; .saving/ and .history/pending.json stay behind for
     the next open). -> ("saved" | "failed", moves counted)."""
-    calls = {"n": 0, "in": False, "crashed": False}
+    calls = {"n": 0, "in": False, "crashed": False, "rolling": False, "rb_failed": False}
     real = (pf._commit, pf._move_aside, pf._replace, pf._rollback, shutil.rmtree)
 
     def commit(*a, **kw):
@@ -210,7 +223,10 @@ def faulted_save(p, root, k, mode):
             calls["in"] = False
 
     def hit():
-        if calls["in"]:
+        if mode == "double" and calls["rolling"] and not calls["rb_failed"]:
+            calls["rb_failed"] = True               # the rollback's own first move fails too (an antivirus)
+            raise PermissionError("held open by another program")
+        if calls["in"] and not calls["rolling"]:
             calls["n"] += 1
             if calls["n"] == k:
                 if mode == "crash":
@@ -230,9 +246,14 @@ def faulted_save(p, root, k, mode):
         if calls["crashed"] and Path(path).name == pf.SAVING_DIR:
             return                      # a power cut leaves .saving/ behind
         return real[4](path, *a, **kw)
+    def rollback(*a, **kw):
+        calls["rolling"] = True
+        try:
+            return real[3](*a, **kw)
+        finally:
+            calls["rolling"] = False
     pf._commit, pf._move_aside, pf._replace, shutil.rmtree = commit, move, rep, rmtree
-    if mode == "crash":
-        pf._rollback = lambda root, pending: None
+    pf._rollback = (lambda root, pending: None) if mode == "crash" else rollback
     try:
         pf.save(p, root)
         return "saved", calls["n"]
@@ -244,31 +265,25 @@ def faulted_save(p, root, k, mode):
 
 @section("I326 a case-only rename survives a save that fails at any step (fault injection)")
 def _i326_loop():
-    for kind in ("landmark", "camera"):
-        for mode in ("raise", "crash"):
+    for kind in ("landmark", "camera", "delete+rename"):
+        for mode in ("raise", "crash", "double"):
             n_steps, bad, k = None, [], 1
             while n_steps is None or k <= n_steps:
                 root = os.path.join(OUT, f"fault_{kind}_{mode}_{k}.kinetrace")
                 p = mini()
                 pf.save(p, root)
                 before = state(pf.load(root))
-                if kind == "landmark":
-                    p.rename_landmark("snout", "Snout")
-                else:
-                    p.names[0] = "Cam1"
+                change(p, kind)
                 after = state(p)
                 if n_steps is None:             # how many moves this commit makes (an unfaulted dry count)
                     probe = os.path.join(OUT, f"fault_{kind}_{mode}_count.kinetrace")
                     q = mini()
                     pf.save(q, probe)
-                    if kind == "landmark":
-                        q.rename_landmark("snout", "Snout")
-                    else:
-                        q.names[0] = "Cam1"
+                    change(q, kind)
                     n_steps = faulted_save(q, probe, 10 ** 9, "raise")[1]
                 got, _n = faulted_save(p, root, k, mode)
-                if mode == "crash":
-                    pf.finish_interrupted(root)
+                if mode != "raise":
+                    pf.finish_interrupted(root)         # the next open finishes what was left
                 try:
                     now = state(pf.load(root))
                 except Exception as e:  # noqa: BLE001
@@ -323,12 +338,22 @@ def _i326_gui():
 def _i327():
     path = saved_project("i327", ("snout", "tail"))
     tracks = tracks_dir(path)
+    kept = (tracks / "tail.csv").read_bytes()
     os.remove(tracks / "tail.csv")
     shutil.rmtree(Path(path) / ".cache", ignore_errors=True)
     clear_log()
     open_project(path)
     said = [t for t in LOG["warning"] + LOG["info"] if "tail.csv" in t]
     check(bool(said) and "tail" in said[0], "the notice names the landmark and its missing file", str(LOG))
+    (tracks / "tail.csv").write_bytes(kept)             # a sync folder brings the file back while it is open
+    for k in range(2):
+        w.session.set_position(7, w.session.pid_by_name("snout"), 60.0 + k, 60.0)
+        w.session.dirty = True
+        ctrl_s()
+    check((tracks / "tail.csv").is_file() and (tracks / "tail.csv").read_bytes() == kept,
+          "a tail.csv brought back meanwhile is left exactly as it is by the next two saves (review)",
+          f"{sorted(os.listdir(tracks))}")
+    os.remove(tracks / "tail.csv")
     w.session.dirty = True
     ctrl_s()
     check(not (tracks / "tail.csv").exists(), "Ctrl+S did not create an empty tail.csv",
@@ -342,6 +367,14 @@ def _i327():
     j = next((i for i, x in enumerate(q.points) if x.name == "tail"), None)
     check((tracks / "tail.csv").exists() and j is not None and bool(q.tracked[5, j]),
           "once tail has a position, Ctrl+S writes its file", f"{sorted(os.listdir(tracks))}")
+    w.session.clear_window([pid], 0, w.session.n_frames - 1)       # then the user clears all of tail
+    w.session.dirty = True
+    ctrl_s()
+    q, _, _ = pf.read(path)
+    j = next((i for i, x in enumerate(q.sessions[0].points) if x.name == "tail"), None)
+    check(j is not None and not q.sessions[0].tracked[:, j].any() and not q.sessions[0].read_problems,
+          "... and after clearing it and saving, it reopens empty and is not called missing (review)",
+          f"{q.sessions[0].read_problems}")
 
 
 @section("I328 notes / events outside the video open with a notice naming the rows; Save keeps them")
