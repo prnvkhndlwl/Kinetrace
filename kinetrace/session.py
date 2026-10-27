@@ -553,6 +553,7 @@ class TrackingSession:
                               kind=kind, radius=float(radius),
                               shape=shape if shape in ("circle", "rect", "polygon") else "circle",
                               outline=None if outline is None else [[float(a), float(b)] for a, b in outline])
+        self.region_pose.pop(self.points[pid].name, None)   # (I336) a deleted region's poses are not this one's
         self.set_position(frame, pid, x, y)
         return pid
 
@@ -629,6 +630,7 @@ class TrackingSession:
         template does not bring it back through the skeleton (I234)."""
         k = self.segment_of(pid)
         part = self.part_name(pid) if k is not None else None
+        self.region_pose.pop(self.points[pid].name, None)       # (I336)
         self._keep_columns([i for i in range(self.n_points) if i != pid])
         del self.points[pid]
         sk = self.segments[k].skeleton if k is not None else None
@@ -665,7 +667,12 @@ class TrackingSession:
             if not desired.startswith(a + " "):
                 desired = qualified(a, formula_safe(desired))
         name = self.unique_name(desired, exclude_pid=pid)
+        old = self.points[pid].name
         self.points[pid].name = name
+        poses = self.region_pose.pop(old, None)                 # (I336) a region's poses follow its name
+        self.region_pose.pop(name, None)
+        if poses:
+            self.region_pose[name] = poses
         if k is not None:
             self._rename_part(k, old_part, self.part_name(pid))
         self._touch()

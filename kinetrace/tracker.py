@@ -106,6 +106,19 @@ EMITTED_KEEP = 64     # (I337) frames of emitted rows kept, to blank a lost dip 
 # region groups
 GROUP_MIN_FIT_RADIUS = 6.0   # below this the members are too close for a fit
 GROUP_RANSAC_MIN_INLIERS = 3
+# (I336) a region is laid out again in its fitted pose only once it has really turned or changed size: below
+# both, its outline as it is (the fit's angle / scale are never exactly 0 / 1, and re-sampling an unturned
+# region would change its coordinates for nothing). A 10:1 bar's members start leaving it at ~7 deg.
+REGION_TURN_DEG = 5.0
+REGION_SCALE_TOL = 0.10
+
+
+def region_turned(R) -> bool:
+    """(I336) Has a region with this 2 x 2 rotation-scale (against its outline) turned or resized enough to
+    be sampled again in that pose?"""
+    R = np.asarray(R, np.float64)
+    return (abs(float(np.degrees(np.arctan2(R[1, 0], R[0, 0])))) >= REGION_TURN_DEG
+            or abs(float(np.hypot(R[0, 0], R[0, 1])) - 1.0) > REGION_SCALE_TOL)
 
 # ROI zoom
 ROI_MIN_W, ROI_MIN_H = 768, 576  # never crop tighter than this (over-zoom is useless)
@@ -861,7 +874,7 @@ class TrackingWorker(QThread):
                 if pos is not None:
                     radius, outline = sp.radius, sp.outline
                     R = turned.get(sp.pid)
-                    if R is not None:
+                    if R is not None and region_turned(R):
                         # (I336) a region is sampled again as it is NOW: its outline turned and scaled by the
                         # fit on the restart frame (the drawn one put most members on the background)
                         radius = float(sp.radius * np.hypot(R[0, 0], R[0, 1]))
@@ -1073,14 +1086,16 @@ class TrackingWorker(QThread):
             row = L - 1
             hidden = [a for a in range(len(specs)) if need[a] and not usable[row, a]]
         f = w0 + row
-        seeds = [out_tr[row, k].copy() if inside[row, a] else None for a, k in enumerate(cols)]
+        # a point out of the picture on the last row is dropped, as it always was (reviewer: an earlier row must
+        # not bring back a point that has left, nor re-ask the model for one that was hidden there)
+        seeds = [out_tr[row, k].copy() if inside[row, a] and need[a] else None for a, k in enumerate(cols)]
         for a in hidden:
             pid = specs[a].pid
             seeds[a] = None
-            if not self.autopause:
+            if pid in self.resume_pids:
+                self.resume_cuts.setdefault(pid, f)     # a click ahead: picked up there (I316)
+            elif not self.autopause:
                 self.hidden_at_restart.append((pid, f))
-            elif pid in self.resume_pids:
-                self.resume_cuts.setdefault(pid, f)
             else:
                 if self._autopause_hit is None:
                     self._autopause_hit = (f, pid)

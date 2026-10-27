@@ -575,6 +575,66 @@ def section7():
     close(win)
 
 
+# ===================================================================== [8] / [9] review findings (no model)
+def section8():
+    print("[8] I335 review: a restart from an earlier row never brings back a point that has left the picture")
+    w = TrackingWorker.__new__(TrackingWorker)
+    w._frame_wh = (3840, 2160)
+    w.autopause, w.resume_pids, w.resume_cuts, w.hidden_at_restart = True, set(), {}, []
+    w._autopause_hit, w._autopause_reason, w._crop_reach = None, "", None
+    L, K = 16, 3
+    tr = np.zeros((L, K, 2), np.float32)
+    tr[:, 0] = (1000, 1000)                              # A: in view throughout
+    tr[:, 1] = (1500, 1000)                              # B: hidden on the last 3 rows -> an earlier row is used
+    tr[:13, 2], tr[13:, 2] = (3800, 1000), (3900, 1000)  # P: in the picture on rows 0-12, out on 13-15
+    vi, cf = np.ones((L, K), bool), np.ones((L, K), np.float32)
+    vi[13:, 1], cf[13:, 1] = False, 0.1
+    vi[8:13, 2], cf[8:13, 2] = False, 0.05               # P hidden on rows 8-12
+    res = {"last": 115, "restart": False}
+    TrackingWorker._plan_restart(w, 100, tr, vi, cf, [PointSpec(i, tr[0, i].copy()) for i in range(K)],
+                                 [0, 1, 2], 90, res)
+    seeds = res.get("seeds") or [None] * K
+    check(f"[8] restart from an earlier row ({res.get('restart_at')}), A and B seeded there, P (out of the "
+          f"picture on the last row) dropped as before ({[s is not None for s in seeds]})",
+          res.get("restart_at") is not None and res["restart_at"] < 115
+          and seeds[0] is not None and seeds[1] is not None and seeds[2] is None)
+
+
+def section9():
+    print("[9] I336 review: a region that has not really turned resumes from its drawn outline, exactly")
+    from kinetrace.session import TrackingSession
+
+    def rot(deg, s):
+        a = np.deg2rad(deg)
+        return s * np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    check("[9] the pose rule: 1 deg x0.98 is not a turn; 6 deg, 90 deg and x0.85 are",
+          not trk.region_turned(rot(1.0, 0.98)) and trk.region_turned(rot(6.0, 1.0))
+          and trk.region_turned(rot(90.0, 0.97)) and trk.region_turned(rot(0.0, 0.85)))
+    s = TrackingSession("", 10, 30.0, 1000, 1000)
+    pid = s.add_point(5, 500.0, 500.0, kind="group", radius=201.0, shape="rect", outline=(BAR + 500.0).tolist())
+    win = types.SimpleNamespace(session=s, _region_offsets=MainWindow._region_offsets)
+    drawn = MainWindow._region_offsets(s.points[pid])
+    out = {}
+    for deg, sc in ((1.0, 0.98), (90.0, 0.97)):
+        s.region_pose = {s.points[pid].name: {5: rot(deg, sc).astype(np.float32)}}
+        sp = MainWindow._point_specs(win, [pid], s.positions_at(5), 5)[0]
+        out[deg] = sp
+    small, big = out[1.0], out[90.0]
+    check("[9] 1 deg x0.98: the drawn outline and radius, no pose (bit for bit as before)",
+          small.pose is None and np.array_equal(small.outline, drawn) and small.radius == s.points[pid].radius)
+    check(f"[9] 90 deg: the outline turned (first corner {np.round(big.outline[0], 1).tolist()}), radius x0.97",
+          big.pose is not None and abs(float(big.outline[0, 1]) - (-200.0 * 0.97)) < 1.0
+          and abs(big.radius - 201.0 * 0.97) < 0.01)
+    s.rename_point(pid, "bar2")
+    check("[9] a rename carries the region's poses to its new name",
+          "bar2" in s.region_pose and len(s.region_pose) == 1)
+    s.remove_point(pid)
+    pid2 = s.add_point(5, 500.0, 500.0, kind="group", radius=201.0, shape="rect", outline=(BAR + 500.0).tolist(),
+                       name="bar2")
+    check("[9] a new region given a deleted one's name does not inherit its poses", "bar2" not in s.region_pose
+          and pid2 is not None)
+
+
 def finish(name):
     for w_ in QApplication.topLevelWidgets():
         probe = getattr(w_, "_dev_probe", None)
@@ -603,7 +663,8 @@ if not ONLY or 6 in ONLY:
         if p.returncode != 0 and p.stderr.strip():
             print(p.stderr.strip()[-2000:], flush=True)
         check(f"{tag} the cold-start checks (own process) passed", p.returncode == 0, f"exit {p.returncode}")
-for k, fn in ((1, section1), (2, section2), (3, section3), (4, section4), (5, section5), (7, section7)):
+for k, fn in ((1, section1), (2, section2), (3, section3), (4, section4), (5, section5), (7, section7),
+              (8, section8), (9, section9)):
     if ONLY and k not in ONLY:
         continue
     try:

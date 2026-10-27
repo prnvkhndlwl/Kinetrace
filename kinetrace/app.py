@@ -10353,7 +10353,7 @@ class MainWindow(QMainWindow):
         """The appearance-tracked points' `PointSpec`s, seeded from their positions on `frame`. A region
         a run of this session has seen turn or shrink there is sampled as it is there (I336: the drawn
         outline put most of its members on the background)."""
-        from kinetrace.tracker import PointSpec
+        from kinetrace.tracker import PointSpec, region_turned
         s = self.session
         specs = []
         for pid in pids:
@@ -10361,6 +10361,8 @@ class MainWindow(QMainWindow):
             radius, outline = m.radius, self._region_offsets(m)
             pose = (s.region_pose.get(m.name, {}).get(int(frame))
                     if m.kind == "group" and 0 <= frame < s.n_frames and s.tracked[frame, pid] else None)
+            if pose is not None and not region_turned(pose):
+                pose = None             # not really turned: the drawn outline, exactly as before
             if pose is not None:
                 radius = float(m.radius * np.hypot(pose[0, 0], pose[0, 1]))
                 if outline is not None:
