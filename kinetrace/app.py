@@ -11752,6 +11752,8 @@ class MainWindow(QMainWindow):
         p = self.project
         if p is None or not p.dirty:
             return
+        if self._saving:
+            return                             # (I330) a save is writing (_saving_guard): the next tick catches up
         sig = self._signature()
         if sig == self._recovery_sig:
             return
@@ -15111,6 +15113,8 @@ class MainWindow(QMainWindow):
             while self.worker is not None and not self.worker.wait(100) and time.time() < t_end:
                 QApplication.processEvents()
             QApplication.processEvents()
+        else:
+            self._user_paused = False        # (I331) nothing ran: no pause is pending (a Cancel keeps the window)
         if self._overlay is not None:
             if self._overlay.isRunning():
                 self._overlay.request_cancel()
