@@ -13643,8 +13643,11 @@ class MainWindow(QMainWindow):
                 if now - last[0] >= 0.1 or done >= total:      # not a signal per cost evaluation
                     last[0] = now
                     report(f"{done} of about {total} offset tests", done, total)
-            return estimate_offsets(p.sessions, p.calibration, p.rates, p.offsets, (t0, t1), report=rep,
-                                    progress=progress, cancelled=cancelled)
+            # (I351) each camera searched over +/- max(1, its rate) of its own frames: motion sync's whole-frame
+            # answer for a camera at rate r moves in r-frame steps (a 240 fps camera in a 120 fps rig: +/-2)
+            search = [max(1.0, float(r)) for r in p.rates]
+            return estimate_offsets(p.sessions, p.calibration, p.rates, p.offsets, (t0, t1), search=search,
+                                    report=rep, progress=progress, cancelled=cancelled)
         try:           # a joint search over every camera: off the GUI thread (G50)
             offs, before, after = self._in_background(
                 "Estimating sub-frame offsets", work, progress=True, cancellable=True,

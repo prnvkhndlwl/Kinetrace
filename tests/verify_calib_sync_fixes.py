@@ -430,8 +430,11 @@ def _i351():
     e1, e2 = _with_fake_motion(fake, lambda: (errors(1.0), errors(2.0)))
     check(np.abs(e1).max() <= 0.52 + 1e-9, "same rate: as before (within half a frame and a tie)",
           f"{np.abs(e1).max():.3f}")
-    check(np.abs(e2).max() <= 1.0, "a camera at twice the rate lands within one of its own frames",
-          f"worst {np.abs(e2).max():.3f}, mean {e2.mean():+.3f}")
+    # the lag moves in reference frames = 2 local frames here: whole-frame answers are up to r / 2 off, which
+    # the sub-frame step's +/- r search (the app's half of I351) covers; the bias must be gone
+    check(abs(e2.mean()) < 0.1, "a camera at twice the rate: no half-frame bias", f"mean {e2.mean():+.3f}")
+    check(np.abs(e2).max() <= 1.05, "a camera at twice the rate lands within half a reference frame",
+          f"worst {np.abs(e2).max():.3f}")
 
 
 # ------------------------------------------------------------------ I352

@@ -254,7 +254,19 @@ def estimate_offsets_from_motion(paths: list[str], rates: list[float], ref_range
         # requested window (+-search around the prior), with two frames of slack for the floor /
         # ceil above. The search used to run to +2*search+2 as well, three times the range asked
         # for on one side: an offset OUTSIDE the window was reported clear (I237).
-        res = align(ref_sig, sig_ref_clock, max_lag=2, min_lag=-(2 * int(np.ceil(search)) + 2))
+        # (I350) That holds while the stretch really starts at g0. When it would start before this camera's
+        # first frame (g0 < 0: "Use the whole recording", or the playhead in the first seconds) it is read
+        # from g0p = 0, and every lag moves up by s = (g0p - g0) / r reference frames: the window moves with
+        # it (s = 0 otherwise: the window above, exactly).
+        s = (g0p - g0) / r
+        res = align(ref_sig, sig_ref_clock, max_lag=2 + int(np.ceil(s)),
+                    min_lag=-(2 * int(np.ceil(search)) + 2) + int(np.floor(s)))
         offset = float(g0p - r * (f0 + res.lag))
+        if r != 1.0:
+            # (I351) sample k of a motion signal is the change between frames k-1 and k, centred half of THAT
+            # camera's frame before k: half a reference frame for the reference, half a local frame here.
+            # The two centres are 0.5 (r - 1) local frames apart (a 240 fps camera in a 120 fps rig was
+            # -0.56 local frames off on average, up to -1.52)
+            offset += 0.5 * (r - 1.0)
         out.append(CameraSync(i, offset, res, lag_ref=res.lag))
     return out

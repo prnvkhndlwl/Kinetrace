@@ -2039,15 +2039,19 @@ class _Prepared:
             uv[~keep] = np.nan
         return uv
 
-    def stable_cells(self, rates, offsets, t: np.ndarray, search: float) -> np.ndarray:
+    def stable_cells(self, rates, offsets, t: np.ndarray, search) -> np.ndarray:
         """(T, N, C) bool: view/cell pairs with data at the instant AND at
         ±`search` local frames around it — the set an offset search must be
         scored on, so that shifting an offset cannot change WHICH cells are
         counted (sparse or gappy tracks would otherwise let the optimiser
-        lower the mean by dropping cells instead of improving them)."""
+        lower the mean by dropping cells instead of improving them).
+        (I351) `search` may be one width per view; the checks are -1, 0, +1 x each view's width, with
+        steps in between once a width passes 2 local frames (the frames each check reads must touch)."""
+        widths = _search_widths(search, len(offsets))
+        m = max(1, int(np.ceil(float(np.max(widths[1:], initial=0.0)) / 2.0 - 1e-9)))
         ok = None
-        for d in (-search, 0.0, search):
-            o = [offsets[c] + (d if c else 0.0) for c in range(len(offsets))]
+        for g in np.linspace(-1.0, 1.0, 2 * m + 1):
+            o = [offsets[c] + (float(g) * widths[c] if c else 0.0) for c in range(len(offsets))]
             cur = np.isfinite(self.samples(rates, o, t)).all(axis=3)
             ok = cur if ok is None else (ok & cur)
         return ok
@@ -2195,7 +2199,18 @@ class _SearchCancelled(Exception):
     pass
 
 
-def _scoring_instants(prep: "_Prepared", rates, offs, t_all: np.ndarray, search: float):
+def _search_widths(search, n_views: int) -> np.ndarray:
+    """(I351) The offset search's half-width per view, local frames: one number for every view, or one each
+    (the app gives a camera at rate r at least r: motion sync's whole-frame answer moves in r-frame steps)."""
+    if np.ndim(search) == 0:
+        return np.full(n_views, float(search))
+    w = np.asarray(search, np.float64).ravel()
+    if len(w) != n_views:
+        raise ValueError(f"one search width per camera: {len(w)} given for {n_views} cameras")
+    return w
+
+
+def _scoring_instants(prep: "_Prepared", rates, offs, t_all: np.ndarray, search):
     """(t, keep, n_cells): the reference instants the offset search is scored
     on and their stable view / cell sets (G76). A long project has tens of
     thousands of instants and ~650 cost evaluations are made: scoring each
@@ -2270,12 +2285,13 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
     data. (A plain median cost was tried first: not moved by bad cells either, but its surface is grainy,
     0.08 frame off on the synthetic rig.) `robust=False` is exactly the estimator it always was."""
     offs = [float(o) for o in offsets]
+    search = _search_widths(search, len(sessions))      # (I351) one width per camera (a number: every camera)
     reference = 0                       # stable_cells holds view 0 still, as does the project (REFERENCE_VIEW)
     prep = _Prepared(sessions, calib, names)
     t_all = np.arange(int(t_range[0]), int(t_range[1]) + 1)
     t, keep, n_cells = _scoring_instants(prep, rates, offs, t_all, search)
     n_free = max(len(sessions) - 1, 0)
-    n_grid = int(np.floor(2 * search / step + 1e-9)) + 1
+    n_grid = int(np.floor(2 * float(np.max(search)) / step + 1e-9)) + 1
     n_fine = int(np.floor(2 * step / refine + 1e-9)) + 1
     total = 1 + passes * n_free * (n_grid + n_fine) + 400 + 3 * n_free + 1
     if robust:
@@ -2421,7 +2437,7 @@ def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, p
             def better(cand, cur):
                 return cand[0] < cur[0] - eps
 
-            for d in np.arange(-search, search + 1e-9, step):
+            for d in np.arange(-search[c], search[c] + 1e-9, step):
                 offs[c] = base + float(d)
                 cand = (cost(offs), offs[c])
                 if better(cand, best):
@@ -2451,7 +2467,7 @@ def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, p
         x0 = np.array([offs[c] for c in free])
         try:
             r = minimize(joint, x0, method="Powell", options={"xtol": 1e-4, "ftol": 1e-8, "maxfev": 4000})
-            if np.isfinite(r.fun) and r.fun <= joint(x0) and np.all(np.abs(r.x - x0) <= step + search):
+            if np.isfinite(r.fun) and r.fun <= joint(x0) and np.all(np.abs(r.x - x0) <= step + search[free]):
                 for k, c in enumerate(free):
                     offs[c] = float(r.x[k])
         except Exception:      # noqa: BLE001 — the grid result stands
