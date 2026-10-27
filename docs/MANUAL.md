@@ -1395,7 +1395,8 @@ what gets tracked, and background inside the outline pulls the centre off.
 
 A region follows its object as it **turns or shrinks**: when the zoomed-in view
 (ROI) moves, and when you press Track again on it later, it is laid out again as
-the object is *now*, not as you drew it. The program remembers this only while
+the object is *now*, not as you drew it (once it has turned by 5° or more, or
+grown or shrunk by more than a tenth; below that it carries on exactly as drawn). The program remembers this only while
 the project is open: after reopening it, a Track started on a region that has
 turned a lot starts from the outline as you drew it, so draw it again on that
 frame if the object has turned far.
