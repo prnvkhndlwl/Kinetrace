@@ -1346,8 +1346,10 @@ select the point and press **Shift+X** (or right-click the marker → *Hidden on
 this frame (keep, do not export)*). The position stays in the project, so you can
 unmark it (**Shift+X** again), but it is left **blank in every export**, ignored
 by 3D, and never written over by a curve fill (*Keyframe digitizing*, above).
-A run never takes the mark away either, not even when auto-pause cuts the track
-after a lost point: only you remove it (Shift+X again, or Delete / Clear).
+A run that keeps your clicks never takes the mark away either, not even when
+auto-pause cuts the track after a lost point; a **Fresh** run, which replaces
+everything after its start (your clicks too), takes it with the rest. Otherwise
+only you remove it (Shift+X again, or Delete / Clear).
 Hidden frames show hatched on the timeline (never red: a frame you marked hidden is
 dealt with, so **J** does not stop there either), the marker becomes a crossed ring and
 its name reads *(hidden)*. Each mark is one **Ctrl+Z** step.

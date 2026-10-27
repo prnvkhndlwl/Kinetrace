@@ -9147,7 +9147,7 @@ class MainWindow(QMainWindow):
             self._refresh_overlay()
             self._refresh_companions()          # the other cameras' views (the 3D result follows by itself)
             self.timeline.refresh()
-            self._autosave()                    # `_end_run` saved the copy before this erase
+            self._autosave()                    # a press of several passes / cameras ends here, after its runs' copies
             self.statusBar().showMessage(
                 f"Fresh run: everything of these points after frame {first} was erased too (clicks included) — "
                 "Ctrl+Z brings it back", 9000)
@@ -10995,7 +10995,7 @@ class MainWindow(QMainWindow):
         self._rebudget_caches()
         self.act_undo.setEnabled(self._undo_snap is not None)
         if autosave:
-            self._autosave()  # before the guidance message — 'Saved ✓' must not clobber it
+            self._autosave()  # (the error path) before its message — 'Saved ✓' must not clobber it
         return step_run
 
     def _restore_start_flags(self) -> None:
@@ -11061,7 +11061,9 @@ class MainWindow(QMainWindow):
                 self._gaps["stopped"] = True        # (D9) X stops every gap run still to come
             QTimer.singleShot(0, self._gaps_next)
         # (I333) the recovery copy once the run's end has made its cuts (the auto-pause cut, the segments'
-        # ends, a Fresh run's erase, a pass's record): one written before them brought the cut frames back
+        # ends, a lone Fresh run's erase): one written before them brought the cut frames back. (A two-pass /
+        # every-camera press trims and erases later, in `_passes_finish` / `_multi_finish`: the copy catches up
+        # there after a Fresh erase, otherwise at the next 30 s tick -- not covered here, a known follow-up.)
         if self.state != TRACKING:
             self._autosave()
 
