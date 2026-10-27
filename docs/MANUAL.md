@@ -853,7 +853,10 @@ estimated finish time.
 **You can stop it at any moment:** press **X** or **Space**, or click the blue
 button, which now reads **Pause ■ (X)**. Fix whatever looks wrong (the next
 section shows how) and press **Track ▶** again: it carries on from the frame
-you are on.
+you are on. That holds from the very first moment: the first Track after
+starting the program spends a second or two loading the point model, and **X**
+then stops the run at once, before a single frame is written (the model goes on
+loading in the background, so the next Track starts straight away).
 
 **It may stop on its own before the end.** That is the program telling you it has
 lost something, or that a body part has left the animal's outline. It cuts that
@@ -886,6 +889,17 @@ result is always placed at the **first** unreliable frame:
   the program was already unsure show **red**.
 
 A brief hidden object does *not* trigger this — only a real loss.
+
+One more stop has the same shape, with **ROI** on (see section 14): when the
+zoomed-in view has to move to keep up with the points, the program looks at
+every point again on the frame it moves from. A body part that is **hidden** on
+that frame (a leg or the tail over it) would be learned from whatever covers it
+and followed from then on, so the program first tries a few frames back, where
+everything was in view. If the part has been hidden too long for that, the run
+stops on it: its track is cut at that frame and the message says it *was hidden
+when the zoomed view moved*. Go to a frame where it is visible again, click it
+and press Track (or turn ROI off for that stretch). With Auto-pause off the run
+goes on, the part's track ends there, and the message at the end names it.
 
 With the **Moving spot** point model (Track ▾; see *Which point model should I
 use?* in section 14) the stop comes on the very frame where the spot is not
@@ -1017,8 +1031,10 @@ For one point:
   the head, so this tells the program which end is the front;
 - **Lock to seed appearance (re-anchor)** — off by default. The tracker keeps
   looking for the patch exactly as it looked where you placed it and snaps
-  back to it when it finds it nearby: a cure for slow drift on a sharp, rigid
-  mark. Plain points only, not regions;
+  back to it when it finds it **more than about 1 pixel** away from the track: a
+  cure for slow drift on a sharp, rigid mark. Where the two agree, the tracker's
+  own (more precise) position is kept, so switching it on never makes a good
+  track worse. Plain points only, not regions;
 - with a 3D calibration, **Snap to the other cameras' rays here** (section 10).
 
 Each clearing entry, the curve fill, a change of data source, the snap and
@@ -1376,6 +1392,14 @@ button (**Point ▾**) chooses the shape:
 
 Whatever the shape, keep the outline **on the object**: the region's inside is
 what gets tracked, and background inside the outline pulls the centre off.
+
+A region follows its object as it **turns or shrinks**: when the zoomed-in view
+(ROI) moves, and when you press Track again on it later, it is laid out again as
+the object is *now*, not as you drew it (once it has turned by 5° or more, or
+grown or shrunk by more than a tenth; below that it carries on exactly as drawn). The program remembers this only while
+the project is open: after reopening it, a Track started on a region that has
+turned a lot starts from the outline as you drew it, so draw it again on that
+frame if the object has turned far.
 
 ### Undo
 
@@ -3734,7 +3758,9 @@ track at the first unreliable frame** (red on the timeline), so the data ends
 exactly where the tracking stopped being trustworthy. Click the point where it
 really is and press Track. Leave it on while you are learning. Turn it off for
 footage with a lot of hiding-behind-things, where you would rather review
-afterwards than be interrupted.
+afterwards than be interrupted. With it off, a body part the program has lost
+is left **blank from the first frame of the loss** (never the program's guess),
+and the run goes on.
 
 **Keep its points on its silhouette** (not a switch in the bottom bar: a
 setting of each animal — right-click the animal in LAYERS; **off** until you
@@ -3760,6 +3786,10 @@ the program works on a zoomed-in crop so it can see more detail. It decides for
 itself whether that helps (only when the crop is at least twice as close). With
 CoTracker3 the crop has the model's own picture shape (4:3) wherever the picture
 leaves room for it, so a long animal is not squashed on its way into the model.
+When the points near the crop's edge, the crop moves. It moves from a recent
+frame on which every point is in view, so a point that is hidden at that moment
+is never re-learned from whatever covers it; one hidden for too long stops the
+run (see *The program stops by itself*).
 
 **Follow** (bottom bar, off by default) — **the view stays exactly where you put
 it** unless you switch this on: nothing pans or zooms on its own, in any camera
@@ -4173,7 +4203,9 @@ marked hidden). A point with a click of
 yours further on does not stop the run: it is cut where it was lost and picked up
 again at that click. (When the animal keeps its points on its silhouette, a part
 that leaves the outline stops the run the same way - or, with a click of yours
-further on, is cut and picked up again - whether Auto-pause is on or off.)
+further on, is cut and picked up again - whether Auto-pause is on or off.) It also
+stops a run when a part is hidden just as the ROI zoomed view has to move. With
+Auto-pause off, a lost part is left blank from the first frame of the loss.
 
 **Ball marker** — a round marker (a wand ball, a reflective dot, a dropped
 ball) found in every frame by outlining it and fitting a circle; the circle's

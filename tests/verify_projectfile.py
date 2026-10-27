@@ -297,7 +297,8 @@ TRANSIENT = {
     # active_seg: which segment the S tool acts on (reset to the first on open, G149)
     "TrackingSession": {"_dirty", "data_version", "last_interp_hidden_skipped", "video_path", "active_seg",
                         "fingerprint_problem",      # (I266) why a saved fingerprint could not be read
-                        "read_problems", "missing_files"},      # (I327 / I328) what an open said, once
+                        "read_problems", "missing_files",       # (I327 / I328) what an open said, once
+                        "region_pose"},                         # (I336) regions' turn from this session's runs
     "Project": {"path", "dirty", "edits"},
     "MaskTrack": {"native_w", "native_h"},
     "BodyTrack": {"mesh_version", "_version", "_cache", "examined", "stopped_early"},

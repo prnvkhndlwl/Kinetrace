@@ -1718,8 +1718,9 @@ class VideoCanvas(QGraphicsView):
         if is_point:
             act_anchor.setChecked(bool(getattr(meta, "anchor", False)))
             act_anchor.setToolTip(
-                "Snap the track back whenever this point's original appearance is "
-                "found nearby — catches slow drift on distinct rigid features. "
+                "Snap the track back when this point's original appearance is found "
+                "more than 1 px away from it — catches slow drift on distinct rigid "
+                "features, and leaves a track that agrees with it alone. "
                 "Changes the plain 'track the placed location' behavior; off by default.")
         else:
             # visible-but-disabled beats hidden: the user learns why it's not

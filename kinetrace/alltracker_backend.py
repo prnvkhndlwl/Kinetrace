@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import math
 import sys
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,7 @@ STRIDE = 8
 
 _model = None
 _device = None
+_load_lock = threading.Lock()    # (I339) a Track pressed while an X-ed run still loads waits, then shares
 
 
 def available() -> bool:
@@ -108,10 +110,16 @@ def _install_area_pool_fix(device) -> None:
 def get_alltracker(progress=None, cancel=lambda: False):
     """Process-wide singleton (model, device). Downloads the 66 MB checkpoint once
     (and the code, when install.py could not), both pinned and checked; the
-    weights are read as tensors only (I151). progress(label, done, total)."""
+    weights are read as tensors only (I151). progress(label, done, total).
+    Loaded once under a lock, like CoTracker3's (I339)."""
+    with _load_lock:
+        if _model is not None:
+            return _model, _device
+        return _load_alltracker(progress, cancel)
+
+
+def _load_alltracker(progress, cancel):
     global _model, _device
-    if _model is not None:
-        return _model, _device
     import torch
     from kinetrace import downloads
     downloads.ensure_code("alltracker", progress, cancel)

@@ -390,7 +390,7 @@ def _():
         def seg_stub(src, *a, w=w, spot_gone=spot_gone):
             if spot_gone:
                 w._spot_gone.add(7)                         # the spot has stopped
-            return "restart", 40, [None]                    # ... and every point is dropped at a restart
+            return "restart", 40, [None], 40                # ... and every point is dropped at a restart (at 40)
             yield                                           # noqa: unreachable -- makes it a generator
 
         def animal_stub(src, start, calls=calls):

@@ -563,6 +563,23 @@ class _ChoiceMenu(QMenu):
         super().keyPressEvent(ev)
 
 
+def _cut(sender, receiver, pairs) -> None:
+    """(I339) Disconnect `sender`'s signals from `receiver`'s slots, each pair "signal:slot"; one that is not
+    connected (or a signal this sender lacks) is skipped, quietly: PySide6 warns where it cannot disconnect."""
+    import warnings
+    for pair in pairs:
+        sig, slot = pair.split(":")
+        s = getattr(sender, sig, None)
+        if s is None:
+            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            try:
+                s.disconnect(getattr(receiver, slot))
+            except (RuntimeError, TypeError):
+                pass
+
+
 class _SideRun(QObject):
     """One camera of a simultaneous every-camera run (I141). It records how the
     camera's run ended; for a camera other than the working one (`write`) it also
@@ -570,6 +587,11 @@ class _SideRun(QObject):
     and keeps its frames for its tile -- the working camera keeps the full live
     pipeline. A QObject in the GUI thread, so the worker's signals (emitted on the
     tracking thread) arrive here queued, in order."""
+
+    # (I339) what `__init__` connects, for `_cut` when the run ends before it started
+    SLOTS = ("autopaused:on_autopaused", "finished_ok:on_finished", "error:on_error", "chunk_ready:on_chunk",
+             "masks_ready:on_masks", "balls_ready:on_balls", "session_chunk:on_session_chunk",
+             "session_state:on_session_state")
 
     def __init__(self, win, view: int, worker, start: int, write: bool):
         super().__init__(win)
@@ -801,12 +823,20 @@ _STOP_TEXTS = {
         status=("Auto-paused: the model lost {name} at frame {frame} (low confidence; its track is cut "
                 "there). Click where it really is and press Track — or turn Auto-pause off to run "
                 "through")),
+    "hidden": dict(       # (I335) hidden when the ROI zoom moved: re-asking the model there learns the cover
+        short="{name} was hidden when the zoomed view moved", ms=15000,
+        toast=("Auto-paused: <b>{name}</b> was hidden at frame {frame}, just when the tracker had to move its "
+               "zoomed view (ROI) to keep up with the points, so its track is cut there{kept}. Starting it again "
+               "on that frame would have made it follow whatever covered it. Go to a frame where it is visible "
+               "again, click where it is and press Track — or turn <b>ROI</b> off (bottom bar) for this stretch."),
+        status="Auto-paused: {name} was hidden when the zoomed view moved at frame {frame}"),
 }
 
 
 def _stop_short(reason: str, name: str) -> str:
     """How the every-camera summary names a stop (`_STOP_TEXTS` `short`): by the worker's reason."""
-    return _STOP_TEXTS[reason if reason in ("exit", "spot", "switched") else "unreliable"]["short"].format(name=name)
+    return _STOP_TEXTS[reason if reason in ("exit", "spot", "switched", "hidden")
+                       else "unreliable"]["short"].format(name=name)
 
 
 class MainWindow(QMainWindow):
@@ -828,6 +858,7 @@ class MainWindow(QMainWindow):
         self._hotkeys_dlg = None
         self._else_cache = None
         self._budget_key = None              # (I306) who decoded at the last frame-budget split
+        self._run_started = True             # (I339) False while a run's worker still loads its models
         self._point_list_project = None
         self._hidden_warned = None
         self._user_paused = False
@@ -9783,6 +9814,34 @@ class MainWindow(QMainWindow):
             self.btn_track.setText("Pausing…")
             self.btn_track.setEnabled(False)
             self.worker.request_pause()
+            if not self._run_started:
+                self._end_unstarted_run()
+
+    # (I339) what a run's worker sends this window, as `_launch_run` connects it
+    _RUN_SLOTS = ("balls_ready:_on_ball_radii", "model_loading:_on_model_loading",
+                  "model_progress:_on_model_progress", "started_ok:_on_track_started", "masks_ready:_on_masks",
+                  "chunk_ready:_on_chunk", "autopaused:_on_autopaused", "finished_ok:_on_track_finished",
+                  "error:_on_track_error", "session_chunk:_on_session_chunk",
+                  "session_state:_on_session_state", "session_ready:_on_session_ready")
+
+    def _end_unstarted_run(self) -> None:
+        """(I339) X / Space before the run started: its worker is still loading its models, which cannot be
+        interrupted (1.7-2 s the first time in a session). The run ends in the window NOW, as a pause before
+        any frame. The worker is disconnected first -- it has sent nothing but its loading signals yet, so no
+        row is lost -- and retired without waiting (`_on_track_finished_run`); it finishes its load on its own
+        thread, ends without reading a frame (`TrackingWorker._end_before_start`), and the model stays in the
+        process-wide cache for the next Track. An every-camera run: every camera's worker is let go the same way
+        and each camera ends as paused before any frame (`_multi_parallel_done`, as when they all stop)."""
+        _cut(self._model_worker, self, self._RUN_SLOTS)
+        st = self._multi
+        if st is None:
+            self._on_track_finished(self._run_start - 1, True)
+            return
+        _cut(self.worker, self, ("finished:_multi_parallel_done",))
+        for _v, run in st.get("runs", []):
+            _cut(run.worker, run, _SideRun.SLOTS)
+            run.last, run.paused = run.start - 1, True
+        self._multi_parallel_done()
 
     def _start_tracking(self, stop_after: int | None = None, only_pids=None, quiet: bool = False,
                         build_only: bool = False, segment: bool | None = None, step: bool = False,
@@ -9831,7 +9890,7 @@ class MainWindow(QMainWindow):
         # with the others, so the run's model is its own tracker (review #1: not the project's default)
         model_join = [q for q in pids if not s.tracked[self.current, q]]
         pids = [q for q in pids if q not in model_join]
-        specs = self._point_specs(pids, seeds)
+        specs = self._point_specs(pids, seeds, self.current)
         balls = self._ball_specs(ball_pids, seeds)
         seg = self._segment_specs(pids, scope, animal_ok, segment, specs)
         end = self.n_frames if stop_after is None else min(self.n_frames, stop_after + 1)
@@ -9991,7 +10050,7 @@ class MainWindow(QMainWindow):
                 animals.append(AnimalSpec(index=k, name=s.segments[k].name, stored=src, on_body=set(qs),
                                           constrain=set(qs)))
         return TrackingWorker(self.info.path, int(frame), None, None, self.cache, int(n_end), refine=True,
-                              specs=self._point_specs(pids, s.positions_at(int(frame))), roi=self.btn_roi.isChecked(),
+                              specs=self._point_specs(pids, s.positions_at(int(frame)), int(frame)), roi=self.btn_roi.isChecked(),
                               autopause=self.btn_autopause.isChecked() if autopause is None else bool(autopause),
                               animals=animals or None, point_backend=backend,
                               resume_pids=set(resume) or None, cache_first=not decode, emit_frames=decode,
@@ -10290,14 +10349,37 @@ class MainWindow(QMainWindow):
         o = np.asarray(meta.outline, np.float32).reshape(-1, 2)
         return o - o.mean(axis=0)
 
-    def _point_specs(self, pids, seeds) -> list:
-        """The appearance-tracked points' `PointSpec`s, seeded from their positions on this frame."""
-        from kinetrace.tracker import PointSpec
+    def _point_specs(self, pids, seeds, frame: int) -> list:
+        """The appearance-tracked points' `PointSpec`s, seeded from their positions on `frame`. A region
+        a run of this session has seen turn or shrink there is sampled as it is there (I336: the drawn
+        outline put most of its members on the background)."""
+        from kinetrace.tracker import PointSpec, region_turned
         s = self.session
-        return [PointSpec(pid, seeds[pid].astype(np.float32).copy(),
-                          s.points[pid].kind, s.points[pid].radius,
-                          s.points[pid].anchor, self._region_offsets(s.points[pid]))
-                for pid in pids]
+        specs = []
+        for pid in pids:
+            m = s.points[pid]
+            radius, outline = m.radius, self._region_offsets(m)
+            pose = (s.region_pose.get(m.name, {}).get(int(frame))
+                    if m.kind == "group" and 0 <= frame < s.n_frames and s.tracked[frame, pid] else None)
+            if pose is not None and not region_turned(pose):
+                pose = None             # not really turned: the drawn outline, exactly as before
+            if pose is not None:
+                radius = float(m.radius * np.hypot(pose[0, 0], pose[0, 1]))
+                if outline is not None:
+                    outline = (outline.astype(np.float64) @ pose.T).astype(np.float32)
+            specs.append(PointSpec(pid, seeds[pid].astype(np.float32).copy(), m.kind, radius, m.anchor, outline,
+                                   pose))
+        return specs
+
+    def _keep_region_poses(self, w) -> None:
+        """(I336) A finished run's region poses (against the drawn outlines), for a Track resumed later in
+        this session."""
+        s = self.session
+        if s is None or w is None:
+            return
+        for pid, poses in (getattr(w, "region_pose", None) or {}).items():
+            if 0 <= pid < s.n_points and poses:
+                s.region_pose.setdefault(s.points[pid].name, {}).update(poses)
 
     def _ball_specs(self, ball_pids, seeds) -> list:
         """Ball markers: SAM segments them, a circle is fitted, the centre is the
@@ -10599,6 +10681,7 @@ class MainWindow(QMainWindow):
         self._run_start = int(getattr(w, "start_frame", self.current))  # (PR B) a lone joiner's run starts at its click
         self._fps_ema = 0.0
         self._last_emit_t = 0.0
+        self._run_started = False               # (I339) until the worker says it has its models and reads
         self.state = TRACKING
         self._apply_state()
         self._track_label.setText("starting…")
@@ -10683,6 +10766,10 @@ class MainWindow(QMainWindow):
             self.session.write_ball_radii(rows)
 
     def _on_track_started(self):
+        snd = self.sender()
+        if snd is not None and snd is not self._model_worker:
+            return                  # (I339) a run already ended in the window (X during its load)
+        self._run_started = True
         _quiet_close(self._model_dialog)
         self._model_dialog = None
         self.statusBar().showMessage(f"Tracking from frame {self.current}… press X or the "
@@ -11082,7 +11169,8 @@ class MainWindow(QMainWindow):
             self._fresh_erase({view: last}, user_stop)
 
     def _on_track_finished_run(self, last: int, was_paused: bool):
-        self.worker.wait(2000)
+        if self._run_started:           # (I339) a worker still loading its models is retired as it is
+            self.worker.wait(2000)
         reason = getattr(self.worker, "_autopause_reason", "")
         ball_ended = dict(getattr(self.worker, "_ball_ended", {}) or {})
         spot_ended = dict(getattr(self.worker, "_spot_ended", {}) or {})
@@ -11096,6 +11184,8 @@ class MainWindow(QMainWindow):
         # dropping the last reference to a running QThread aborts the app (I133)
         cuts = self._run_cuts = self._resume_cuts(self.worker)       # (PR B) a lost point with a click ahead
         restarts = int(getattr(self.worker, "_kt_restarts", 0) or 0)
+        hidden = list(getattr(getattr(self.worker, "primary", self.worker), "hidden_at_restart", None) or [])
+        self._keep_region_poses(getattr(self.worker, "primary", self.worker))      # (I336)
         _retire(self.worker)
         self.worker = None
         self._restore_start_flags()         # before the autosave (I189)
@@ -11177,6 +11267,14 @@ class MainWindow(QMainWindow):
             self.toast.show_message(
                 "Moving spot stopped (auto-pause is off, so the run went on for the rest): " + ", ".join(parts)
                 + ". Their tracks end there. Select one, click it where it is and press Track.", "warn", 15000)
+        hid = [(pid, f) for pid, f in hidden if s is not None and 0 <= pid < s.n_points]
+        if hid:
+            # (I335) auto-pause off: a point hidden when the zoomed view moved was not started again there
+            parts = [f"<b>{s.points[pid].name}</b> at frame {f}" for pid, f in hid]
+            self.toast.show_message(
+                "Hidden when the zoomed view (ROI) moved, so not tracked on from there (auto-pause is off, so "
+                "the run went on): " + ", ".join(parts) + ". Their tracks end there. Go to a frame where one "
+                "is visible, click where it is and press Track.", "warn", 15000)
 
     def _resume_cuts(self, w) -> int:
         """(I316, PR B) A point lost with a click ahead was cut where it was lost, not stopped: its rows from there to
@@ -11240,8 +11338,8 @@ class MainWindow(QMainWindow):
             return "ball"
         if reason == "spot" and known:
             return "spot"
-        if reason == "exit":
-            return "exit"
+        if reason in ("exit", "hidden"):
+            return reason
         return "unreliable"
 
     def _say_stop(self, kind: str, name: str, frame: int, why: str = "missing") -> None:
