@@ -447,6 +447,10 @@ class TrackingSession:
         # Not data the user edits: making one does not mark the project changed; it is saved with it.
         self.fingerprint = None
         self.fingerprint_problem = ""   # a saved fingerprint that could not be read: why (said once)
+        # (I327 / I328) what opening found wrong but opened anyway -- a landmark's file missing, a note or an
+        # event outside the video: said once by the app, never saved
+        self.read_problems: list[str] = []
+        self.missing_files: set[str] = set()    # (I327) landmarks whose file was missing: no empty file in its place
         self.current_frame = 0  # persisted so projects reopen where the user left off
         self.ui_state: dict = dict(DEFAULT_UI_STATE)
         self.data_version = 0   # bumped on every mutation (timeline repaint/cache key)

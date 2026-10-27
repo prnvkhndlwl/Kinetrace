@@ -12847,7 +12847,30 @@ class MainWindow(QMainWindow):
             self.project.dirty = True
         if plan.decline_after is not None:
             recovery.decline(plan.decline_after)      # (I209) the copy is open: now the old recovery is set aside
+        self._say_read_problems()
         QTimer.singleShot(0, lambda: self._apply_layout(plan.state.get("layout")))
+
+    def _say_read_problems(self) -> None:
+        """(I327 / I328) What the open found wrong but opened anyway, in one notice, said once: a landmark
+        whose file is missing (it opens empty, and Save writes no empty file in its place) and notes or
+        events outside the video (kept as they are)."""
+        p = self.project
+        if p is None:
+            return
+        said = [(f"{p.name(i)}: " if p.n_views > 1 else "") + t
+                for i, x in enumerate(p.sessions) for t in x.read_problems]
+        for x in p.sessions:
+            x.read_problems = []
+        if not said:
+            return
+        more = f"\n• … and {len(said) - 12} more" if len(said) > 12 else ""
+        QMessageBox.warning(
+            self, "Some of this project's files need a look",
+            "The project opened, but:\n\n• " + "\n• ".join(said[:12]) + more + "\n\nNothing in the project folder "
+            "was changed. A landmark whose file is missing stays empty, and Save writes no empty file in its place: "
+            "if the file was moved, or a sync folder is still bringing it back, close without saving, put it back "
+            "and open the project again. Notes and events outside the video are kept exactly as they are; if one "
+            "is a typo, correct it in that camera's notes.csv / events.csv.")
 
     def _adopt_project(self, proj: Project, located: dict | None = None,
                        infos: dict | None = None):
