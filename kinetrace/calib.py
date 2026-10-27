@@ -1879,10 +1879,15 @@ def sample_tracks_at(ct: np.ndarray, local_t: np.ndarray) -> np.ndarray:
     a = lt - f0
     f0i = f0.astype(np.int64)
     out = np.full((len(lt),) + ct.shape[1:], np.nan)
-    exact = (a < 1e-9) & (f0i >= 0) & (f0i < T)
+    # (I346) a hair from a whole frame on EITHER side is that frame: rate * t + offset lands 1e-16 below
+    # frame 4 as often as above it, and "between 3 and 4" lost the cell when frame 3 was in a gap
+    up = a > 1.0 - 1e-9
+    whole = (a < 1e-9) | up
+    fi = f0i + up
+    exact = whole & (fi >= 0) & (fi < T)
     if exact.any():
-        out[exact] = ct[f0i[exact]]
-    mid = (~exact) & (f0i >= 0) & (f0i + 1 < T)
+        out[exact] = ct[fi[exact]]
+    mid = (~whole) & (f0i >= 0) & (f0i + 1 < T)
     if mid.any():
         p0 = ct[f0i[mid]]
         p1 = ct[f0i[mid] + 1]
@@ -2124,8 +2129,8 @@ def sampled_views(sessions: list, calib: Calibration, rates: list[float], offset
                     and bool(np.isfinite(s.tracks[f, j]).all()))
         x = float(local_frame(t, rates[v], offsets[v]))
         f0 = int(np.floor(x))
-        if x - f0 < 1e-9:
-            if has(f0):
+        if x - f0 < 1e-9 or x - f0 > 1.0 - 1e-9:                # (I346) sample_tracks_at's "whole frame"
+            if has(f0 + (x - f0 > 0.5)):
                 views.append(v)
             continue
         h0, h1 = has(f0), has(f0 + 1)
