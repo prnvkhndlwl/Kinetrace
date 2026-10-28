@@ -9,6 +9,8 @@ CPU, every dialog stubbed; each section makes the user's gesture and FAILS on ea
       Ctrl+Z as it was; T on the last frame says there is nothing ahead
   [6] (I373) a ball's size hint is its size at the start frame (else the nearest earlier, else the nearest later)
   [7] (I374) 3D > Carve Volume (Ctrl+4) on a 50 mm ball: the same hull in a metre and a mm world, never cut off
+  [8] (G229) names with "<" or "&" read as typed: a run's stop notice, a marked-up notice, a refused name typed in
+      LAYERS
 Run: .venv\\Scripts\\python.exe tests\\verify_ui_behaviour.py   (UI_ONLY=fc,... runs only those sections)
 """
 import os
@@ -650,8 +652,87 @@ def section_hull():
         close(win)
 
 
+def shown(win) -> str:
+    """The notice as it reads on screen (the Toast's rich text rendered to plain text)."""
+    from PySide6.QtGui import QTextDocument
+    doc = QTextDocument()
+    doc.setHtml(win.toast.text())
+    return doc.toPlainText()
+
+
+def rename_row(win, pid, text):
+    """Rename the way the user does: double-click the point's LAYERS row, type the name, Enter."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    win.activateWindow()
+    item = win.layers.point_item(pid)
+    par = item.parent()
+    while par is not None:
+        par.setExpanded(True)
+        par = par.parent()
+    win.layers.scrollToItem(item)
+    pump(0.05)
+    at = win.layers.visualItemRect(item).center()
+    QTest.mouseClick(win.layers.viewport(), Qt.LeftButton, Qt.NoModifier, at)
+    pump(0.2 + QApplication.doubleClickInterval() / 1000.0)
+    QTest.mouseDClick(win.layers.viewport(), Qt.LeftButton, Qt.NoModifier, win.layers.visualItemRect(item).center())
+    pump(0.2)
+    ed = QApplication.focusWidget()
+    if type(ed).__name__ != "QLineEdit":
+        return False
+    QTest.keyClick(ed, Qt.Key_A, Qt.ControlModifier)
+    QTest.keyClicks(ed, text)
+    QTest.keyClick(ed, Qt.Key_Return)
+    pump(0.2)
+    return True
+
+
+def section_names():
+    print("[8] (G229) a name with '<' or '&' in it reads exactly as typed in every notice")
+    from PySide6.QtCore import Qt
+    path = os.path.join(OUT, "names", "gone.mp4")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 30, (160, 120))
+    bg = cv2.GaussianBlur(np.random.default_rng(9).integers(30, 90, size=(120, 160, 3), dtype=np.uint8), (0, 0), 1.5)
+    for f in range(60):
+        fr = bg.copy()
+        if f < 20:                                        # the dot is gone from frame 20 on
+            cv2.circle(fr, (40 + f, 60), 5, (230, 230, 230), -1, lineType=cv2.LINE_AA)
+        vw.write(fr)
+    vw.release()
+    win = new_window()
+    win._open_video(path)
+    check("(setup) the video opens", wait(lambda: win.state == READY and win.session is not None
+                                            and not win._loading, 30))
+    s = win.session
+    tip = s.add_point(0, 40.0, 60.0, name="<tip>")
+    s.points[tip].tracker = "spot"
+    other = s.add_empty_point()
+    s.points[other].name = "a<i>b"
+    third = s.add_point(0, 120.0, 30.0, name="R&D")
+    win._refresh_point_list()
+    # (a) a run's stop notice (markup in it): Moving spot loses <tip> where its dot is gone
+    win._goto(0, force=True)
+    select(win, [tip])
+    key(win, Qt.Key_T)
+    wait(lambda: win.state == READY and win.worker is None and not win._run_in_progress(), 60)
+    pump(0.3)
+    txt = shown(win)
+    check("[8] the run's stop notice names <tip> as typed", "<tip>" in txt, txt[:160])
+    # (b) any notice that marks up a point's name (the app's own <b>): a<i>b stays a<i>b, not "ab" in italics
+    win.toast.show_message(f"<b>{s.points[other].name}</b> sits on a dot about 9 px across.", "info", 5000)
+    pump(0.1)
+    txt = shown(win)
+    check("[8] a notice that marks up a<i>b names it as typed (no italics)", "a<i>b sits on a dot" in txt, txt[:160])
+    # (c) a plain notice: a new name that may not be used, typed in LAYERS
+    check("(setup) the LAYERS name editor opened", rename_row(win, third, "=R&D<b>x"))
+    txt = shown(win)
+    check("[8] the refused name reads as typed: =R&D<b>x", "=R&D<b>x" in txt, txt[:160])
+    close(win)
+
+
 SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close,
-            "undo": section_undo, "ball": section_ball, "hull": section_hull}
+            "undo": section_undo, "ball": section_ball, "hull": section_hull, "names": section_names}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
 for sect, fn in SECTIONS.items():
     if ONLY and sect not in ONLY:

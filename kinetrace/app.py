@@ -9,6 +9,7 @@ Threading rules (the GUI thread never blocks):
 from __future__ import annotations
 
 import contextlib
+import html
 import os
 import sys
 import time
@@ -1066,6 +1067,7 @@ class MainWindow(QMainWindow):
         self.grid.name_of = lambda i: self.project.name(i) if self.project is not None else ""
         self._wire_canvas(self.grid.canvases[0])
         self.toast = Toast(self.grid)   # important notices float over the video
+        self.toast.literal = self._typed_names      # (G229) shown as typed, never as markup
         self._build_ui_rest()
         # opening videos / a project: a card over the window says what is happening
         # (G31: without it the wait looked like a frozen app)
@@ -6064,8 +6066,9 @@ class MainWindow(QMainWindow):
             return
         self._refresh_skeleton_menu()
         self.toast.show_message(
-            f"Template <b>{t['name']}</b> saved ({len(t['landmarks'])} points, {len(t['bones'])} bones): select "
-            f"another animal and choose it under Skeleton ▾. ({Path(str(path)).name})", "success", 9000)
+            f"Template <b>{html.escape(t['name'], quote=False)}</b> saved ({len(t['landmarks'])} points, "
+            f"{len(t['bones'])} bones): select another animal and choose it under Skeleton ▾. "
+            f"({Path(str(path)).name})", "success", 9000)
 
     def _save_template_asking(self, t: dict, no_means: str = "") -> "Path | None | bool":
         """Save a skeleton template to skeletons/; a template of that name already there is replaced only
@@ -6987,9 +6990,9 @@ class MainWindow(QMainWindow):
             return
         from kinetrace.session import starts_formula
         if starts_formula(name):              # (M7) a spreadsheet would run it as a formula
-            self.toast.show_message(f"“{name.strip()}”: a name may not start with = + - or @ (a spreadsheet "
-                                    "opening the events export would run it as a formula), so those "
-                                    "characters were left out.", "warn", 8000)
+            self.toast.show_message(f"“{html.escape(name.strip(), quote=False)}”: a name may not start with = + - "
+                                    "or @ (a spreadsheet opening the events export would run it as a formula), "
+                                    "so those characters were left out.", "warn", 8000)
         s.add_event(name, start, end)
         self._on_events_changed()
         e = s.events[-1]
@@ -7121,6 +7124,18 @@ class MainWindow(QMainWindow):
         if extra:
             self._undo_extra.update(extra)
         self.act_undo.setEnabled(True)
+
+    def _typed_names(self) -> list[str]:
+        """(G229) The names the user typed that notices show - every camera's points and animals, the
+        cameras - for the notice float (`Toast.literal`): shown as typed, never read as markup."""
+        p = self.project
+        if p is None:
+            return []
+        out = {p.name(v) for v in range(p.n_views)}
+        for s in p.sessions:
+            out.update(q.name for q in s.points)
+            out.update(a.name for a in s.segments)
+        return [n for n in out if n]
 
     def _set_run_undo_point(self, snaps: dict) -> None:
         """One Ctrl+Z for a run that went through several cameras: `snaps` = {view: the snapshot
@@ -7604,9 +7619,9 @@ class MainWindow(QMainWindow):
         from kinetrace.session import starts_formula
         if starts_formula(desired):
             # a spreadsheet would run it as a formula when an export is opened (M7, owner decision)
-            self.toast.show_message(f"“{desired}” was not used: a name may not start with = + - or @, "
-                                    "because a spreadsheet opening an export would run it as a formula.",
-                                    "warn", 8000)
+            self.toast.show_message(f"“{html.escape(desired, quote=False)}” was not used: a name may not start "
+                                    "with = + - or @, because a spreadsheet opening an export would run it as a "
+                                    "formula.", "warn", 8000)
             return self.session.points[pid].name
         p = self.project
         old = self.session.points[pid].name

@@ -45,6 +45,7 @@ def pop_menu(menu: QMenu, pos):
 # a notice that carries HTML markup: the tags the app's notices use, so an error text with
 # a "<class 'x'>" in it is still shown as typed
 _TAG = re.compile(r"</?(?:b|i|u|em|strong|code|tt|br|p|a|span|ul|ol|li|h[1-6])\b[^<>]*>", re.I)
+_ENTITY = re.compile(r"&(?:lt|gt|amp|quot|nbsp|#[0-9]+);")     # (G229) an escaped character: the text is HTML
 
 
 class WheelSteps:
@@ -101,14 +102,24 @@ class Toast(QLabel):
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.hide)
         host.installEventFilter(self)
+        # (G229) -> the names the user typed (points, animals, cameras) a notice may hold; set by the window
+        self.literal = None
 
     SHOWN = 2          # notices kept on screen together: the latest two (G10)
 
-    @staticmethod
-    def _rich(text: str) -> str:
+    def _rich(self, text: str) -> str:
         """A notice as rich text: HTML one stays as it is, a plain one is escaped
-        (its '<' / '&' shown as typed) with its line breaks kept (G89)."""
-        return text if _TAG.search(text) else html.escape(text, quote=False).replace("\n", "<br>")
+        (its '<' / '&' shown as typed) with its line breaks kept (G89). (G229) The user's names
+        in it (`literal`) are shown as typed, never as markup: a notice is HTML only when its
+        markup is the app's own, and a name inside HTML is escaped (`a<i>b` was shown as an
+        italic "ab", `<tip>` vanished); an escaped character (&lt; &gt; &amp;) also means HTML."""
+        names = [n for n in (self.literal() if self.literal is not None else ())
+                 if n and n in text and any(c in n for c in "<>&")]
+        hit = re.compile("|".join(re.escape(n) for n in sorted(set(names), key=len, reverse=True))) if names else None
+        own = hit.sub("", text) if hit is not None else text
+        if not (_TAG.search(own) or _ENTITY.search(own)):
+            return html.escape(text, quote=False).replace("\n", "<br>")
+        return hit.sub(lambda m: html.escape(m.group(0), quote=False), text) if hit is not None else text
 
     def show_message(self, text: str, level: str = "info", ms: int = 6000, on_click=None) -> None:
         """`on_click` = what clicking the notice does (then it closes); without
