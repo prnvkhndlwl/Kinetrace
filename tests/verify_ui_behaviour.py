@@ -381,7 +381,45 @@ def section_trails():
     cv.deleteLater()
 
 
-SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails}
+def section_close():
+    print("[4] (I370) closing while the tracking worker does not stop in the close's 20 s: the window waits for it")
+    from PySide6.QtCore import QThread
+    from kinetrace import app as appmod
+
+    class Stuck(QThread):
+        """A worker in a long model load: it does not look at the pause flag; it ends 1.5 s later."""
+        def request_pause(self):
+            pass
+
+        def run(self):
+            t0 = time.perf_counter()
+            while time.perf_counter() - t0 < 1.5:
+                time.sleep(0.01)
+    win = new_window()
+    w = Stuck()
+    w.start()
+    win.worker, win.state = w, appmod.TRACKING
+    seen = []
+    real_wait_all, real_time = threads.wait_all, time.time
+    threads.wait_all = lambda ms=30000: (seen.append(w in threads.ORPHANS), real_wait_all(ms))[1]
+    calls = {"n": 0}
+
+    def clock():                                          # the close's 20 s wait runs out at once
+        calls["n"] += 1
+        return real_time() + (21.0 if calls["n"] > 1 else 0.0)
+    time.time = clock
+    try:
+        win.close()                                       # the user closes the window
+    finally:
+        time.time, threads.wait_all = real_time, real_wait_all
+    running = w.isRunning()
+    check("[4] the worker that outlived the wait is kept until it ends (in the registry the close waits for)",
+          seen and seen[0], seen)
+    check("[4] ... so the window closed only after it ended", not running)
+    w.wait(5000)
+
+
+SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
 for key, fn in SECTIONS.items():
     if ONLY and key not in ONLY:

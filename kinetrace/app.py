@@ -15289,6 +15289,8 @@ class MainWindow(QMainWindow):
             while self.worker is not None and not self.worker.wait(100) and time.time() < t_end:
                 QApplication.processEvents()
             QApplication.processEvents()
+            if self.worker is not None and self.worker.isRunning():
+                _retire(self.worker)        # (I370) it outlived the wait: the close waits for it (`wait_all`)
         else:
             self._user_paused = False        # (I331) nothing ran: no pause is pending (a Cancel keeps the window)
         if self._overlay is not None:
