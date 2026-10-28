@@ -114,16 +114,21 @@ rem moved or renamed, .venv\pyvenv.cfg still points at the old absolute path
 rem and the venv launcher exits with code 103. Detect that by trying to start
 rem it (a string compare would hit findstr's 127-char limit on long paths) and
 rem repoint the venv at wherever we are now.
+rem (X43) No ( ) block here, and the path is read only as !VENV_HOME!: delayed
+rem expansion pastes it in after cmd has read the line, so a ( ) & ^ % or ! in
+rem the folder's name ("Program Files (x86)") cannot end a block or start a
+rem command. VENV_HOME is set before delayed expansion is on: a ! survives.
 set "VENV_HOME=%~dp0.venv\base"
-if exist "%VENV_HOME%\python.exe" (
-    ".venv\Scripts\python.exe" -c "pass" >nul 2>nul || (
-        echo Folder was moved - relinking .venv to %VENV_HOME%
-        > ".venv\pyvenv.cfg" echo home = %VENV_HOME%
-        >> ".venv\pyvenv.cfg" echo include-system-site-packages = false
-        >> ".venv\pyvenv.cfg" echo version = 3.12.10
-        >> ".venv\pyvenv.cfg" echo executable = %VENV_HOME%\python.exe
-    )
-)
+if not exist "%VENV_HOME%\python.exe" goto :linked
+".venv\Scripts\python.exe" -c "pass" >nul 2>nul && goto :linked
+setlocal EnableDelayedExpansion
+echo Folder was moved - relinking .venv to !VENV_HOME!
+> ".venv\pyvenv.cfg" echo home = !VENV_HOME!
+>> ".venv\pyvenv.cfg" echo include-system-site-packages = false
+>> ".venv\pyvenv.cfg" echo version = 3.12.10
+>> ".venv\pyvenv.cfg" echo executable = !VENV_HOME!\python.exe
+endlocal
+:linked
 rem the Kinetrace shortcut: made when missing, rewritten after a folder move or a newer shortcut layout
 ".venv\Scripts\python.exe" -m kinetrace.winapp --if-stale --quiet >nul 2>nul
 rem ONE line on purpose (I142): cmd reads a batch file as it goes, and Help ->
