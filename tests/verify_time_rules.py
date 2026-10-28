@@ -309,10 +309,7 @@ s_slow._touch()
 cv_fast = win.grid.canvas(1)
 QTest.mouseClick(cv_fast.viewport(), Qt.LeftButton, Qt.NoModifier, cv_fast.viewport().rect().center())
 pump(0.4)
-if pj.active != 1:
-    win._set_active_view(1)                                 # (the click did not reach the tile offscreen)
-    pump(0.4)
-check(pj.active == 1, "(setup) working in the 60 fps camera")
+check(pj.active == 1, "a click on the 60 fps camera's view makes it the working camera", pj.active)
 s_fast = pj.sessions[1]
 j_fast = s_fast.pid_by_name(name)
 check(j_fast is not None and not s_fast.tracked[:, j_fast].any(), "(setup) the 60 fps camera has no data for it")

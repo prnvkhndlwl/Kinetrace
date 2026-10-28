@@ -32,7 +32,7 @@ import numpy as np
 
 from kinetrace.project import half_up
 
-VFOV_NAMES ={"W": "Wide", "L": "Linear", "N": "Narrow", "S": "SuperView", "H": "HyperView",
+VFOV_NAMES = {"W": "Wide", "L": "Linear", "N": "Narrow", "S": "SuperView", "H": "HyperView",
               "X": "Max SuperView", "M": "Max", "Z": "Linear + Horizon Lock"}
 OREN_NAMES = {"U": "upright", "D": "upside down", "L": "on its side (left)", "R": "on its side (right)"}
 TILT_DEV_DEG = 0.5      # the camera's tilt differs from its usual tilt by more than this = it moved (GRAV is steady to ~0.1-0.3 deg)
