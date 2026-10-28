@@ -11857,10 +11857,13 @@ class MainWindow(QMainWindow):
         if self._writer_busy():
             self._save_worker.wait()
 
-    def _freeze_now(self, pid: str, target, **kw):
+    def _freeze_now(self, pid: str, target, sync3d: bool = True, **kw):
         """(R49) The project as it is now, for a writer: the working state recorded first, and (I305) the 3D
-        result brought up to date with the data being written."""
-        self._sync_3d(force=True)
+        result brought up to date with the data being written. `sync3d` False (I372, owner 2026-10-28: the
+        recovery copy): the 3D result as it stands - the end of a run no longer computes it on the window's
+        thread for the copy; a recovery copy makes its 3D again once when it is opened (`_open_project_impl`)."""
+        if sync3d:
+            self._sync_3d(force=True)
         self._sync_ui_state()
         return projectfile.freeze(self.project, self._ui_global_state(), pid, target=target, **kw)
 
@@ -11894,7 +11897,8 @@ class MainWindow(QMainWindow):
         info = dict(base_saved_at=self._saved_at,
                     last_path=str(self.project_path) if self.project_path else None,
                     videos=[x.video_path for x in p.sessions], temporary=self._saved_at is None)
-        frozen = self._freeze_now(pid, self.project_path, binary_tracks=True, layout=self._project_layout())
+        frozen = self._freeze_now(pid, self.project_path, sync3d=False, binary_tracks=True,
+                                  layout=self._project_layout())
 
         def done(ok, err):
             if ok:
@@ -12782,7 +12786,7 @@ class MainWindow(QMainWindow):
         path = str(projectfile.project_root(path))   # kinetrace.json -> its folder, the project
         if self.state == TRACKING:
             return
-        self._sync3d_rebuild_open = recovered is not None      # (I305) see _sync_3d
+        self._sync3d_rebuild_open = False        # (I305, I372) set once it is known what opens (_open_project_impl)
         pname = Path(path).name
         # the card shows at once: reading the file happens right here
         ptok = self._busy_push(f"Opening {pname}", "Reading the project file…", 0,
@@ -12805,6 +12809,10 @@ class MainWindow(QMainWindow):
         if got is None:
             return
         plan = self._decide_unsaved_work(path, recovered, pname, *got, discard_pid=discard_pid)
+        # (I372) what opens is a recovery copy - chosen in Recover Unsaved Work, or this file's unsaved changes
+        # restored: its 3D result may lag its tracks (written mid-run, or without the end-of-run refresh), so
+        # it is made again once. Only `recovered` used to count: "Restore them?" kept a stale result.
+        self._sync3d_rebuild_open = plan.unsaved
         self._set_project_home(path, recovered, plan)
         proj = plan.proj
         located = self._locate_project_videos(proj)
@@ -14103,9 +14111,11 @@ class MainWindow(QMainWindow):
         blocks changed) rather than by hooking each edit. Only the changed cells are recomputed
         (`calib.update_reconstruction`, the same bits as Ctrl+3); a change of calibration, timing or cameras
         rebuilds the whole result once it has been still for a tick. Never while a Track press is not over
-        (between its passes / cameras / stretches too), opening, busy or a dialog is up. `force` (every
-        writer, `_freeze_now`): now, whatever is up, no waiting tick, and on this thread - what is saved
-        is always the result of the data saved. The project's own "changed" state is left to the edit."""
+        (between its passes / cameras / stretches too), opening, busy or a dialog is up. `force` (Save and the
+        other project writers, `_freeze_now`): now, whatever is up, no waiting tick, and on this thread - what
+        is saved is always the result of the data saved. (I372) The recovery copy is written without it: an
+        opened recovery copy makes its 3D again once instead. The project's own "changed" state is left to the
+        edit."""
         p = self.project
         if p is None or self._sync3d_busy or self._run_in_progress() or self._loading:
             return

@@ -78,6 +78,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_board_merged",
        # (I368-I377, G226-G231) sweep PR 7: the window's behaviour rows
        "verify_ui_behaviour",
+       # (I372) the end-of-run 3D in the background; recovery copies make their 3D again when opened
+       "verify_recovery_3d",
        # (I310, G211) File > Import > DLTdv Project
        "verify_dltdv_project",
        # (I321-I323, G220, G221) ChArUco boards: lens and camera calibration, Argus files
