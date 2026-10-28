@@ -105,6 +105,12 @@ MAP = [
       "verify_wand_subset", "verify_calib3d", "verify_auto3d"]),
     # (I302) estimate_offsets' verdict and its robust search; (G200) the picture the wand wizard opens
     ([K + "calib.py"], ["verify_wand_sync", "verify_review_app3"]),
+    # (I340-I356, G222-G224) the 2026-10-25 sweep's PR 3: calibration import / export, undistortion, the
+    # sub-frame search, motion sync, the wand, ChArUco, the xypts sidecar; the window halves
+    ([K + f for f in ("calib.py", "calibio.py", "lens.py", "sync.py", "wand.py", "wandsync.py", "wanddata.py",
+                      "charuco.py", "project.py", "dltdvproject.py", "retrack.py", "autoexport.py")],
+     ["verify_calib_sync_fixes"]),
+    ([K + f for f in ("app.py", "calib.py", "calibwizard.py", "view3d.py")], ["verify_calib_sync_gui"]),
     ([K + f for f in ("view3d.py", "calibview.py")], ["verify_wand_sync_gui"]),
     ([K + f for f in ("calibio.py", "trackio.py", "convert.py")], ["verify_interop", "verify_review_data",
                                                                   "verify_wand_subset"]),
@@ -132,6 +138,12 @@ MAP = [
     ([K + f for f in ("sync.py", "audiosync.py", "syncdialog.py")], ["verify_sync"]),
     ([K + f for f in ("body.py", "bodypose.py", "bodyview.py")], ["verify_body", "verify_body_gui", "verify_review_body"]),
     ([K + "render.py"], ["verify_render"]),
+    # (I357-I361) one pixel-centre rule: SAM prompts, the board editor / search, body + overlay drawing, the
+    # in-picture rule (session, retrack, canvas clicks, imports)
+    ([K + f for f in ("segmenter.py", "boardreview.py", "lens.py", "bodyview.py", "render.py", "session.py",
+                      "retrack.py", "canvas.py", "trackio.py", "pixels.py", "app.py", "calibview.py", "spots.py",
+                      "balls.py")],
+     ["verify_pixel_centre"]),
     # install, update, device, errors
     ([K + f for f in ("device.py", "downloads.py", "paths.py", "update.py", "updatedialog.py", "crashlog.py",
                       "errors.py", "welcome.py", "macapp.py", "winapp.py", "winlaunch.py", "appicon.py",

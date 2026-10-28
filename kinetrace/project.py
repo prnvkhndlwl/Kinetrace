@@ -807,9 +807,14 @@ class Project:
         w.writerow(["name", "cameras"])
         w.writerows([nm, self.n_views] for nm in names)
         w.writerow(["convention", dltdv_convention_text(flip_y, po)])
-        w.writerow(["rows", f"row k = frame k (from 0) of {self.name(ref)}, the reference camera; "
-                            "the other cameras are sampled at the same instant through their offsets"])
+        # (I356) the other cameras are at their NEAREST WHOLE frame (map_frame; DLTdv works in whole frames),
+        # not interpolated to the instant: say so, and give each camera's offset so a fractional one shows
+        w.writerow(["rows", f"row k = frame k (from 0) of {self.name(ref)}, the reference camera; the other "
+                            "cameras at their nearest whole frame through their offsets (DLTdv works in whole "
+                            "frames: a fractional part of an offset is not in these rows)"])
         w.writerows([f"cam{c + 1}", f"{self.name(c)} = {Path(s.video_path).name}".replace("\n", " ")]
                     for c, s in enumerate(self.sessions))
+        w.writerows([f"cam{c + 1}_offset", f"{float(self.offsets[c]):.10g} frames at rate {float(self.rates[c]):.10g} "
+                     "(local frame = rate x reference frame + offset)"] for c in range(self.n_views))
         side.write_text(buf.getvalue(), encoding="utf-8", newline="")
         return [str(path), str(side)]

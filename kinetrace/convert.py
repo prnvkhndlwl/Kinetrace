@@ -187,8 +187,12 @@ def cmd_points3d(a) -> int:
             raise Failure(f"{Path(a.calibration).name} does not record the cameras' picture sizes: give --size "
                           "WIDTHxHEIGHT, once for all cameras or once per camera")
         models = calibio.to_models(cal)
-        notes += [f"points written in the world of the cameras exported from {Path(a.calibration).name}"
-                  + (" (mirrored in Z, as those cameras are)" if models.mirrored else "")]
+        if to == "dltdv":       # (I340) the DLTdv pair: the dltCoefs.csv's (the DLT's own) world
+            notes += [f"DLTdv xyzpts written in the world of {Path(a.calibration).name}'s DLT coefficients "
+                      "(the dltCoefs.csv `convert calibration --to dlt` writes)"]
+        else:
+            notes += [f"points written in the world of the cameras exported from {Path(a.calibration).name}"
+                      + (" (mirrored in Z, as those cameras are)" if models.mirrored else "")]
     left = calibio.write_points3d(rec, a.output, to, models=models)
     for n in notes:
         _say("note:", n)

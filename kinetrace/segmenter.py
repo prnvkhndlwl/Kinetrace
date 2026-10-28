@@ -31,7 +31,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from kinetrace.pixels import centre_scale
+from kinetrace.pixels import centre_scale, centre_unscale
 from kinetrace import paths as _paths
 
 MODELS_DIR = _paths.MODELS_DIR                      # (R48) the one models folder
@@ -283,10 +283,14 @@ class SegSession:
         self.session = seg.proc.init_video_session(inference_device=seg.device, dtype=seg.dtype)
 
     def _to_work(self, xy) -> list[float]:
-        # per axis: the two axes of the working size are rounded separately (I61)
-        sx = self.work[0] / self.native_size[0]
-        sy = self.work[1] / self.native_size[1]
-        return [float(xy[0]) * sx, float(xy[1]) * sy]
+        # per axis: the two axes of the working size are rounded separately (I61). The pixel-centre rule,
+        # the exact inverse of the outlines' way back (`outline_polygons`): p * s put a 4K click 1.4 native
+        # px down-right of where it was made (I357). No resize = the click itself, bit for bit
+        if tuple(self.work) == tuple(self.native_size):
+            return [float(xy[0]), float(xy[1])]
+        sx = self.native_size[0] / self.work[0]
+        sy = self.native_size[1] / self.work[1]
+        return [float(centre_unscale(float(xy[0]), sx)), float(centre_unscale(float(xy[1]), sy))]
 
     def step(self, frame_rgb: np.ndarray, frame_idx: int,
              prompts: list[Prompt] | None = None) -> FrameMasks:

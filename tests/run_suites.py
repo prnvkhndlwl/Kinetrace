@@ -72,6 +72,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_lens_turn",
        # (G176) one lens file on several cameras
        "verify_lens_attach",
+       # (I357-I361) one pixel-centre rule
+       "verify_pixel_centre",
        # (I363) a checkerboard view with two corners on one spot is flagged and never auto-picked
        "verify_board_merged",
        # (I310, G211) File > Import > DLTdv Project
@@ -92,6 +94,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_camera_views", "verify_save_during_run",
        # (I326-I334) save / open / recovery safety (the 2026-10-25 sweep's PR 1)
        "verify_save_safety",
+       # (I340-I356, G222-G224) calibration, 3D and sync fixes (the 2026-10-25 sweep's PR 3)
+       "verify_calib_sync_fixes", "verify_calib_sync_gui",
        # (I266) a video that decodes differently on another computer: the fingerprint, exact seeks
        "verify_fingerprint", "verify_fingerprint_gui", "verify_decode_identity",
        # (I271, I300-I304, G199, G200) camera timing from the wand: refine, checks, pending offsets, the picture

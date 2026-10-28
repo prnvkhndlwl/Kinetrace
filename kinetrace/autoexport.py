@@ -37,6 +37,10 @@ FORMATS = (
 )
 KEYS = tuple(f[0] for f in FORMATS)
 STATE = "exports.json"
+# (I340, I356; review) what a file is made from includes HOW it is made: a writer that changed puts its token
+# in the fingerprint, so a project saved before rewrites that file once on its next save (the DLTdv xyzpts in
+# the dltCoefs.csv's world; the all-cameras sidecar's wording and offsets) instead of keeping the old one
+WRITER = {"xyz_dltdv": "xyzpts in the DLT's own world (I340)", "dltdv_all": "sidecar with offsets (I356)"}
 
 
 _FOLDER = projectfile.CAMERA_FOLDER                       # the one camera-folder rule (R16)
@@ -74,10 +78,9 @@ def _fingerprint(index: dict, prefixes: tuple, *extra: str) -> str:
 
 
 def _write_points_in_camera_world(calibio, project, path: str) -> None:
-    """xyzpts.csv in the world the exported cameras (File -> Export -> Calibration) are in:
-    mirrored in Z for a left-handed easyWand / DLTdv calibration, the file's origin
-    restored for a K + R/t import. The probe is the one the export dialog takes,
-    so the two agree (I170)."""
+    """xyzpts.csv (DLTdv) in the world of the dltCoefs.csv File -> Export -> Calibration
+    writes beside it: the DLT coefficients' own (I340; `write_points3d` keeps the "dltdv"
+    kind there whatever the models say, so this matches Ctrl+E's DLTdv xyzpts)."""
     import numpy as np
     rec = project.reconstruction
     probe = (np.nanmedian(rec.xyz.reshape(-1, 3), axis=0) if np.isfinite(rec.xyz).any() else None)
@@ -113,13 +116,14 @@ def refresh(root: str | Path, formats: list[str], scorer: str = "Kinetrace", can
             continue
         if key == "dltdv_all":
             if len(cams) >= 2:
-                jobs.append((pattern, _fingerprint(index, ("cameras/", "project.json"), key),
+                jobs.append((pattern, _fingerprint(index, ("cameras/", "project.json"), key, WRITER[key]),
                              lambda p, path: p.export_multi_dltdv(path)))
         elif key == "xyz_dltdv":
             if has_3d:
                 # in the world of the cameras Export Calibration writes, so the points reproject through them (I170);
                 # the calibration is part of what the file is made from
-                jobs.append((pattern, _fingerprint(index, ("reconstruction/", "calibration.json"), key),
+                jobs.append((pattern, _fingerprint(index, ("reconstruction/", "calibration.json"), key,
+                                                    WRITER[key]),
                              lambda p, path: _write_points_in_camera_world(calibio, p, path)))
         else:
             for i, (folder, name) in enumerate(cams):

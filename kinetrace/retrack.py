@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from kinetrace.calib import epipolar_polyline, intersect_polylines
+from kinetrace.calib import BLAME_MARGIN, epipolar_polyline, intersect_polylines
 
 MIN_RUN = 3             # frames: shorter runs are noise, not a slide
 GAP_JOIN = 2            # runs separated by <= this many clean frames are one stretch
@@ -97,10 +97,17 @@ def edge_tolerance(width: float) -> float:
 
 
 def outside_by(xy, width: float, height: float) -> float:
-    """Distance (px) from `xy` to the picture [0, w-1] x [0, h-1]; 0 inside."""
-    dx = max(0.0, -float(xy[0]), float(xy[0]) - (float(width) - 1.0))
-    dy = max(0.0, -float(xy[1]), float(xy[1]) - (float(height) - 1.0))
+    """Distance (px) from `xy` to the picture's outer edges [-0.5, w - 0.5] x [-0.5, h - 0.5]
+    (`session.in_frame`'s rule, I361); 0 inside."""
+    dx = max(0.0, -0.5 - float(xy[0]), float(xy[0]) - (float(width) - 0.5))
+    dy = max(0.0, -0.5 - float(xy[1]), float(xy[1]) - (float(height) - 0.5))
     return float(np.hypot(dx, dy))
+
+
+def _onto_picture(v: float, n: float) -> float:
+    """One coordinate of a ray crossing: kept where it is inside the picture's edges, else (outside by
+    no more than `edge_tolerance`) the border pixel's centre, 0 or n - 1 (I361)."""
+    return v if -0.5 <= v < n - 0.5 else float(np.clip(v, 0, n - 1))
 
 
 def ray_target(project, view: int, name: str, local_frame: int, probe=None,
@@ -164,8 +171,8 @@ def ray_target(project, view: int, name: str, local_frame: int, probe=None,
             why.append(f"the other cameras put it {off:.0f} px outside this camera's picture there (out of the "
                        "picture = no data): clear its track on those frames instead of re-tracking")
         return None
-    x = float(np.clip(target[0], 0, s.width - 1))
-    y = float(np.clip(target[1], 0, s.height - 1))
+    x = _onto_picture(float(target[0]), s.width)
+    y = _onto_picture(float(target[1]), s.height)
     return np.array([x, y]), len(lines)
 
 
@@ -237,7 +244,7 @@ def _blame(project, stretches: list[Stretch], threshold_px) -> list[Stretch]:
         # (it used to accept whichever of "half the full residual" and "half the band" was LARGER,
         # so the others could still disagree beyond the band and be called "agreeing")
         agree = vrest[bv] <= thr[bv] and (not np.isfinite(vfull[bv]) or vrest[bv] <= 0.5 * vfull[bv])
-        clear = len(order) == 1 or vrest[order[1]] > 1.5 * vrest[bv]
+        clear = len(order) == 1 or vrest[order[1]] > BLAME_MARGIN * vrest[bv]           # (I349) one margin
         for st in g:
             if st.view == bv and agree and clear:
                 continue

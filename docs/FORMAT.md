@@ -28,7 +28,7 @@ with one long `tracks.csv` per camera) still opens; see the end.
 | | |
 |---|---|
 | Frames | counted from **0** |
-| Pixels | OpenCV **pixel centres counted from 0**: the centre of the top-left pixel is (0, 0), x to the right, y **down**. The last pixel of a 1920-wide picture has x = 1919. (DLTdv8 and MATLAB count from 1: subtract 1.) |
+| Pixels | OpenCV **pixel centres counted from 0**: the centre of the top-left pixel is (0, 0), x to the right, y **down**. The last pixel of a 1920-wide picture has x = 1919. The picture's outer edges are at -0.5 and width - 0.5, so a position on the outer half of the first column or row is slightly negative (x = -0.3 is on pixel 0; 1919.7 is outside). (DLTdv8 and MATLAB count from 1: subtract 1.) |
 | Missing data | an **empty cell** (not 0, not `NaN`) |
 | True / false | `1` / `0` (`TRUE` / `FALSE` are accepted when read) |
 | Numbers | `.` decimal point, no thousands separator. 32-bit values (positions, confidence) are written as the shortest text that reads back to the same number exactly |
@@ -248,7 +248,8 @@ counted from 1) or counted from the bottom edge is converted once, on import;
 a file written with `pixel_origin` 1 (an older save) is converted when the
 project opens and saved 0-based. The dltCoefs.csv export adds the 1 back.
 `undistort` = the lens correction applied to raw pixels before the DLT
-(`none`, `opencv` with K / dist / optional P, `lwm` with control points, or
+(`none`, `opencv` with K / dist / optional P (written whenever it is not exactly K;
+absent = K), `lwm` with control points, or
 `dltdv`: DLTdv's own undistortion of a camera -- `model` `ocam` (the GoPro
 fisheye: OCamCalib's `ss`, `xc`, `yc`, `c`, `d`, `e`, re-projected by a pinhole at
 focal `width` / 4 about the picture centre) or `brown3` (a DLTdv camera profile:
@@ -441,7 +442,7 @@ beside them; the DLTdv exports do not. For reference:
 |---|---|---|
 | **DeepLabCut** | top-left, pixel centres on whole numbers (as Kinetrace) | CSV with `scorer` / `bodyparts` / `coords` rows, `x, y, likelihood`, first column = frame (videos analysed by DLC; single animal). Kinetrace also writes the **multi-animal** CSV (`scorer` / `individuals` / `bodyparts` / `coords` rows): one individual per animal, the Scene points as DeepLabCut's unique body parts under `single` |
 | **SLEAP** | (0, 0) is the centre of the top-left pixel (as Kinetrace; sleap-io documentation) | reads the SLEAP 1.x analysis CSV (`track, frame_idx, instance.score, node.x, node.y, node.score`) and sleap-io's `sleap` / `instances` / `points` / `frames` CSV layouts, one track; writes the analysis CSV with one track per animal plus a `scene` track for the Scene points (`track, frame_idx, instance.score, <part>.x, <part>.y, <part>.score`) |
-| **DLTdv8 / easyWand** | first pixel = **1**, top-left | xypts `pt1_cam1_X …` (NaN = none) with a `_pointnames.csv` sidecar (CSV-quoted, so a landmark name with a comma or a quote survives; it holds the real names). DLTdv8a's own save writes `pt1_cam1_U`, `pt1_cam1_V` …: the same raw clicks (DLTdv applies its lens only when it computes 3D); Import → Tracks reads both, Kinetrace writes `_X / _Y`; xyzpts `pt1_X …` (a frame with no 3D position is a row of NaN / empty cells, so row = reference frame); dltCoefs.csv (11 rows, a column per camera). A DLTdv export from Kinetrace is **points only**: the points file and its `_pointnames.csv`, with no events or silhouette files beside it. Reads a whole DLTdv8 project, `…_dvProject.mat` (MATLAB v7.3 or v7; File → Import → DLTdv Project): videos, `video.offset` and frame-rate ratios (row r, 1-based, is frame ratio × r + offset of each video), DLT coefficients, the LWM lens profiles, the clicks, and DLTdv's stored 3D (compared, not imported) |
+| **DLTdv8 / easyWand** | first pixel = **1**, top-left | xypts `pt1_cam1_X …` (NaN = none) with a `_pointnames.csv` sidecar (CSV-quoted, so a landmark name with a comma or a quote survives; it holds the real names; the all-cameras one also says the other cameras are at their nearest whole frame and gives a `camK_offset` row per camera: offset and frame rate). DLTdv8a's own save writes `pt1_cam1_U`, `pt1_cam1_V` …: the same raw clicks (DLTdv applies its lens only when it computes 3D); Import → Tracks reads both, Kinetrace writes `_X / _Y`; xyzpts `pt1_X …` (a frame with no 3D position is a row of NaN / empty cells, so row = reference frame); dltCoefs.csv (11 rows, a column per camera). A DLTdv export from Kinetrace is **points only**: the points file and its `_pointnames.csv`, with no events or silhouette files beside it. Reads a whole DLTdv8 project, `…_dvProject.mat` (MATLAB v7.3 or v7; File → Import → DLTdv Project): videos, `video.offset` and frame-rate ratios (row r, 1-based, is frame ratio × r + offset of each video), DLT coefficients, the LWM lens profiles, the clicks, and DLTdv's stored 3D (compared, not imported) |
 | **older DLTdv, Argus** | first pixel = 1, y up from the **bottom** edge | xypts (the sidecar's `convention` line says `bottom-left`); Argus lens profile lines `cam f w h cx cy AR k1 k2 t1 t2 k3` (OpenCV pixels; a line with a negative AR is y up, as Argus's ChArUco script writes it: cy' = h − cy, read back turned). The ChArUco wizard's *Save for Argus…* writes Argus's ChArUco files: `camera_profile.txt` (tab-separated, a line per camera from 1, 6 decimals, y up), `paired_pts-xypts.csv` (`pt1_cam1_x, pt1_cam1_y, … pt2_camC_y`, a row per board instant: the long edge's end corners) and `unpaired_pts-xypts.csv` (`pt1_cam1_x …`, a row per other corner seen by two or more cameras): raw pixels, y' = h − y, `nan` where unseen |
 | **Anipose / aniposelib** | OpenCV | `calibration.toml`: `[cam_0]` `name`, `size = [w, h]`, `matrix` (K), `distortions` (k1 k2 p1 p2 k3; 4 + `fisheye = true`), `rotation` (Rodrigues vector), `translation`; x_cam = R X + t. 3D output CSV `name_x, name_y, name_z, name_error, name_ncams, name_score, …, fnum` |
 | **OpenCV** | 0-based | FileStorage `.yml` / `.json`: per camera `camera_matrix`, `distortion_coefficients`, `image_width`, `image_height`, `rvec`, `tvec`, `R` |
@@ -451,7 +452,11 @@ beside them; the DLTdv exports do not. For reference:
 A calibration made by easyWand or DLTdv usually describes a **mirrored**
 (left-handed) world, which the K + R/t formats cannot hold: Kinetrace then
 exports that world mirrored in Z and says so, and 3D points exported beside
-it are mirrored the same way. DLTdv's own lens correction (its fisheye or
+it are mirrored the same way. The DLTdv pair is not: a dltCoefs.csv holds the
+coefficients in the calibration's own world, and DLTdv xyzpts are written in
+that world too, so the two reproject onto the clicks as DLTdv's own do (for a
+K + R/t import that is Kinetrace's moved origin: a DLT cannot hold an origin a
+camera stands on). DLTdv's own lens correction (its fisheye or
 camera-profile model, or a local weighted mean) is not an OpenCV model: an OpenCV model is fitted to it and its worst
 error is reported.
 

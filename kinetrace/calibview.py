@@ -111,8 +111,9 @@ def camera_sees(cam: CameraCalibration, X: np.ndarray, probe, reach: tuple | Non
     if not len(idx):
         return out
     uv = cam.project(X[idx])
-    inside = (np.isfinite(uv).all(axis=1) & (uv[:, 0] >= -0.5) & (uv[:, 0] <= cam.width - 0.5)
-              & (uv[:, 1] >= -0.5) & (uv[:, 1] <= cam.height - 0.5))
+    # the picture's outer edges, `session.in_frame`'s rule (I361; not imported: session pulls body / segmenter)
+    inside = (np.isfinite(uv).all(axis=1) & (uv[:, 0] >= -0.5) & (uv[:, 0] < cam.width - 0.5)
+              & (uv[:, 1] >= -0.5) & (uv[:, 1] < cam.height - 0.5))
     if cam.has_lens_correction and inside.any():
         j = np.nonzero(inside)[0]
         q = cam.to_calib_frame(uv[j])

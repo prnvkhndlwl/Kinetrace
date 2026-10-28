@@ -578,8 +578,9 @@ def _i170():
     models = calibio.to_models(pf.load(path).calibration, ["camA", "camB"], probe)
     want = models.world_to_export(rec.xyz.reshape(-1, 3)).reshape(rec.xyz.shape)
     check(models.mirrored, "the calibration is left-handed: its exported cameras are mirrored in Z")
-    check(np.allclose(got, want, atol=1e-5) and not np.allclose(got, rec.xyz, atol=1e-3),
-          "the points are the ones the exported cameras reproject (mirrored / shifted like them)")
+    # (I340) exports/xyzpts.csv pairs with the dltCoefs.csv: the DLT's own world, not the K + R/t cameras'
+    check(np.allclose(got, rec.xyz, atol=1e-5) and not np.allclose(got, want, atol=1e-3),
+          "the DLTdv points are in the dltCoefs.csv's (the calibration's own) world, not mirrored / shifted (I340)")
 
 
 # ------------------------------------------------------------------ crashlog

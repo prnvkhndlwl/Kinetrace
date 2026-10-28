@@ -435,10 +435,8 @@ def apply(session, imp: Imported, camera: int = 0, frame_of_row=None) -> dict:
     fr = rows if frame_of_row is None else np.array(
         [-1 if (f := frame_of_row(int(r))) is None else int(f) for r in rows], np.int64)
     has = np.isfinite(x) & np.isfinite(y)
-    # (I254) pixel 0's outer half-pixel counts as pixel 0 (the canvas does the same),
-    # then the session's own picture rule: 0 <= x < W, 0 <= y < H
-    x = np.where((x >= -0.5) & (x < 0.0), 0.0, x)
-    y = np.where((y >= -0.5) & (y < 0.0), 0.0, y)
+    # the session's own picture rule, the pixel edges -0.5 <= x < W - 0.5 (I361; the I254 nudge of
+    # pixel 0's outer half onto 0.0 dodged the old [0, W) rule and is gone: a position is kept as it is)
     inside = in_frame(np.stack([x, y], axis=-1), W, H)
     in_video = (fr >= 0) & (fr < T)
     beyond = int((has & ~in_video[:, None]).sum())

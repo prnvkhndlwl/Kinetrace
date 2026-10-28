@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 from kinetrace import theme
 from kinetrace.canvas import bgr_pixmap
 from kinetrace.body import MIN_JOINT_CONF, BodyTrack, canon, is_finger, median_axis
+from kinetrace.pixels import centre_scale
 from kinetrace.hull import _view_rotation
 from kinetrace.render import VideoWriteJob, _text, is_rate
 
@@ -156,6 +157,12 @@ def _pt(p) -> tuple[int, int]:
     return int(round(float(p[0]))), int(round(float(p[1])))
 
 
+def _scaled(xy, sxy):
+    """Native positions in the drawn picture: unchanged at full size (`sxy` None), else the pixel-centre
+    rule with the resized picture's own per-axis scale (I359: x * s drew a 4K joint 2.2 px down-right)."""
+    return xy if sxy is None else centre_scale(np.asarray(xy, np.float64), sxy)
+
+
 def draw_pose(bgr: np.ndarray, track: BodyTrack, frame: int,
               opts: PoseDrawOptions | None = None, scale: float = 1.0) -> np.ndarray:
     """Draw the 2D skeleton onto a copy of `bgr`. Pure OpenCV, no Qt -- the
@@ -171,6 +178,9 @@ def draw_pose(bgr: np.ndarray, track: BodyTrack, frame: int,
         img = bgr.copy()
     if track is None or not (0 <= frame < track.n_frames):
         return img
+    # cv2 resized to a whole-pixel size: the real scale per axis is that size over the frame's
+    sxy = (None if scale == 1.0
+           else np.array([img.shape[1] / bgr.shape[1], img.shape[0] / bgr.shape[0]], np.float64))
     th = max(1, int(round(2 * opts.thickness * max(0.5, scale))))
     rad = max(2, int(round(3.5 * opts.thickness * max(0.5, scale))))
     people = ([opts.person] if opts.person is not None else range(track.n_people))
@@ -178,13 +188,14 @@ def draw_pose(bgr: np.ndarray, track: BodyTrack, frame: int,
     for p in people:
         if not (0 <= p < track.n_people) or not track.has(frame, p):
             continue
-        uv = track.joints2d[frame, p] * scale
+        uv = _scaled(track.joints2d[frame, p], sxy)
         cf = track.conf[frame, p]
         # NaN confidence = the backend gives no score: drawn, never hidden
         ok = np.isfinite(uv).all(axis=1) & ~(cf < opts.min_conf)
         if opts.box:
-            b = track.bbox[frame, p] * scale
-            if np.isfinite(b).all() and b[0] >= 0:
+            b0 = track.bbox[frame, p]
+            b = np.asarray(_scaled(np.reshape(b0, (2, 2)), sxy)).ravel()
+            if np.isfinite(b).all() and b0[0] >= 0:
                 cv2.rectangle(img, _pt(b[:2]), _pt(b[2:]), COL_DIM, max(1, th - 1), cv2.LINE_AA)
         if opts.bones:
             for i, j in bones:
@@ -204,7 +215,7 @@ def draw_pose(bgr: np.ndarray, track: BodyTrack, frame: int,
                             cv2.FONT_HERSHEY_SIMPLEX, 0.32 * max(1.0, scale), COL_MID, 1,
                             cv2.LINE_AA)
         if opts.angle_labels and opts.angles_shown:
-            _label_angles(img, track, frame, p, opts, scale)
+            _label_angles(img, track, frame, p, opts, scale, sxy)
     return img
 
 
@@ -250,9 +261,9 @@ def _angle_anchor(track: BodyTrack, name: str) -> tuple[int | None, int, int]:
     return _first_joint(track, ("neck", "left_shoulder")), 8, 11
 
 
-def _label_angles(img, track, frame, person, opts, scale) -> None:
+def _label_angles(img, track, frame, person, opts, scale, sxy=None) -> None:
     defs, vals = track.angles(person)
-    uv = track.joints2d[frame, person] * scale
+    uv = _scaled(track.joints2d[frame, person], sxy)
     for k, d in enumerate(defs):
         if d.name not in opts.angles_shown or not np.isfinite(vals[frame, k]):
             continue

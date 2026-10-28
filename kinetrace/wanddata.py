@@ -353,8 +353,9 @@ def find_fall(project, name: str, t0: int | None = None, t1: int | None = None,
     uv = _sample_name(project, name, t)                              # (M, C, 2)
     seen = np.isfinite(uv).all(axis=2)
     ok = seen.sum(axis=1) >= 2
-    # "not moving": 1 px per frame at 640 px wide, 3 px at 4K (a hand-digitized jitter)
-    still = np.array([max(1.0, 0.0008 * float(s.width or 0)) for s in project.sessions])
+    # "not moving": 1 px per frame at 640 px, 3 px at 4K (a hand-digitized jitter), by the LONG side (I354: the
+    # width made a portrait 4K camera 1.7 px where the same camera in landscape is 3.1; landscape unchanged)
+    still = np.array([max(1.0, 0.0008 * float(max(s.width or 0, s.height or 0))) for s in project.sessions])
     best = None
     for a, b in contiguous_runs(ok):
         r = _fall_in_run(uv[a:b + 1], seen[a:b + 1], still, min_frames)
