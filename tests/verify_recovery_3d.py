@@ -36,6 +36,7 @@ os.environ["KINETRACE_UPDATE_API"] = "http://127.0.0.1:9"
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 from PySide6.QtCore import QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox  # noqa: E402
 
@@ -47,7 +48,7 @@ QMessageBox.critical = staticmethod(lambda *a, **k: (_ for _ in ()).throw(Assert
 app = QApplication.instance() or QApplication([])
 
 from _stubs import stub_track_choice  # noqa: E402
-from kinetrace import recovery  # noqa: E402
+from kinetrace import recovery, threads  # noqa: E402
 from kinetrace.app import READY, TRACKING, MainWindow  # noqa: E402
 from kinetrace.calib import (Calibration, CameraCalibration, NoUndistort, OpenCVUndistort, dlt_from_camera,  # noqa
                              reconstruct)
@@ -441,9 +442,12 @@ for w_ in QApplication.topLevelWidgets():
             w_.project.dirty = False
             for s_ in w_.project.sessions:
                 s_.dirty = False
-    probe = getattr(w_, "_dev_probe", None)
-    if probe is not None:
-        probe.wait(10000)
+        probe = getattr(w_, "_dev_probe", None)
+        if probe is not None:
+            probe.wait(10000)
+        w_.closeEvent(QCloseEvent())                  # a "crashed" window is only hidden: stop its threads
+threads.wait_all()                                    # a running QThread dropped at exit aborts (0xC0000409)
+pump(0.2)
 recovery.discard(A._project_id)
 print("\nverify_recovery_3d: " + ("PASSED" if not FAILS else f"FAILED ({len(FAILS)}): " + "; ".join(FAILS)))
 sys.exit(1 if FAILS else 0)
