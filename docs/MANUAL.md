@@ -1679,7 +1679,11 @@ the numbers just get measured from the new starting point.
    **CLEAR** (use it), **WEAK** (check by eye first) or **NONE** (nothing all
    cameras heard or saw in that stretch — pick a stretch around a clap, a
    flash or the wand entering, tick *Use the whole recording instead*, widen
-   the search, or switch method; a NONE row starts unticked). The line under
+   the search, or switch method; a NONE row starts unticked). Motion also finds
+   a camera that was started later than the reference with *Use the whole
+   recording*, and lines up a camera filmed at another frame rate (a 240 fps
+   camera in a 120 fps rig) to within half a reference frame;
+   *Estimate Sub-frame Offsets* then takes it the rest of the way. The line under
    the button also names a video with no sound track (use Motion for it), a
    reference camera whose stretch is silent, a file that could not be read at
    all (hover its verdict for the reason: it is not the same as having no
@@ -2050,7 +2054,12 @@ implies corner to corner; compare that with the camera's own figure (a GoPro
 instead it says the model **runs away in the corners**, the curve is being
 stretched past where the board ever went: the board reached too little of the
 picture, so out in the corners the model has nothing to hold on to and would
-place a point at infinity. That happens most with the fisheye model. Film the
+place a point at infinity. That happens most with the fisheye model. A standard
+model can also **fold** out there: past a certain distance from the centre its
+curve turns back, so two places in the picture would undistort to the same
+point and a click a few pixels further out jumps hundreds of pixels; the part
+of the picture past the fold counts as not described too (no 3D point is made
+from a click there). Film the
 board again pushed into every corner, or use the standard model if the report
 says it fits about as well. The wizard never picks a runaway model on its own: with *Lens type* on *Not
 sure* it fits both models to the very same boards, and when it leaves the
@@ -2289,7 +2298,10 @@ five pages and explains each one:
    DLTdv profile, **Remove** drops it, and **Use for all** gives this camera's
    profile to every other camera with the same picture size (identical
    cameras: calibrate one lens, share it; one filmed on its side gets it turned
-   to fit). A camera that already has a
+   to fit). Nothing on this page changes the project yet: the lenses you
+   calibrate, load, share or remove here go in with the calibration when you
+   press *Use this calibration* (one **Ctrl+Z** then takes back both), and
+   **Cancel** leaves every camera's lens as it was. A camera that already has a
    different profile of its own is replaced only if you say yes. A shared
    profile says *the same profile as …* on its row. With a profile on every
    camera of this run (the ticked ones; a camera left out says *not in this
@@ -2516,7 +2528,11 @@ pixel). Two things it tells you about when they happen: coefficients from
 easyWand or DLTdv often describe a **mirrored** world, which those formats
 cannot hold, so the exported world is mirrored in Z (and 3D points exported
 with it are mirrored the same way; **3D → Set World Axes…** gives such a
-calibration a proper right-handed world instead, with nothing left to mirror); and DLTdv's own lens correction is not
+calibration a proper right-handed world instead, with nothing left to mirror).
+The **dltCoefs.csv** is the exception: DLT coefficients can hold a mirrored
+world, so they stay in the calibration's own world, and so do 3D landmarks
+exported as **DLTdv xyzpts** — the two files belong together, as they would
+from DLTdv itself. And DLTdv's own lens correction is not
 OpenCV's, so an OpenCV lens model is fitted to it and its largest error is
 named.
 
@@ -2553,6 +2569,10 @@ Four steps, in this order:
    program asks instead of guessing. The choice starts fresh for every file you
    open. A Kinetrace `.kcal.json`, a DLTdv8 project and an OpenCV-style camera
    file (below) state their own convention, so for those the choice is locked.
+   Importing over a calibration you already have can be taken back: one
+   **Ctrl+Z** puts the earlier one back. A camera the file has no calibration
+   for (DLTdv keeps a column of zeros for a video it did not calibrate) comes in
+   as *not calibrated*.
    Inside the program every calibration is then kept the way Kinetrace counts
    pixels (from 0, y downwards); the export for DLTdv / easyWand / MATLAB adds
    the 1 back. When
@@ -2593,7 +2613,11 @@ Four steps, in this order:
    disagreement barely changes with the timing (slow motion, few shared
    frames, noisy tracks): apply only if the numbers look plausible. **NOT
    SUPPORTED** means the tracks carry no timing information at all — do not
-   apply; line the cameras up from a flash or a clap instead. When the landmarks
+   apply; line the cameras up from a flash or a clap instead. Each camera is
+   searched over one of its own frames either side of its offset, or as many
+   frames as its rate is a multiple of the reference's (two for a 240 fps
+   camera in a 120 fps rig: motion sync places such a camera only to within
+   that). When the landmarks
    simply do not move enough in the window to time anything (a still marker
    looks the same at every offset), it says **flat: the landmarks do not move
    enough to time it** and advises you not to apply: pick a stretch where
@@ -2630,7 +2654,11 @@ Four steps, in this order:
    project saved before this version may hold an older result: press Ctrl+3
    once. The **3D view** window opens (**3D → Show 3D View**, **Ctrl+5**,
    opens and closes it later): drag to turn it, wheel to zoom, middle-drag or
-   Shift+drag to pan, double-click to reset. It follows the frame you are on,
+   Shift+drag to pan, double-click to reset. A calibration from easyWand or
+   DLTdv often describes a **mirrored** world (its X, Y, Z axes form a left hand);
+   the 3D view draws it the way the room looks — a left foot on the left — and
+   its top line says the world is mirrored. **3D → Set World Axes…** gives it
+   ordinary right-handed axes. It follows the frame you are on,
    **and a tracking run as it goes**: while you track, the points being
    tracked appear in 3D frame by frame, with the trail behind them, like the
    camera views (the full 3D result is brought up to date when the run ends;
@@ -2838,8 +2866,20 @@ many cameras saw it, and each camera's own error in pixels. Everything 3D is
 saved in the project, so reopening it brings the calibration, the offsets, the
 positions and the bands back. The 3D points you export always come in the same
 world as the cameras you export with **File → Export → Calibration…**, so the two
-can be used together in another program. A DLTdv xyzpts file keeps a frame with
+can be used together in another program: the Anipose and Kinetrace points go with
+the Anipose / OpenCV / MATLAB / Blender cameras, and **DLTdv xyzpts go with the
+dltCoefs.csv** (both in the calibration's own world; the export's message says so
+when the two worlds differ). A DLTdv xyzpts file keeps a frame with
 no 3D position as an empty frame, so every later frame stays on its own row.
+
+**Which camera is wrong?** Each camera's own error in the second file (and the red
+"disagrees" band on the timeline) says how far *that camera's* click is from the 3D
+point. It cannot always name the camera that made the mistake: when one camera alone
+pins a direction — two cameras side by side, a third from the side — the 3D point
+moves to wherever that camera says, so a 50 px slip in the side camera reads about
+0.1 px for it and about 1 px for each of the two good cameras. Look at a stretch in
+every camera before blaming one; **3D → Re-track Disagreeing Stretches** tests each
+camera by leaving it out and says when no single camera stands out.
 
 ### Choosing the axes of the 3D world
 
@@ -3153,7 +3193,7 @@ next camera's picture and export again for each one.
 | **DLTdv xypts CSV, bottom-left origin** | the same for older DLTdv versions and Argus Clicker, which count y from the bottom edge. If a re-imported file lands upside down, you picked the wrong one of these two |
 | **Sparse TSV** | only the frames that actually have data — much smaller for sparse tracks |
 | **MATLAB (.mat)** | to load straight into MATLAB, including confidence, the silhouette, events and notes. Pixels are counted from 0 like the Wide CSV (the file's `pixel_convention` says so; add 1 for DLTdv8-style coordinates); `NaN` where there is no data |
-| **ALL CAMERAS — DLTdv8 xypts** | **the 3D one.** Every camera in one file (`pt1_cam1_X`, `pt1_cam1_Y`, `pt1_cam2_X` …), landmarks matched across cameras **by name**, DLTdv8's pixel convention. One row per frame of the **reference camera** (the first in CAMERAS), starting at its frame 0; the other cameras are read at the same instant through their offsets. A camera that did not film that instant, or has no landmark of that name, gives `NaN`. The `_pointnames.csv` beside it names the landmarks and states the pixel convention, what the rows are, and which video is cam1, cam2 … |
+| **ALL CAMERAS — DLTdv8 xypts** | **the 3D one.** Every camera in one file (`pt1_cam1_X`, `pt1_cam1_Y`, `pt1_cam2_X` …), landmarks matched across cameras **by name**, DLTdv8's pixel convention. One row per frame of the **reference camera** (the first in CAMERAS), starting at its frame 0; the other cameras are read at their **nearest whole frame** through their offsets (DLTdv works in whole frames, so a fraction of a frame in an offset is not in the rows). A camera that did not film that instant, or has no landmark of that name, gives `NaN`. The `_pointnames.csv` beside it names the landmarks and states the pixel convention, what the rows are, which video is cam1, cam2 …, and each camera's offset and frame rate |
 | **3D landmarks** | the reconstructed positions (after *3D → Reconstruct 3D Landmarks*, Ctrl+3), one row per frame of the reference camera, `NaN` where there is no 3D position, with a second file (`_xyzres.csv`) giving each position's residual, how many cameras saw it and each camera's own error |
 | **3D landmarks — Anipose / DLTdv xyzpts** | the same positions in the layout Anipose writes (`name_x`, `name_y`, `name_z`, `name_error`, `name_ncams`, `fnum`) or DLTdv's own xyzpts file (`pt1_X` …, one row per frame of the reference camera from 0, `NaN` where none, names in `_pointnames.csv`) |
 | **Silhouette outlines** | the animal's outline on every frame as polygons, in a JSON file (pixels counted from 0); with several animals, one file each, named `…_<animal>.json` |
@@ -3402,7 +3442,7 @@ knowing: `convert tracks … --camera 2` refuses an all-cameras file (its rows
 are frames of the reference camera; `convert import PROJECT --tracks FILE`
 maps them through your project's camera offsets), `convert points3d …
 --calibration FILE` writes the 3D points in the same world as the cameras
-exported from that calibration, and `convert import … --out NEW.kinetrace`
+exported from that calibration (`--to dltdv`: the world of its dltCoefs.csv), and `convert import … --out NEW.kinetrace`
 gives the new project an identity of its own, so its unsaved-work copies are
 never confused with the original's.
 

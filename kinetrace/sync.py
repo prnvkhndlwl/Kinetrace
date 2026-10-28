@@ -112,6 +112,8 @@ class AlignResult:
     why: str
     n_blocks: int = 0           # sound only: blocks of the correlogram that counted
     peak: float = 0.0           # sound only: the best peak's height (correlogram units)
+    lag_frac: float = 0.0       # motion only (I351): where the correlation peaks between `lag` and its
+                                # neighbours (a parabola through the three), -0.5 .. 0.5; 0 = not known
 
 
 def align(ref: np.ndarray, other: np.ndarray, max_lag: int, min_lag: int | None = None) -> AlignResult:
@@ -144,6 +146,11 @@ def align(ref: np.ndarray, other: np.ndarray, max_lag: int, min_lag: int | None 
                            "The two stretches do not overlap enough to compare.")
     best = int(np.nanargmax(curve))
     score = float(curve[best])
+    frac = 0.0
+    if 0 < best < len(curve) - 1 and np.isfinite(curve[best - 1:best + 2]).all():
+        den = curve[best - 1] - 2.0 * curve[best] + curve[best + 1]
+        if den < 0:                                  # a real peak: the parabola's top, at most half a lag away
+            frac = float(np.clip(0.5 * (curve[best - 1] - curve[best + 1]) / den, -0.5, 0.5))
     far = np.abs(lags - lags[best]) >= 3
     rival = float(np.nanmax(curve[far])) if np.isfinite(curve[far]).any() else float("-inf")
     margin = score - rival if np.isfinite(rival) else score
@@ -161,7 +168,7 @@ def align(ref: np.ndarray, other: np.ndarray, max_lag: int, min_lag: int | None 
         why = (f"No offset stands out (best correlation {score:.2f}). The cameras probably do not see the "
                "same movement in this stretch, or it lies outside the search range. Pick a stretch with "
                "an event every camera saw, or widen the search.")
-    return AlignResult(int(lags[best]), score, margin, verdict, why)
+    return AlignResult(int(lags[best]), score, margin, verdict, why, lag_frac=frac)
 
 
 @dataclass
@@ -254,7 +261,23 @@ def estimate_offsets_from_motion(paths: list[str], rates: list[float], ref_range
         # requested window (+-search around the prior), with two frames of slack for the floor /
         # ceil above. The search used to run to +2*search+2 as well, three times the range asked
         # for on one side: an offset OUTSIDE the window was reported clear (I237).
-        res = align(ref_sig, sig_ref_clock, max_lag=2, min_lag=-(2 * int(np.ceil(search)) + 2))
+        # (I350) That holds while the stretch really starts at g0. When it would start before this camera's
+        # first frame (g0 < 0: "Use the whole recording", or the playhead in the first seconds) it is read
+        # from g0p = 0, and every lag moves up by s = (g0p - g0) / r reference frames: the window moves with
+        # it (s = 0 otherwise: the window above, exactly).
+        s = (g0p - g0) / r
+        res = align(ref_sig, sig_ref_clock, max_lag=2 + int(np.ceil(s)),
+                    min_lag=-(2 * int(np.ceil(search)) + 2) + int(np.floor(s)))
         offset = float(g0p - r * (f0 + res.lag))
+        if r != 1.0:
+            # (I351, review) the lag moves in whole REFERENCE frames = r local frames: the peak's place between
+            # them (`lag_frac`) keeps the answer from sitting on a half frame, which whole-frame rounding then
+            # pushed one way every time (same rate: the whole-frame answer, unchanged)
+            offset -= r * res.lag_frac
+            # (I351) sample k of a motion signal is the change between frames k-1 and k, centred half of THAT
+            # camera's frame before k: half a reference frame for the reference, half a local frame here.
+            # The two centres are 0.5 (r - 1) local frames apart (a 240 fps camera in a 120 fps rig was
+            # -0.56 local frames off on average, up to -1.52)
+            offset += 0.5 * (r - 1.0)
         out.append(CameraSync(i, offset, res, lag_ref=res.lag))
     return out

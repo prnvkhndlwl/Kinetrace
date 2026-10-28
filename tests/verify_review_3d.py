@@ -573,7 +573,9 @@ def t_sidecar_quoted():
     assert rows[0] == ["name", "cameras"]
     assert rows[1] == ["tail, tip", "2"] and rows[2] == ["cam1", "2"], rows[:4]
     assert rows[3][0] == "convention" and len(rows[3]) == 2 and rows[4][0] == "rows" and len(rows[4]) == 2
-    assert [r[0] for r in rows[5:]] == ["cam1", "cam2"] and all(len(r) == 2 for r in rows[5:]), rows[5:]
+    # (I356) then each camera's offset and rate
+    assert [r[0] for r in rows[5:]] == ["cam1", "cam2", "cam1_offset", "cam2_offset"] \
+        and all(len(r) == 2 for r in rows[5:]), rows[5:]
 
 
 def t_project_rates():

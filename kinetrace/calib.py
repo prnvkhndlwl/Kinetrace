@@ -177,6 +177,13 @@ def dlt_from_camera(K: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray:
     return np.concatenate([P[0], P[1], P[2, :3]])
 
 
+def dlt_column_calibrated(c) -> bool:
+    """(I341) The one rule for a DLTdv `dltcoef` column: DLTdv keeps a column of zeros (or NaN) for a video it
+    has no calibration for, so only 11 finite numbers, not all zero, are a calibrated camera."""
+    c = np.asarray(c, np.float64).ravel()
+    return bool(c.size == 11 and np.isfinite(c).all() and np.any(c != 0))
+
+
 # ------------------------------------------------------------ undistortion
 
 
@@ -476,11 +483,49 @@ def match_dltdv_lenses(lenses: list, sizes: list) -> tuple[list, str]:
     return out, note
 
 
+UNDISTORT_SANE_PX = 1e5      # (I344) beyond this an undistorted coordinate is cv2's failure sentinel, not a point
+
+
+def fold_radius(dist, fisheye: bool = False) -> float:
+    """(I345) Where an OpenCV lens model stops growing outward, as a NORMALISED undistorted radius (inf = it
+    never does). A standard model maps r to r (1 + k1 r^2 + k2 r^4 + k3 r^6): past the first root of its
+    derivative 1 + 3 k1 r^2 + 5 k2 r^4 + 7 k3 r^6 the picture folds back, two raw positions undistort to one
+    and a round trip can land on the wrong one. A fisheye maps the ray angle t to t (1 + k1 t^2 + ... k4 t^8):
+    the same with 1 + 3 k1 t^2 + 5 k2 t^4 + 7 k3 t^6 + 9 k4 t^8, returned as tan(t). Tangential terms are left
+    out (p1, p2; they move the fold little and only off the axes); a rational / thin-prism model (more than five
+    coefficients in use) is not judged here (inf) and keeps only the round-trip checks."""
+    d = np.asarray(dist, np.float64).ravel()
+    if fisheye:
+        k = np.pad(d, (0, 4))[:4]
+        coef = [9.0 * k[3], 7.0 * k[2], 5.0 * k[1], 3.0 * k[0], 1.0]
+    else:
+        if len(d) > 5 and np.any(d[5:] != 0):
+            return float("inf")
+        k = np.pad(d, (0, 5))[:5]
+        coef = [7.0 * k[4], 5.0 * k[1], 3.0 * k[0], 1.0]
+    coef = np.trim_zeros(np.asarray(coef), "f")
+    if len(coef) <= 1 or not np.isfinite(coef).all():
+        return float("inf")
+    roots = np.roots(coef)                                   # in r^2 (t^2)
+    s = [float(z.real) for z in roots if abs(z.imag) <= 1e-9 * max(1.0, abs(z.real)) and z.real > 0]
+    if not s:
+        return float("inf")
+    x = float(np.sqrt(min(s)))
+    if fisheye:
+        return float(np.tan(x)) if x < np.pi / 2 else float("inf")
+    return x
+
+
 class OpenCVUndistort:
     """Brown–Conrady / OpenCV model: camera matrix K and distortion
     coefficients (k1, k2, p1, p2[, k3 ...]). Undistorted points are returned
     in the same pixel frame (P = K), which is what a DLT fitted on
-    `cv2.undistortPoints(..., P=K)` output expects."""
+    `cv2.undistortPoints(..., P=K)` output expects.
+
+    (I344, I345) Like the LWM / DLTdv models, a point the model does not describe undistorts to NaN: cv2's
+    failure sentinel (a coordinate beyond `UNDISTORT_SANE_PX`; the fisheye solver returns (-1e6, -1e6) where
+    the model has no inverse) and anything at or past the model's fold (`fold_radius`). Every other point is
+    exactly cv2's result."""
     kind = "opencv"
     # (I73) OpenCV's standard-model point undistortion is a fixed-point
     # iteration that stops after 5 steps unless told otherwise: far from
@@ -503,6 +548,7 @@ class OpenCVUndistort:
         # or a "square" camera matrix (fx = fy) when a downstream solver with a
         # single focal length per camera (the wand core) consumes them
         self.P = self.K if P is None else np.asarray(P, np.float64).reshape(3, 3)
+        self.fold = fold_radius(self.dist, self.fisheye)       # (I345) normalised; inf = no fold
 
     def undistort(self, pts: np.ndarray) -> np.ndarray:
         import cv2
@@ -515,6 +561,15 @@ class OpenCVUndistort:
             else:
                 u = cv2.undistortPoints(p[ok], self.K, self.dist, None, None, self.P, self.CRITERIA)
             out[ok] = u.reshape(-1, 2)
+            with np.errstate(invalid="ignore", over="ignore"):
+                bad = np.abs(out).max(axis=1) >= UNDISTORT_SANE_PX          # (I344) the sentinel
+                fold = getattr(self, "fold", None)          # (a model made without __init__: a copy, a pickle)
+                if fold is None:
+                    fold = self.fold = fold_radius(self.dist, self.fisheye)
+                if np.isfinite(fold):                                      # (I345) past the fold
+                    hom = np.column_stack([out, np.ones(len(out))]) @ np.linalg.inv(self.P).T
+                    bad |= np.hypot(hom[:, 0] / hom[:, 2], hom[:, 1] / hom[:, 2]) >= fold
+            out[bad] = np.nan
         return out
 
     def distort(self, pts: np.ndarray) -> np.ndarray:
@@ -538,7 +593,7 @@ class OpenCVUndistort:
     def to_json(self) -> dict:
         d = {"kind": self.kind, "K": self.K.tolist(), "dist": self.dist.tolist(),
              "fisheye": self.fisheye}
-        if not np.allclose(self.P, self.K):
+        if not np.array_equal(self.P, self.K):      # (I343) any difference: a reopened model is the same bits
             d["P"] = self.P.tolist()
         return d
 
@@ -811,7 +866,10 @@ class Calibration:
         camera (a header row is tolerated). `sizes` = (width, height) per
         camera when known."""
         raw = np.genfromtxt(str(path), delimiter=",")
-        raw = np.atleast_2d(raw)
+        # (I342) a flat result is ONE camera: a column (one number per line) or a row of 11
+        raw = raw.reshape(-1, 1) if raw.ndim == 1 else raw
+        if raw.shape[0] > 1 and not np.isfinite(raw[0]).any():
+            raw = raw[1:]                    # (I342) the header row, before the orientation is guessed
         if raw.shape[0] != 11 and raw.shape[1] == 11:
             raw = raw.T
         if raw.shape[0] == 12:               # header row became NaN
@@ -876,7 +934,7 @@ class Calibration:
         ud = m.get("udExport")
         if ud is None:
             raise ValueError(f"{Path(path).name}: not a DLTdv project (no udExport)")
-        coefs = np.asarray(ud.data.dltcoef, np.float64)
+        coefs = np.asarray(ud.data.dltcoef, np.float64).reshape(11, -1)    # (I341) one camera squeezes to 1-D
         sizes = np.atleast_2d(np.asarray(ud.data.movsizes)).astype(int)   # rows: (h, w)
         n = coefs.shape[1]
         cams = [CameraCalibration(coefs[:, c].copy(), int(sizes[c, 1]), int(sizes[c, 0]), NoUndistort(),
@@ -921,6 +979,9 @@ class Calibration:
                              "GoPro-style lens. Save the project again from DLTdv8 (its own MATLAB v7.3 "
                              "format is read in full), or import the cameras' lens profiles another way "
                              "before trusting the 3D.")
+        # (I341) a column DLTdv keeps for a video it has no calibration for is a camera that is NOT calibrated,
+        # as the v7.3 reader (`dltdvproject.calibrated`) has it
+        cams = [cam if dlt_column_calibrated(coefs[:, c]) else None for c, cam in enumerate(cams)]
         cal = Calibration(cams, source=Path(path).name)
         cal.notes = notes
         return cal
@@ -1818,10 +1879,15 @@ def sample_tracks_at(ct: np.ndarray, local_t: np.ndarray) -> np.ndarray:
     a = lt - f0
     f0i = f0.astype(np.int64)
     out = np.full((len(lt),) + ct.shape[1:], np.nan)
-    exact = (a < 1e-9) & (f0i >= 0) & (f0i < T)
+    # (I346) a hair from a whole frame on EITHER side is that frame: rate * t + offset lands 1e-16 below
+    # frame 4 as often as above it, and "between 3 and 4" lost the cell when frame 3 was in a gap
+    up = a > 1.0 - 1e-9
+    whole = (a < 1e-9) | up
+    fi = f0i + up
+    exact = whole & (fi >= 0) & (fi < T)
     if exact.any():
-        out[exact] = ct[f0i[exact]]
-    mid = (~exact) & (f0i >= 0) & (f0i + 1 < T)
+        out[exact] = ct[fi[exact]]
+    mid = (~whole) & (f0i >= 0) & (f0i + 1 < T)
     if mid.any():
         p0 = ct[f0i[mid]]
         p1 = ct[f0i[mid] + 1]
@@ -1830,14 +1896,17 @@ def sample_tracks_at(ct: np.ndarray, local_t: np.ndarray) -> np.ndarray:
     return out
 
 
-def triangulate_batch(coefs: np.ndarray, uv: np.ndarray, min_cams: int = 2,
-                      max_residual: float = float("inf")):
+def triangulate_batch(coefs: np.ndarray, uv: np.ndarray, min_cams: int = 2):
     """Vectorised `triangulate` over many cells. coefs (C, 11); uv (..., C, 2)
     with NaN where a camera did not see the point. Returns xyz (..., 3),
     residual (...), n_cams (...), per-camera errors (..., C). Cells with fewer
-    than `min_cams` views are NaN. With `max_residual` the worst camera is
-    dropped (once per pass, up to C - min_cams passes) while a cell's
-    residual exceeds it — a cheap guard against one bad view."""
+    than `min_cams` views are NaN.
+
+    (I347) A camera's own error does not say which camera is wrong: a camera that alone fixes a
+    direction (two cameras side by side and one from the side) absorbs its own mistake (+50 px in the
+    side camera: 0.06 px for it, 1.19 px for each good one). The "drop the worst camera" option that
+    acted on that was used by no part of the app and is gone; Re-track blames by leave-one-out
+    (`retrack._blame`)."""
     Ls = np.asarray(coefs, np.float64)
     if Ls.ndim == 2 and Ls.shape[0] == 11 and Ls.shape[1] != 11:
         Ls = Ls.T
@@ -1854,44 +1923,35 @@ def triangulate_batch(coefs: np.ndarray, uv: np.ndarray, min_cams: int = 2,
     A2 = np.stack([v * Ls[:, 8] - Ls[:, 4], v * Ls[:, 9] - Ls[:, 5], v * Ls[:, 10] - Ls[:, 6]], -1)
     b1 = Ls[:, 3] - u
     b2 = Ls[:, 7] - v
-    xyz = np.full((M, 3), np.nan)
-    resid = np.full(M, np.nan)
-    err = np.full((M, C), np.nan)
-    for _ in range(max(C - min_cams, 0) + 1):
-        w = use.astype(np.float64)[..., None]                    # (M, C, 1)
-        AtA = (np.einsum("mci,mcj->mij", A1 * w, A1) + np.einsum("mci,mcj->mij", A2 * w, A2))
-        Atb = (np.einsum("mci,mc->mi", A1 * w, b1) + np.einsum("mci,mc->mi", A2 * w, b2))
-        n = use.sum(1)
-        ok = n >= min_cams
-        X = np.full((M, 3), np.nan)
-        if ok.any():
-            # (I305) a cell's answer depends on that cell alone: a singular cell goes to `lstsq` by itself
-            # (it used to send EVERY cell of the batch there), so a few cells solved on their own give the
-            # same bits as the whole result
-            try:
-                X[ok] = np.linalg.solve(AtA[ok], Atb[ok][..., None])[..., 0]
-            except np.linalg.LinAlgError:
-                for m in np.nonzero(ok)[0]:
-                    try:
-                        X[m] = np.linalg.solve(AtA[m], Atb[m][..., None])[..., 0]
-                    except np.linalg.LinAlgError:
-                        X[m] = np.linalg.lstsq(AtA[m], Atb[m], rcond=None)[0]
-        # (I305) element by element, not `X @ Ls.T`: a one-row matrix product takes another BLAS path and
-        # changed a cell's error in the last bit, so a cell recomputed alone must not depend on the batch
-        x0, x1, x2 = X[:, 0, None], X[:, 1, None], X[:, 2, None]
-        den = x0 * Ls[:, 8] + x1 * Ls[:, 9] + x2 * Ls[:, 10] + 1.0          # (M, C)
-        pu = (x0 * Ls[:, 0] + x1 * Ls[:, 1] + x2 * Ls[:, 2] + Ls[:, 3]) / den
-        pv = (x0 * Ls[:, 4] + x1 * Ls[:, 5] + x2 * Ls[:, 6] + Ls[:, 7]) / den
-        e = np.hypot(pu - u, pv - v)
-        e[~use] = np.nan
-        r = np.sqrt(np.nansum(e ** 2, axis=1) / np.maximum(2 * n - 3, 1))
-        r[~ok] = np.nan
-        xyz, resid, err = X, r, e
-        bad = ok & (r > max_residual) & (n > min_cams)
-        if not bad.any():
-            break
-        worst = np.nanargmax(np.where(use, e, -1.0), axis=1)
-        use[bad, worst[bad]] = False
+    w = use.astype(np.float64)[..., None]                    # (M, C, 1)
+    AtA = (np.einsum("mci,mcj->mij", A1 * w, A1) + np.einsum("mci,mcj->mij", A2 * w, A2))
+    Atb = (np.einsum("mci,mc->mi", A1 * w, b1) + np.einsum("mci,mc->mi", A2 * w, b2))
+    n = use.sum(1)
+    ok = n >= min_cams
+    X = np.full((M, 3), np.nan)
+    if ok.any():
+        # (I305) a cell's answer depends on that cell alone: a singular cell goes to `lstsq` by itself
+        # (it used to send EVERY cell of the batch there), so a few cells solved on their own give the
+        # same bits as the whole result
+        try:
+            X[ok] = np.linalg.solve(AtA[ok], Atb[ok][..., None])[..., 0]
+        except np.linalg.LinAlgError:
+            for m in np.nonzero(ok)[0]:
+                try:
+                    X[m] = np.linalg.solve(AtA[m], Atb[m][..., None])[..., 0]
+                except np.linalg.LinAlgError:
+                    X[m] = np.linalg.lstsq(AtA[m], Atb[m], rcond=None)[0]
+    # (I305) element by element, not `X @ Ls.T`: a one-row matrix product takes another BLAS path and
+    # changed a cell's error in the last bit, so a cell recomputed alone must not depend on the batch
+    x0, x1, x2 = X[:, 0, None], X[:, 1, None], X[:, 2, None]
+    den = x0 * Ls[:, 8] + x1 * Ls[:, 9] + x2 * Ls[:, 10] + 1.0          # (M, C)
+    pu = (x0 * Ls[:, 0] + x1 * Ls[:, 1] + x2 * Ls[:, 2] + Ls[:, 3]) / den
+    pv = (x0 * Ls[:, 4] + x1 * Ls[:, 5] + x2 * Ls[:, 6] + Ls[:, 7]) / den
+    e = np.hypot(pu - u, pv - v)
+    e[~use] = np.nan
+    r = np.sqrt(np.nansum(e ** 2, axis=1) / np.maximum(2 * n - 3, 1))
+    r[~ok] = np.nan
+    xyz, resid, err = X, r, e
     n_cams = use.sum(1)
     n_cams[~np.isfinite(resid)] = 0
     return (xyz.reshape(lead + (3,)), resid.reshape(lead), n_cams.reshape(lead),
@@ -1958,13 +2018,13 @@ class _Prepared:
             self.ct.append(ct)
         return self
 
-    def triangulate(self, uv: np.ndarray, min_cams: int = 2, max_residual: float = float("inf")):
+    def triangulate(self, uv: np.ndarray, min_cams: int = 2):
         """`triangulate_batch` over the calibrated cameras of `uv` (..., C views, 2); the per-camera
         errors come back with one column per view (NaN for a camera that is not calibrated). With
         every camera calibrated this IS `triangulate_batch(self.coefs, uv, ...)`."""
         if len(self.used) == self.n_views:
-            return triangulate_batch(self.coefs, uv, min_cams, max_residual)
-        xyz, resid, ncams, err_u = triangulate_batch(self.coefs, uv[..., self.used, :], min_cams, max_residual)
+            return triangulate_batch(self.coefs, uv, min_cams)
+        xyz, resid, ncams, err_u = triangulate_batch(self.coefs, uv[..., self.used, :], min_cams)
         err = np.full(err_u.shape[:-1] + (self.n_views,), np.nan, err_u.dtype)
         err[..., self.used] = err_u
         return xyz, resid, ncams, err
@@ -1979,15 +2039,22 @@ class _Prepared:
             uv[~keep] = np.nan
         return uv
 
-    def stable_cells(self, rates, offsets, t: np.ndarray, search: float) -> np.ndarray:
+    def stable_cells(self, rates, offsets, t: np.ndarray, search) -> np.ndarray:
         """(T, N, C) bool: view/cell pairs with data at the instant AND at
         ±`search` local frames around it — the set an offset search must be
         scored on, so that shifting an offset cannot change WHICH cells are
         counted (sparse or gappy tracks would otherwise let the optimiser
-        lower the mean by dropping cells instead of improving them)."""
+        lower the mean by dropping cells instead of improving them).
+        (I351) `search` may be one width per view; the checks are -1, 0, +1 x each view's width, with
+        steps in between (at most one local frame apart) once a width reaches 2: the frames the checks read
+        must leave no frame out (with only -2, 0, +2 a camera clicked on every other frame looked stable).
+        Under 2, the three checks already read every frame in reach: the set is today's."""
+        widths = _search_widths(search, len(offsets))
+        wmax = float(np.max(widths[1:], initial=0.0))
+        m = 1 if wmax < 2.0 else int(np.ceil(wmax - 1e-9))
         ok = None
-        for d in (-search, 0.0, search):
-            o = [offsets[c] + (d if c else 0.0) for c in range(len(offsets))]
+        for g in np.linspace(-1.0, 1.0, 2 * m + 1):
+            o = [offsets[c] + (float(g) * widths[c] if c else 0.0) for c in range(len(offsets))]
             cur = np.isfinite(self.samples(rates, o, t)).all(axis=3)
             ok = cur if ok is None else (ok & cur)
         return ok
@@ -1995,18 +2062,16 @@ class _Prepared:
 
 def reconstruct(sessions: list, calib: Calibration, rates: list[float], offsets: list[float],
                 t_range: tuple[int, int], names: list[str] | None = None,
-                min_cams: int = 2, max_residual: float = float("inf"),
-                _prep: "_Prepared | None" = None) -> Reconstruction:
+                min_cams: int = 2, _prep: "_Prepared | None" = None) -> Reconstruction:
     """Triangulate every landmark (matched BY NAME across views) at every
     integer reference frame in t_range (inclusive). Views without the
     landmark, or without data at that instant, simply drop out; a point needs
-    `min_cams` views. `max_residual`: drop the worst camera while the residual
-    exceeds it and >= min_cams remain (a cheap outlier guard)."""
+    `min_cams` views."""
     prep = _prep or _Prepared(sessions, calib, names)
     t0, t1 = int(t_range[0]), int(t_range[1])
     t = np.arange(t0, max(t1 + 1, t0))
     uv = prep.samples(rates, offsets, t)
-    xyz, resid, ncams, err = prep.triangulate(uv, min_cams, max_residual)
+    xyz, resid, ncams, err = prep.triangulate(uv, min_cams)
     return Reconstruction(t0, prep.names, xyz, resid, ncams.astype(np.int32), calib.unit,
                           err.astype(np.float32))
 
@@ -2015,6 +2080,8 @@ MAX_SCAN_INSTANTS = 6000     # estimate_offsets looks at no more than this many 
 MAX_SCORE_INSTANTS = 500     # ... and scores the search on at most this many MOVING ones (G76)
 ROBUST_CAP_K = 4.0           # estimate_offsets(robust=True): a cell counts at most this x the starting median (I271)
 MIN_OWN_CELLS = 30           # (I302) a camera judged on fewer of its own scored cells reads at most "weak"
+BLAME_MARGIN = 1.5           # (I349) one camera is "the one" when every other leave-one-out residual is above
+                             # this x its own (Re-track's `_blame` and the robust offset search share it)
 
 
 def reference_span(f_lo: int, f_hi: int, rate: float, offset: float) -> tuple[int, int]:
@@ -2063,8 +2130,8 @@ def sampled_views(sessions: list, calib: Calibration, rates: list[float], offset
                     and bool(np.isfinite(s.tracks[f, j]).all()))
         x = float(local_frame(t, rates[v], offsets[v]))
         f0 = int(np.floor(x))
-        if x - f0 < 1e-9:
-            if has(f0):
+        if x - f0 < 1e-9 or x - f0 > 1.0 - 1e-9:                # (I346) sample_tracks_at's "whole frame"
+            if has(f0 + (x - f0 > 0.5)):
                 views.append(v)
             continue
         h0, h1 = has(f0), has(f0 + 1)
@@ -2135,7 +2202,18 @@ class _SearchCancelled(Exception):
     pass
 
 
-def _scoring_instants(prep: "_Prepared", rates, offs, t_all: np.ndarray, search: float):
+def _search_widths(search, n_views: int) -> np.ndarray:
+    """(I351) The offset search's half-width per view, local frames: one number for every view, or one each
+    (the app gives a camera at rate r at least r: motion sync's whole-frame answer moves in r-frame steps)."""
+    if np.ndim(search) == 0:
+        return np.full(n_views, float(search))
+    w = np.asarray(search, np.float64).ravel()
+    if len(w) != n_views:
+        raise ValueError(f"one search width per camera: {len(w)} given for {n_views} cameras")
+    return w
+
+
+def _scoring_instants(prep: "_Prepared", rates, offs, t_all: np.ndarray, search):
     """(t, keep, n_cells): the reference instants the offset search is scored
     on and their stable view / cell sets (G76). A long project has tens of
     thousands of instants and ~650 cost evaluations are made: scoring each
@@ -2210,12 +2288,13 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
     data. (A plain median cost was tried first: not moved by bad cells either, but its surface is grainy,
     0.08 frame off on the synthetic rig.) `robust=False` is exactly the estimator it always was."""
     offs = [float(o) for o in offsets]
+    search = _search_widths(search, len(sessions))      # (I351) one width per camera (a number: every camera)
     reference = 0                       # stable_cells holds view 0 still, as does the project (REFERENCE_VIEW)
     prep = _Prepared(sessions, calib, names)
     t_all = np.arange(int(t_range[0]), int(t_range[1]) + 1)
     t, keep, n_cells = _scoring_instants(prep, rates, offs, t_all, search)
     n_free = max(len(sessions) - 1, 0)
-    n_grid = int(np.floor(2 * search / step + 1e-9)) + 1
+    n_grid = int(np.floor(2 * float(np.max(search)) / step + 1e-9)) + 1
     n_fine = int(np.floor(2 * step / refine + 1e-9)) + 1
     total = 1 + passes * n_free * (n_grid + n_fine) + 400 + 3 * n_free + 1
     if robust:
@@ -2234,14 +2313,23 @@ def estimate_offsets(sessions: list, calib: Calibration, rates: list[float], off
         cap[0] = ROBUST_CAP_K * float(np.median(r0)) if len(r0) and np.median(r0) > 0 else float("inf")
 
     def cost(o, mask=None):
-        """The mean residual over the scored cells (only those of `mask`, (T, N), when given: I302)."""
+        """The mean residual over the scored cells (only those of `mask`, (T, N), when given: I302).
+        (I348) At an offset where a scored observation has no data (the search reaches beyond the window
+        `stable_cells` checked: pass 2, Powell, the sharpness probes) the cost is NOT DEFINED (inf): a
+        mean over fewer cells could look lower by losing cells instead of fitting them."""
         if cancelled is not None and cancelled():
             raise _SearchCancelled()
-        r = residuals(o)
-        r = r[np.isfinite(r) if mask is None else (mask & np.isfinite(r))]
+        uv = prep.samples(rates, o, t, use[0])
+        lost = use[0] & ~np.isfinite(uv).all(axis=-1)                         # (T, N, C)
+        if mask is not None:
+            lost &= mask[..., None]
         done[0] += 1
         if progress is not None:
             progress(min(done[0], total - 1), total)
+        if lost.any():
+            return float("inf")
+        _, r, _, _ = prep.triangulate(uv, 2)
+        r = r[np.isfinite(r) if mask is None else (mask & np.isfinite(r))]
         if not len(r):
             return float("inf")
         return float(np.minimum(r, cap[0]).mean()) if np.isfinite(cap[0]) else float(r.mean())
@@ -2315,8 +2403,16 @@ def _drop_bad_observations(prep: "_Prepared", rates, offs, t_all: np.ndarray, ch
         _, rc, _, _ = prep.triangulate(u, 2)
         loo[:, c] = np.where(seen[:, c] & np.isfinite(rc), rc, np.inf)
     for m in range(len(ti)):
-        if seen[m].sum() >= 3 and np.isfinite(loo[m]).any():
-            blame = [int(np.argmin(loo[m]))]
+        order = np.argsort(loo[m], kind="stable")
+        # (I349) one camera is blamed only when it is CLEARLY the one: leaving it out settles the cell and
+        # leaving out any other camera does not (the next residual above half the full one and BLAME_MARGIN x
+        # the smallest, Re-track's margin). When the error lies along the other cameras' epipolar lines every
+        # leave-one-out residual is noise and the argmin picked a good camera by chance -- then every camera
+        # that saw the cell loses it
+        full = float(r[ti[m], ni[m]])
+        if (seen[m].sum() >= 3 and np.isfinite(loo[m, order[0]])
+                and loo[m, order[1]] > BLAME_MARGIN * loo[m, order[0]] and loo[m, order[1]] > 0.5 * full):
+            blame = [int(order[0])]
         else:
             blame = [int(c) for c in np.nonzero(seen[m])[0]]
         for c in blame:
@@ -2344,7 +2440,7 @@ def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, p
             def better(cand, cur):
                 return cand[0] < cur[0] - eps
 
-            for d in np.arange(-search, search + 1e-9, step):
+            for d in np.arange(-search[c], search[c] + 1e-9, step):
                 offs[c] = base + float(d)
                 cand = (cost(offs), offs[c])
                 if better(cand, best):
@@ -2373,8 +2469,11 @@ def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, p
 
         x0 = np.array([offs[c] for c in free])
         try:
-            r = minimize(joint, x0, method="Powell", options={"xtol": 1e-4, "ftol": 1e-8, "maxfev": 4000})
-            if np.isfinite(r.fun) and r.fun <= joint(x0) and np.all(np.abs(r.x - x0) <= step + search):
+            # (I348) an offset that loses a scored cell costs inf: Brent's parabola step then reads NaN and
+            # falls back to a golden-section step, as intended -- not a warning worth printing
+            with np.errstate(invalid="ignore"):
+                r = minimize(joint, x0, method="Powell", options={"xtol": 1e-4, "ftol": 1e-8, "maxfev": 4000})
+            if np.isfinite(r.fun) and r.fun <= joint(x0) and np.all(np.abs(r.x - x0) <= step + search[free]):
                 for k, c in enumerate(free):
                     offs[c] = float(r.x[k])
         except Exception:      # noqa: BLE001 — the grid result stands

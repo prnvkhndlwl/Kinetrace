@@ -11501,10 +11501,16 @@ class MainWindow(QMainWindow):
         return rec
 
     def _apply_board_result(self, calibration, lenses: dict) -> None:
-        """(G221) The ChArUco wizard's Finish as ONE Ctrl+Z step: the fitted lens profiles
-        ({camera: profile}) and the calibration (None = "lenses only": the calibration stays) go in
-        together, and `_undo_timing_step` takes both back while they are still what this step left.
-        The offsets are not touched (recorded as they are, so the step's check holds)."""
+        """(G221) The ChArUco wizard's Finish as ONE Ctrl+Z step (`_apply_calibration_step`)."""
+        self._apply_calibration_step(calibration, lenses, "the ChArUco calibration",
+                                     "the ChArUco calibration was taken back")
+
+    def _apply_calibration_step(self, calibration, lenses: dict, what: str, drop_reason: str) -> None:
+        """(G221, G222) A new calibration as ONE Ctrl+Z step: the lens profiles ({camera: profile}, may be
+        empty) and the calibration (None = "lenses only": the calibration stays) go in together, and
+        `_undo_timing_step` takes both back while they are still what this step left. The ChArUco
+        wizard's Finish and File > Import > Calibration. The offsets are not touched (recorded as they
+        are, so the step's check holds)."""
         p = self.project
         if p is None or self.session is None:
             return
@@ -11512,11 +11518,11 @@ class MainWindow(QMainWindow):
             p.lenses.append(None)
         self._set_undo_point(self.session.snapshot())
         rec = {"offsets": list(p.offsets), "calibration": p.calibration, "wand_result": self._wand_result,
-               "lenses": list(p.lenses), "what": "the ChArUco calibration",
+               "lenses": list(p.lenses), "what": what,
                # what Ctrl+Z says it put back, and why the 3D result goes with it
                "what_changed": " and ".join(w for w, on in (("the lens profiles", bool(lenses)),
                                                             ("the calibration", calibration is not None)) if on),
-               "drop_reason": "the ChArUco calibration was taken back"}
+               "drop_reason": drop_reason}
         self._set_lenses(lenses)
         if calibration is not None:
             p.calibration = calibration
@@ -13102,9 +13108,12 @@ class MainWindow(QMainWindow):
             return
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
         dlg = CalibrationDialog(self, list(p.names), self._view_sizes(), start)
-        if dlg.exec() != QDialog.Accepted or dlg.result_calibration is None:
+        if dlg.exec() != QDialog.Accepted or dlg.result_calibration is None or self.session is None:
             return
-        p.calibration = dlg.result_calibration
+        # (G222) one Ctrl+Z step, as the wand and ChArUco wizards' Finish: importing over a good
+        # calibration could not be taken back
+        self._apply_calibration_step(dlg.result_calibration, {}, "importing the calibration",
+                                     "the imported calibration was taken back")
         self._wand_result = (None, None)   # the last wand run's report is not this calibration's (I33)
         self._drop_reconstruction("a new calibration was imported")      # (I242)
         p.dirty = True
@@ -13417,13 +13426,29 @@ class MainWindow(QMainWindow):
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
         wiz = WandWizard(self, p, start)
         accepted = wiz.exec() == QDialog.Accepted
-        self._refresh_cameras()          # its lens rows may have changed the lenses, accepted or not (G177)
+        self._refresh_cameras()          # (G177) the CAMERAS panel; its lens rows are pending until Finish (G223)
         if not accepted or wiz.result_calibration is None:
             return                       # (I303) Cancel: the offsets and the calibration stay as they were
         # (I303) the offsets the wizard calibrated at (pending until now) go in WITH the calibration made at
         # them: one Ctrl+Z step for both, a fresh one for this Finish
         before = list(p.offsets)
         rec = self._apply_offsets_undoable(wiz.result_offsets) if wiz.result_offsets is not None else None
+        # (G223) the lens rows' changes were pending in the wizard (`wiz.lenses`): they go in now, in the SAME
+        # Ctrl+Z step as the offsets and the calibration made with them
+        old_lenses = list(p.lenses) + [None] * max(0, p.n_views - len(p.lenses))
+        changed = {c: wiz.lenses[c] for c in range(min(p.n_views, len(wiz.lenses)))
+                   if wiz.lenses[c] is not old_lenses[c]}
+        if changed:
+            if rec is None:                      # no offset moved: a step of its own for the lenses
+                self._set_undo_point(self.session.snapshot())
+                rec = {"offsets": list(p.offsets), "calibration": p.calibration, "wand_result": self._wand_result,
+                       "after": list(p.offsets)}
+                self.__dict__["_undo_timing"] = rec
+            self._set_lenses(changed)
+            moved = any(abs(a - b) > 1e-12 for a, b in zip(before, p.offsets))
+            rec.update(lenses=old_lenses, lenses_after=list(p.lenses), what="the wand calibration",
+                       what_changed="the lens profiles, the calibration" + (" and the offsets" if moved else ""),
+                       drop_reason="the wand calibration was taken back")
         p.calibration = wiz.result_calibration
         self._wand_result = (wiz.result, wiz.gravity)
         self._wand_cal = p.calibration                          # (G185) its picture comes from the run
@@ -13741,8 +13766,11 @@ class MainWindow(QMainWindow):
                 if now - last[0] >= 0.1 or done >= total:      # not a signal per cost evaluation
                     last[0] = now
                     report(f"{done} of about {total} offset tests", done, total)
-            return estimate_offsets(p.sessions, p.calibration, p.rates, p.offsets, (t0, t1), report=rep,
-                                    progress=progress, cancelled=cancelled)
+            # (I351) each camera searched over +/- max(1, its rate) of its own frames: motion sync's whole-frame
+            # answer for a camera at rate r moves in r-frame steps (a 240 fps camera in a 120 fps rig: +/-2)
+            search = [max(1.0, float(r)) for r in p.rates]
+            return estimate_offsets(p.sessions, p.calibration, p.rates, p.offsets, (t0, t1), search=search,
+                                    report=rep, progress=progress, cancelled=cancelled)
         try:           # a joint search over every camera: off the GUI thread (G50)
             offs, before, after = self._in_background(
                 "Estimating sub-frame offsets", work, progress=True, cancellable=True,
@@ -14277,6 +14305,22 @@ class MainWindow(QMainWindow):
             scene.unit = r.unit
         # (G201) the chosen world
         scene.world = p.calibration.world if p.calibration is not None else None
+        # (G224) a mirror-image (left-handed) world is drawn as the room looks, and the window says so
+        cal_m = p.calibration
+        if cal_m is not None and cal_m.n_calibrated >= 2:
+            key = self.__dict__.get("_mirror_key")
+            if key is None or key[0] is not cal_m:
+                try:
+                    from kinetrace.calib import world_is_left_handed
+                    lh = bool(world_is_left_handed(cal_m))
+                except Exception:      # noqa: BLE001 - a calibration it cannot judge is drawn as it is
+                    lh = False
+                key = (cal_m, lh)
+                self.__dict__["_mirror_key"] = key
+            scene.mirrored = key[1]
+        if scene.mirrored:
+            info += (" · mirrored (left-handed) world, as easyWand / DLTdv make it: drawn as the room looks; "
+                     "3D → Set World Axes gives it right-handed axes")
         if p.calibration is not None:
             views = [v for v in p.calibration.views() if v < p.n_views]      # (I273) calibrated cameras
             scene.cameras = np.array([p.calibration.camera(v).center() for v in views]).reshape(-1, 3)
@@ -14746,7 +14790,8 @@ class MainWindow(QMainWindow):
     def _points_models(self):
         """(I170) The exported cameras' models for the 3D points that go out beside them: 3D points are
         ALWAYS written through `calibio.write_points3d(..., models=)`, so a left-handed calibration's
-        points are in the same (mirrored) world as the cameras Export Calibration writes. The probe is
+        points are in the same (mirrored) world as the cameras Export Calibration writes (the DLTdv
+        xyzpts excepted, I340: they pair with the dltCoefs.csv, in the DLT's own world). The probe is
         the median of the finite points (as in Export Calibration). Returns (models or None, note)."""
         from kinetrace import calibio
         p = self.project
@@ -14861,9 +14906,18 @@ class MainWindow(QMainWindow):
                 notes.append(f"{left_out} instant(s) before reference frame 0 were left out: a DLTdv xyzpts "
                              "file starts at frame 0.")
             if models is not None and (models.mirrored or np.any(models.shift)):
-                notes.append("The 3D points are in the same world as the cameras Export Calibration writes"
-                             + (" -- a mirrored (left-handed) one; 3D -> Set World Axes… first gives the "
-                                "calibration a right-handed world" if models.mirrored else "") + ".")
+                if key == "xyz_dltdv":                  # (I340) the DLTdv pair keeps the DLT's own world
+                    notes.append("The DLTdv xyzpts are in the calibration's own world, the one of the "
+                                 "dltCoefs.csv that File → Export → Calibration writes (use the two together). "
+                                 "The Anipose / OpenCV / MATLAB / Blender cameras of this calibration are "
+                                 + ("mirrored in Z" if models.mirrored else "in the calibration file's origin")
+                                 + ": pair those with the 3D landmarks as Anipose or Kinetrace CSV.")
+                else:
+                    notes.append("The 3D points are in the same world as the cameras Export Calibration writes"
+                                 + (" -- a mirrored (left-handed) one; 3D -> Set World Axes… first gives the "
+                                    "calibration a right-handed world" if models.mirrored else "")
+                                 + " (not the dltCoefs.csv's: export the 3D landmarks as DLTdv xyzpts for "
+                                   "that one).")
         elif key in ("sil_json", "sil_png"):
             # (G151m) every segment with silhouettes, one file / folder each (a "_<segment>" suffix
             # when there are several); it used to be the active segment's alone

@@ -14,7 +14,10 @@ fisheye coefficients). A Kinetrace calibration becomes CamModels with
     report says so. 3D points are in the SAME world only when they are
     written with these models (`write_points3d(..., models=...)`, which
     applies `Models.world_to_export`); the exports (Ctrl+E, exports/, the
-    converter) must pass them. A world chosen with 3D -> Set World Axes
+    converter) must pass them. (I340) The DLTdv pair is the exception: a
+    dltCoefs.csv holds the DLT coefficients as they are (`dlt_csv_matlab`),
+    so DLTdv xyzpts are written in THAT world, never through the models; for
+    an easyWand / DLTdv calibration it is the file's own. A world chosen with 3D -> Set World Axes
     (`calib.world_axes`) is right-handed by construction: nothing is mirrored
     and the points need no change;
   * a lens model other than OpenCV's (DLTdv's LWM) is fitted with an OpenCV
@@ -208,7 +211,8 @@ def to_models(cal: Calibration, names: list[str] | None = None, probe: np.ndarra
                      "coefficients often do. The exported cameras' world is Kinetrace's mirrored in Z "
                      "(Z -> -Z). 3D points are in that same world only when they are exported together "
                      "with these cameras; to get a right-handed world in Kinetrace itself (nothing mirrored "
-                     "anywhere), choose the axes with 3D -> Set World Axes.")
+                     "anywhere), choose the axes with 3D -> Set World Axes. The DLTdv pair (dltCoefs.csv and "
+                     "3D points as DLTdv xyzpts) is not mirrored: it stays in the calibration's own world.")
     if np.any(shift):
         notes.append("The world origin is the calibration file's own again (Kinetrace had moved it to the "
                      "point the cameras look at).")
@@ -937,14 +941,18 @@ def write_points3d(rec: Reconstruction, path, kind: str = "kinetrace", models: M
     "anipose" (name_x/_y/_z/_error/_ncams/_score + fnum). With `models`, the
     points are put in those exported cameras' world (mirror / origin): ALWAYS
     pass the models of the cameras exported with these points (I170), or the
-    points reproject 30-100 px off through them. A DLTdv xyzpts file starts at
+    points reproject 30-100 px off through them. (I340) "dltdv" ignores
+    `models`: its cameras are the dltCoefs.csv (`dlt_csv_matlab`), which keeps
+    the DLT coefficients' own world (a mirror cannot be undone in a K + R/t
+    file, but a DLT holds it; and a DLT cannot hold an origin a camera
+    stands on), so the xyzpts stay in that world too. A DLTdv xyzpts file starts at
     reference frame 0, so a result that starts BEFORE 0 (other cameras running
     before the reference started) is written from frame 0 and the instants
     before it are left out; the return value is how many instants were (0
     for every other case, I215)."""
     left_out = 0
     xyz = rec.xyz.astype(np.float64)
-    if models is not None:
+    if models is not None and kind != "dltdv":                # (I340) the DLTdv pair: the DLT's own world
         xyz = models.world_to_export(xyz.reshape(-1, 3)).reshape(xyz.shape)
     if kind == "kinetrace":
         r2 = Reconstruction(rec.t0, rec.names, xyz, rec.residual, rec.n_cams, rec.unit, rec.per_cam, rec.source)
