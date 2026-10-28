@@ -2046,9 +2046,12 @@ class _Prepared:
         counted (sparse or gappy tracks would otherwise let the optimiser
         lower the mean by dropping cells instead of improving them).
         (I351) `search` may be one width per view; the checks are -1, 0, +1 x each view's width, with
-        steps in between once a width passes 2 local frames (the frames each check reads must touch)."""
+        steps in between (at most one local frame apart) once a width reaches 2: the frames the checks read
+        must leave no frame out (with only -2, 0, +2 a camera clicked on every other frame looked stable).
+        Under 2, the three checks already read every frame in reach: the set is today's."""
         widths = _search_widths(search, len(offsets))
-        m = max(1, int(np.ceil(float(np.max(widths[1:], initial=0.0)) / 2.0 - 1e-9)))
+        wmax = float(np.max(widths[1:], initial=0.0))
+        m = 1 if wmax < 2.0 else int(np.ceil(wmax - 1e-9))
         ok = None
         for g in np.linspace(-1.0, 1.0, 2 * m + 1):
             o = [offsets[c] + (float(g) * widths[c] if c else 0.0) for c in range(len(offsets))]
@@ -2466,7 +2469,10 @@ def _search_offsets(sessions, offs, cost, keep, n_cells, search, step, refine, p
 
         x0 = np.array([offs[c] for c in free])
         try:
-            r = minimize(joint, x0, method="Powell", options={"xtol": 1e-4, "ftol": 1e-8, "maxfev": 4000})
+            # (I348) an offset that loses a scored cell costs inf: Brent's parabola step then reads NaN and
+            # falls back to a golden-section step, as intended -- not a warning worth printing
+            with np.errstate(invalid="ignore"):
+                r = minimize(joint, x0, method="Powell", options={"xtol": 1e-4, "ftol": 1e-8, "maxfev": 4000})
             if np.isfinite(r.fun) and r.fun <= joint(x0) and np.all(np.abs(r.x - x0) <= step + search[free]):
                 for k, c in enumerate(free):
                     offs[c] = float(r.x[k])

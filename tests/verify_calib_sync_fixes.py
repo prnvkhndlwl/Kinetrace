@@ -439,6 +439,26 @@ def _i351():
           f"mean {a2.mean():+.3f}")
     check(np.abs(a2).max() <= 1.0, "...and it lands within one of its own frames (the sub-frame step's search)",
           f"worst {np.abs(a2).max():.3f}")
+    # the sub-frame step's +/-2 for a camera at twice the rate checks EVERY frame it reaches: one clicked only on
+    # every other frame (the others' cadence) shares no stable cell, and stays "left as it was" (a real 6-camera
+    # project read "flat" -> NOT SUPPORTED when only -2, 0, +2 were checked)
+    cal2, sess, c0, c1 = _two_cam_rig(100)
+    K = np.array([[1000, 0, 960], [0, 1000, 540], [0, 0, 1.0]])
+    c2 = dlt_from_camera(K, np.array([[0, 0, 1.0], [0, 1, 0], [-1, 0, 0]]), np.array([0, 0, 3.0]))
+    f = np.arange(200)
+    tq = f / 2.0
+    X = np.column_stack([0.3 * np.sin(tq / 7.0), 0.2 * np.cos(tq / 5.0), 0.1 * np.sin(tq / 3.0)])
+    tr = dlt_project(c2, X).reshape(200, 1, 2).astype(np.float64)
+    tr[1::2] = np.nan                                      # clicked on every other frame only
+    s2 = SimpleNamespace(tracks=tr, exportable=np.ones((200, 1), bool), points=[SimpleNamespace(name="p")],
+                         n_frames=200)
+    cal3 = Calibration(list(cal2.cameras) + [CameraCalibration(c2, 1920, 1080)])
+    rep = {}
+    calib.estimate_offsets([sess(c0), sess(c1), s2], cal3, [1, 1, 2], [0.0, 0.0, 0.0], (5, 90),
+                           search=[1.0, 1.0, 2.0], report=rep)
+    check(rep.get("per_view", {}).get(2) == "none" and rep.get("verdict") == "reliable",
+          "a 2x camera clicked on every other frame shares no cell at +/-2: offset left, verdict reliable",
+          f"{rep.get('per_view')} {rep.get('verdict')}")
 
 
 # ------------------------------------------------------------------ I352
