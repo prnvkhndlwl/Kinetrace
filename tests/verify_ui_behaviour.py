@@ -238,7 +238,150 @@ def section_every():
     close(win)
 
 
-SECTIONS = {"fc": section_fc, "every": section_every}
+def _old_trail_paint(self, painter):
+    """`_MotionOverlay.paint` as it was on eaee38b (one pen + one line per segment): the reference picture."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QColor, QPen
+    from kinetrace.canvas import GHOST_RADIUS
+    scale = painter.worldTransform().m11() or 1.0
+    painter.setRenderHint(painter.RenderHint.Antialiasing, True)
+    for i in range(len(self.colors)):
+        if i >= len(self.display) or not self.display[i]:
+            continue
+        color, bold = self.colors[i], i == self.selected
+        pts = self.past[i] if i < len(self.past) else None
+        if pts is not None and len(pts) >= 2:
+            k = len(pts) - 1
+            for j in range(k):
+                a, b = pts[j], pts[j + 1]
+                if not (np.isfinite(a).all() and np.isfinite(b).all()):
+                    continue
+                painter.setPen(QPen(QColor(*color, int(40 + 200 * (j + 1) / k)), (2.2 if bold else 1.5) / scale))
+                painter.drawLine(QPointF(float(a[0]), float(a[1])), QPointF(float(b[0]), float(b[1])))
+        pts = self.future[i] if i < len(self.future) else None
+        if pts is not None and len(pts) >= 2:
+            k = len(pts) - 1
+            for j in range(k):
+                a, b = pts[j], pts[j + 1]
+                if not (np.isfinite(a).all() and np.isfinite(b).all()):
+                    continue
+                painter.setPen(QPen(QColor(*color, int(30 + 150 * (k - j) / k)), 1.2 / scale, Qt.DashLine))
+                painter.drawLine(QPointF(float(a[0]), float(a[1])), QPointF(float(b[0]), float(b[1])))
+        r = GHOST_RADIUS / scale
+        cur = self.current[i] if self.current is not None and i < len(self.current) else None
+        for ghost, style in ((self.ghost_prev, Qt.SolidLine), (self.ghost_next, Qt.DashLine)):
+            if ghost is None or i >= len(ghost) or not np.isfinite(ghost[i]).all():
+                continue
+            g = ghost[i]
+            painter.setPen(QPen(QColor(*color, 170), 1.2 / scale, style))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(QPointF(float(g[0]), float(g[1])), r, r)
+            if cur is not None and np.isfinite(cur).all():
+                painter.setPen(QPen(QColor(*color, 110), 1.0 / scale, Qt.DotLine))
+                painter.drawLine(QPointF(float(g[0]), float(g[1])), QPointF(float(cur[0]), float(cur[1])))
+
+
+def _chains(segs):
+    """Segments (a, b) joined where one ends and the next starts: [(first, ..., last)] per chain."""
+    out = []
+    for a, b in segs:
+        if out and out[-1][-1] == a:
+            out[-1].append(b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def section_trails():
+    print("[3] (G227) long trails: the same picture, drawn in under 33 ms (20 points, 1000 frames past + future)")
+    import types
+    from PySide6.QtGui import QImage, QPainter
+    from kinetrace.canvas import VideoCanvas
+    cv = VideoCanvas()
+    cv.resize(1920, 1080)
+    cv.set_video_size(3840, 2160)
+    rng = np.random.default_rng(0)
+    n = 20
+    metas = [types.SimpleNamespace(color=(int(40 + 10 * i) % 256, 200, 80), display=True, name=f"P{i}", kind="point",
+                                   source="track", anchor=False, free=False, derived=False, is_ball=False,
+                                   segment=None) for i in range(n)]
+    pos = (rng.random((n, 2)) * 1000 + 1000).astype(np.float32)
+
+    def scene(length, nan_every=0):
+        cv.set_trails(length, True)
+        tr = [np.cumsum(rng.normal(0, 3, size=(length + 1, 2)), 0).astype(np.float32) + 1000 for _ in range(n)]
+        fu = [np.cumsum(rng.normal(0, 3, size=(length + 1, 2)), 0).astype(np.float32) + 1000 for _ in range(n)]
+        if nan_every:
+            for a in tr + fu:
+                a[rng.random(len(a)) < 1.0 / nan_every] = np.nan          # frames with no data: gaps in the trail
+        cv.set_points(pos, np.ones(n, bool), metas, 3, tr, fu)
+        cv._motion.ghost_prev = pos + 3.0
+        cv._motion.ghost_next = pos - 3.0
+        cv._motion.current = pos
+
+    def picture(paint):
+        img = QImage(1920, 1080, QImage.Format_ARGB32_Premultiplied)
+        img.fill(0)
+        p = QPainter(img)
+        p.scale(0.5, 0.5)                                 # 4K video in a 1080p view
+        t0 = time.perf_counter()
+        paint(p)
+        dt = time.perf_counter() - t0
+        p.end()
+        return img, dt
+    mo = cv._motion
+    for length, nan_every, sel in ((10, 0, None), (100, 0, None), (300, 40, 3)):
+        scene(length, nan_every)
+        mo.selected = sel
+        ref, _ = picture(lambda p: _old_trail_paint(mo, p))
+        new, _ = picture(lambda p: mo.paint(p, None))
+        check(f"[3] {length}-frame trails (gaps every ~{nan_every or '-'} frames): the same picture, pixel for pixel",
+              new == ref)
+    # longer than TRAIL_DRAWN (owner: thinned only if still over 33 ms): every n-th frame of each stretch with data
+    from PySide6.QtCore import Qt
+    from kinetrace.canvas import TRAIL_DRAWN
+
+    class Recorder:
+        def __init__(self):
+            self.lines, self.alpha = [], []
+
+        def setPen(self, pen):
+            self.cur = pen.color().alpha()
+
+        def drawLines(self, lines):
+            self.lines += [(ln.x1(), ln.y1(), ln.x2(), ln.y2()) for ln in lines]
+            self.alpha += [self.cur] * len(lines)
+    scene(1000, 50)
+    bad, worst = [], 0
+    for pts in mo.past + mo.future:
+        k = len(pts) - 1
+        alphas = (40 + 200 * np.arange(1, k + 1) / k).astype(int)
+        rec = Recorder()
+        mo._trail(rec, pts, (200, 200, 80), alphas, 1.0, Qt.SolidLine)
+        at = {(float(x), float(y)): f for f, (x, y) in enumerate(pts.tolist()) if np.isfinite([x, y]).all()}
+        segs = [(at[(x0, y0)], at[(x1, y1)]) for x0, y0, x1, y1 in rec.lines]
+        ok = np.isfinite(pts).all(axis=1)
+        edge = np.diff(np.r_[0, ok.astype(np.int8), 0])
+        runs = [(a, b - 1) for a, b in zip(np.nonzero(edge == 1)[0], np.nonzero(edge == -1)[0]) if b - a >= 2]
+        worst = max(worst, len(segs))
+        if any(not ok[a:b + 1].all() or b <= a for a, b in segs):
+            bad.append("crosses a frame without data")
+        if sorted(segs) != segs or [(s[0], s[-1]) for s in _chains(segs)] != runs:
+            bad.append("does not run from each stretch's first frame to its last")
+        if [al for al in rec.alpha] != [int(alphas[b - 1]) for _a, b in segs]:
+            bad.append("fade differs")
+    check(f"[3] 1000-frame trails with gaps: drawn through every n-th frame of each stretch (at most "
+          f"{TRAIL_DRAWN} + one per gap segments), never across a gap, the same fade", not bad and worst < 2 * TRAIL_DRAWN,
+          (sorted(set(bad)), worst))
+    scene(1000, 0)
+    t_old = min(picture(lambda p: _old_trail_paint(mo, p))[1] for _ in range(3))
+    t_new = min(picture(lambda p: mo.paint(p, None))[1] for _ in range(3))
+    print(f"    20 x 1000 frames past + future: {t_old * 1000:.0f} ms before, {t_new * 1000:.0f} ms now")
+    check("[3] 20 points x 1000 frames past + future repaint in under 33 ms", t_new < 0.033, f"{t_new * 1000:.0f} ms")
+    cv.deleteLater()
+
+
+SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
 for key, fn in SECTIONS.items():
     if ONLY and key not in ONLY:
