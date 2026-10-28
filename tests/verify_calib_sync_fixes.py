@@ -575,6 +575,46 @@ def _i356():
     check(abs(rows[20, 2] - 1 - 296.3) < 1e-6, "the xypts rows themselves are unchanged", str(rows[20]))
 
 
+# ------------------------------------------------------------------ I340 / I356 in exports/ (review)
+def _exports_rewritten():
+    from kinetrace import projectfile as pf
+    K = np.array([[300.0, 0, 159.5], [0, 300.0, 119.5], [0, 0, 1]])
+    s0, s1 = TrackingSession("a.mp4", 10, 30.0, 320, 240), TrackingSession("b.mp4", 10, 30.0, 320, 240)
+    for s in (s0, s1):
+        s.add_landmark("p")
+        for f in range(10):
+            s.set_position(f, 0, 100.0 + f, 100.0)
+    p = Project([s0, s1], ["a", "b"], [0.0, 0.0])
+    cams = []
+    for C in ((5, 0, 1), (0, 5, 1)):
+        R, t = look_at(C)
+        cams.append(CameraCalibration(dlt_from_camera(K, R @ np.diag([1.0, 1.0, -1.0]), t), 320, 240))
+    p.calibration = Calibration(cams, "m", "left-handed")
+    xyz = np.random.default_rng(2).normal(size=(10, 1, 3)) * 0.1
+    p.reconstruction = Reconstruction(0, ["p"], xyz, np.zeros((10, 1)), np.full((10, 1), 2, np.int32), "m")
+    root = os.path.join(OUT, "exports_old.kinetrace")
+    pf.save(p, root)
+    autoexport.refresh(root, ["xyz_dltdv", "dltdv_all"])
+    # the exports/ record as a save BEFORE this change left it: the fingerprints without the writer token, and
+    # its files (the mirrored xyzpts, the "same instant" sidecar)
+    out = os.path.join(root, "exports")
+    idx = pf._read_index(pf.project_root(root))
+    old = {"xyzpts.csv": autoexport._fingerprint(idx, ("reconstruction/", "calibration.json"), "xyz_dltdv"),
+           "all_cameras_xypts.csv": autoexport._fingerprint(idx, ("cameras/", "project.json"), "dltdv_all")}
+    with open(os.path.join(out, "exports.json"), "w", encoding="utf-8") as fh:
+        json.dump({"files": old}, fh)
+    with open(os.path.join(out, "xyzpts.csv"), "w", encoding="ascii") as fh:
+        fh.write("pt1_X,pt1_Y,pt1_Z\n" + "".join("1,2,-3\n" for _ in range(10)))
+    written, problems = autoexport.refresh(root, ["xyz_dltdv", "dltdv_all"])
+    check("xyzpts.csv" in written and "all_cameras_xypts.csv" in written and not problems,
+          "a project saved before this change rewrites its exports/ xyzpts and all-cameras xypts once",
+          f"{written} {problems}")
+    got = np.loadtxt(os.path.join(out, "xyzpts.csv"), delimiter=",", skiprows=1).reshape(-1, 3)
+    check(np.allclose(got, xyz[:, 0], atol=1e-5), "...in the dltCoefs.csv's world")
+    again, _ = autoexport.refresh(root, ["xyz_dltdv", "dltdv_all"])
+    check(not again, "...and not again on the save after", str(again))
+
+
 for name, fn in (("I340 the DLTdv pair in one world", _i340),
                  ("I341 DLTdv v7 projects", _i341),
                  ("I342 dltCoefs.csv headers", _i342),
@@ -591,7 +631,8 @@ for name, fn in (("I340 the DLTdv pair in one world", _i340),
                  ("I353 wobble vs dropped frame", _i353),
                  ("I354 the 'still' band of a portrait camera", _i354),
                  ("I355 ChArUco frames per pair", _i355),
-                 ("I356 the multi-camera xypts sidecar", _i356)):
+                 ("I356 the multi-camera xypts sidecar", _i356),
+                 ("I340 / I356 exports/ of a project saved before", _exports_rewritten)):
     section(name, fn)
 
 print("\nverify_calib_sync_fixes: " + ("PASSED" if not FAILS else f"FAILED ({len(FAILS)}): " + "; ".join(FAILS)))
