@@ -14,6 +14,7 @@ CPU, every dialog stubbed; each section makes the user's gesture and FAILS on ea
   [9] (G230) Save As onto the project opened without camB names camB and what replacing it drops; No changes nothing
   [10] (I375) has_click_after: the same answers as the old scan after every kind of edit; the Track label with 15
        cameras x 20 points x 40,000 frames costs under 5 ms a playhead move (20.7 ms on eaee38b)
+  [11] (G231) Body > Side-by-side View (Ctrl+6) greyed out until there is a body pose; an open window stays closable
 Run: .venv\\Scripts\\python.exe tests\\verify_ui_behaviour.py   (UI_ONLY=fc,... runs only those sections)
 """
 import os
@@ -865,9 +866,40 @@ def section_label():
     close(win)
 
 
+def section_body():
+    print("[11] (G231) Body > Side-by-side View is greyed out until there is a body pose; an open window stays closable")
+    from PySide6.QtCore import Qt
+    from kinetrace import body
+    v = make_video("body/clip.mp4", n=30)
+    win = new_window()
+    win._open_video(v)
+    check("(setup) the video opens", wait(lambda: win.state == READY and win.session is not None
+                                            and not win._loading, 30))
+    win._apply_state()
+    check("[11] with no body pose the menu entry is greyed out", not win.act_body_view.isEnabled())
+    key(win, Qt.Key_6, Qt.ControlModifier)                # Ctrl+6
+    check("[11] ... and Ctrl+6 opens no window", not win.act_body_view.isChecked()
+          and getattr(win, "body_win", None) is None)
+    s = win.session
+    s.body = body.BodyTrack(s.n_frames, body.rig_of("coco17"), 1)
+    s.body.set_person(3, 0, joints2d=np.full((17, 2), 50.0), conf=np.ones(17), score=0.9)
+    s._touch()
+    win._apply_state()
+    check("[11] with a body pose it is enabled", win.act_body_view.isEnabled())
+    key(win, Qt.Key_6, Qt.ControlModifier)
+    check("(setup) Ctrl+6 opened the window", wait(lambda: win.act_body_view.isChecked(), 5))
+    s.body = None                                          # Body > Remove ... while the window is open
+    s._touch()
+    win._apply_state()
+    check("[11] an open window can still be closed from the menu", win.act_body_view.isEnabled())
+    win.act_body_view.trigger()
+    pump(0.2)
+    close(win)
+
+
 SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close,
             "undo": section_undo, "ball": section_ball, "hull": section_hull, "names": section_names,
-            "saveas": section_saveas, "label": section_label}
+            "saveas": section_saveas, "label": section_label, "body": section_body}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
 for sect, fn in SECTIONS.items():
     if ONLY and sect not in ONLY:
