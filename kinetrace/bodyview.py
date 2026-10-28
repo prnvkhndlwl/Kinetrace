@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QPushButton, QRadioButton, QSizePolicy, QSpinBox, QToolButton,
                                QVBoxLayout, QWidget)
 
-from kinetrace import theme
+from kinetrace import paths, theme
 from kinetrace.canvas import bgr_pixmap
 from kinetrace.body import MIN_JOINT_CONF, BodyTrack, canon, is_finger, median_axis
 from kinetrace.pixels import centre_scale
@@ -1401,7 +1401,8 @@ class BodySideBySide(QWidget):
     def save_png(self, path: str) -> None:
         if self.last_image is None:
             self._render()
-        cv2.imwrite(str(path), self.last_image)
+        if not paths.write_image(path, self.last_image):    # any folder name (X44); a failure is said
+            raise OSError(f"the picture could not be written to {path}")
 
     # ---- interaction
     def resizeEvent(self, ev):

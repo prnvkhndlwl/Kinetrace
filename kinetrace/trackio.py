@@ -37,7 +37,7 @@ from pathlib import Path
 
 import numpy as np
 
-from kinetrace import projectfile
+from kinetrace import paths, projectfile
 
 KINDS = {"dlc": "DeepLabCut CSV", "dltdv": "DLTdv / Argus xypts CSV",
          "sleap": "SLEAP analysis CSV", "kinetrace": "Kinetrace tracks (tracks.csv, or one landmark's file)",
@@ -526,8 +526,8 @@ def export_masks_json(session, path, i: int | None = None) -> int:
 def export_masks_png(session, folder, progress=None, i: int | None = None) -> int:
     """One black / white PNG per frame with a silhouette of segment `i` (None = the active
     one; white = the segment), named <video name>_<frame, 6 digits>.png. `progress(done,
-    total)` may return False to stop. Returns the number of files written."""
-    import cv2
+    total)` may return False to stop. Returns the number of files written. Any folder name
+    (X44: `paths.write_image`, not cv2.imwrite)."""
     m = session.masks_of(i)
     frames = [] if m is None else [int(f) for f in m.frames()]
     folder = Path(folder)
@@ -537,7 +537,7 @@ def export_masks_png(session, folder, progress=None, i: int | None = None) -> in
         if progress is not None and progress(k, len(frames)) is False:
             return k
         mask = m.rasterize(f, session.height, session.width)
-        if not cv2.imwrite(str(folder / f"{stem}_{f:06d}.png"), mask.astype(np.uint8) * 255):
+        if not paths.write_image(folder / f"{stem}_{f:06d}.png", mask.astype(np.uint8) * 255):
             raise TrackImportError(f"{folder}: cannot write the PNG files there")
     return len(frames)
 
@@ -569,7 +569,7 @@ def import_masks_png(session, folder, progress=None, i: int | None = None) -> di
         if not 0 <= f < T:
             beyond += 1
             continue
-        img = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
+        img = paths.read_image(p, cv2.IMREAD_GRAYSCALE)        # any folder name (X44)
         if img is None:
             raise TrackImportError(f"{p.name}: not a readable image")
         if img.shape != (H, W):

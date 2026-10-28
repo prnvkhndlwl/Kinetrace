@@ -425,6 +425,18 @@ assert v3._light_preference() is True, "the choice is remembered"
 _png = os.path.join(SCRATCH, "test3d_gui_light.png")
 v.save_png(_png)
 assert np.array_equal(cv2.imread(_png), v.last_image)
+# (X44) the Save button into a folder named with an accent (cv2.imwrite cannot open that path on Windows)
+_intl = os.path.join(SCRATCH, "José")
+os.makedirs(_intl, exist_ok=True)
+_png = os.path.join(_intl, "3d.png")
+if os.path.exists(_png):
+    os.remove(_png)
+_gsf = QFileDialog.getSaveFileName
+QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (_png, "PNG picture (*.png)"))
+QTest.mouseClick(v.btn_save, Qt.LeftButton)
+QFileDialog.getSaveFileName = _gsf
+assert os.path.isfile(_png) and cv2.imdecode(np.fromfile(_png, np.uint8), cv2.IMREAD_COLOR) is not None, \
+    f"the 3D picture saved into an accented folder: {v.info.text()}"
 QTest.mouseClick(v.chk_light, Qt.LeftButton)
 pump(0.1)
 v._render()

@@ -303,6 +303,14 @@ check(img is not None and img.shape[1] > 600, "the window renders",
 check(img is not None and len(np.unique(img.reshape(-1, 3), axis=0)) > 50,
       "the render has real content, not a blank panel")
 w.save_png(str(OUT / "body_gui_side_by_side.png"))
+_intl = OUT / "José"                                 # (X44) cv2.imwrite cannot open this path on Windows
+_intl.mkdir(exist_ok=True)
+(_intl / "body.png").unlink(missing_ok=True)
+try:
+    w.save_png(str(_intl / "body.png"))
+except OSError:
+    pass
+check((_intl / "body.png").is_file(), "the body picture is saved into a folder named with an accent")
 before = img.copy()
 w.azimuth += 40
 w._render()
