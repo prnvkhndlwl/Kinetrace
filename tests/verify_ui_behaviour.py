@@ -8,6 +8,7 @@ CPU, every dialog stubbed; each section makes the user's gesture and FAILS on ea
   [5] (I371, G228) a Track press that starts nothing (last frame, nothing to start from, a declined run) leaves
       Ctrl+Z as it was; T on the last frame says there is nothing ahead
   [6] (I373) a ball's size hint is its size at the start frame (else the nearest earlier, else the nearest later)
+  [7] (I374) 3D > Carve Volume (Ctrl+4) on a 50 mm ball: the same hull in a metre and a mm world, never cut off
 Run: .venv\\Scripts\\python.exe tests\\verify_ui_behaviour.py   (UI_ONLY=fc,... runs only those sections)
 """
 import os
@@ -650,7 +651,7 @@ def section_hull():
 
 
 SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close,
-            "undo": section_undo, "ball": section_ball}
+            "undo": section_undo, "ball": section_ball, "hull": section_hull}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
 for sect, fn in SECTIONS.items():
     if ONLY and sect not in ONLY:

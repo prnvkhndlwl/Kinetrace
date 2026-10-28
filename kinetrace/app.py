@@ -14019,7 +14019,11 @@ class MainWindow(QMainWindow):
         def work():
             cams = p.calibration.padded(p.n_views)          # (I273) one per camera, None = not calibrated
             span = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) if len(pts) > 1 else 0.0
-            margin = max(2.0 * span, 0.05)
+            # (I374) the smallest box: a fortieth of the way to the nearest camera with a silhouette, in the
+            # calibration's own unit (it was 0.05 units: right in metres, a 1.6 mm box in a mm world)
+            near = min(float(np.linalg.norm(cams[c].center() - pts.mean(axis=0)))
+                       for c, m in enumerate(masks) if m is not None and cams[c] is not None)
+            margin = max(2.0 * span, 0.025 * near)
             cut_off = False
             for _grow in range(5):
                 lo, hi = bounds_from_points(pts, margin)
