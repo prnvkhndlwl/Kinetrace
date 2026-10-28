@@ -12,6 +12,8 @@ start is tracked from the frame before it, only when that frame is a usable posi
   [7] "Use this every time": the next press fills the gaps without asking; Track > When there is data ahead shows it
   [8] the first press with data ahead counts the gaps without loading the tracker (torch) on the window's thread
       (review #2: it froze the window with no "Starting the tracking engine" card, G46) - run first, in a fresh process
+  [9] (I368, I376; sweep PR 7) between two gap runs the press is not over: Ctrl+S is kept for its end (saved once,
+      after the last gap run), and the press's undo point takes no extra snapshot - FAILS on eaee38b
 Every check FAILS on the code before step 19 (there is no third choice). Run: .venv\\Scripts\\python.exe
 tests\\verify_gap_fill.py
 """
@@ -395,8 +397,79 @@ def section_torch():
     close(win)
 
 
+def section_press():
+    print("[9] between two gap runs the press is not over (I368): Ctrl+S waits for its end; one undo point, no "
+          "extra snapshot (I376)")
+    from kinetrace.session import TrackingSession
+    from PySide6.QtWidgets import QFileDialog
+    win = new_window(V600)
+    s = win.session
+    win._on_add(float(GT[0, 0, 0]), float(GT[0, 0, 1]))
+    s.points[0].tracker = "cotracker3"
+    win._refresh_point_list()
+    seed_track(s, GT, 600, [0])
+    s.clear_window([0], 100, 129)                        # two gaps far apart: two gap runs
+    s.clear_window([0], 400, 409)
+    win._refresh_point_list()
+    target = os.path.join(OUT, "press9.kinetrace")
+    real_dlg = QFileDialog.getSaveFileName
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (target, ""))
+    try:
+        check("(setup) the project is saved, so Ctrl+S writes it with no question", win._save_project_as())
+    finally:
+        QFileDialog.getSaveFileName = real_dlg
+    wait(lambda: not win._writer_busy(), 30)
+    s = win.session
+    s.clear_window([0], 100, 129)                        # (Save As kept them; dirty again for the press)
+    s.set_position(0, 0, float(GT[0, 0, 0]), float(GT[0, 0, 1]))
+    toasts = Toasts(win)
+    writes, between, snaps = [], [], []
+    real_writer, real_next, real_undo = win._start_writer, win._gaps_next, win._set_run_undo_point
+
+    def writer(frozen, path, *a, **k):
+        if str(path).lower().startswith(str(target).lower()):
+            writes.append({"gaps_over": win._gaps is None, "state": win.state})
+        return real_writer(frozen, path, *a, **k)
+
+    def gaps_next():
+        st = win._gaps
+        if st is not None and st["runs"] >= 1 and st["queue"] and win.state == READY and not between:
+            between.append(win._run_in_progress())
+            win.activateWindow()
+            QTest.keyClick(win, Qt.Key_S, Qt.ControlModifier)          # the user's Ctrl+S between two gap runs
+        return real_next()
+
+    def undo_point(sn):
+        n0 = len(snaps)
+        real_snap = TrackingSession.snapshot
+        TrackingSession.snapshot = lambda self_: (snaps.append(1), real_snap(self_))[1]
+        try:
+            return real_undo(sn)
+        finally:
+            TrackingSession.snapshot = real_snap
+            snaps.append(("calls", len(snaps) - n0))
+    win._start_writer, win._gaps_next, win._set_run_undo_point = writer, gaps_next, undo_point
+    try:
+        ok = press_t(win)
+        wait(lambda: not win._save_after_run and not win._writer_busy(), 30)
+        pump(0.5)
+    finally:
+        del win._start_writer, win._gaps_next, win._set_run_undo_point
+    s = win.session
+    check("(setup) the press ended and both gaps are filled",
+          ok and s.tracked[100:130, 0].all() and s.tracked[400:410, 0].all())
+    check("(setup) Ctrl+S was pressed between the two gap runs", between, between)
+    check("[9] between two gap runs the press counts as not over (`_run_in_progress`)", between and between[0], between)
+    check("[9] ... so Ctrl+S says it saves once the run stops", toasts.said("saved as soon as it stops"), toasts.msgs[-3:])
+    check("[9] ... and the project is written once, after the last gap run", len(writes) == 1 and writes[0]["gaps_over"],
+          writes)
+    calls = [c[1] for c in snaps if isinstance(c, tuple)]
+    check("[9] the press's one undo point takes no extra snapshot of the working camera (I376)", calls == [0], calls)
+    close(win)
+
+
 ONLY = {x.strip() for x in os.environ.get("GAP_FILL_ONLY", "").split(",") if x.strip()}    # e.g. "torch,plan"
-for fn in (section_torch, section_plan, section_main, section_gone, section_long):
+for fn in (section_torch, section_plan, section_main, section_gone, section_long, section_press):
     if ONLY and fn.__name__.replace("section_", "") not in ONLY:
         continue
     try:

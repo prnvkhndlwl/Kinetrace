@@ -7120,7 +7120,8 @@ class MainWindow(QMainWindow):
         nothing), the others' ride along (R10; `_multi_finish`, `_passes_finish`, the re-track's
         Keep)."""
         p = self.project
-        self._set_undo_point(snaps.get(p.active, self.session.snapshot()),
+        # (I376) not `snaps.get(p.active, snapshot())`: the default was a whole snapshot made every time
+        self._set_undo_point(snaps[p.active] if p.active in snaps else self.session.snapshot(),
                              {v: sn for v, sn in snaps.items() if v != p.active})
 
     def _begin_edit(self, names=None, animals=None) -> None:
@@ -11928,9 +11929,10 @@ class MainWindow(QMainWindow):
     def _run_in_progress(self) -> bool:
         """A Track press is not over yet: a run is going, or what follows it is still to come -- the
         second pass of a two-pass run, the next camera of an every-camera run, the next re-track
-        stretch (each starts from a timer once the one before has ended)."""
+        stretch, the next run of "Only fill the gaps" (I368) (each starts from a timer once the one
+        before has ended)."""
         return (self.state == TRACKING or self._passes is not None or self._multi is not None
-                or self._retrack is not None)
+                or self._retrack is not None or self._gaps is not None)
 
     def _save_project(self) -> bool:
         if self.project is not None and self._run_in_progress():
