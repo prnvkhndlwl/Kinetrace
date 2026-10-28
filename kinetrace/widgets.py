@@ -119,7 +119,9 @@ class Toast(QLabel):
         own = hit.sub("", text) if hit is not None else text
         if not (_TAG.search(own) or _ENTITY.search(own)):
             return html.escape(text, quote=False).replace("\n", "<br>")
-        return hit.sub(lambda m: html.escape(m.group(0), quote=False), text) if hit is not None else text
+        out = hit.sub(lambda m: html.escape(m.group(0), quote=False), text) if hit is not None else text
+        # (review) HTML only by an escaped character: a plain sentence, its line breaks kept
+        return out if _TAG.search(own) else out.replace("\n", "<br>")
 
     def show_message(self, text: str, level: str = "info", ms: int = 6000, on_click=None) -> None:
         """`on_click` = what clicking the notice does (then it closes); without

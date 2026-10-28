@@ -14624,7 +14624,8 @@ class MainWindow(QMainWindow):
         if on:
             if self.body_win is None:
                 self.body_win = BodySideBySide(self)
-                self.body_win.closed.connect(lambda: self.act_body_view.setChecked(False))
+                # (G231, review) closed by its X: the menu entry follows at once (greyed out with no pose)
+                self.body_win.closed.connect(lambda: (self.act_body_view.setChecked(False), self._apply_state()))
                 self.body_win.export_requested.connect(self._export_body_video)
             self.body_win.show()
             self._refresh_body_view(force=True)
