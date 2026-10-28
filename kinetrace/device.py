@@ -29,6 +29,7 @@ import os
 import platform
 import shutil
 import subprocess
+import threading
 
 FORCE_ENV = "KINETRACE_DEVICE"
 DRIVER_MIN = 580            # NVIDIA driver branch the CUDA 13 PyTorch build needs
@@ -145,6 +146,7 @@ def _write_bench(d: dict) -> None:
 
 
 _memo: dict = {}                # (file, key, file mtime) -> the measurement: once per process
+_compare_lock = threading.Lock()    # (X49) one measurement at a time: two at once slowed each other
 
 
 def _bench_mtime() -> tuple | None:
@@ -172,31 +174,37 @@ def compare(torch=None) -> dict:
     sig = (BENCH_FILE, key, _bench_mtime())
     if sig in _memo:
         return _memo[sig]
-    cached = _read_bench(key)
-    if cached is not None:
-        _memo.clear()
-        _memo[sig] = cached
-        return cached
-    gpu = "cuda" if torch.cuda.is_available() else ("mps" if _mps_available(torch) else None)
-    d = {"key": key, "cpu_ms": None, "gpu": gpu, "gpu_ms": None, "speedup": None, "error": ""}
-    try:
-        d["cpu_ms"] = benchmark("cpu", torch)
-    except Exception as e:      # noqa: BLE001 - the CPU cannot fail this; record it if it does
-        d["error"] = f"cpu: {type(e).__name__}: {e}"
-        _memo.clear()
-        _memo[sig] = d
-        return d
-    if gpu is not None:
+    # (X49) two callers at once on a first start (the tracker and System Check) measured twice, the two
+    # CPU timings slowing each other: the second waits here and finds the first's answer
+    with _compare_lock:
+        sig = (BENCH_FILE, key, _bench_mtime())
+        if sig in _memo:
+            return _memo[sig]
+        cached = _read_bench(key)
+        if cached is not None:
+            _memo.clear()
+            _memo[sig] = cached
+            return cached
+        gpu = "cuda" if torch.cuda.is_available() else ("mps" if _mps_available(torch) else None)
+        d = {"key": key, "cpu_ms": None, "gpu": gpu, "gpu_ms": None, "speedup": None, "error": ""}
         try:
-            d["gpu_ms"] = benchmark(gpu, torch)
-            d["speedup"] = d["cpu_ms"] / max(d["gpu_ms"], 1e-6)
-        except Exception as e:  # noqa: BLE001 - a GPU that cannot run the workload is not used
-            d["error"] = f"{gpu}: {type(e).__name__}: {e}"
-    if gpu is None or d["gpu_ms"] is not None:
-        _write_bench(d)
-    _memo.clear()
-    _memo[sig if gpu is None or d["gpu_ms"] is None else (BENCH_FILE, key, _bench_mtime())] = d
-    return d
+            d["cpu_ms"] = benchmark("cpu", torch)
+        except Exception as e:      # noqa: BLE001 - the CPU cannot fail this; record it if it does
+            d["error"] = f"cpu: {type(e).__name__}: {e}"
+            _memo.clear()
+            _memo[sig] = d
+            return d
+        if gpu is not None:
+            try:
+                d["gpu_ms"] = benchmark(gpu, torch)
+                d["speedup"] = d["cpu_ms"] / max(d["gpu_ms"], 1e-6)
+            except Exception as e:  # noqa: BLE001 - a GPU that cannot run the workload is not used
+                d["error"] = f"{gpu}: {type(e).__name__}: {e}"
+        if gpu is None or d["gpu_ms"] is not None:
+            _write_bench(d)
+        _memo.clear()
+        _memo[sig if gpu is None or d["gpu_ms"] is None else (BENCH_FILE, key, _bench_mtime())] = d
+        return d
 
 
 def pick_device() -> tuple[str, str]:

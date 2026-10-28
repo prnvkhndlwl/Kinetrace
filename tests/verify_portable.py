@@ -196,6 +196,38 @@ try:
         d, label = dv.pick_device()
         assert d == "cpu" and label.startswith("cpu: no GPU"), label
         ok("no GPU here: the CPU, measured and said")
+    # (X49) two callers at once on a first start (the tracker and System Check): ONE measurement per
+    # device, never two overlapping CPU timings that slow each other
+    import threading
+    import time
+    real_bench = dv.benchmark
+    seen = []
+
+    def _slow(device, torch=None):
+        t0 = time.perf_counter()
+        time.sleep(0.4)
+        seen.append((device, t0, time.perf_counter()))
+        return 10.0 if device == "cpu" else 5.0
+
+    if os.path.exists(tmp_bench):
+        os.remove(tmp_bench)
+    dv._memo.clear()
+    dv.benchmark = _slow
+    got = []
+    try:
+        ths = [threading.Thread(target=lambda: got.append(dv.compare(torch))) for _ in range(2)]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join(30)
+    finally:
+        dv.benchmark = real_bench
+        dv._memo.clear()
+    gpu_dev = "cuda" if torch.cuda.is_available() else ("mps" if dv._mps_available(torch) else None)
+    want = sorted(["cpu"] + ([gpu_dev] if gpu_dev else []))
+    assert sorted(d for d, _, _ in seen) == want, f"one measurement per device, not {sorted(d for d, _, _ in seen)}"
+    assert len(got) == 2 and got[0] == got[1], got
+    ok(f"two callers at once: one measurement per device ({', '.join(want)}), the same answer for both")
 finally:
     dv.BENCH_FILE = real_file
     if os.path.exists(tmp_bench):
