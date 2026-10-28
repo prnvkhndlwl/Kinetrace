@@ -88,13 +88,17 @@ def sessions(*fps, n=200):
 print("[map] map_frame gives what it always gave (the rule now written once)")
 
 
-def old_map_frame(p, src, dst, frame):
-    """map_frame as it was on main eaee38b (project.py:212-228), kept here as the reference."""
-    if not (0 <= src < p.n_views and 0 <= dst < p.n_views):
-        return None
+def old_index(p, src, dst, frame):
+    """map_frame's rounding as it was on main eaee38b (project.py:212-228), kept here as the reference."""
     t = (float(int(frame)) - p.offsets[src]) / p.rates[src]
     x = p.rates[dst] * float(t) + p.offsets[dst]
-    local = int(np.floor(x + 0.5)) if src <= dst else int(np.ceil(x - 0.5))
+    return int(np.floor(x + 0.5)) if src <= dst else int(np.ceil(x - 0.5))
+
+
+def old_map_frame(p, src, dst, frame):
+    if not (0 <= src < p.n_views and 0 <= dst < p.n_views):
+        return None
+    local = old_index(p, src, dst, frame)
     if local < 0 or local >= p.sessions[dst].n_frames:
         return None
     return local
@@ -105,13 +109,10 @@ diff = [(a, b, f) for a in range(3) for b in range(3) for f in range(0, 401)
         if pm.map_frame(a, b, f) != old_map_frame(pm, a, b, f)]
 check(not diff, "every (src, dst, frame) of 3 cameras x 401 frames maps exactly as before", diff[:5])
 if hasattr(pm, "map_index"):
-    fr = np.arange(0, 401)
-    vec_ok = all(np.array_equal(pm.map_index(a, b, fr),
-                                [old_map_frame(types.SimpleNamespace(n_views=3, offsets=pm.offsets, rates=pm.rates,
-                                                                     sessions=[types.SimpleNamespace(n_frames=10 ** 9)] * 3),
-                                               a, b, f) for f in fr])
+    fr = np.arange(-50, 401)
+    vec_ok = all(np.array_equal(pm.map_index(a, b, fr), [old_index(pm, a, b, f) for f in fr])
                  for a in range(3) for b in range(3))
-    check(vec_ok, "Project.map_index (vectorised) = map_frame's rule on every frame")
+    check(vec_ok, "Project.map_index (vectorised) = map_frame's rule on every frame, no range check")
 else:
     check(False, "Project.map_index exists (map_frame's rule for many frames at once)")
 
@@ -128,9 +129,9 @@ cases = [((239.76, 119.88), 2.0), ((240.0, 120.0), 2.0), ((119.88011988011988, 2
 for (a, b), want in cases:
     got = rate_of(a, b)
     check(got == want, f"rate_of({a}, {b}) = {want!r}", repr(got))
-raw = 23.976 / 25.0
-check(rate_of(23.976, 25.0) == raw, "23.976 / 25 (no simple fraction within a millionth) stays the raw ratio",
-      repr(rate_of(23.976, 25.0)))
+for a, b in ((23.976, 25.0), (240000 / 1001, 120.0), (59.94, 50.0), (120.0001, 120.0)):
+    check(rate_of(a, b) == a / b, f"{a} / {b} (no simple fraction within a billionth) stays the raw ratio",
+          repr(rate_of(a, b)))
 check(rate_of(0.0, 30.0) == 1.0 and rate_of(30.0, 0.0) == 1.0, "an unknown rate still gives 1.0")
 p2 = Project(sessions(120, n=100))
 p2.add_view(sessions(100, n=100)[0], "cam2")
