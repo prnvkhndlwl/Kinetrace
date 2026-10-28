@@ -30,7 +30,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-VFOV_NAMES = {"W": "Wide", "L": "Linear", "N": "Narrow", "S": "SuperView", "H": "HyperView",
+from kinetrace.project import half_up
+
+VFOV_NAMES ={"W": "Wide", "L": "Linear", "N": "Narrow", "S": "SuperView", "H": "HyperView",
               "X": "Max SuperView", "M": "Max", "Z": "Linear + Horizon Lock"}
 OREN_NAMES = {"U": "upright", "D": "upside down", "L": "on its side (left)", "R": "on its side (right)"}
 TILT_DEV_DEG = 0.5      # the camera's tilt differs from its usual tilt by more than this = it moved (GRAV is steady to ~0.1-0.3 deg)
@@ -302,7 +304,8 @@ class GoProInfo:
         return ", ".join(bits)
 
     def frame_of(self, t: float) -> int:
-        return int(round(t * self.fps)) if np.isfinite(self.fps) and self.fps > 0 else 0
+        """The frame at `t` seconds; a .5 goes up (`half_up`, I366: round() sent 1.25 s at 2 fps to frame 2)."""
+        return half_up(t * self.fps) if np.isfinite(self.fps) and self.fps > 0 else 0
 
     def tilt(self) -> tuple[float, float] | None:
         """(degrees the lens points below the horizon -- negative = above, roll in degrees) from

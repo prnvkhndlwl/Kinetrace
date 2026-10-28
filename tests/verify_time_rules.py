@@ -184,28 +184,38 @@ check(len(mv) == 1 and (mv[0]["frame"], mv[0]["end_frame"]) == (3, 5),
 print("[I365] Re-track probes a stretch's frames with half_up")
 s_rt = TrackingSession("r.mp4", 40, 30.0, 640, 480)
 s_rt.add_landmark("p")
-st = retrack.Stretch(view=0, name="p", t0=10, t1=15, local0=10, local1=15, median_px=9.0)
 asked = []
+OUTSIDE = set()
 
 
 def fake_ray_target(project, view, name, local_frame, probe=None, why=None, **kw):
     asked.append(int(local_frame))
-    if local_frame == 13 and why is not None:
+    if local_frame in OUTSIDE and why is not None:
         why.append("the other cameras put it outside this camera's picture there (right edge)")
         return None
     return np.array([100.0, 100.0]), 2
 
 
-saved = (retrack.disagreeing_stretches, retrack._blame, retrack.ray_target)
-retrack.disagreeing_stretches = lambda project, thr, min_run=retrack.MIN_RUN: [st]
-retrack._blame = lambda project, out, thr: out
-retrack.ray_target = fake_ray_target
-try:
-    proj_rt = types.SimpleNamespace(sessions=[s_rt], n_views=1, calibration=types.SimpleNamespace(n_calibrated=2))
-    res = retrack.plan(proj_rt, 5.0)
-finally:
-    retrack.disagreeing_stretches, retrack._blame, retrack.ray_target = saved
+def run_plan():
+    asked.clear()
+    st = retrack.Stretch(view=0, name="p", t0=10, t1=15, local0=10, local1=15, median_px=9.0)
+    saved = (retrack.disagreeing_stretches, retrack._blame, retrack.ray_target)
+    retrack.disagreeing_stretches = lambda project, thr, min_run=retrack.MIN_RUN: [st]
+    retrack._blame = lambda project, out, thr: out
+    retrack.ray_target = fake_ray_target
+    try:
+        proj_rt = types.SimpleNamespace(sessions=[s_rt], n_views=1, calibration=types.SimpleNamespace(n_calibrated=2))
+        return retrack.plan(proj_rt, 5.0)
+    finally:
+        retrack.disagreeing_stretches, retrack._blame, retrack.ray_target = saved
+
+
+res = run_plan()
 check(asked == [10, 11, 13, 14, 15], "a stretch 10..15: the start, then 11, 13, 14, 15 (12.5 -> 13)", asked)
+check(res and res[0].target is not None and not res[0].reason, "... and with every probe inside, it is re-tracked",
+      (res[0].reason if res else None))
+OUTSIDE.add(13)
+res = run_plan()
 check(res and res[0].target is None and "at frame 13" in res[0].reason,
       "the point leaving the picture at frame 13 is caught (the stretch is not re-tracked into blank frames)",
       (res[0].reason if res else None))
