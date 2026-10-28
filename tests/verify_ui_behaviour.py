@@ -196,7 +196,49 @@ def section_fc():
     close(win)
 
 
-SECTIONS = {"fc": section_fc}
+def section_every():
+    print("[2] (G226) Every camera, the point tracked here only in the OTHER cameras: T starts them, as the label says")
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    vids = [make_video(f"every/cam{i}.mp4", n=80) for i in range(3)]
+    p0 = make_project("every/three.kinetrace", vids, n=80)
+    win = new_window()
+    check("(setup) a three-camera project opens", open_project(win, p0))
+    p = win.project
+    F = 30
+    q0 = p.sessions[0].add_empty_point()                 # a landmark with no data in the working camera
+    p.sync_landmarks()
+    name = p.sessions[0].points[q0].name
+    for v in (1, 2):
+        sv = p.sessions[v]
+        sv.set_position(F, sv.pid_by_name(name), 50.0, 60.0)
+    win._set_active_view(0)
+    win._refresh_point_list()
+    win.layers.select_only([q0])
+    win._on_point_selection_changed()
+    win.act_track_all.setChecked(True)
+    win._goto(F, force=True)
+    pump(0.2)
+    win._update_track_button()
+    label = win.btn_track.text()
+    started, toasts = [], Toasts(win)
+    real = MainWindow._start_multi_tracking
+    MainWindow._start_multi_tracking = lambda self, **k: started.append(
+        [j["view"] for j in self._multi_jobs(k.get("step", False), names=k.get("names"), model=k.get("model"),
+                                             rest=k.get("rest", True))])
+    try:
+        win.activateWindow()
+        QTest.keyClick(win, Qt.Key_T)
+        pump(0.3)
+    finally:
+        MainWindow._start_multi_tracking = real
+    check("(setup) the button says it runs in 2 cameras", "2 cams" in label, label)
+    check("[2] T starts the run in the two cameras that have the point", started == [[1, 2]], (started, toasts.msgs))
+    check("[2] ... and says nothing about 'no position'", not toasts.said("no position"), toasts.msgs)
+    close(win)
+
+
+SECTIONS = {"fc": section_fc, "every": section_every}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
 for key, fn in SECTIONS.items():
     if ONLY and key not in ONLY:

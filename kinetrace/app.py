@@ -2835,7 +2835,11 @@ class MainWindow(QMainWindow):
                 blocked = (None if any(p is not None and j["view"] != p.active for j in jobs)
                            else self._hand_only_text(scope))
             elif scope:
-                blocked = (f"The selected point(s) have no position on frame {self.current}. Select a "
+                # (G226) the Hand-only rule: an every-camera press whose cameras (`jobs`, the label's "N cams")
+                # include another camera runs there, even when the working camera has no position here
+                p = self.project
+                blocked = (None if any(p is not None and j["view"] != p.active for j in jobs) else
+                           f"The selected point(s) have no position on frame {self.current}. Select a "
                            "point that exists here, or place it here first (click it on the video)")
             elif s is not None and s.animal is not None:
                 blocked = ("Nothing to track from this frame: place a point (N), press S and click the "
