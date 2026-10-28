@@ -140,8 +140,10 @@ def _shared_lock(path: Path):
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     got = True
                     break
-                except OSError:             # BlockingIOError: another window holds it
+                except BlockingIOError:     # another window holds it: wait
                     time.sleep(0.05)
+                except OSError:             # no locks on this file system (NFS without lockd): write unlocked
+                    break
     except OSError:
         pass
     try:

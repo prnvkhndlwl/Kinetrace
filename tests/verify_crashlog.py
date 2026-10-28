@@ -286,7 +286,7 @@ print("the real main() starts, attaches the window, closes and ends its session 
 # (X48) Mac / Linux: a log lock another window holds is given up after the tries, as on Windows (it used to
 # wait as long as the other window held it). Emulated here on every OS: os.name "posix" and a stand-in fcntl
 # whose blocking call would wait (it raises after 5 s instead, so the old code fails rather than hangs); the
-# real two-process check runs on the Ubuntu / macOS pull-request jobs (verify_portable [7]).
+# real two-process check runs on the Ubuntu pull-request job (verify_portable [7]).
 import types  # noqa: E402
 
 held = {"on": True}
@@ -320,6 +320,11 @@ try:
     with crashlog._shared_lock(_lockfile):
         got = list(calls)
     released = calls[len(got):] == [_fake.LOCK_UN]
+    # a file system without locks (NFS without lockd: ENOLCK) is not waited on: the entry is written at once
+    _fake.flock = lambda fd, op: (_ for _ in ()).throw(OSError(37, "No locks available"))
+    t0 = time.perf_counter()
+    with crashlog._shared_lock(_lockfile):
+        no_locks_wait = time.perf_counter() - t0
 finally:
     os.name = _saved[0]
     if _saved[1] is None:
@@ -332,6 +337,7 @@ finally:
         crashlog._LOCK_TRIES = _saved[2]
 assert gave_up, f"Mac / Linux: a held log lock is given up after the tries: waited {waited:.1f} s {err}"
 assert got == [_fake.LOCK_EX | _fake.LOCK_NB] and released, (got, calls)
+assert no_locks_wait < 0.3, f"a file system without locks is not waited on: {no_locks_wait:.1f} s"
 print(f"Mac / Linux (emulated): a held log lock is given up after {waited:.1f} s (20 tries), a free one "
       "is taken at once and released (X48) OK")
 print("verify_crashlog PASSED")

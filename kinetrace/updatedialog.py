@@ -209,7 +209,7 @@ class UpdateDialog(QDialog):
         self.state = "available"
         self.title.setText(f"Kinetrace {rel.version} is available — you have {self._local}")
         if how == "git":
-            note =(blocker or f"This folder is a git checkout: it will be moved forward to {rel.tag}.")
+            note = (blocker or f"This folder is a git checkout: it will be moved forward to {rel.tag}.")
         else:
             note = ("Only Kinetrace's own files are replaced; your projects, models, recovery copies, "
                     "saved skeletons and settings are kept.")

@@ -98,7 +98,9 @@ def parse_version(text: str) -> tuple[int, ...]:
     """The sort key of a version: "v1.10.2" -> (1, 10, 2, 1). After major, minor, patch comes 1 for a
     release or 0 for a pre-release, then the pre-release's own numbers: "0.7.0-beta.1" -> (0, 7, 0, 0, 1),
     so a pre-release sorts below its release and rc1 below rc2 (X47: the suffix used to count as a 4th
-    number, so 0.7.0-beta.1 never saw 0.7.0). A "+build" part is ignored; a missing number counts as 0."""
+    number, so 0.7.0-beta.1 never saw 0.7.0). A "+build" part is ignored; a missing number counts as 0.
+    Only a pre-release's NUMBERS are compared, not its words (beta.2 > rc.1), and a 4th release number
+    is ignored: enough while releases are plain numbers (the release rule, .claude/skills/release)."""
     s = str(text).strip().lstrip("vV").split("+", 1)[0]
     m = re.match(r"(\d*)(?:\.(\d+))?(?:\.(\d+))?(.*)", s)
     out = tuple(int(g) if g else 0 for g in m.groups()[:3])
@@ -512,7 +514,8 @@ def preload() -> list[str]:
         try:
             importlib.import_module("kinetrace." + m.name)
         except Exception:       # noqa: BLE001 - one part that cannot load must not stop the update
-            logging.getLogger("kinetrace").exception("preload before the update: kinetrace.%s", m.name)
+            logging.getLogger("kinetrace.errors").exception(        # THE error log (crashlog)
+                "preload before the update: kinetrace.%s", m.name)
             failed.append("kinetrace." + m.name)
     return failed
 
