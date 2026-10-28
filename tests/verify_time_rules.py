@@ -231,6 +231,21 @@ check("floor(" not in "".join(ln for ln in src["wanddata"].splitlines() if "+ 0.
       "wanddata has no hand-written floor(x + 0.5)")
 
 
+from kinetrace.calib import local_frame  # noqa: E402
+from kinetrace.project import half_up  # noqa: E402
+rng = np.random.default_rng(5)
+same = True
+for trial in range(200):
+    rate = float(rng.choice([1.0, 0.5, 2.0, 1.001, 0.25, 0.8333333333333334, rng.uniform(0.2, 5.0)]))
+    off = float(rng.choice([0.0, 0.5, -37.5, 237.5, rng.uniform(-300, 300)]))
+    f = np.concatenate([np.sort(rng.integers(0, 5000, int(rng.integers(1, 300)))), [0, 1, 2]]).astype(np.int64)
+    x = np.concatenate([(f - off) / rate, np.arange(-20, 20) + 0.5])           # exact .5 ties too
+    same &= np.array_equal(half_up(x), np.floor(x + 0.5).astype(np.int64))
+    same &= np.array_equal(local_frame(f, rate, off), rate * f.astype(np.float64) + off)
+    same &= half_up(float(x[0])) == int(np.floor(x[0] + 0.5))
+check(bool(same), "the shared helpers give exactly what wanddata's inlined maths gave (200 random trials, .5 ties)")
+
+
 def round_calls(text):
     out = []
     for n in ast.walk(ast.parse(text)):
