@@ -9879,13 +9879,19 @@ class MainWindow(QMainWindow):
             self.toast.show_message("One moment — the silhouette preview is still computing.",
                                     "info", 4000)
             return
+        if stop_after is None and not step and not quiet and self.current >= self.n_frames - 1:
+            # (G228) a run from the last frame ends at once: it used to start and stop with only a flash
+            self.toast.show_message(
+                f"Already at the last frame ({self.current}): there is nothing ahead to track. Go to the frame "
+                "where tracking should start and press <b>T</b>.", "info", 7000)
+            return
         self._step_run = bool(step)
         self._say_what_runs(scope, pids, animal_ok)
         # (G217) the press asked about the data ahead already (the Track pop-up replaced "Re-track from here?")
 
-        if not quiet:
-            self._undo_snap = s.snapshot()
-        self.act_undo.setEnabled(False)  # re-enabled when the run ends
+        # (I371) the undo point as it is now, made the undo point only once a run starts: a press that starts
+        # nothing (nothing to start from, a declined run) used to replace it, and Ctrl+Z then restored nothing
+        snap = s.snapshot() if not quiet else None
 
         from kinetrace.tracker import TrackingWorker        # lazy: imports torch
         # (I320, G217) the press's choice: keep the hand clicks (the run writes round them and Moving spot
@@ -9922,7 +9928,6 @@ class MainWindow(QMainWindow):
             self.toast.show_message(
                 f"Nothing to start from on frame {self.current}: place a point with <b>N</b>, a ball "
                 "with Point ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
-            self.act_undo.setEnabled(self._undo_snap is not None)       # no run: Ctrl+Z stays what it was
             return
         # (I316) each Moving spot point's usable clicks from the start frame on: it starts again at them
         hand = ({sp.pid: s.hand_clicks(sp.pid, self.current, end) for sp in spot_specs} if keep else None)
@@ -9956,8 +9961,10 @@ class MainWindow(QMainWindow):
         if plan:
             w = self._with_sessions(w, plan, backend, seg.animals, end)
             if w is None:
-                self.act_undo.setEnabled(self._undo_snap is not None)       # the user declined: nothing ran
-                return None
+                return None                                                  # the user declined: nothing ran
+        if not quiet:
+            self._undo_snap = snap
+        self.act_undo.setEnabled(False)  # re-enabled when the run ends
         if build_only:
             return w                    # one camera of a simultaneous run (I141)
         self._launch_run(w)

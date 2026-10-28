@@ -1,6 +1,12 @@
 """The window's behaviour rows of the 2026-10-25 sweep (sweep PR 7, dev/work/2026-10-28-ui-behaviour-sweep). Offscreen,
 CPU, every dialog stubbed; each section makes the user's gesture and FAILS on eaee38b.
   [1] (I369) open project A, then B at once: A's late "finished" never retires B's frame check, no 2 s freeze
+  [2] (G226) Every camera, the point placed here only in the other cameras: T runs there, as the label says
+  [3] (G227) trails: up to 300 frames the same picture pixel for pixel; 20 x 1000 frames repaint under 33 ms,
+      longer trails thinned within each stretch with data, never across a gap
+  [4] (I370) close while the tracking worker does not stop in 20 s: it is retired, the close waits for it
+  [5] (I371, G228) a Track press that starts nothing (last frame, nothing to start from, a declined run) leaves
+      Ctrl+Z as it was; T on the last frame says there is nothing ahead
 Run: .venv\\Scripts\\python.exe tests\\verify_ui_behaviour.py   (UI_ONLY=fc,... runs only those sections)
 """
 import os
@@ -26,7 +32,8 @@ import numpy as np  # noqa: E402
 from PySide6.QtWidgets import QApplication, QFileDialog, QInputDialog, QMessageBox  # noqa: E402
 
 QUESTIONS: list = []
-QMessageBox.question = staticmethod(lambda *a, **k: (QUESTIONS.append(a[1:3]), QMessageBox.Yes)[1])
+ANSWER = [QMessageBox.Yes]                # what every question is answered (a section may set No)
+QMessageBox.question = staticmethod(lambda *a, **k: (QUESTIONS.append(a[1:3]), ANSWER[0])[1])
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QMessageBox.critical = staticmethod(lambda *a, **k: QMessageBox.Ok)
@@ -419,10 +426,126 @@ def section_close():
     w.wait(5000)
 
 
-SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close}
+def click_canvas(win, x, y):
+    """The user's click on the video at scene point (x, y): it places the selected point there."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtTest import QTest
+    cv = win.canvas
+    QTest.mouseClick(cv.viewport(), Qt.LeftButton, Qt.NoModifier, cv.mapFromScene(QPointF(float(x), float(y))))
+    pump(0.1)
+
+
+def select(win, pids):
+    """The LAYERS selection becomes `pids` (what clicking the rows does)."""
+    win.layers.select_only(list(pids))
+    win._on_point_selection_changed()
+    pump(0.1)
+
+
+def key(win, k, mod=None):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    win.activateWindow()
+    QTest.keyClick(win, k, mod if mod is not None else Qt.NoModifier)
+    pump(0.15)
+
+
+def section_undo():
+    print("[5] (I371, G228) a Track press that starts nothing leaves Ctrl+Z as it was; T on the last frame says so")
+    from PySide6.QtCore import Qt
+    from kinetrace import device
+    from kinetrace.app import TRACKING
+    v = make_video("undo/clip.mp4", n=40)
+    win = new_window()
+    win._open_video(v)
+    check("(setup) the video opens", wait(lambda: win.state == READY and win.session is not None
+                                            and not win._loading, 30))
+    s = win.session
+    last = s.n_frames - 1
+    p1 = s.add_point(0, 40.0, 50.0, name="P1")
+    s.points[p1].tracker = "spot"                         # Moving spot: no point model to load on the old code
+    win._refresh_point_list()
+    toasts = Toasts(win)
+    seen_tracking = []
+
+    def press_t():
+        n0 = len(seen_tracking)
+        real_launch = win._launch_run
+        win._launch_run = lambda w: (seen_tracking.append(1), real_launch(w))[1]
+        try:
+            key(win, Qt.Key_T)
+            wait(lambda: win.state == READY and win.worker is None and not win._run_in_progress(), 30)
+            pump(0.2)
+        finally:
+            del win._launch_run
+        return len(seen_tracking) > n0
+
+    # A: T on the last frame, right after a click there
+    select(win, [p1])
+    key(win, Qt.Key_End)
+    check("(setup) the playhead is on the last frame", win.current == last, win.current)
+    click_canvas(win, 60.0, 50.0)
+    check("(setup) the click placed P1 on the last frame", s.tracked[last, p1])
+    ran = press_t()
+    check("[5] T on the last frame says there is nothing ahead to track", toasts.said("last frame", "nothing"),
+          toasts.msgs[-2:])
+    check("[5] ... and starts no run", not ran and win.state == READY)
+    key(win, Qt.Key_Z, Qt.ControlModifier)
+    check("[5] ... and Ctrl+Z still takes back the click made before it", not win.session.tracked[last, p1])
+
+    # B: "Nothing to start from" (a Moving spot point with no position here, a click ahead, Fresh run)
+    s = win.session
+    p2 = s.add_point(12, 100.0, 60.0, name="P2")
+    s.points[p2].tracker = "spot"
+    win._refresh_point_list()
+    win._goto(5, force=True)
+    select(win, [p1])
+    click_canvas(win, 45.0, 50.0)                         # the edit Ctrl+Z should take back
+    check("(setup) the click placed P1 on frame 5", s.tracked[5, p1])
+    select(win, [p2])
+    pump(0.1)
+    TRACK_CHOICE.answer = "fresh"
+    try:
+        ran = press_t()
+    finally:
+        TRACK_CHOICE.answer = "keep"
+    check("(setup) the press reached 'Nothing to start from'", toasts.said("nothing to start from"), toasts.msgs[-2:])
+    key(win, Qt.Key_Z, Qt.ControlModifier)
+    check("[5] after a press that found nothing to start from, Ctrl+Z still takes back the click before it",
+          not win.session.tracked[5, p1])
+
+    # C: the "Many restarts at once" question answered No
+    s = win.session
+    p3 = s.add_point(6, 120.0, 70.0, name="P3")
+    s.points[p3].tracker = "cotracker3"
+    s.set_position(20, p3, 125.0, 70.0)                   # a click ahead: a re-seed session
+    win._refresh_point_list()
+    win._goto(6, force=True)
+    select(win, [p1])
+    click_canvas(win, 46.0, 50.0)
+    check("(setup) the click placed P1 on frame 6", s.tracked[6, p1])
+    select(win, [p3])
+    pump(0.1)
+    real_vram, n_q = device.cached_vram_gb, len(QUESTIONS)
+    device.cached_vram_gb = lambda *a, **k: 0.01          # a card too small: the question is asked
+    ANSWER[0] = QMessageBox.No
+    try:
+        ran = press_t()
+    finally:
+        device.cached_vram_gb, ANSWER[0] = real_vram, QMessageBox.Yes
+    check("(setup) the press asked 'Many restarts at once' and was declined",
+          any("restarts" in str(q[0]).lower() for q in QUESTIONS[n_q:]) and not ran, QUESTIONS[n_q:])
+    key(win, Qt.Key_Z, Qt.ControlModifier)
+    check("[5] after a declined run, Ctrl+Z still takes back the click before it", not win.session.tracked[6, p1])
+    check("(setup) no run was left going", win.state != TRACKING)
+    close(win)
+
+
+SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close,
+            "undo": section_undo}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
-for key, fn in SECTIONS.items():
-    if ONLY and key not in ONLY:
+for sect, fn in SECTIONS.items():
+    if ONLY and sect not in ONLY:
         continue
     try:
         fn()
