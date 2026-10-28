@@ -1322,28 +1322,36 @@ def merged_corners(corners: np.ndarray, pattern: tuple[int, int]) -> list[tuple[
     return sorted((int(i), int(j)) for i, j in zip(a[hit], b[hit]))
 
 
-def merged_reason(corners: np.ndarray, pattern: tuple[int, int]) -> str:
+def merged_reason(corners: np.ndarray, pattern: tuple[int, int], editable: bool = True) -> str:
     """(I363) "" for a sound board, else the board tile's sentence: which corners, how far apart, why, what it
-    means for the fit, and the hand check."""
+    means for the fit, and the hand check. `editable` = its corners can be dragged (a checkerboard; not a
+    ChArUco view)."""
     pairs = merged_corners(corners, pattern)
     if not pairs:
         return ""
-    cols = pattern[0]
+    cols, rows = pattern
     i, j = pairs[0]
     where = (f"row {i // cols + 1}, corners {i % cols + 1} and {j % cols + 1}" if j == i + 1 else
              f"corner {i % cols + 1}, rows {i // cols + 1} and {j // cols + 1}")
     c = np.asarray(corners, np.float64).reshape(-1, 2)
-    g = c.reshape(pattern[1], cols, 2)
-    d = np.concatenate([np.linalg.norm(np.diff(g, axis=1), axis=2).ravel(),
-                        np.linalg.norm(np.diff(g, axis=0), axis=2).ravel()])
-    square = float(np.median(d[np.isfinite(d)]))
+    # the squares THERE: the other links of the two corners to their grid neighbours
+    links = []
+    for k in (i, j):
+        r, q = divmod(k, cols)
+        for rr, qq in ((r, q - 1), (r, q + 1), (r - 1, q), (r + 1, q)):
+            m = rr * cols + qq
+            if 0 <= rr < rows and 0 <= qq < cols and m not in (i, j):
+                links.append(float(np.linalg.norm(c[k] - c[m])))
+    links = [x for x in links if np.isfinite(x)]
+    square = f", where the squares are about {float(np.median(links)):.0f} px wide" if links else ""
     more = f" ({len(pairs)} such pairs on this board.)" if len(pairs) > 1 else ""
+    fix = ("Untick it, or drag one ring onto its own corner to use it." if editable else
+           "Leave it unticked.")
     return (f"Two neighbouring corners ({where}) were found on the same spot, "
-            f"{float(np.linalg.norm(c[i] - c[j])):.1f} px apart, where this board's squares are about "
-            f"{square:.0f} px wide.{more} The corner search looked wider than the squares, so both slid onto one "
-            "corner: this board's corners are wrong by several pixels, so Best spread leaves it out. Check by "
-            "hand: click the board, and two rings sit on one corner while the next corner has none. Untick it, "
-            "or drag one ring onto its own corner to use it.")
+            f"{float(np.linalg.norm(c[i] - c[j])):.1f} px apart{square}.{more} The corner search looked wider "
+            "than the squares, so both slid onto one corner: this board's corners are wrong by several pixels, "
+            "so Best spread leaves it out. Check by hand: click the board, and two rings sit on one corner while "
+            f"the next corner has none. {fix}")
 
 
 def auto_select(corner_list: list[np.ndarray], pattern: tuple[int, int], square: float,
@@ -1375,7 +1383,8 @@ def auto_select(corner_list: list[np.ndarray], pattern: tuple[int, int], square:
     left_out = f"; {len(merged)} left out: two corners found on one spot" if merged else ""
     spread = [cand[k] for k in select_diverse([corner_list[i] for i in cand], size, min(keep, len(cand)))]
     if len(cand) < 4:
-        return spread, np.full(n, np.nan), f"only {len(cand)} boards found -- using all of them{left_out}"
+        return spread, np.full(n, np.nan), (f"only {n} boards found -- using all of them" if not merged else
+                                            f"only {len(cand)} of {n} boards usable -- using those{left_out}")
     try:
         prof = calibrate_lens([corner_list[i] for i in spread], pattern, square, size, model, base=base)
     except (ValueError, cv2.error) as exc:

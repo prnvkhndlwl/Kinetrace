@@ -127,8 +127,11 @@ def _():
     assert lens.merged_reason(b, PATTERN) == ""
     assert lens.merged_corners(merge(b), PATTERN) == [(7, 8)], lens.merged_corners(merge(b), PATTERN)
     why = lens.merged_reason(merge(b), PATTERN)
-    for word in ("same spot", "0.0 px", "row 1", "Best spread", "Check by hand", "Untick"):
+    for word in ("same spot", "0.0 px", "row 1", "corners 8 and 9", "squares are about", "Best spread",
+                 "Check by hand", "Untick", "drag"):
         assert word in why, (word, why)
+    why = lens.merged_reason(merge(b), PATTERN, editable=False)          # a ChArUco view cannot be dragged
+    assert "drag" not in why and "Leave it unticked" in why, why
 
 
 @check("a strongly foreshortened column (0.36 x the median spacing, the tightest sound board measured) is not merged")
@@ -161,6 +164,8 @@ def _():
     assert sorted(idx) == [0, 1, 2, 3, 4, 6, 7], idx
     assert np.isfinite(err[5]), "the merged board is still scored, so its tile can show its number"
     assert "two corners found on one spot" in why, why
+    idx, err, why = lens.auto_select(boards[3:6], PATTERN, SQUARE, (W, H), "standard")    # board 5 is the last
+    assert sorted(idx) == [0, 1] and why.startswith("only 2 of 3 boards usable -- using those"), (idx, why)
     every = [merge(b) for b in boards]
     idx, err, why = lens.auto_select(every, PATTERN, SQUARE, (W, H), "standard")
     assert idx == [] and "every board" in why, (idx, why)
@@ -189,6 +194,7 @@ def _():
         assert rv._tiles[5].err.text() == "poor: corners merged", rv._tiles[5].err.text()
         assert "same spot" in rv._tiles[5].err.toolTip(), rv._tiles[5].err.toolTip()
         assert "px" in rv._tiles[0].err.text(), "a sound board's tile keeps its number"
+        assert "1 with two corners on one spot left out" in rv.summary.text(), rv.summary.text()
         QTest.mouseClick(button(rv, "All"), Qt.LeftButton)
         pump(0.05)
         assert rv.used[5], "All is the user's choice: every board, the merged one too"

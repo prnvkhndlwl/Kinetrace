@@ -462,7 +462,8 @@ class BoardReview(QWidget):
         if chosen is None:
             chosen = list(range(n))
         self.used = [i in set(chosen) for i in range(n)]
-        self.merged = [lens.merged_reason(c, pattern) for c in scan.corners] if scan is not None else []
+        edit = getattr(scan, "board", None) is None          # (I363) a ChArUco view cannot be dragged
+        self.merged = [lens.merged_reason(c, pattern, edit) for c in scan.corners] if scan is not None else []
         self.edited.clear()
         orient = list(getattr(scan, "orient", []) or []) if scan is not None else []
         if scan is not None and len(orient) != n:          # an older scan without the tags
@@ -695,8 +696,11 @@ class BoardReview(QWidget):
         if self.edited:
             bits.append(f"{len(self.edited)} edited by hand")
         m = sum(1 for u, why in zip(self.used, self.merged) if u and why)
+        out = sum(1 for u, why in zip(self.used, self.merged) if why and not u)
         if m:
             bits.append(f"{m} ticked board{' has' if m == 1 else 's have'} two corners on one spot")
+        if out:
+            bits.append(f"{out} with two corners on one spot left out")
         if note:
             bits.append(note)
         self.summary.setText("  -  ".join(bits))
