@@ -359,10 +359,18 @@ def drive_finish(wiz):
     return QDialog.Accepted
 
 
+def wand_action():
+    """3D -> Calibrate -> Calibrate Cameras with a Wand... (the menu's own action)."""
+    from PySide6.QtGui import QAction
+    acts = [a for a in win.findChildren(QAction) if "Calibrate Cameras with a" in a.text() and "Wand" in a.text()]
+    assert acts, "the wand calibration menu action"
+    return acts[0]
+
+
 orig_exec = cw.WandWizard.exec
 cw.WandWizard.exec = drive_cancel
 try:
-    win._wand_wizard()
+    wand_action().trigger()                  # 3D -> Calibrate -> Calibrate Cameras with a Wand...
     pump(0.3)
 finally:
     cw.WandWizard.exec = orig_exec
@@ -375,7 +383,7 @@ if p.lenses[0] is not prof:                      # (today's Cancel removed it: p
 
 cw.WandWizard.exec = drive_finish
 try:
-    win._wand_wizard()
+    wand_action().trigger()
     pump(0.3)
 finally:
     cw.WandWizard.exec = orig_exec

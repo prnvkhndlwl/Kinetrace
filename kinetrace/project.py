@@ -814,7 +814,7 @@ class Project:
                             "frames: a fractional part of an offset is not in these rows)"])
         w.writerows([f"cam{c + 1}", f"{self.name(c)} = {Path(s.video_path).name}".replace("\n", " ")]
                     for c, s in enumerate(self.sessions))
-        w.writerows([f"cam{c + 1}_offset", f"{float(self.offsets[c]):g} frames at rate {float(self.rates[c]):g} "
+        w.writerows([f"cam{c + 1}_offset", f"{float(self.offsets[c]):.10g} frames at rate {float(self.rates[c]):.10g} "
                      "(local frame = rate x reference frame + offset)"] for c in range(self.n_views))
         side.write_text(buf.getvalue(), encoding="utf-8", newline="")
         return [str(path), str(side)]

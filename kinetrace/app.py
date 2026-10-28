@@ -13108,7 +13108,7 @@ class MainWindow(QMainWindow):
             return
         start = str(Path(self.project_path or self.info.path).parent) if self.info else ""
         dlg = CalibrationDialog(self, list(p.names), self._view_sizes(), start)
-        if dlg.exec() != QDialog.Accepted or dlg.result_calibration is None:
+        if dlg.exec() != QDialog.Accepted or dlg.result_calibration is None or self.session is None:
             return
         # (G222) one Ctrl+Z step, as the wand and ChArUco wizards' Finish: importing over a good
         # calibration could not be taken back
