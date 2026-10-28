@@ -820,7 +820,8 @@ how much there is and how many of those frames are your clicks:
   Inside a stretch Auto-pause is on: where the tracker loses the point, the
   stretch ends there. The choice says how many stretches and frames it fills
   and, after a first run, about how long it takes. (Silhouettes and Moving spot
-  points are left to a normal run.)
+  points are left to a normal run.) Ctrl+S while it fills saves once the last
+  stretch is done.
 - **Fresh run** — the run goes over everything ahead as if there were no
   clicks (it writes over the ones it reaches), and when it has ended,
   everything of these points after the last frame it reached is erased too,
@@ -1323,7 +1324,9 @@ All of them are under the **View** menu and none of them changes any data.
 
 - **Trails** (*View → Trails*) draw each body part's recent path as a fading
   line behind its marker. Choose *Off*, *Last 10 frames* (the standard) or
-  *Custom…* and type how many frames you want (up to 1000). Tick *Also show the
+  *Custom…* and type how many frames you want (up to 1000; a trail longer than
+  300 frames is drawn through every few frames, never across a frame without
+  data, so scrubbing stays smooth). Tick *Also show the
   upcoming path* to see, dashed, where the point goes **after** this frame: a
   wrong step ahead shows before you get there. With several cameras the trails
   are drawn in the camera you work in; while **Track ▾ → Every camera** is
@@ -3007,7 +3010,9 @@ the computer crashes you lose at most half a minute. The status bar shows
 
 * **Coming back after a crash:** open the project again (or, if you never saved
   one, the video). The program finds the unsaved work and asks *Unsaved changes
-  found* (or *Restore unsaved work?*). **Yes** carries on where you stopped;
+  found* (or *Restore unsaved work?*). **Yes** carries on where you stopped
+  (with a calibration, its 3D landmarks are made again once as it opens: the
+  copy may have been kept in the middle of a run);
   **No** opens the last save and keeps the unsaved work aside — nothing is
   deleted. If you open just one camera's video of a multi-camera session you
   never saved, the unsaved work comes back with every camera, each on its own
@@ -3611,7 +3616,8 @@ stored in the camera it was started in.
 ### The side-by-side view
 
 **Body → Side-by-side View** (**Ctrl+6**) opens the window this feature is built
-around. It follows the video: whatever frame you are on, that is what it shows.
+around (it is greyed out until **Body → Find People & Measure Joints…** has made
+a pose). It follows the video: whatever frame you are on, that is what it shows.
 
 * **Left** — your footage with the skeleton drawn on it. The person's **left side
   is green and their right side is orange**. This is how you catch the classic
@@ -4235,7 +4241,8 @@ Project As…** to save somewhere else.
 remembers it, and it was not located. That camera is left out of this session
 only: the project still holds it, with all its points, tracks and the
 calibration, and nothing is saved over it automatically (**Save** asks for a
-new name). Close without saving, make the videos reachable (connect the
+new name; choosing that same project in *Save As* asks first and names the
+cameras it would drop from it). Close without saving, make the videos reachable (connect the
 drive, or move them next to the project), and open the project again.
 
 ---
