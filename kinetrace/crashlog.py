@@ -109,19 +109,23 @@ def _versions() -> str:
     return " | ".join(parts)
 
 
+_LOCK_TRIES = 200              # x 0.05 s: the ten seconds `_shared_lock` waits (tests shorten it)
+
+
 @contextmanager
 def _shared_lock(path: Path):
     """An exclusive lock between Kinetrace windows (processes) on `path`: held
     while a log entry is written or the log rotated. Best effort: a lock that
     cannot be had in ten seconds is gone without (a stuck window must not
-    silence this one)."""
+    silence this one) -- on every system (X48: Mac / Linux used to wait for
+    as long as the other window held it)."""
     fd = None
     got = False
     try:
         fd = os.open(str(path), os.O_RDWR | os.O_CREAT)
         if os.name == "nt":
             import msvcrt
-            for _ in range(200):
+            for _ in range(_LOCK_TRIES):
                 try:
                     os.lseek(fd, 0, os.SEEK_SET)
                     msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
@@ -131,8 +135,13 @@ def _shared_lock(path: Path):
                     time.sleep(0.05)
         else:
             import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            got = True
+            for _ in range(_LOCK_TRIES):
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    got = True
+                    break
+                except OSError:             # BlockingIOError: another window holds it
+                    time.sleep(0.05)
     except OSError:
         pass
     try:

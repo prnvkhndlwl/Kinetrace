@@ -459,4 +459,32 @@ else:
     finally:
         shutil.rmtree(SCR, ignore_errors=True)
 
+# ------------------------------------- [7] the error log's lock on Mac / Linux
+print("[7] Mac / Linux: a log lock another window holds is given up (X48)")
+if os.name == "nt":
+    ok("skipped: fcntl locks exist on Mac / Linux only (verify_crashlog emulates them on every OS)")
+else:
+    import time
+    from kinetrace import crashlog
+    _lock = os.path.join(OUT, "portable_posix.lock")
+    holder = subprocess.Popen([sys.executable, "-c",
+                               "import fcntl, os, sys, time\n"
+                               "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\n"
+                               "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+                               "print('held', flush=True)\n"
+                               "time.sleep(6)\n", _lock], stdout=subprocess.PIPE, text=True)
+    saved_tries = crashlog._LOCK_TRIES
+    try:
+        assert holder.stdout.readline().strip() == "held", "the other process holds the lock"
+        crashlog._LOCK_TRIES = 20
+        t0 = time.perf_counter()
+        with crashlog._shared_lock(_lock):
+            waited = time.perf_counter() - t0
+        assert 0.5 < waited < 2.5, f"given up after the tries (~1 s), waited {waited:.1f} s"
+    finally:
+        crashlog._LOCK_TRIES = saved_tries
+        holder.kill()
+        holder.wait()
+    ok(f"a real flock held by another process: given up after {waited:.1f} s (20 tries)")
+
 print("verify_portable PASSED")
