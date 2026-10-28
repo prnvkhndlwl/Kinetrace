@@ -297,7 +297,8 @@ assert np.allclose(d2["centroid"], want, atol=0.05)
 assert d2["bbox"][3] == round(572 * sy2) - 1 and d2["bbox"][2] == round(430 * sx2) - 1
 ses = SegSession.__new__(SegSession)                               # the prompt mapping, no model needed
 ses.native_size, ses.work = (NW, NH), (ww2, wh2)
-assert np.allclose(ses._to_work((1000.0, 1500.0)), (1000.0 * ww2 / NW, 1500.0 * wh2 / NH))
+# per axis AND the pixel-centre rule (I357: p * s put the prompt down-right of the click)
+assert np.allclose(ses._to_work((1000.0, 1500.0)), ((1000.0 + 0.5) * ww2 / NW - 0.5, (1500.0 + 0.5) * wh2 / NH - 0.5))
 print("native size through undo + per-axis scale OK")
 
 # ------------------------------------------- 2b. skeleton specs are checked (I62)
