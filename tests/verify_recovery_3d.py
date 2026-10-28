@@ -9,6 +9,8 @@ that lags its tracks, and every recovery copy opened - File > Recover Unsaved Wo
   [3] a recovery copy whose 3D lags, opened by File > Recover Unsaved Work: equal after opening
   [4] the same, opened by File > Open -> "Unsaved changes found ... Restore them?" Yes: equal (12.9 mm off before)
   [5] a recovery copy written DURING a run (the 30 s tick; a crash after it), opened by Restore: equal
+  [6] a never-saved session's copy whose 3D lags, opened with its video -> "Restore unsaved work?" Yes: equal
+      (review: that path did not ask for the rebuild)
 [1] and [5] FAIL on eaee38b. The project: 3 synthetic calibrated cameras (one with an OpenCV lens), 400 frames, a dot
 at the hip landmark in every camera.
 Run: .venv\\Scripts\\python.exe tests\\verify_recovery_3d.py
@@ -377,7 +379,55 @@ def section_midrun():
     crash(w2)
 
 
-for fn in (section_run_end, section_save, section_recover, section_restore, section_midrun):
+def section_video():
+    print("[6] a never-saved session's copy whose 3D lags, opened with its video -> 'Restore unsaved work?' Yes")
+    from kinetrace import cameraorder, projectfile
+    from PySide6.QtWidgets import QDialogButtonBox
+    loaded = projectfile.read(PROJ)[0]
+    vids = [s_.video_path for s_ in loaded.sessions]
+    win = new_window()
+    win._open_video(vids[0])                             # File > Open Video: a session never saved as a project
+    wait(lambda: win.state == READY and not win._loading, 30)
+    real_files, real_exec = QFileDialog.getOpenFileNames, cameraorder.CameraOrderDialog.exec
+    QFileDialog.getOpenFileNames = staticmethod(lambda *a, **k: (vids[1:], ""))
+    cameraorder.CameraOrderDialog.exec = lambda self: (self.buttons.button(QDialogButtonBox.Ok).click(),
+                                                       self.result())[1]
+    try:
+        win._add_video_dialog()                          # File > Add Camera Videos
+        wait(lambda: win.project.n_views == 3 and not win._loading, 30)
+    finally:
+        QFileDialog.getOpenFileNames, cameraorder.CameraOrderDialog.exec = real_files, real_exec
+    p_ = win.project
+    for v in range(3):                                   # (setup) the saved project's tracks and calibration
+        sv, lv = p_.sessions[v], loaded.sessions[v]
+        for nm in NAMES:
+            if sv.pid_by_name(nm) is None:
+                sv.add_landmark(nm)
+        for nm in NAMES:
+            a, b = sv.pid_by_name(nm), lv.pid_by_name(nm)
+            for arr in ("tracks", "tracked", "visibility", "manual", "confidence", "occluded"):
+                getattr(sv, arr)[:, a] = getattr(lv, arr)[:, b]
+        sv._touch()
+    p_.calibration = loaded.calibration
+    win._refresh_point_list()
+    win.act_recon.trigger()                              # Ctrl+3
+    pump(0.5)
+    same(win, "(setup) the never-saved session has its full 3D result")
+    lag = lagging_copy(win, 120, 3.0)
+    check("(setup) its recovery copy's 3D lags its tracks", lag > 0.01, f"{lag:.3f} mm")
+    crash(win)
+    w2 = new_window()
+    n_q = len(QUESTIONS)
+    w2._open_video(vids[0])                              # the same video again: "Restore unsaved work?" Yes
+    ok = wait(lambda: w2.state == READY and w2.project is not None and w2.project.n_views == 3
+              and not w2._loading and not w2._sync3d_busy, 60)
+    asked = [q for q in QUESTIONS[n_q:] if "Restore unsaved work" in q]
+    check("(setup) the video opens and offered the unsaved work, all three cameras", ok and asked, asked)
+    same(w2, "[6] after restoring, its 3D result equals Ctrl+3")
+    crash(w2)
+
+
+for fn in (section_run_end, section_save, section_recover, section_restore, section_midrun, section_video):
     try:
         fn()
     except Exception as e:  # noqa: BLE001

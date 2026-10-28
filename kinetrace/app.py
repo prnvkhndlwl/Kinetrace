@@ -4952,6 +4952,7 @@ class MainWindow(QMainWindow):
         restored.video_path = self.info.path
         proj.active = mine                        # the opened video is this camera's picture
         self._project_id = pid                    # keep writing to the same recovery
+        self._sync3d_rebuild_open = True          # (I372) a recovery copy: its 3D may lag its tracks, made again once
         self._adopt_project(proj)      # the whole project, one camera too: its name, lens, exports
         self.project.dirty = True
 
