@@ -424,17 +424,17 @@ def section_lens_thumbs():
     want = (tuple(int(v) for v in np.round(centre_scale(a, s))), tuple(int(v) for v in np.round(centre_scale(b, s))))
     real_axes, real_cv2 = lens.board_axes, lens.cv2
     lens.board_axes = lambda *a_, **k_: [("X", a, b)]
-    for label, corners, pattern in (("checkerboard", np.array([[2000.3, 1000.7]]), (1, 1)),
-                                    ("ChArUco", np.array([[np.nan, np.nan], [2000.3, 1000.7]]), (2, 1))):
-        rec = _ArrowRecorder()
-        lens.cv2 = rec
-        try:
+    try:
+        for label, corners, pattern in (("checkerboard", np.array([[2000.3, 1000.7]]), (1, 1)),
+                                        ("ChArUco", np.array([[np.nan, np.nan], [2000.3, 1000.7]]), (2, 1))):
+            rec = _ArrowRecorder()
+            lens.cv2 = rec
             lens.draw_board_review(tile, corners, pattern, prof=object(), scale=s, axes=True)
-        finally:
             lens.cv2 = real_cv2
-        check(f"a {label} tile's axis arrow is drawn at the pixel-centre positions", rec.calls == [want],
-              f"drawn {rec.calls}, wanted {want} (PR 4: (126, 64) -> (138, 76))")
-    lens.board_axes = real_axes
+            check(f"a {label} tile's axis arrow is drawn at the pixel-centre positions", rec.calls == [want],
+                  f"drawn {rec.calls}, wanted {want} (PR 4: (126, 64) -> (138, 76))")
+    finally:
+        lens.board_axes, lens.cv2 = real_axes, real_cv2
     # the result page's "where the board went" map
     sc = 640 / 3840
     m, worst = _dot_offsets(lambda p: lens.coverage_image(SimpleNamespace(size=(3840, 2160), corners=[p[None]]),
