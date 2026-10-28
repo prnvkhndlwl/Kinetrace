@@ -420,21 +420,25 @@ def _i351():
         return out
     S = 30
 
+    from kinetrace.project import half_up
+
     def errors(r):
-        errs = []
+        errs, applied = [], []
         for o in np.linspace(-0.8 * r * S, 0.8 * r * S, 201):
             CAM["ref"], CAM["cam"] = (1.0, 0.0), (r, float(o))
             cs = sync.estimate_offsets_from_motion(["ref", "cam"], [1.0, r], (100, 1000), S, prior=[None, 0.0])[0]
             errs.append(cs.offset - o)
-        return np.array(errs)
-    e1, e2 = _with_fake_motion(fake, lambda: (errors(1.0), errors(2.0)))
+            applied.append(float(half_up(cs.offset)) - o)        # what the Sync dialog shows and applies
+        return np.array(errs), np.array(applied)
+    (e1, a1), (e2, a2) = _with_fake_motion(fake, lambda: (errors(1.0), errors(2.0)))
     check(np.abs(e1).max() <= 0.52 + 1e-9, "same rate: as before (within half a frame and a tie)",
           f"{np.abs(e1).max():.3f}")
-    # the lag moves in reference frames = 2 local frames here: whole-frame answers are up to r / 2 off, which
-    # the sub-frame step's +/- r search (the app's half of I351) covers; the bias must be gone
-    check(abs(e2.mean()) < 0.1, "a camera at twice the rate: no half-frame bias", f"mean {e2.mean():+.3f}")
-    check(np.abs(e2).max() <= 1.05, "a camera at twice the rate lands within half a reference frame",
-          f"worst {np.abs(e2).max():.3f}")
+    print(f"        (rate 2: raw mean {e2.mean():+.3f} worst {np.abs(e2).max():.3f}; applied mean {a2.mean():+.3f} "
+          f"worst {np.abs(a2).max():.3f}, beyond 1 frame {int((np.abs(a2) > 1.0).sum())} of 201)")
+    check(abs(a2.mean()) < 0.1, "a camera at twice the rate: no bias in the offset the dialog applies",
+          f"mean {a2.mean():+.3f}")
+    check(np.abs(a2).max() <= 1.0, "...and it lands within one of its own frames (the sub-frame step's search)",
+          f"worst {np.abs(a2).max():.3f}")
 
 
 # ------------------------------------------------------------------ I352
