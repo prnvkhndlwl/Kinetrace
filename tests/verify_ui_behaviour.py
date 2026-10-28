@@ -1,6 +1,7 @@
 """The window's behaviour rows of the 2026-10-25 sweep (sweep PR 7, dev/work/2026-10-28-ui-behaviour-sweep). Offscreen,
 CPU, every dialog stubbed; each section makes the user's gesture and FAILS on eaee38b.
   [1] (I369) open project A, then B at once: A's late "finished" never retires B's frame check, no 2 s freeze
+  [1b] (I369, review) a camera removed while its frame check runs: the other cameras' checks still run
   [2] (G226) Every camera, the point placed here only in the other cameras: T runs there, as the label says
   [3] (G227) trails: up to 300 frames the same picture pixel for pixel; 20 x 1000 frames repaint under 33 ms,
       longer trails thinned within each stretch with data, never across a gap
@@ -911,7 +912,40 @@ def section_paths():
     close(win)
 
 
-SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close,
+def section_fc_remove():
+    print("[1b] (I369, review) a camera removed while its frame check runs: the other cameras' checks still run")
+    from kinetrace import framecheck
+    vids = [make_video(f"fcr/c{i}.mp4") for i in range(3)]
+    proj = make_project("fcr/three.kinetrace", vids)
+    started, done = [], []
+    real_run = framecheck.FrameCheckWorker.run
+
+    def run(self):
+        """Camera c1's check takes a while (until cancelled, at most 3 s); the others end at once."""
+        name = os.path.basename(self.path)
+        started.append(name)
+        t0 = time.time()
+        while name == "c1.mp4" and not self._cancel and time.time() - t0 < 3.0:
+            time.sleep(0.01)
+        if not self._cancel:
+            done.append(name)
+    framecheck.FrameCheckWorker.run = run
+    win = new_window()
+    try:
+        check("(setup) the three-camera project opens", open_project(win, proj))
+        check("(setup) camera c1's check is running", wait(lambda: "c1.mp4" in started and "c1.mp4" not in done, 10),
+              (started, done))
+        win.cameras.remove_requested.emit(1)              # CAMERAS: remove camera c1 (its question answered Yes)
+        pump(0.3)
+        check("(setup) camera c1 was removed", win.project.n_views == 2)
+        check("[1b] camera c2's check still runs to its end", wait(lambda: "c2.mp4" in done, 6), (started, done))
+        wait(lambda: win._fc_job is None, 5)
+    finally:
+        framecheck.FrameCheckWorker.run = real_run
+    close(win)
+
+
+SECTIONS = {"fc": section_fc, "fcr": section_fc_remove, "every": section_every, "trails": section_trails, "close": section_close,
             "undo": section_undo, "ball": section_ball, "hull": section_hull, "names": section_names,
             "saveas": section_saveas, "label": section_label, "body": section_body, "paths": section_paths}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}

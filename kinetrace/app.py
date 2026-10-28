@@ -4191,7 +4191,9 @@ class MainWindow(QMainWindow):
     def _fc_finished(self, ended) -> None:
         if ended is not self._fc_job:
             # (I369) a check `_fc_stop` cancelled (and retired): its `finished`, queued, arrives after the next
-            # project's check started and used to retire THAT one (its result lost, the window frozen 2 s)
+            # project's check started and used to retire THAT one (its result lost, the window frozen 2 s). The
+            # queue still goes on (review): after one camera's check was stopped, the others wait in it
+            QTimer.singleShot(0, self._fc_next)
             return
         th, self._fc_job = self._fc_job, None
         if th is not None:
