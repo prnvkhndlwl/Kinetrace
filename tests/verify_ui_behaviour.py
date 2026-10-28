@@ -15,6 +15,7 @@ CPU, every dialog stubbed; each section makes the user's gesture and FAILS on ea
   [10] (I375) has_click_after: the same answers as the old scan after every kind of edit; the Track label with 15
        cameras x 20 points x 40,000 frames costs under 5 ms a playhead move (20.7 ms on eaee38b)
   [11] (G231) Body > Side-by-side View (Ctrl+6) greyed out until there is a body pose; an open window stays closable
+  [12] (I377) a project whose videos sit in ../../vid opens with plain video paths (no "..")
 Run: .venv\\Scripts\\python.exe tests\\verify_ui_behaviour.py   (UI_ONLY=fc,... runs only those sections)
 """
 import os
@@ -129,6 +130,7 @@ def make_project(name, videos, n=40, w=160, h=120):
         sessions.append(s)
     proj = Project(sessions, [f"cam{chr(65 + i)}" for i in range(len(videos))], [0.0] * len(videos))
     path = os.path.join(OUT, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     proj.save(path)
     return path
 
@@ -897,9 +899,21 @@ def section_body():
     close(win)
 
 
+def section_paths():
+    print("[12] (I377) a video found through the project folder is shown by its plain path, no '..'")
+    va, vb = make_video("paths/vid/camA.mp4"), make_video("paths/vid/camB.mp4")
+    proj = make_project("paths/cams/two.kinetrace", [va, vb])           # the videos sit beside, in ../../vid
+    win = new_window()
+    check("(setup) the project opens", open_project(win, proj))
+    got = [s.video_path for s in win.project.sessions]
+    check("[12] both cameras' video paths are plain (no '..')", all(".." not in str(g) for g in got), got)
+    check("[12] ... and the same files", all(os.path.samefile(g, v) for g, v in zip(got, (va, vb))), got)
+    close(win)
+
+
 SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close,
             "undo": section_undo, "ball": section_ball, "hull": section_hull, "names": section_names,
-            "saveas": section_saveas, "label": section_label, "body": section_body}
+            "saveas": section_saveas, "label": section_label, "body": section_body, "paths": section_paths}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
 for sect, fn in SECTIONS.items():
     if ONLY and sect not in ONLY:

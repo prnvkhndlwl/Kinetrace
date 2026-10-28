@@ -1721,6 +1721,16 @@ def _nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
+def _plain_path(p: Path) -> Path:
+    """(I377) `p` without its "." / ".." parts (`two.kinetrace\\..\\vid\\camB.mp4` -> `vid\\camB.mp4`), as the user
+    reads it - only when that is the same file (on macOS / Linux a ".." after a linked folder leads elsewhere)."""
+    q = Path(os.path.normpath(p))
+    try:
+        return q if q != p and q.is_file() and os.path.samefile(q, p) else p
+    except OSError:
+        return p
+
+
 def locate_video(entry: dict, project_dir: Path | None, extra_dirs=()) -> Path | None:
     """The camera's video on THIS computer: relative path, absolute path, then
     the same file name in the project folder or folders already used."""
@@ -1738,7 +1748,7 @@ def locate_video(entry: dict, project_dir: Path | None, extra_dirs=()) -> Path |
     for c in cands:
         try:
             if c.is_file():
-                return c
+                return _plain_path(c)
         except OSError:
             continue
     # macOS may hand back a decomposed name: compare normalised names in the folders
