@@ -138,6 +138,12 @@ MAP = [
     ([K + f for f in ("sync.py", "audiosync.py", "syncdialog.py")], ["verify_sync"]),
     ([K + f for f in ("body.py", "bodypose.py", "bodyview.py")], ["verify_body", "verify_body_gui", "verify_review_body"]),
     ([K + "render.py"], ["verify_render"]),
+    # (I357-I361) one pixel-centre rule: SAM prompts, the board editor / search, body + overlay drawing, the
+    # in-picture rule (session, retrack, canvas clicks, imports)
+    ([K + f for f in ("segmenter.py", "boardreview.py", "lens.py", "bodyview.py", "render.py", "session.py",
+                      "retrack.py", "canvas.py", "trackio.py", "pixels.py", "app.py", "calibview.py", "spots.py",
+                      "balls.py")],
+     ["verify_pixel_centre"]),
     # install, update, device, errors
     ([K + f for f in ("device.py", "downloads.py", "paths.py", "update.py", "updatedialog.py", "crashlog.py",
                       "errors.py", "welcome.py", "macapp.py", "winapp.py", "winlaunch.py", "appicon.py",

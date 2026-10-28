@@ -49,23 +49,24 @@ for _j in range(4):
 print("exportable_at matches exportable, one cell and a column (I137) OK")
 
 # ---------------------------------------------------------------- I138
-# in_frame = the six inline copies it replaced (tracker x5, session.write_segment)
+# in_frame = THE picture-bounds rule (it replaced six inline copies, I138), on the picture's outer edges
+# -0.5 <= x < W - 0.5 since I361 (the window's, the hull's and the 3D layer's edges)
 from kinetrace.session import in_frame  # noqa: E402
 
 _W, _H = 320, 240
-_vals = np.array([0.0, -0.0, -1e-6, 1e-6, 319.0, 319.999, 320.0, 239.0, 239.999, 240.0, -5.0, 1000.0,
+_vals = np.array([-0.5, -0.5001, -0.49, 0.0, 319.0, 319.49, 319.5, 239.0, 239.49, 239.5, -5.0, 1000.0,
                   np.nan, np.inf, -np.inf, 17.25])
 _xy = np.stack(np.meshgrid(_vals, _vals), -1).reshape(-1, 2)
 for _dt in (np.float32, np.float64):
     _p = _xy.astype(_dt)
-    _old_vec = (np.isfinite(_p).all(axis=1) & (_p[:, 0] >= 0) & (_p[:, 0] < _W) & (_p[:, 1] >= 0) & (_p[:, 1] < _H))
-    _old_seg = ((_p[..., 0] >= 0) & (_p[..., 0] < _W) & (_p[..., 1] >= 0) & (_p[..., 1] < _H))   # write_segment's
-    assert np.array_equal(in_frame(_p, _W, _H), _old_vec) and np.array_equal(in_frame(_p, _W, _H), _old_seg)
-    assert np.array_equal(in_frame(_p.reshape(16, 16, 2), _W, _H), _old_vec.reshape(16, 16)), "(L, K, 2) windows"
+    _rule = (np.isfinite(_p).all(axis=1) & (_p[:, 0] >= -0.5) & (_p[:, 0] < _W - 0.5)
+             & (_p[:, 1] >= -0.5) & (_p[:, 1] < _H - 0.5))
+    assert np.array_equal(in_frame(_p, _W, _H), _rule)
+    assert np.array_equal(in_frame(_p.reshape(16, 16, 2), _W, _H), _rule.reshape(16, 16)), "(L, K, 2) windows"
     for _q in _p:
-        _old = bool(np.isfinite(_q).all() and 0 <= _q[0] < _W and 0 <= _q[1] < _H)
-        assert bool(in_frame(_q, _W, _H)) == _old, _q
-print("in_frame is the picture-bounds rule it replaced, NaN / inf / edges included (I138) OK")
+        _want = bool(np.isfinite(_q).all() and -0.5 <= _q[0] < _W - 0.5 and -0.5 <= _q[1] < _H - 0.5)
+        assert bool(in_frame(_q, _W, _H)) == _want, _q
+print("in_frame is the pixel-edge picture rule, NaN / inf / edges included (I138, I361) OK")
 
 # ---------------------------------------------------------------- I19
 p = Project([sess(200, name="a.mp4"), sess(200, name="b.mp4")], ["A", "B"], [0.0, -36.5])
@@ -621,12 +622,11 @@ win._start_tracking = orig_start
 del s.seedable_at, s.animal_seedable_at
 print("a semi-automatic step runs with only a segment (I128) OK")
 
-# I126: a click in pixel 0's outer half-pixel lands on the picture
-q = VideoCanvas._onpic(QPointF(-0.3, -0.49))
-assert (q.x(), q.y()) == (0.0, 0.0), (q.x(), q.y())
-q = VideoCanvas._onpic(QPointF(12.25, 7.5))
-assert (q.x(), q.y()) == (12.25, 7.5)
-print("edge clicks are clamped onto the picture (I126) OK")
+# I126 -> I361: a click in pixel 0's outer half-pixel is used as it is (the session's rule takes it now;
+# the real click: verify_pixel_centre)
+assert not hasattr(VideoCanvas, "_onpic"), "the I126 nudge onto 0.0 is gone"
+assert bool(in_frame(np.array([-0.3, -0.49]), 320, 240))
+print("an edge click is kept where it was made (I126, I361) OK")
 
 # G10: a second notice does not wipe the first
 win.toast.show_message("first verdict", "warn", 8000)

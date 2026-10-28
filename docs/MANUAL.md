@@ -3212,7 +3212,9 @@ else. The MATLAB file carries both inside itself.
 `x` counts from the left edge, `y` counts **downward from the top** edge — this
 is the normal convention for images, but it is upside-down compared with a graph,
 so remember it when plotting. The Wide CSV, DeepLabCut CSV, Sparse TSV and
-MATLAB file count from **0**: the centre of the top-left pixel is (0, 0). The
+MATLAB file count from **0**: the centre of the top-left pixel is (0, 0), so the
+picture's left edge is at -0.5 and a point on the left half of the first column
+reads, for example, x = -0.3 (it is still on the picture). The
 **DLTdv8** files (one camera and ALL CAMERAS) keep the origin at the top-left
 but count from **1**, as DLTdv8 and MATLAB do, so their numbers are exactly 1
 larger. Only the **bottom-left** variant flips `y`, counting it upward from the

@@ -25,7 +25,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRect, Qt, QThread, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFrame, QGridLayout,
                                QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
@@ -209,12 +209,14 @@ class _EditorCanvas(QWidget):
         return s, (self.width() - iw * s) / 2, (self.height() - ih * s) / 2
 
     def _to_widget(self, p):
+        """Video pixel centres to widget pixels: pixel i spans [i, i + 1) * s + offset, its centre at
+        (i + 0.5) * s + offset (I358: p * s put a corner dropped on a pixel's centre half a pixel off)."""
         s, ox, oy = self._fit()
-        return np.asarray(p, np.float64) * s + [ox, oy]
+        return (np.asarray(p, np.float64) + 0.5) * s + [ox, oy]
 
     def _to_image(self, x, y):
         s, ox, oy = self._fit()
-        return np.array([(x - ox) / max(s, 1e-9), (y - oy) / max(s, 1e-9)])
+        return np.array([(x - ox) / max(s, 1e-9) - 0.5, (y - oy) / max(s, 1e-9) - 0.5])
 
     # ---- painting ----
     def paintEvent(self, _ev):
@@ -225,7 +227,8 @@ class _EditorCanvas(QWidget):
         p.fillRect(self.rect(), QColor(theme.BG_CANVAS))
         s, ox, oy = self._fit()
         ih, iw = d.bgr.shape[:2]
-        p.drawPixmap(QRect(int(ox), int(oy), int(iw * s), int(ih * s)), self._base)
+        # exactly where _to_widget puts it (a truncated QRect drew it at another scale and origin, I358)
+        p.drawPixmap(QRectF(ox, oy, iw * s, ih * s), self._base, QRectF(self._base.rect()))
         pts = self._to_widget(d.corners)
         cols = int(d.pattern[0])
         if len(pts) >= cols:
@@ -252,14 +255,14 @@ class _EditorCanvas(QWidget):
             hot = (i == self._hover) or (i == d._drag)
             p.setPen(QPen(QColor(theme.ACCENT if hot else "#40E080"), 2))
             r = 9 if hot else 5
-            p.drawEllipse(QPoint(int(x), int(y)), r, r)
+            p.drawEllipse(QPointF(float(x), float(y)), r, r)
         if len(pts):
             p.setPen(QPen(QColor(255, 120, 60), 2))                    # corner 0
-            p.drawEllipse(QPoint(int(pts[0, 0]), int(pts[0, 1])), 14, 14)
+            p.drawEllipse(QPointF(float(pts[0, 0]), float(pts[0, 1])), 14, 14)
         moved = np.linalg.norm(d.corners - d.original, axis=1) > 0.5
         p.setPen(QPen(QColor(theme.RED), 2))
         for x, y in pts[moved]:
-            p.drawEllipse(QPoint(int(x), int(y)), 11, 11)
+            p.drawEllipse(QPointF(float(x), float(y)), 11, 11)
         p.end()
 
     # ---- interaction ----

@@ -1365,18 +1365,13 @@ class VideoCanvas(QGraphicsView):
         w, h = self._native_size
         return -0.5 <= p.x() < w - 0.5 and -0.5 <= p.y() < h - 0.5
 
-    @staticmethod
-    def _onpic(p: QPointF) -> QPointF:
-        """A position the session accepts: pixel 0 spans [-0.5, 0.5), but a
-        coordinate below 0 counts as out of the picture there, so a click in
-        that outer half-pixel became a point that tracking blanked (I126)."""
-        return QPointF(max(0.0, p.x()), max(0.0, p.y()))
-
     def _clamp_pic(self, p: QPointF) -> QPointF:
         """`p` pulled onto the picture: a rectangle / segment-box drag that ends
-        beyond the edge ends AT it, as the press is (I216)."""
+        beyond the edge ends AT it (I216), the picture's outer edges -0.5 / w - 0.5.
+        A click inside them is used as it is: `session.in_frame` takes the same
+        edges (I361; the I126 nudge of pixel 0's outer half onto 0.0 is gone)."""
         w, h = self._native_size
-        return QPointF(min(max(0.0, p.x()), w - 0.5), min(max(0.0, p.y()), h - 0.5))
+        return QPointF(min(max(-0.5, p.x()), w - 0.5), min(max(-0.5, p.y()), h - 0.5))
 
     # --------------------------------------------------------------- gestures
     # ONE gesture at a time (`_g`, see __init__). Each press / move / release
@@ -1418,7 +1413,7 @@ class VideoCanvas(QGraphicsView):
         """Begin a deferred gesture: the release (or a move) decides what it is."""
         self._g = g
         self._gbutton = ev.button()
-        self._press_scene = self._onpic(sp) if sp is not None else None
+        self._press_scene = sp
         self._press_view = ev.position()
         self._press_hit = hit
         self._press_shift = bool(ev.modifiers() & Qt.ShiftModifier)    # the segment tool's "not the segment" (G86)
@@ -1468,13 +1463,11 @@ class VideoCanvas(QGraphicsView):
             if ev.modifiers() & Qt.AltModifier and not self._place_mode:
                 # look-here: never an edit, so it cannot pass for a placement (G21)
                 if self._in_video(sp):
-                    sp = self._onpic(sp)
                     self.probe_requested.emit(sp.x(), sp.y())
                 return
             hit = self._hit_test(sp)
             if ev.modifiers() & Qt.ControlModifier:
                 if self._in_video(sp):
-                    sp = self._onpic(sp)
                     self.reposition_requested.emit(sp.x(), sp.y())
                 return
             if not self._place_mode:
@@ -1489,7 +1482,7 @@ class VideoCanvas(QGraphicsView):
                     # polygon region: every click adds a corner; Enter closes
                     # it (>= 3 corners), Esc cancels. Double-click also closes.
                     self._g = "poly"
-                    self._poly_pts.append(self._onpic(sp))
+                    self._poly_pts.append(sp)
                     self._draw_poly_preview(sp)
                     return
                 # deferred: release decides between a click (add point) and a

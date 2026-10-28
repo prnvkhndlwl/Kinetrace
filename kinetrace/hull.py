@@ -91,6 +91,7 @@ def undistort_maps(cal: CameraCalibration, width: int, height: int) -> tuple[np.
     # writes 0 there, which `carve` must not read as "seen, and outside the
     # silhouette" -- that carved the body away along the coverage boundary
     # (a synthetic ellipsoid came out at 55 % of its true volume).
+    # the picture's outer edges: `session.in_frame`'s rule (I361), on whole remap arrays
     valid = ~bad & (map_x >= -0.5) & (map_x < width - 0.5) & (map_y >= -0.5) & (map_y < height - 0.5)
     cal._maps = (key, map_x, map_y, valid)
     return map_x, map_y

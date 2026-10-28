@@ -47,7 +47,7 @@ from kinetrace.segmenter import (BACKENDS, DEFAULT_BACKEND, backend_status, has_
 from kinetrace import gpmf, projectfile, recent, recovery, trackio
 from kinetrace.lens import lens_label
 from kinetrace.errors import cap_first, plain_error as _plain_error
-from kinetrace.session import SESSION_TAIL, TRACKER_NAMES, TrackingSession
+from kinetrace.session import SESSION_TAIL, TRACKER_NAMES, TrackingSession, in_frame
 from kinetrace.viewgrid import ViewGrid, caption_for
 from kinetrace.skeletons import all_templates, save_user_template
 from kinetrace.theme import apply_theme
@@ -8473,7 +8473,7 @@ class MainWindow(QMainWindow):
             why = f"{who} disagree by {res:.1f} px (more than {thr:.0f}) — one of them is misplaced here"
         elif probe is not None and np.sign(float(L[8:11] @ xyz) + 1.0) != front_sign(L, probe):
             why = f"{who} put it behind {p.name(target)}"
-        elif not np.isfinite(xy).all() or not (-0.5 <= xy[0] < dst.width - 0.5 and -0.5 <= xy[1] < dst.height - 0.5):
+        elif not in_frame(xy, dst.width, dst.height):
             why = f"{who} put it outside {p.name(target)}'s picture (out of the picture = no data)"
         return {"xy": xy, "residual": float(res), "angle_deg": widest, "views": views, "why": why}
 
