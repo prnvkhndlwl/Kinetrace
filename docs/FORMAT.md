@@ -28,7 +28,7 @@ with one long `tracks.csv` per camera) still opens; see the end.
 | | |
 |---|---|
 | Frames | counted from **0** |
-| Pixels | OpenCV **pixel centres counted from 0**: the centre of the top-left pixel is (0, 0), x to the right, y **down**. The last pixel of a 1920-wide picture has x = 1919. (DLTdv8 and MATLAB count from 1: subtract 1.) |
+| Pixels | OpenCV **pixel centres counted from 0**: the centre of the top-left pixel is (0, 0), x to the right, y **down**. The last pixel of a 1920-wide picture has x = 1919. The picture's outer edges are at -0.5 and width - 0.5, so a position on the outer half of the first column or row is slightly negative (x = -0.3 is on pixel 0; 1919.7 is outside). (DLTdv8 and MATLAB count from 1: subtract 1.) |
 | Missing data | an **empty cell** (not 0, not `NaN`) |
 | True / false | `1` / `0` (`TRUE` / `FALSE` are accepted when read) |
 | Numbers | `.` decimal point, no thousands separator. 32-bit values (positions, confidence) are written as the shortest text that reads back to the same number exactly |
