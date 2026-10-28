@@ -302,6 +302,30 @@ def remove_lens(wiz):
 
 def drive_cancel(wiz):
     to_cams_page(wiz)
+    # (review) the lens wizard opened by a row's Calibrate... offers to share by the PENDING lenses
+    from kinetrace import lenswizard as lwmod
+
+    class FakeLensWizard:
+        def __init__(self, *a, **k):
+            self.result_profile = self.result_view = None
+            state["lw"] = self
+
+        def exec(self):
+            state["share_lenses"] = getattr(self, "share_lenses", None)
+            return QDialog.Rejected
+
+        def result_views(self):
+            return []
+
+        def deleteLater(self):
+            pass
+    orig_lw = lwmod.LensWizard
+    lwmod.LensWizard = FakeLensWizard
+    try:
+        click(wiz.page_cams.lens_buttons[1][0])            # camera 2's Calibrate...
+    finally:
+        lwmod.LensWizard = orig_lw
+    state["share_ok"] = state.get("share_lenses") is wiz.lenses
     remove_lens(wiz)
     wiz.reject()
     pump(0.1)
@@ -342,6 +366,7 @@ try:
     pump(0.3)
 finally:
     cw.WandWizard.exec = orig_exec
+check(state.get("share_ok"), "a row's Calibrate... hands the lens wizard the pending lenses to share by")
 check(state.get("during") is prof, "Remove on the Cameras page does not change the project yet")
 check(p.lenses[0] is prof and p.calibration is TRUE_CAL, "Cancel leaves the lens and the calibration as they were")
 if p.lenses[0] is not prof:                      # (today's Cancel removed it: put it back for the next half)

@@ -824,6 +824,7 @@ class CamerasPage(QWizardPage):
         from kinetrace.lenswizard import LensWizard
         p = self.wiz.project
         lw = LensWizard(self, p, p.sessions[c].video_path, c, self.wiz.start_dir)
+        lw.share_lenses = self.wiz.lenses        # (G223, review) offers to share by the PENDING lenses, not the project's
         accepted = lw.exec() == QWizard.Accepted
         prof, v, views = lw.result_profile, lw.result_view, (lw.result_views() if accepted else [])
         lw.deleteLater()            # (I249) the wizard holds its scan (~93 MB of thumbnails): release it
