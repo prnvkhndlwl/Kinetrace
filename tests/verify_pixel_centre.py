@@ -10,7 +10,9 @@ shrunk by s maps p to (p + 0.5) * s - 0.5 (`pixels.centre_scale`), not p * s. Ea
   I360  a reduced-size overlay export draws markers / silhouettes / trails / region outlines 0.25-0.4 px off
   I361  three "inside the picture" rules half a pixel apart; a click or import in pixel 0's outer half was moved
         to 0.0; the tracker blanked x = -0.3 (on pixel 0) and kept x = W - 0.3 (past the last pixel)
-Full-size drawing (scale 1) is pinned by md5s recorded on main: it must not change.
+  I362  (fails on PR 4 f1b0712) the lens board tiles draw corners / axes ~0.44 tile px down-right; the result
+        page's map cuts positions off instead of rounding (dots up to 0.58 map px off)
+Full-size drawing (scale 1) is pinned by md5s recorded on main (I362's on PR 4): it must not change.
 
 Offscreen; no GPU. Run: .venv\\Scripts\\python.exe tests\\verify_pixel_centre.py
 """
@@ -59,6 +61,9 @@ FAILS: list = []
 # md5 of the full-size (scale 1) drawings, recorded on main 60a50ed: scale 1 must stay pixel-identical
 MD5_POSE_NATIVE = "35b0b33e285b6199407a17a321878250"
 MD5_OVERLAY_NATIVE = "3e90e1baa2763202e76b672fc12913bf"
+# (I362) the full-size lens board drawing, recorded on PR 4 (pixel-centre-rule f1b0712)
+MD5_BOARD_NATIVE = "00bf15487e9882f985ee3a9d76bccbdb"
+MD5_SEEN_NATIVE = "11d4751944287a0ee2ccd2831f3034b6"
 
 
 def check(label, cond, detail=None):
@@ -371,6 +376,86 @@ def section_render():
     check("a full-size overlay export frame is pixel-identical to main's", h == MD5_OVERLAY_NATIVE, h)
 
 
+# ---------------------------------------------------------------- I362 lens board tiles + result map
+class _ArrowRecorder:
+    """lens's cv2 with arrowedLine recorded (where the board's X / Y / Z arrows start and end)."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        return getattr(cv2, name)
+
+    def arrowedLine(self, img, o, q, *a, **k):
+        self.calls.append((tuple(o), tuple(q)))
+        return cv2.arrowedLine(img, o, q, *a, **k)
+
+
+def _dot_offsets(draw, s, n, seed):
+    """`n` random 4K corners, each drawn alone by `draw(p)`: (mean, worst) offset of the drawn dot's centroid
+    from `centre_scale(p, s)`. The dot is weighted by green minus red, which leaves out corner 0's ring
+    (red-blue) and the dark map background."""
+    rng = np.random.default_rng(seed)
+    d = []
+    for _ in range(n):
+        p = rng.uniform([200.0, 200.0], [3640.0, 1960.0])
+        img = draw(p).astype(np.float64)
+        want = centre_scale(p, s)
+        d.append(centroid(np.clip(img[:, :, 1] - img[:, :, 2], 0, None), want[0], want[1], 4) - want)
+    d = np.asarray(d)
+    return d.mean(axis=0), np.abs(d).max()
+
+
+def section_lens_thumbs():
+    print("I362 lens board tiles (480 px wide) and the result page's map (640 px wide) of a 4K video")
+    s = 480 / 3840
+    tile = np.zeros((270, 480, 3), np.uint8)
+    m, _ = _dot_offsets(lambda p: lens.draw_board_review(tile, p[None], (1, 1), prof=None, scale=s, axes=False),
+                        s, 200, 3)
+    check("a checkerboard tile's corner dots sit on the shrunk corner (mean within 0.1 tile px)",
+          np.all(np.abs(m) < 0.1), f"mean dot - corner ({m[0]:+.3f}, {m[1]:+.3f}) tile px (PR 4: +0.462, +0.424)")
+    # a ChArUco view that missed corner 0: the NaN row sends it through _draw_seen_board
+    m, _ = _dot_offsets(lambda p: lens.draw_board_review(tile, np.array([[np.nan, np.nan], p]), (2, 1), prof=None,
+                                                         scale=s, axes=False), s, 200, 4)
+    check("a ChArUco tile's corner dots sit on the shrunk corner (mean within 0.1 tile px)",
+          np.all(np.abs(m) < 0.1), f"mean dot - corner ({m[0]:+.3f}, {m[1]:+.3f}) tile px (PR 4: +0.449, +0.490)")
+    # the board's axes: video points whose p * s and centre_scale round to different tile pixels
+    a, b = np.array([1004.6, 508.6]), np.array([1100.6, 604.6])
+    want = (tuple(int(v) for v in np.round(centre_scale(a, s))), tuple(int(v) for v in np.round(centre_scale(b, s))))
+    real_axes, real_cv2 = lens.board_axes, lens.cv2
+    lens.board_axes = lambda *a_, **k_: [("X", a, b)]
+    for label, corners, pattern in (("checkerboard", np.array([[2000.3, 1000.7]]), (1, 1)),
+                                    ("ChArUco", np.array([[np.nan, np.nan], [2000.3, 1000.7]]), (2, 1))):
+        rec = _ArrowRecorder()
+        lens.cv2 = rec
+        try:
+            lens.draw_board_review(tile, corners, pattern, prof=object(), scale=s, axes=True)
+        finally:
+            lens.cv2 = real_cv2
+        check(f"a {label} tile's axis arrow is drawn at the pixel-centre positions", rec.calls == [want],
+              f"drawn {rec.calls}, wanted {want} (PR 4: (126, 64) -> (138, 76))")
+    lens.board_axes = real_axes
+    # the result page's "where the board went" map
+    sc = 640 / 3840
+    m, worst = _dot_offsets(lambda p: lens.coverage_image(SimpleNamespace(size=(3840, 2160), corners=[p[None]]),
+                                                          [0]), sc, 200, 5)
+    check("the result map's dots sit on the shrunk corner (mean within 0.1 map px)", np.all(np.abs(m) < 0.1),
+          f"mean dot - corner ({m[0]:+.3f}, {m[1]:+.3f}) map px")
+    check("every result-map dot is on the map pixel nearest the corner (within 0.5 map px)", worst <= 0.5 + 1e-9,
+          f"worst {worst:.3f} map px (PR 4: 0.582, a cut-off instead of rounding)")
+    # full size: unchanged, pixel for pixel
+    rng = np.random.default_rng(9)
+    frame = (rng.random((480, 640, 3)) * 255).astype(np.uint8)
+    grid = np.array([(80.0 + 90 * i, 90.0 + 90 * j) for j in range(4) for i in range(6)])
+    corners = grid + rng.uniform(-3, 3, grid.shape)
+    seen = corners.copy()
+    seen[[3, 10]] = np.nan
+    for label, c, md5_main in (("checkerboard", corners, MD5_BOARD_NATIVE), ("ChArUco", seen, MD5_SEEN_NATIVE)):
+        h = md5(lens.draw_board_review(frame, c, (6, 4), prof=None, scale=1.0, axes=False))
+        print(f"  ({label} scale 1 md5 {h})")
+        check(f"a full-size {label} board drawing is pixel-identical to PR 4's", h == md5_main, h)
+
+
 # ---------------------------------------------------------------- I361 one in-picture rule
 def section_rule():
     print("I361 one in-picture rule: the pixel edges [-0.5, W - 0.5) (W = 1920, H = 1080)")
@@ -510,8 +595,8 @@ def section_click():
     pump(0.3)
 
 
-for section in (section_sam, section_board, section_body, section_render, section_rule, section_point_models,
-                section_click):
+for section in (section_sam, section_board, section_body, section_render, section_lens_thumbs, section_rule,
+                section_point_models, section_click):
     try:
         section()
     except Exception as e:  # noqa: BLE001
