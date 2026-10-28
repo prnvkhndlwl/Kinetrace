@@ -144,14 +144,18 @@ POINT_ARRAYS: tuple[PointArray, ...] = (
 
 
 def in_frame(pts, w: float, h: float):
-    """Which positions lie inside a w x h picture: finite, 0 <= x < w and
-    0 <= y < h, over the last axis (x, y) -- a numpy bool for one (2,) point, a
-    bool array for (..., 2). THE picture-bounds rule of the tracker and the
-    session, which lived in six copies (I138). A NaN or infinite coordinate
-    fails the bounds anyway; the finite test only says so outright."""
+    """Which positions lie inside a w x h picture: finite, -0.5 <= x < w - 0.5
+    and -0.5 <= y < h - 0.5, over the last axis (x, y) -- a numpy bool for one
+    (2,) point, a bool array for (..., 2). THE picture-bounds rule of the
+    tracker and the session, which lived in six copies (I138). Pixel i's centre
+    is at i, so the picture's outer edges are at -0.5 and w - 0.5: the window,
+    the hull and the 3D layer use the same edges (I361: [0, w) kept x = w - 0.3,
+    past the last pixel, and blanked x = -0.3, on pixel 0). A NaN or infinite
+    coordinate fails the bounds anyway; the finite test only says so outright."""
     pts = np.asarray(pts)
     x, y = pts[..., 0], pts[..., 1]
-    return np.isfinite(pts).all(axis=-1) & (x >= 0) & (x < w) & (y >= 0) & (y < h)
+    return (np.isfinite(pts).all(axis=-1) & (x >= -0.5) & (x < w - 0.5)
+            & (y >= -0.5) & (y < h - 0.5))
 
 
 # a spreadsheet runs a cell that starts with one of these as a FORMULA (CSV

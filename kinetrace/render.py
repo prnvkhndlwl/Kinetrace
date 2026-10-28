@@ -28,6 +28,8 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
+from kinetrace.pixels import centre_scale
+
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
@@ -168,6 +170,12 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
     sc = float(opts.scale)
     if sc != 1.0:
         bgr = cv2.resize(bgr, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
+
+    def at(p):
+        """Native positions in the drawn picture: as they are at full size, else the pixel-centre rule
+        the resize itself follows (I360: p * sc drew markers 0.25-0.4 px down-right of the footage)."""
+        return p if sc == 1.0 else centre_scale(np.asarray(p, np.float64), sc)
+
     out = bgr
     h, w = out.shape[:2]
     font_scale = _font_scale(w)
@@ -186,7 +194,7 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
         polys = masks.contours.get(frame) if masks is not None else None
         if polys:
             col = _bgr(getattr(animal, "color", mask_color))
-            pts = [np.round(np.asarray(p, np.float64) * sc).astype(np.int32).reshape(-1, 1, 2)
+            pts = [np.round(at(np.asarray(p, np.float64))).astype(np.int32).reshape(-1, 1, 2)
                    for p in polys if len(p) >= 3]
             if pts:
                 # blend only the polygons' bounding box (clipped to the picture): outside it the
@@ -202,7 +210,7 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
                 cv2.polylines(out, pts, True, col, 1, cv2.LINE_AA)
 
     occ = s.occluded[frame] if getattr(s, "occluded", None) is not None else np.zeros(s.n_points, bool)
-    pos = s.tracks[frame] * sc
+    pos = at(s.tracks[frame])
     valid = s.tracked[frame] & np.isfinite(s.tracks[frame]).all(axis=1)
     valid &= ~occ                       # cells marked hidden by hand are not drawn
 
@@ -219,7 +227,7 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
             if ok.sum() < 2:
                 continue
             col = _bgr(meta.color)
-            pts = np.round(seg * sc).astype(np.int32)
+            pts = np.round(at(seg)).astype(np.int32)
             # break the polyline at gaps
             run: list[np.ndarray] = []
             for k in range(len(pts)):
@@ -254,9 +262,9 @@ def draw_overlay(bgr: np.ndarray, frame: int, session, opts: OverlayOptions,
             else:
                 cv2.circle(out, c, r, col, 2, cv2.LINE_AA)
             if meta.kind == "group":
-                ol = meta.outline_at(pos[j] / sc) if hasattr(meta, "outline_at") else None
+                ol = meta.outline_at(s.tracks[frame, j]) if hasattr(meta, "outline_at") else None
                 if ol is not None:
-                    cv2.polylines(out, [np.round(ol * sc).astype(np.int32).reshape(-1, 1, 2)], True,
+                    cv2.polylines(out, [np.round(at(ol)).astype(np.int32).reshape(-1, 1, 2)], True,
                                   col, 1, cv2.LINE_AA)
                 else:
                     cv2.circle(out, c, int(round(meta.radius * sc)), col, 1, cv2.LINE_AA)

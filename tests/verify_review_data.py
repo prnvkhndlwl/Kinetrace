@@ -265,16 +265,17 @@ def _():
 
 
 # ---------------------------------------------------------------- I254 / G72
-@check("I254 import bounds = the session's rule: [-0.5, 0) is pixel 0, [W-0.5, W) is kept")
+@check("I254 / I361 import bounds = the session's rule, the pixel edges: [-0.5, 0) is pixel 0 (kept as it is), "
+       "[W-0.5, W) is past the last pixel")
 def _():
     s = sess()
     xy = np.array([[[-0.3, 100.0]], [[W - 0.3, 100.0]], [[-0.6, 100.0]], [[W + 0.1, 100.0]],
                    [[100.0, -0.4]], [[100.0, H - 0.2]], [[100.0, H + 0.2]]], np.float64)
     res = trackio.apply(s, imported(["p"], xy))
     t = s.tracked[:7, 0]
-    assert t.tolist() == [True, True, False, False, True, True, False], t.tolist()
-    assert res["outside"] == 3 and res["cells"] == 4, res
-    assert tuple(s.tracks[0, 0]) == (0.0, 100.0) and tuple(s.tracks[4, 0]) == (100.0, 0.0)
+    assert t.tolist() == [True, False, False, False, True, False, False], t.tolist()
+    assert res["outside"] == 5 and res["cells"] == 2, res
+    assert tuple(s.tracks[0, 0]) == (np.float32(-0.3), 100.0) and tuple(s.tracks[4, 0]) == (100.0, np.float32(-0.4))
     assert in_frame(s.tracks[:7][t, 0], W, H).all(), "stored but outside the session's rule"
     # and a tracking write keeps them: write_segment blanks anything in_frame refuses
     s.write_segment(0, s.tracks[:7].copy(), np.ones((7, 1), bool), [0])

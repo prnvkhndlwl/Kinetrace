@@ -72,6 +72,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_lens_turn",
        # (G176) one lens file on several cameras
        "verify_lens_attach",
+       # (I357-I361) one pixel-centre rule
+       "verify_pixel_centre",
        # (I310, G211) File > Import > DLTdv Project
        "verify_dltdv_project",
        # (I321-I323, G220, G221) ChArUco boards: lens and camera calibration, Argus files
