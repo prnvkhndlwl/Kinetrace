@@ -258,7 +258,8 @@ def measure_spot(rgb: np.ndarray, xy, cues=("bright", "dark"), sigmas=SIGMAS) ->
     if not (math.isfinite(x) and math.isfinite(y)):
         return None
     h, w = rgb.shape[:2]
-    if not (0 <= x < w and 0 <= y < h):
+    # the picture's outer edges, `session.in_frame`'s rule (I361: a click on pixel 0's outer half is inside)
+    if not (-0.5 <= x < w - 0.5 and -0.5 <= y < h - 0.5):
         return None
     half = 3.0 * sigmas[-1] * DOG_RATIO + 12.0
     crop, x0, y0 = _crop(rgb, x, y, half)
@@ -467,7 +468,9 @@ class SpotTracker:
         pred = self.prediction()
         R = self.search_radius()
         w, h = self.size
-        if not (0 <= pred[0] <= w - 1 and 0 <= pred[1] <= h - 1):
+        # left = past the picture's outer edges, `session.in_frame`'s rule (I361: [0, w - 1] stopped a spot
+        # clicked on pixel 0's outer half at once)
+        if not (-0.5 <= pred[0] < w - 0.5 and -0.5 <= pred[1] < h - 0.5):
             self.stopped = (int(idx), "left")
             return None
         if self.settings.cue == "change":

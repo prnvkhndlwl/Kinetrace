@@ -432,6 +432,29 @@ def section_rule():
           out.get(1921.0) == 1919.0 and out.get(-1.5) == 0.0, out)
 
 
+def section_point_models():
+    print("I361 the Moving spot and Ball marker take the same edges (a click on pixel 0's outer half)")
+    from kinetrace import spots
+    from kinetrace.balls import BallTracker
+    W, H = 100, 100
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    g = 40 + 200 * np.exp(-((xx - 0.0) ** 2 + (yy - 50.0) ** 2) / (2 * 1.6 ** 2))      # a spot on pixel 0
+    rgb = cv2.cvtColor(np.clip(g, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2RGB)
+    check("a spot clicked at x = -0.3 is measured (the small-spot hint, the point test)",
+          spots.measure_spot(rgb, (-0.3, 50.0)) is not None)
+    check("(edges) x = -0.6 and x = 99.5 are outside the picture",
+          spots.measure_spot(rgb, (-0.6, 50.0)) is None and spots.measure_spot(rgb, (99.5, 50.0)) is None)
+    tr = spots.SpotTracker(spots.SpotSettings("bright", 6.0, 0.5, 1.6), (-0.3, 50.0), size=(W, H))
+    tr.start(0, rgb)
+    fix = tr.step(1, rgb)
+    check("a Moving spot started at x = -0.3 keeps tracking (not 'left the picture' at once)",
+          fix is not None and tr.stopped is None, tr.stopped)
+    check("a ball clicked at x = -0.3 is inside a crop at the picture's edge (it gets its SAM prompt)",
+          BallTracker._inside((0, 0, 200, 200), (-0.3, 50.0)) and BallTracker._inside((0, 0, 200, 200), (50.0, -0.4)))
+    check("(unchanged) away from the picture's edge a crop is [x0, x1)",
+          not BallTracker._inside((10, 10, 210, 210), (9.7, 50.0)) and BallTracker._inside((10, 10, 210, 210), (10.0, 50.0)))
+
+
 def section_click():
     print("I361 a click on the outer half of pixel 0 stays where it was made")
     from _clean import forget_recovery
@@ -487,7 +510,8 @@ def section_click():
     pump(0.3)
 
 
-for section in (section_sam, section_board, section_body, section_render, section_rule, section_click):
+for section in (section_sam, section_board, section_body, section_render, section_rule, section_point_models,
+                section_click):
     try:
         section()
     except Exception as e:  # noqa: BLE001

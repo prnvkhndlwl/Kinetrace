@@ -301,8 +301,11 @@ class BallTracker:
 
     @staticmethod
     def _inside(crop, xy) -> bool:
+        """Is `xy` on the crop? A crop that starts at the picture's first pixel reaches that pixel's outer
+        half, the picture's edge at -0.5 (`session.in_frame`'s rule, I361: a ball clicked there was never
+        prompted). Elsewhere [x0, x1) as before."""
         x0, y0, x1, y1 = crop
-        return bool(x0 <= xy[0] < x1 and y0 <= xy[1] < y1)
+        return bool((-0.5 if x0 == 0 else x0) <= xy[0] < x1 and (-0.5 if y0 == 0 else y0) <= xy[1] < y1)
 
     def _near_edge(self, xy) -> bool:
         return self._near_edge_in(self.crop, xy)

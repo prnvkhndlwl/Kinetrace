@@ -285,7 +285,9 @@ class SegSession:
     def _to_work(self, xy) -> list[float]:
         # per axis: the two axes of the working size are rounded separately (I61). The pixel-centre rule,
         # the exact inverse of the outlines' way back (`outline_polygons`): p * s put a 4K click 1.4 native
-        # px down-right of where it was made (I357)
+        # px down-right of where it was made (I357). No resize = the click itself, bit for bit
+        if tuple(self.work) == tuple(self.native_size):
+            return [float(xy[0]), float(xy[1])]
         sx = self.native_size[0] / self.work[0]
         sy = self.native_size[1] / self.work[1]
         return [float(centre_unscale(float(xy[0]), sx)), float(centre_unscale(float(xy[1]), sy))]

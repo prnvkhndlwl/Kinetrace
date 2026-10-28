@@ -135,7 +135,8 @@ MAP = [
     # (I357-I361) one pixel-centre rule: SAM prompts, the board editor / search, body + overlay drawing, the
     # in-picture rule (session, retrack, canvas clicks, imports)
     ([K + f for f in ("segmenter.py", "boardreview.py", "lens.py", "bodyview.py", "render.py", "session.py",
-                      "retrack.py", "canvas.py", "trackio.py", "pixels.py", "app.py", "calibview.py")],
+                      "retrack.py", "canvas.py", "trackio.py", "pixels.py", "app.py", "calibview.py", "spots.py",
+                      "balls.py")],
      ["verify_pixel_centre"]),
     # install, update, device, errors
     ([K + f for f in ("device.py", "downloads.py", "paths.py", "update.py", "updatedialog.py", "crashlog.py",
