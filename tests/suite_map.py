@@ -64,6 +64,10 @@ MAP = [
     # (I316, I318, PR B) a re-seed session per click for the point models: the run driver, the frames it reads
     # from the cache, the app's plan of the sessions and their writes
     ([K + f for f in ("tracker.py", "video_source.py", "session.py", "app.py", "spots.py")], ["verify_hand_restart"]),
+    # (sweep PR 7, I368-I377, G226-G231) the window's behaviour rows: frame checks, the Track button and press,
+    # trails, close, undo, balls, the volume hull, notices, Save As, the Body menu, video paths
+    ([K + f for f in ("app.py", "canvas.py", "widgets.py", "session.py", "projectfile.py", "framecheck.py")],
+     ["verify_ui_behaviour"]),
     # (D9 choice 3, G217) Only fill the gaps: the gaps' plan, the pop-up's third choice, the runs over the gaps
     ([K + f for f in ("session.py", "app.py", "trackchoice.py", "tracker.py", "video_source.py")], ["verify_gap_fill"]),
     # (G216, G219) a tracker per camera and "Hand only": the Tracker menu, the passes of a press over every

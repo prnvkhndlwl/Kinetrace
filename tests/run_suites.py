@@ -76,6 +76,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_pixel_centre",
        # (I363) a checkerboard view with two corners on one spot is flagged and never auto-picked
        "verify_board_merged",
+       # (I368-I377, G226-G231) sweep PR 7: the window's behaviour rows
+       "verify_ui_behaviour",
        # (I310, G211) File > Import > DLTdv Project
        "verify_dltdv_project",
        # (I321-I323, G220, G221) ChArUco boards: lens and camera calibration, Argus files

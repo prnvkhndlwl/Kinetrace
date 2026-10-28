@@ -4175,12 +4175,16 @@ class MainWindow(QMainWindow):
             th.made.connect(lambda fp, r=rt, u=by_user: self._fc_made(r, fp, u))
             th.checked.connect(lambda res, r=rt, u=by_user: self._fc_checked(r, res, u))
             th.failed.connect(lambda msg: self.toast.show_message(msg, "warn", 10000))
-            th.finished.connect(self._fc_finished)
+            th.finished.connect(lambda t=th: self._fc_finished(t))      # (I369) which check ended
             self._fc_job = th
             th.start(QThread.Priority.LowPriority)
             return
 
-    def _fc_finished(self) -> None:
+    def _fc_finished(self, ended) -> None:
+        if ended is not self._fc_job:
+            # (I369) a check `_fc_stop` cancelled (and retired): its `finished`, queued, arrives after the next
+            # project's check started and used to retire THAT one (its result lost, the window frozen 2 s)
+            return
         th, self._fc_job = self._fc_job, None
         if th is not None:
             th.wait(2000)
