@@ -1286,8 +1286,8 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
         verts, faces = scene.mesh
         fn = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
         fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
-        if np.linalg.det(R) < 0:
-            fn = -fn                                 # (G224) a reflected view turns every face inside out
+        # (G224) no flip for a reflected view: a hull is built outward in the world's OWN coordinates
+        # (`hull.surface`), so R (reflection included) already turns its normals the right way
         light = np.array([0.3, 0.5, 0.8])
         light /= np.linalg.norm(light)
         shade = np.clip(0.25 + 0.75 * np.clip((fn @ R.T) @ light, 0, 1), 0, 1)

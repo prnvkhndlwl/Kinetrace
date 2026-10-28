@@ -243,7 +243,9 @@ if v3 is not None:
     def lit(mirror):
         sc_ = view3d.Scene3D()
         F = np.array([1.0, -1.0, 1.0]) if mirror else np.ones(3)
-        sc_.mesh = (vtx * F, fcs)
+        # a hull carved in the mirrored world is outward in ITS coordinates (hull.surface): the mirrored
+        # corners with the faces' winding reversed (review: keeping the winding made an inside-out test mesh)
+        sc_.mesh = (vtx * F, fcs[:, ::-1] if mirror else fcs)
         sc_.points_all = (vtx * F)[None]
         sc_.mirrored = mirror
         img = view3d.render_scene(sc_, (400, 400), 35, 25, show_points=False, show_cameras=False)
