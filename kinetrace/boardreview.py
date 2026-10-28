@@ -316,10 +316,12 @@ class _Tile(QFrame):
     opened = Signal(int)
 
     def __init__(self, i: int, frame_no: int, pix: QPixmap, err: float, used: bool,
-                 size: tuple[int, int] | None = None):
+                 size: tuple[int, int] | None = None, merged: str = ""):
         super().__init__()
         self.i = i
         self._size = size
+        self._err = err
+        self._merged = merged          # (I363) "" or why two of this board's corners sit on one spot
         self.setFrameShape(QFrame.StyledPanel)
         # A fixed width, or the grid stretches each tile across its cell and
         # the picture floats in a sea of panel.
@@ -342,12 +344,8 @@ class _Tile(QFrame):
         self.chk.toggled.connect(lambda v: self.toggled.emit(self.i, bool(v)))
         row.addWidget(self.chk)
         row.addStretch(1)
-        word, col = quality(err, size)
-        self.err = QLabel(word)
-        self.err.setStyleSheet(f"color: {col};")
-        self.err.setToolTip("How far this view's corners sit from where the fitted lens "
-                            f"says they should be. Under {lens.rms_limits(*(size or (1920, 1080)))[0]:.1f} px "
-                            "is good.")
+        self.err = QLabel("")
+        self._show_error()
         row.addWidget(self.err)
         lay.addLayout(row)
         self._restyle(used)
@@ -359,9 +357,26 @@ class _Tile(QFrame):
         self._restyle(used)
 
     def set_error(self, err: float):
-        word, col = quality(err, self._size)
+        self._err = err
+        self._show_error()
+
+    def set_merged(self, reason: str):
+        self._merged = reason
+        self._show_error()
+
+    def _show_error(self):
+        """The board's verdict: its number, or (I363) "poor: corners merged" with the reason as the tooltip."""
+        if self._merged:
+            self.err.setText("poor: corners merged")
+            self.err.setStyleSheet(f"color: {theme.RED};")
+            self.err.setToolTip(self._merged)
+            return
+        word, col = quality(self._err, self._size)
         self.err.setText(word)
         self.err.setStyleSheet(f"color: {col};")
+        self.err.setToolTip("How far this view's corners sit from where the fitted lens "
+                            f"says they should be. Under {lens.rms_limits(*(self._size or (1920, 1080)))[0]:.1f} px "
+                            "is good.")
 
     def set_pixmap(self, pix: QPixmap):
         self.pic.setPixmap(pix)
@@ -388,6 +403,7 @@ class BoardReview(QWidget):
         self.prof = None
         self.errors = np.zeros(0)
         self.used: list[bool] = []
+        self.merged: list[str] = []     # (I363) per board: "" or why two of its corners sit on one spot
         self.edited: set[int] = set()
         # bumped on every accepted corner edit, so a page can tell whether its
         # fit still describes these corners (I74)
@@ -449,6 +465,8 @@ class BoardReview(QWidget):
         if chosen is None:
             chosen = list(range(n))
         self.used = [i in set(chosen) for i in range(n)]
+        edit = getattr(scan, "board", None) is None          # (I363) a ChArUco view cannot be dragged
+        self.merged = [lens.merged_reason(c, pattern, edit) for c in scan.corners] if scan is not None else []
         self.edited.clear()
         orient = list(getattr(scan, "orient", []) or []) if scan is not None else []
         if scan is not None and len(orient) != n:          # an older scan without the tags
@@ -487,7 +505,7 @@ class BoardReview(QWidget):
         per_row = self._per_row()
         for i in range(len(self.scan.corners)):
             t = _Tile(i, self.scan.frames[i], self._tile_image(i), self.errors[i], self.used[i],
-                      self.scan.size)
+                      self.scan.size, self.merged[i])
             t.toggled.connect(self._on_toggle)
             t.opened.connect(self._edit)
             if getattr(self.scan, "board", None) is not None:
@@ -568,15 +586,22 @@ class BoardReview(QWidget):
 
     def _drop_worst(self):
         e = self.errors
+        merged = [i for i, why in enumerate(self.merged) if why]
+        for i in merged:                       # (I363) a board with two corners on one spot is always dropped
+            self.used[i] = False
+            self._tiles[i].set_used(False)
+        also = f", and {len(merged)} with two corners on one spot" if merged else ""
         if not np.isfinite(e).any():
-            self._summarise("nothing to go on yet - fit once first")
+            self._summarise(f"nothing to go on yet - fit once first{also}")
+            if merged:
+                self.changed.emit()
             return
         limit = lens.outlier_limit(e, lens.OUTLIER_FLOOR_PICK_PX)
         for i in range(len(self.used)):
             if np.isfinite(e[i]) and e[i] > limit:
                 self.used[i] = False
                 self._tiles[i].set_used(False)
-        self._summarise(f"dropped every view worse than {limit:.2f} px")
+        self._summarise(f"dropped every view worse than {limit:.2f} px{also}")
         self.changed.emit()
 
     def _edit(self, i: int):
@@ -650,6 +675,8 @@ class BoardReview(QWidget):
             return
         s.corners[i] = new_corners
         self.edited.add(i)
+        self.merged[i] = lens.merged_reason(new_corners, self.pattern)      # (I363) pulled apart: cleared
+        self._tiles[i].set_merged(self.merged[i])
         self.corner_rev += 1
         try:
             self.errors[i] = lens.per_view_errors([s.corners[i]], self.pattern, self.square,
@@ -671,6 +698,12 @@ class BoardReview(QWidget):
             bits.append(f"median {med:.2f} px")
         if self.edited:
             bits.append(f"{len(self.edited)} edited by hand")
+        m = sum(1 for u, why in zip(self.used, self.merged) if u and why)
+        out = sum(1 for u, why in zip(self.used, self.merged) if why and not u)
+        if m:
+            bits.append(f"{m} ticked board{' has' if m == 1 else 's have'} two corners on one spot")
+        if out:
+            bits.append(f"{out} with two corners on one spot left out")
         if note:
             bits.append(note)
         self.summary.setText("  -  ".join(bits))

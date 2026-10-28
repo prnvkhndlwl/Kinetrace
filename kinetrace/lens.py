@@ -1307,6 +1307,66 @@ def board_axes(corners: np.ndarray, pattern: tuple[int, int], square: float,
     return [("X", pts[0], pts[1]), ("Y", pts[0], pts[2]), ("Z", pts[0], pts[3])]
 
 
+# (I363) Two grid neighbours closer than this x the board's median neighbour spacing were found on ONE spot: where
+# a board's squares are smaller than the corner search (the 19 px full-size refine window, or OpenCV's own
+# detector), two corners slide onto the same corner. Measured on 281 rendered boards: merged pairs 0.00 x the
+# median, every sound board 0.36 x or more (the most foreshortened fisheye board).
+MERGED_FRAC = 0.1
+
+
+def merged_corners(corners: np.ndarray, pattern: tuple[int, int]) -> list[tuple[int, int]]:
+    """(I363) The neighbouring corner pairs (indices, left-right or up-down) found on one spot: closer than
+    MERGED_FRAC x the board's median neighbour spacing. Unseen (NaN) corners are skipped; [] for a sound board."""
+    cols, rows = pattern
+    c = np.asarray(corners, np.float64)
+    if c.size != rows * cols * 2:
+        return []
+    c = c.reshape(rows, cols, 2)
+    idx = np.arange(rows * cols).reshape(rows, cols)
+    a = np.concatenate([idx[:, :-1].ravel(), idx[:-1, :].ravel()])
+    b = np.concatenate([idx[:, 1:].ravel(), idx[1:, :].ravel()])
+    d = np.concatenate([np.linalg.norm(np.diff(c, axis=1), axis=2).ravel(),
+                        np.linalg.norm(np.diff(c, axis=0), axis=2).ravel()])
+    seen = np.isfinite(d)
+    if not seen.any():
+        return []
+    hit = np.zeros_like(seen)
+    hit[seen] = d[seen] <= MERGED_FRAC * float(np.median(d[seen]))
+    return sorted((int(i), int(j)) for i, j in zip(a[hit], b[hit]))
+
+
+def merged_reason(corners: np.ndarray, pattern: tuple[int, int], editable: bool = True) -> str:
+    """(I363) "" for a sound board, else the board tile's sentence: which corners, how far apart, why, what it
+    means for the fit, and the hand check. `editable` = its corners can be dragged (a checkerboard; not a
+    ChArUco view)."""
+    pairs = merged_corners(corners, pattern)
+    if not pairs:
+        return ""
+    cols, rows = pattern
+    i, j = pairs[0]
+    where = (f"row {i // cols + 1}, corners {i % cols + 1} and {j % cols + 1}" if j == i + 1 else
+             f"corner {i % cols + 1}, rows {i // cols + 1} and {j // cols + 1}")
+    c = np.asarray(corners, np.float64).reshape(-1, 2)
+    # the squares THERE: the other links of the two corners to their grid neighbours
+    links = []
+    for k in (i, j):
+        r, q = divmod(k, cols)
+        for rr, qq in ((r, q - 1), (r, q + 1), (r - 1, q), (r + 1, q)):
+            m = rr * cols + qq
+            if 0 <= rr < rows and 0 <= qq < cols and m not in (i, j):
+                links.append(float(np.linalg.norm(c[k] - c[m])))
+    links = [x for x in links if np.isfinite(x)]
+    square = f", where the squares are about {float(np.median(links)):.0f} px wide" if links else ""
+    more = f" ({len(pairs)} such pairs on this board.)" if len(pairs) > 1 else ""
+    fix = ("Untick it, or drag one ring onto its own corner to use it." if editable else
+           "Leave it unticked.")
+    return (f"Two neighbouring corners ({where}) were found on the same spot, "
+            f"{float(np.linalg.norm(c[i] - c[j])):.1f} px apart{square}.{more} The corner search looked wider "
+            "than the squares, so both slid onto one corner: this board's corners are wrong by several pixels, "
+            "so Best spread leaves it out. Check by hand: click the board, and two rings sit on one corner while "
+            f"the next corner has none. {fix}")
+
+
 def auto_select(corner_list: list[np.ndarray], pattern: tuple[int, int], square: float,
                 size: tuple[int, int], model: str = "auto", keep: int = MAX_VIEWS, base: LensProfile | None = None
                 ) -> tuple[list[int], np.ndarray, str]:
@@ -1319,34 +1379,44 @@ def auto_select(corner_list: list[np.ndarray], pattern: tuple[int, int], square:
        that reproject far worse than the rest (blurred frames, part-occluded
        boards, corners found in the wrong order).
 
+    (I363) A view with two corners found on one spot (`merged_corners`) is never
+    picked, however few views are left; it is still scored.
+
     Returns (chosen indices, per-view error for all views, a sentence saying
     what happened). The user can override any of it on the review board.
     """
     n = len(corner_list)
     if n == 0:
         return [], np.zeros(0), "no boards were found in that video"
-    spread = select_diverse(corner_list, size, min(keep, n))
-    if n < 4:
-        return spread, np.full(n, np.nan), f"only {n} boards found -- using all of them"
+    merged = {i for i, c in enumerate(corner_list) if merged_corners(c, pattern)}
+    cand = [i for i in range(n) if i not in merged]      # with no merged view: every view, as before
+    if not cand:
+        return [], np.full(n, np.nan), (f"every board found ({n}) has two corners found on one spot -- none is "
+                                        "picked; click a board to see")
+    left_out = f"; {len(merged)} left out: two corners found on one spot" if merged else ""
+    spread = [cand[k] for k in select_diverse([corner_list[i] for i in cand], size, min(keep, len(cand)))]
+    if len(cand) < 4:
+        return spread, np.full(n, np.nan), (f"only {n} boards found -- using all of them" if not merged else
+                                            f"only {len(cand)} of {n} boards usable -- using those{left_out}")
     try:
         prof = calibrate_lens([corner_list[i] for i in spread], pattern, square, size, model, base=base)
     except (ValueError, cv2.error) as exc:
-        return spread, np.full(n, np.nan), f"a first fit was not possible ({exc}); using the spread"
+        return spread, np.full(n, np.nan), f"a first fit was not possible ({exc}); using the spread{left_out}"
     err = per_view_errors(corner_list, pattern, square, prof)
     ok = np.isfinite(err)
-    if not ok.any():
-        return spread, err, "the spread could not be scored; using it as it is"
-    limit = outlier_limit(err, OUTLIER_FLOOR_PICK_PX)
+    if not ok[cand].any():
+        return spread, err, f"the spread could not be scored; using it as it is{left_out}"
+    limit = outlier_limit(err[cand], OUTLIER_FLOOR_PICK_PX)
     good =[i for i in spread if ok[i] and err[i] <= limit]
     dropped = len(spread) - len(good)
     if len(good) < max(8, len(spread) // 3):      # too aggressive: keep the spread
         return spread, err, (f"{len(spread)} of {n} boards chosen for a good spread "
-                             f"(none dropped -- too few would be left)")
+                             f"(none dropped -- too few would be left){left_out}")
     why = (f"{len(good)} of {n} boards chosen: a spread over the picture, near and far, "
            f"tilted and square-on")
     if dropped:
         why += f"; {dropped} dropped for reprojecting worse than {limit:.2f} px"
-    return good, err, why
+    return good, err, why + left_out
 
 
 CENTRE_SPLIT_FRAC = 0.003   # (G146) two halves of the boards may disagree on the centre by this x the long side

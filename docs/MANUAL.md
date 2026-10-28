@@ -2206,6 +2206,15 @@ On each picture:
 * **a number** — how far that view's corners are from where the fitted lens
   says they should be. Under 0.6 px is good and shown in green; over 1.5 px is
   red and worth a look.
+  Instead of the number, a board may read **poor: corners merged** in red. Two
+  neighbouring corners were found on the same spot. This happens where the
+  board's squares are only a few pixels wide, near the edge of a fisheye
+  picture: the corner search looks wider than a square, and both corners slide
+  onto one. That board's corners are several pixels wrong. *Best spread* and
+  *Drop the worst* always leave it out; *All* or your own tick still use it.
+  Hold the pointer over the words to see which two corners. Check by hand:
+  click the board, and two rings sit on one corner while the next corner has
+  none.
 
 Three things you can do:
 
