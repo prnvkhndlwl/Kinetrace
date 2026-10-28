@@ -119,7 +119,7 @@ MAP = [
       "verify_wand_sync", "verify_wand_sync_gui"]),
     ([K + f for f in ("lens.py", "lenswizard.py", "lensattach.py", "boardreview.py")],
      ["verify_lens", "verify_lens_gui", "verify_lens_export", "verify_lens_turn", "verify_lens_attach",
-      "verify_review_calib", "verify_camera_overview"]),
+      "verify_review_calib", "verify_camera_overview", "verify_board_merged"]),
     # (I321-I323) ChArUco boards: the board and its frame rules, the lens fit from them, the camera solve
     ([K + "charuco.py"], ["verify_charuco", "verify_charuco_gui", "verify_lens", "verify_lens_gui", "verify_wand",
                           "verify_wand_gui"]),
