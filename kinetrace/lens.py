@@ -35,7 +35,7 @@ import cv2
 import numpy as np
 
 from kinetrace.calib import OpenCVUndistort
-from kinetrace.pixels import centre_unscale
+from kinetrace.pixels import centre_scale, centre_unscale
 
 DEFAULT_PATTERN = (9, 6)        # inner corners (columns, rows) = 10 x 7 squares
 DEFAULT_SQUARE_MM = 24.0
@@ -1208,6 +1208,14 @@ def per_view_errors(corner_list: list[np.ndarray], pattern: tuple[int, int], squ
     return out
 
 
+def _on_thumb(p, scale: float) -> np.ndarray:
+    """(I362) Video pixels to a picture shrunk by `scale`, in the pixel-centre rule (`p * scale` drew every
+    mark ~0.44 px down-right on a 4K board's 480 px tile). Scale 1 returns `p` itself: `(p + 0.5) - 0.5` is
+    not always p in floats, and a full-size drawing must stay pixel-identical."""
+    p = np.asarray(p, np.float64)
+    return p if scale == 1.0 else centre_scale(p, float(scale))
+
+
 def draw_board_review(bgr: np.ndarray, corners: np.ndarray, pattern: tuple[int, int],
                       square: float = 0.024, prof: "LensProfile | None" = None,
                       scale: float = 1.0, axes: bool = True, every: int = 1) -> np.ndarray:
@@ -1218,7 +1226,7 @@ def draw_board_review(bgr: np.ndarray, corners: np.ndarray, pattern: tuple[int, 
     Drawn on a COPY. `scale` converts native video pixels to this image's.
     """
     img = bgr.copy()
-    c = np.asarray(corners, np.float64).reshape(-1, 2) * float(scale)
+    c = _on_thumb(np.asarray(corners, np.float64).reshape(-1, 2), scale)
     cols, rows = pattern
     m = _seen(c)
     if m is not None:
@@ -1242,8 +1250,8 @@ def draw_board_review(bgr: np.ndarray, corners: np.ndarray, pattern: tuple[int, 
                    cv2.LINE_AA)                                      # corner 0
     if axes and prof is not None:
         for lab, a, b in board_axes(corners, pattern, square, prof):
-            o = tuple(np.round(a * float(scale)).astype(int))
-            q = tuple(np.round(b * float(scale)).astype(int))
+            o = tuple(np.round(_on_thumb(a, scale)).astype(int))
+            q = tuple(np.round(_on_thumb(b, scale)).astype(int))
             col = AXIS_COLORS_BGR[lab]
             cv2.arrowedLine(img, o, q, col, 2, cv2.LINE_AA, tipLength=0.25)
             cv2.putText(img, lab, (q[0] + 3, q[1] + 4), cv2.FONT_HERSHEY_SIMPLEX,
@@ -1268,8 +1276,8 @@ def _draw_seen_board(img, c, m, corners, pattern, square, prof, scale, axes, eve
                    max(1, r - 1), cv2.LINE_AA)
     if axes and prof is not None:
         for lab, a, b in board_axes(corners, pattern, square, prof):
-            o = tuple(np.round(a * float(scale)).astype(int))
-            q = tuple(np.round(b * float(scale)).astype(int))
+            o = tuple(np.round(_on_thumb(a, scale)).astype(int))
+            q = tuple(np.round(_on_thumb(b, scale)).astype(int))
             col = AXIS_COLORS_BGR[lab]
             cv2.arrowedLine(img, o, q, col, 2, cv2.LINE_AA, tipLength=0.25)
             cv2.putText(img, lab, (q[0] + 3, q[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
@@ -1876,8 +1884,8 @@ def coverage_image(scan: ScanResult, chosen: list[int] | None = None, max_w: int
     use = set(chosen) if chosen is not None else set(range(len(scan.corners)))
     for i, c in enumerate(scan.corners):
         col = (60, 220, 120) if i in use else (110, 110, 115)
-        for x, y in c:
+        for x, y in _on_thumb(c, sc):          # (I362) rounded below, not cut off by int(x * sc)
             if not (np.isfinite(x) and np.isfinite(y)):        # (I321) a ChArUco corner not seen
                 continue
-            cv2.circle(img, (int(x * sc), int(y * sc)), 1, col, -1)
+            cv2.circle(img, (int(round(x)), int(round(y))), 1, col, -1)
     return img
