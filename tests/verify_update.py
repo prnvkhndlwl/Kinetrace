@@ -519,8 +519,37 @@ check(calls, "the check ran once shown")
 check("1.1.0 is available" in dlg.title.text() and "Faster tracking" in dlg.body.toPlainText()
       and "projects, models" in dlg.body.toPlainText(), dlg.body.toPlainText())
 check(dlg.buttons["Update now"].isEnabled(), "Update now enabled for a ZIP install")
+# (X46) every module of the running app is loaded BEFORE the update writes a file: Later (or Cancel at the
+# save question) then keeps running one release, not the old app importing the new files on first use
+import pkgutil  # noqa: E402
+import kinetrace as _kt  # noqa: E402
+_mods = {"kinetrace." + m.name for m in pkgutil.iter_modules(_kt.__path__) if m.name != "__main__"}
+_unloaded = sorted(n for n in _mods if n not in sys.modules)
+check(_unloaded, "precondition: some of the app's modules are not loaded yet")
+missing_at_apply = []
+_real_apply = update.apply
+
+
+def _apply_spy(*a, **k):
+    missing_at_apply.append(sorted(n for n in _mods if n not in sys.modules))
+    return _real_apply(*a, **k)
+
+
+update.apply = _apply_spy
+torch_before = "torch" in sys.modules
+ticks = []
+tick.start()
 QTest.mouseClick(dlg.buttons["Update now"], Qt.LeftButton)
-check(pump(lambda: dlg.state == "done"), f"installed: {dlg.state} {dlg.body.toPlainText()[:300]}")
+check(pump(lambda: dlg.state == "done", 60), f"installed: {dlg.state} {dlg.body.toPlainText()[:300]}")
+tick.stop()
+update.apply = _real_apply
+gap = max((b - a for a, b in zip(ticks, ticks[1:])), default=99.0)
+print(f"  loading them (torch loaded before: {torch_before}): longest window gap {gap:.2f} s")
+check(gap < 1.0, f"the window keeps repainting while the modules load: longest gap {gap:.2f} s")
+check(missing_at_apply == [[]], f"loaded before the update wrote files ({len(_unloaded)} were not): "
+      f"{missing_at_apply[0][:8] if missing_at_apply else 'apply never ran'}")
+check(update.preload() == [], "every module of this checkout loads")
+print(f"  Update now loads the app's {len(_unloaded)} not-yet-used modules before writing (X46) OK")
 check(read(inst_g, "kinetrace/__init__.py").endswith('"1.1.0"\n') and "Restart" in dlg.body.toPlainText(),
       dlg.body.toPlainText())
 QTest.mouseClick(dlg.buttons["Restart now"], Qt.LeftButton)

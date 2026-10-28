@@ -237,7 +237,11 @@ class UpdateDialog(QDialog):
         self._buttons()                      # nothing to press while files are written
         self._connect(self._on_installed, self._on_error)
         root = self._root
-        _run(self._relay, lambda p: update.apply(rel, root, p))
+
+        def step(p):
+            update.preload()                 # (X46) Later keeps running ONE release: nothing loads from new files
+            return update.apply(rel, root, p)
+        _run(self._relay, step)
 
     def _on_progress(self, done: int, total: int) -> None:
         if self.state == "applying" and total > 0:

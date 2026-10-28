@@ -494,6 +494,29 @@ def apply(release: Release, root: Path = ROOT, progress=None) -> ApplyResult:
         shutil.rmtree(root / STAGING, ignore_errors=True)
 
 
+def preload() -> list[str]:
+    """(X46) Load every Kinetrace module into this process BEFORE an update writes files. The app
+    imports many of its parts only when first used (calibration, lens, body, 3D, exports); after an
+    update, Later (or Cancel at the save question) kept the OLD program running, which then loaded
+    those parts from the NEW files ("cannot import name ..."). Loaded first, this process stays one
+    release until it restarts. Run on the update's thread, never the window's (it imports torch);
+    about 1.5 s. Returns the modules that could not be loaded (logged; the update goes on)."""
+    import importlib
+    import logging
+    import pkgutil
+    import kinetrace
+    failed = []
+    for m in pkgutil.iter_modules(kinetrace.__path__):
+        if m.name == "__main__":
+            continue
+        try:
+            importlib.import_module("kinetrace." + m.name)
+        except Exception:       # noqa: BLE001 - one part that cannot load must not stop the update
+            logging.getLogger("kinetrace").exception("preload before the update: kinetrace.%s", m.name)
+            failed.append("kinetrace." + m.name)
+    return failed
+
+
 # ------------------------------------------------------------------ restart
 
 def relaunch(root: Path = ROOT) -> None:
