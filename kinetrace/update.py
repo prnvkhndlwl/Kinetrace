@@ -95,15 +95,15 @@ class ApplyResult:
 # ------------------------------------------------------------------ versions
 
 def parse_version(text: str) -> tuple[int, ...]:
-    """"v1.10.2" -> (1, 10, 2); anything that is not a number counts as 0."""
-    parts = re.split(r"[.\-+]", str(text).strip().lstrip("vV"))
-    out = []
-    for p in parts[:4]:
-        m = re.match(r"\d+", p)
-        out.append(int(m.group()) if m else 0)
-    while len(out) < 3:
-        out.append(0)
-    return tuple(out)
+    """The sort key of a version: "v1.10.2" -> (1, 10, 2, 1). After major, minor, patch comes 1 for a
+    release or 0 for a pre-release, then the pre-release's own numbers: "0.7.0-beta.1" -> (0, 7, 0, 0, 1),
+    so a pre-release sorts below its release and rc1 below rc2 (X47: the suffix used to count as a 4th
+    number, so 0.7.0-beta.1 never saw 0.7.0). A "+build" part is ignored; a missing number counts as 0."""
+    s = str(text).strip().lstrip("vV").split("+", 1)[0]
+    m = re.match(r"(\d*)(?:\.(\d+))?(?:\.(\d+))?(.*)", s)
+    out = tuple(int(g) if g else 0 for g in m.groups()[:3])
+    pre = m.group(4).lstrip(".-")
+    return out + ((0, *(int(n) for n in re.findall(r"\d+", pre))) if pre else (1,))
 
 
 def is_newer(remote: str, local: str = APP_VERSION) -> bool:

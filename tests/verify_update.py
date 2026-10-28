@@ -50,11 +50,18 @@ def check(cond, what):
 
 # ---------------------------------------------------------------- [1] versions
 print("[1] versions")
-check(update.parse_version("v1.10.2") == (1, 10, 2), "parse v1.10.2")
-check(update.parse_version("2") == (2, 0, 0), "parse 2")
+check(update.parse_version("v1.10.2")[:3] == (1, 10, 2), "parse v1.10.2")
+check(update.parse_version("2")[:3] == (2, 0, 0), "parse 2")
 check(update.is_newer("1.10.0", "1.9.9") and not update.is_newer("1.2.0", "1.2.0"), "numeric compare")
 check(update.is_newer("v1.2.1", "1.2.0") and not update.is_newer("1.1.9", "1.2.0"), "tag compare")
 print("  1.10 > 1.9, equal is not newer OK")
+# (X47) a pre-release suffix sorts BELOW the same numbers without one (it used to count as a 4th number)
+check(update.is_newer("0.7.0", "0.7.0-beta.1"), "0.7.0 is newer than 0.7.0-beta.1")
+check(not update.is_newer("0.7.0-rc1", "0.7.0"), "0.7.0-rc1 is not newer than 0.7.0")
+check(update.is_newer("0.7.0-rc2", "0.7.0-rc1") and update.is_newer("0.7.0-rc1", "0.6.9"), "rc2 > rc1 > 0.6.9")
+check(not update.is_newer("1.2.3+build5", "1.2.3") and not update.is_newer("1.2.3", "1.2.3+build5"),
+      "a +build part is ignored")
+print("  0.7.0 > 0.7.0-rc2 > 0.7.0-rc1 > 0.6.9; +build ignored (X47) OK")
 
 
 # ---------------------------------------------------------- a fake GitHub
