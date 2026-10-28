@@ -392,14 +392,14 @@ WANT_SIDE = lens.turn_profile(OLD, 270)
 p.lenses = [None, None, None]
 wiz = cw.WandWizard(w, p, OUT)
 wiz.show()
-page = wiz.page_cams
+page = wiz.page_cams          # (G223) its lens rows change the wizard's pending copy, wiz.lenses
 page._refresh_lens_rows()
 pump(0.1)
 ASK.update(open=[OLD_FILE, LEVEL], question=QMessageBox.Yes)
 n_asked, n_warn = len(ASK["asked"]), len(ASK["warn"])
 QTest.mouseClick(page.lens_buttons[0][1], Qt.LeftButton)
 pump(0.3)
-got = p.lenses[0] if p.lenses else None
+got = wiz.lenses[0] if wiz.lenses else None
 check(len(ASK["asked"]) == n_asked + 1 and "checkerboard video" in "".join(ASK["asked"][n_asked:]),
       "wand wizard: an old profile on the camera filmed on its side -> asked to find its checkerboard video",
       ASK["asked"][n_asked:])
@@ -408,18 +408,18 @@ check(ident(got, WANT_SIDE) and got is not None and got.rotation == 270 and len(
 check(page.lens_labels and "turned" in page.lens_labels[0].text() and "level.mp4" in page.lens_labels[0].text(),
       "...and its row says it was turned and names the checkerboard video the turn came from",
       page.lens_labels[0].text() if page.lens_labels else "")
-p.lenses = [None, None, None]
+wiz.lenses[:] = [None, None, None]
 page._refresh_lens_rows()
 ASK.update(open=[OLD_FILE], question=QMessageBox.No)
 QTest.mouseClick(page.lens_buttons[0][1], Qt.LeftButton)
 pump(0.2)
-check(p.lenses[0] is None and "not known" in page.lens_labels[0].text(),
+check(wiz.lenses[0] is None and "not known" in page.lens_labels[0].text(),
       "...No: not attached, the old refusal on the row", page.lens_labels[0].text())
 ASK.update(open=[OLD_FILE, BOARD_LEVEL], question=QMessageBox.Yes)
 n_warn = len(ASK["warn"])
 QTest.mouseClick(page.lens_buttons[0][1], Qt.LeftButton)
 pump(0.3)
-check(p.lenses[0] is None and any("640 x 480" in t for t in ASK["warn"][n_warn:]),
+check(wiz.lenses[0] is None and any("640 x 480" in t for t in ASK["warn"][n_warn:]),
       "...a board video of another size: refused in words, nothing attached", ASK["warn"][n_warn:])
 # a lens file from another program (OpenCV .yml, same numbers): it may have been fitted on the STORED
 # pictures, so the turn Kinetrace's decoder gives a board video is not known to be its: never offered
@@ -427,14 +427,14 @@ from kinetrace import calibio  # noqa: E402
 
 OCV_FILE = os.path.join(OUT, "old_board_opencv.yml")
 calibio.write_lens(OLD, OCV_FILE)
-p.lenses = [None, None, None]
+wiz.lenses[:] = [None, None, None]
 page._refresh_lens_rows()
 ASK.update(open=[OCV_FILE, LEVEL], question=QMessageBox.Yes)
 n_asked = len(ASK["asked"])
 QTest.mouseClick(page.lens_buttons[0][1], Qt.LeftButton)
 pump(0.2)
 ASK["open"] = ""
-check(len(ASK["asked"]) == n_asked and p.lenses[0] is None and "not known" in page.lens_labels[0].text(),
+check(len(ASK["asked"]) == n_asked and wiz.lenses[0] is None and "not known" in page.lens_labels[0].text(),
       "an OpenCV lens file from another program is not offered a checkerboard video: refused as before",
       (ASK["asked"][n_asked:], page.lens_labels[0].text()))
 wiz.reject()

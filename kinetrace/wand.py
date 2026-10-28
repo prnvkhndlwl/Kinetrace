@@ -589,10 +589,15 @@ def _bundle_adjust(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, *, free_f, fre
     return cams_new, pts_new, res
 
 
-def _reject(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, outlier_px, floor_px: float,
+def _reject(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, outlier_px, px_scale: np.ndarray,
             max_rounds: int = 8):
     """Drop observations whose reprojection error exceeds the threshold
-    (`outlier_px`, or 3 x the median of the kept ones, never below `floor_px`).
+    (`outlier_px`, or 3 x the median of the kept ones, never below OUTLIER_FLOOR_PX).
+
+    (I352) `px_scale` = each camera's `_px_scale`: the 3 x median and the floor are taken on errors in
+    each camera's OWN scale (error / its scale), so a 720p camera beside 4K ones keeps its 2 px floor
+    instead of the 4K cameras' 4 px. A rig of one picture size takes the single-threshold rule exactly
+    as it always was (the same bits). Returns (threshold: one number, or one per camera, n_new).
 
     One bad click drags its 3D point towards itself, so the point's GOOD
     observations also look wrong while the bad one is still in the fit -
@@ -607,13 +612,22 @@ def _reject(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, outlier_px, floor_px:
     cur = obs.used & np.isfinite(e)
     if not cur.any():
         return float("nan"), 0
-    if outlier_px is None:
-        thr = outlier_limit(e[cur], floor_px)             # (R34) the lens fit's rule
-    else:
+    px_scale = np.asarray(px_scale, np.float64)
+    one_size = bool(np.all(px_scale == px_scale[0]))
+    if outlier_px is not None:
         thr = float(outlier_px)
+        thr_obs = thr                                     # the user's own threshold: px, every camera
+    elif one_size:
+        thr = outlier_limit(e[cur], OUTLIER_FLOOR_PX * float(px_scale[0]))        # (R34) the lens fit's rule
+        thr_obs = thr
+    else:
+        sc = px_scale[obs.cam]                            # (I352) each observation in its camera's scale
+        thr_s = outlier_limit(e[cur] / sc[cur], OUTLIER_FLOOR_PX)
+        thr = [float(thr_s * k) for k in px_scale]
+        thr_obs = thr_s * sc
     n_new = 0
     for _ in range(max_rounds):
-        cand = obs.used & np.isfinite(e) & (e > thr)
+        cand = obs.used & np.isfinite(e) & (e > thr_obs)
         if not cand.any():
             break
         drop = []
@@ -711,7 +725,7 @@ def _search_focal(obs: _Obs, f0: np.ndarray, unknown: np.ndarray, pp: np.ndarray
 
 
 def _refine_passes(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, free_f: np.ndarray, free_d: np.ndarray,
-                   f_scale: float, outlier_px, scale_all: float, note):
+                   f_scale: float, outlier_px, px_scale: np.ndarray, note):
     """Bundle adjustment: robust pass -> reject -> linear pass -> reject ->
     final linear pass -> (cams, pts3, rejection threshold, observations set aside)."""
     thr, n_out = float("nan"), 0
@@ -721,9 +735,9 @@ def _refine_passes(obs: _Obs, cams: np.ndarray, pts3: np.ndarray, free_f: np.nda
         cams, pts3, r = _bundle_adjust(obs, cams, pts3, free_f=free_f, free_dist=free_d,
                                        loss=loss, f_scale=f_scale, max_nfev=300)
         if reject:
-            thr, n_new = _reject(obs, cams, pts3, outlier_px, OUTLIER_FLOOR_PX * scale_all)
+            thr, n_new = _reject(obs, cams, pts3, outlier_px, px_scale)
             n_out += n_new
-    if not np.isfinite(thr):
+    if np.ndim(thr) == 0 and not np.isfinite(thr):
         thr = float(outlier_px) if outlier_px is not None else float("nan")
     return cams, pts3, thr, n_out
 
@@ -837,7 +851,8 @@ def calibrate_wand(wand_uv, wand_length, sizes, *, focal=None, principal=None, b
         cams, pts3 = _initialise(obs, f0, pp, sizes, False, names)
         best_mult = None
     free_f = free_f | unknown                 # a focal length found by the search is refined too
-    cams, pts3, thr, n_out = _refine_passes(obs, cams, pts3, free_f, free_d, f_scale, outlier_px, scale_all, note)
+    cams, pts3, thr, n_out = _refine_passes(obs, cams, pts3, free_f, free_d, f_scale, outlier_px, _px_scale(sizes),
+                                            note)
     cams, pts3 = _scale_and_centre(obs, cams, pts3, wand_length)
     note(0.95, "assembling the result")
     run = _Run(sizes, wand_length, str(unit), free_f, free_d, unknown, best_mult, names, frame_ids,
@@ -883,8 +898,9 @@ def _finish(obs, cams, pts3, wand_uv, run: _Run, thr, n_out) -> WandResult:
         # rows = (frame, end) pairs: transpose the end axis in front of the camera axis first
         uv = wand_uv[unsel].transpose(0, 2, 1, 3).reshape(-1, C, 2)
         xyz, er = _triangulate_uv(cams, uv)
-        if np.isfinite(thr):
-            drop = er > thr
+        thr_c = np.asarray(thr, np.float64)               # (I352) one number, or one per camera (column)
+        if np.isfinite(thr_c).all():
+            drop = er > thr_c
             if drop.any():
                 uv = uv.copy()
                 uv[drop] = np.nan
@@ -1050,7 +1066,9 @@ def _verdict_checks(score, rmse_all, rmse_eq, rmse_ok, coverage, n_obs_cam, n_ob
                          f"calibration.")
     if n_out:
         pct = 100.0 * n_out / max(n_tot, 1)
-        msg = f"{n_out} of {n_tot} observations ({pct:.1f}%) were rejected as outliers (> {thr:.2f} px)."
+        lim = (f"{thr:.2f} px" if np.ndim(thr) == 0 else                       # (I352) per camera on a mixed rig
+               f"{min(thr):.2f}-{max(thr):.2f} px by the camera's picture size")
+        msg = f"{n_out} of {n_tot} observations ({pct:.1f}%) were rejected as outliers (> {lim})."
         if pct > MAX_REJECTED_PCT:
             msg += " That is a lot: look for mis-clicked wand ends, swapped ends or a sync error."
         add("rejected", int(pct > MAX_REJECTED_PCT), msg)
@@ -1142,7 +1160,8 @@ def _build_report(obs, e, kept, wand_uv, run: _Run, Rm, tv, cams, wand_mean, wan
         "n_observations": n_tot,
         "n_observations_per_camera": n_obs_cam,
         "n_observations_total_per_camera": [int(v) for v in n_obs_all],
-        "outlier_threshold_px": (float(thr) if np.isfinite(thr) else None),
+        "outlier_threshold_px": ([float(v) for v in thr] if np.ndim(thr) else       # (I352) one per camera
+                                 (float(thr) if np.isfinite(thr) else None)),
         "outliers_removed": int(n_out),
         "outliers": outliers,
         "camera_names": [_cam(c, names) for c in range(C)],

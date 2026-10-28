@@ -317,7 +317,9 @@ def _i170_export():
     out2 = os.path.join(OUT, "mir_xyzpts.csv")
     win._export_one("xyz_dltdv", out2)
     row0 = open(out2, encoding="utf-8").read().splitlines()[1].split(",")
-    check(abs(float(row0[IDX["PX"] * 3 + 2]) - TRUE["PX"][2]) < 1e-4, "xyzpts: the same world")
+    # (I340) the DLTdv xyzpts pair with the dltCoefs.csv: the calibration's own (here mirrored) world
+    check(abs(float(row0[IDX["PX"] * 3 + 2]) - z_raw) < 1e-4,
+          "xyzpts: the dltCoefs.csv's world (the calibration's own, I340)")
     out3 = os.path.join(OUT, "mir_anipose.csv")
     win._export_one("xyz_anipose", out3)
     rows3 = open(out3, encoding="utf-8").read().splitlines()

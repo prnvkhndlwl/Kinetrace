@@ -424,6 +424,9 @@ class Scene3D:
         self.camera_views: list[int] = []
         self.status: list[tuple[str, str]] = []
         self.fov_views: set | None = None
+        # (G224) the calibration's world is a mirror image (left-handed: easyWand / DLTdv): drawn reflected back
+        # (its Y axis), so the scene looks as the room does; the axes keep their own labels
+        self.mirrored = False
 
     def framing(self, include_cameras: bool, include_calib: bool = False,
                 box: tuple | None = None) -> tuple[np.ndarray, float]:
@@ -470,6 +473,11 @@ def screen_transform(scene: Scene3D, size: tuple[int, int], azimuth: float, elev
     point under the mouse uses the same, G185)."""
     W, H = size
     R = _view_rotation(azimuth, elevation, up)
+    if getattr(scene, "mirrored", False):
+        # (G224) a left-handed world drawn through a proper rotation is the room's mirror image (a left foot
+        # on the right): reflect its Y back - Z stays up, X keeps its direction. Everything goes through this
+        # R (points, cameras, grid, axes, picking); a mesh's winding flips with it (`render_scene`)
+        R = R @ np.diag([1.0, -1.0, 1.0])
     centre, span = scene.framing(show_cameras, show_calib, box)
     scale = 0.85 * min(W, H) / span * zoom
 
@@ -1278,6 +1286,8 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
         verts, faces = scene.mesh
         fn = np.cross(verts[faces[:, 1]] - verts[faces[:, 0]], verts[faces[:, 2]] - verts[faces[:, 0]])
         fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
+        # (G224) no flip for a reflected view: a hull is built outward in the world's OWN coordinates
+        # (`hull.surface`), so R (reflection included) already turns its normals the right way
         light = np.array([0.3, 0.5, 0.8])
         light /= np.linalg.norm(light)
         shade = np.clip(0.25 + 0.75 * np.clip((fn @ R.T) @ light, 0, 1), 0, 1)

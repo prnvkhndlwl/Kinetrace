@@ -649,7 +649,7 @@ print(f"wand WITHOUT lenses: verdict {rep0['verdict']}, rmse {rep0['reproj_rmse_
       f"camera spacing error max {100 * max(err_without):.2f} %")
 assert rep0["reproj_rmse_all"] > 2 * rep["reproj_rmse_all"] or max(err_without) > 2 * max(err_with), \
     "distortion should hurt the pinhole solve"
-p.lenses = saved_lenses
+p.lenses = list(saved_lenses)        # a copy: Finish applies the wizard's lenses in place (G223)
 
 # ---- identical cameras sharing camera 1's profile (G40, I144) ----------------------------
 # The three cameras share the distortion but NOT the focal length (600 / 620 / 590 px) nor
@@ -669,28 +669,29 @@ QMessageBox.question = staticmethod(_ask)
 
 
 def use_for_all(page):
+    # (G223) the rows change the wizard's pending copy; the project gets it at Finish
     rows = page.lens_buttons
     assert len(rows) == N_CAM and all(len(r) == 4 for r in rows)
     # (a) only camera 1 has a profile: the others get it, nothing asked
-    p.lenses = [saved_lenses[0], None, None]
+    page.wiz.lenses[:] = [saved_lenses[0], None, None]
     page._refresh_lens_rows()
     b = page.lens_buttons[0][3]
     assert b.isEnabled() and not page.lens_buttons[1][3].isEnabled(), "Use for all needs a profile on that row"
     ASKED["n"] = 0
     QTest.mouseClick(b, Qt.LeftButton)
-    assert ASKED["n"] == 0 and all(p.lenses[k] is saved_lenses[0] for k in range(N_CAM)), p.lenses
+    assert ASKED["n"] == 0 and all(page.wiz.lenses[k] is saved_lenses[0] for k in range(N_CAM)), page.wiz.lenses
     assert "the same profile as cam2, cam3" in page.lens_labels[0].text(), page.lens_labels[0].text()
     assert not page.lens_buttons[0][3].isEnabled(), "nothing left to share with"
     # (b) camera 2 has a profile of its own: asked; No keeps it, Yes replaces it
-    p.lenses = [saved_lenses[0], saved_lenses[1], None]
+    page.wiz.lenses[:] = [saved_lenses[0], saved_lenses[1], None]
     page._refresh_lens_rows()
     ASKED.update(answer=QMessageBox.No, n=0)
     QTest.mouseClick(page.lens_buttons[0][3], Qt.LeftButton)
-    assert ASKED["n"] == 1 and p.lenses[1] is saved_lenses[1] and p.lenses[2] is saved_lenses[0], p.lenses
+    assert ASKED["n"] == 1 and page.wiz.lenses[1] is saved_lenses[1] and page.wiz.lenses[2] is saved_lenses[0], page.wiz.lenses
     assert page.focal_free_per_camera() == [True, False, True], page.focal_free_per_camera()
     ASKED.update(answer=QMessageBox.Yes, n=0)
     QTest.mouseClick(page.lens_buttons[0][3], Qt.LeftButton)
-    assert ASKED["n"] == 1 and all(p.lenses[k] is saved_lenses[0] for k in range(N_CAM)), p.lenses
+    assert ASKED["n"] == 1 and all(page.wiz.lenses[k] is saved_lenses[0] for k in range(N_CAM)), page.wiz.lenses
     assert page.focal_free_per_camera() == [True, True, True]
 
 

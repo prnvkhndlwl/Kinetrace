@@ -906,7 +906,9 @@ class ResultPage(QWizardPage):
         self.share_views = []
         if self.wiz.project is not None and self.wiz.result_view is not None:
             from kinetrace.calibwizard import share_targets
-            self.share_views, _ = share_targets(self.wiz.project, self.wiz.result_view, prof)
+            # (G223) opened from the wand wizard: its pending lenses decide who has a profile already
+            self.share_views, _ = share_targets(self.wiz.project, self.wiz.result_view, prof,
+                                                lenses=getattr(self.wiz, "share_lenses", None))
         pr = self.wiz.project
         self.share.setVisible(bool(self.share_views))
         if self.share_views:
@@ -968,6 +970,7 @@ class LensWizard(QWizard):
         self.start_dir = start_dir
         self.result_profile: lens.LensProfile | None = None
         self.result_view: int | None = None
+        self.share_lenses: list | None = None    # (G223) the wand wizard's pending lenses, when it opened this one
         self.scan = None
         # scan indices of the boards the current profile was fitted from (I78)
         self.used_boards: list[int] | None = None

@@ -727,9 +727,10 @@ def _():
     # settings keyed by CONTENT: NaN compares equal to itself, a reloaded profile copy is the same lens
     k1 = wz.page_run._settings_key()
     assert k1 == wz.page_run._settings_key()
-    proj.lenses[0] = copy.deepcopy(proj.lenses[0])
+    # (G223) the wizard's lens rows edit its pending copy, wz.lenses: the run's settings read it
+    wz.lenses[0] = copy.deepcopy(wz.lenses[0])
     assert wz.page_run._settings_key() == k1, "a copy of the same profile is not a new setting"
-    proj.lenses[0].K = proj.lenses[0].K * np.array([[1.01], [1.01], [1.0]])
+    wz.lenses[0].K = wz.lenses[0].K * np.array([[1.01], [1.01], [1.0]])
     assert wz.page_run._settings_key() != k1, "an edited profile is"
     wz.reject()
     wz.deleteLater()
