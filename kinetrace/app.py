@@ -957,6 +957,7 @@ class MainWindow(QMainWindow):
         self._place_kind = "point"          # what the next armed click creates: "point" | "ball"
         self._retrack = None                # an automatic epipolar re-track in progress (see _retrack_start)
         self._gaps = None                   # (D9 choice 3) "Only fill the gaps" in progress (see _start_gap_fill)
+        self._detached_from = None          # (G230) (the project folder, [its cameras left out]) of an open without them
         self._stopping_for_close = False    # `_stop_runs_for_close` is running: no window opens meanwhile
         self._retrack_last = None
         self._trail_custom = 30             # the last length typed into View → Trails → Custom…
@@ -4955,6 +4956,7 @@ class MainWindow(QMainWindow):
 
     def _teardown_video(self):
         self._fc_stop()                     # (I266) the frame checks of the video that is going
+        self._detached_from = None          # (G230) the cameras left out belong to the project that is going
         self._live3d = None                 # (I309) a run's overlay belongs to the project that is going
         for th in (self._body_worker, self._body_video):
             if th is not None and th.isRunning():
@@ -12096,6 +12098,19 @@ class MainWindow(QMainWindow):
         more = f"\n  … and {len(lines) - most} more" if len(lines) > most else ""
         return "Changed since your last save:\n" + "\n".join(f"  • {x}" for x in lines[:most]) + more + "\n\n"
 
+    def _drops_cameras(self, folder: Path) -> str:
+        """(G230) For the replace questions: when `folder` is the project this work was opened from without
+        some of its cameras, the sentence saying what replacing it loses; else ""."""
+        det = self._detached_from
+        if det is None or det[0] is None or folder.resolve() != det[0]:
+            return ""
+        lost = det[1]
+        one = len(lost) == 1
+        return (f"\n\nThis work was opened from that project WITHOUT {', '.join(lost)} (the video was not found): "
+                f"replacing it removes {'that camera' if one else 'those cameras'} - "
+                f"{'its' if one else 'their'} points, tracks and calibration - from the project, which is the only "
+                f"place they are kept.")
+
     def _project_target(self, path: str) -> Path | None:
         """Where Save As may put a project folder (I145), or None after saying
         why not: never inside another project's folder, never over a folder
@@ -12116,8 +12131,9 @@ class MainWindow(QMainWindow):
                     self, "Save as this project?",
                     f"You chose the project folder\n{inside}\n\nSave this work as {inside.name}, replacing "
                     "what that project holds now? (Its last save stays in its .history folder until the next "
-                    "save.)\n\nNo: choose another place or name (a project cannot be put inside another "
-                    "project).", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                    "save.)" + self._drops_cameras(inside) + "\n\nNo: choose another place or name (a project "
+                    "cannot be put inside another project).",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return None
             return inside
         if p.is_dir():
@@ -12126,7 +12142,7 @@ class MainWindow(QMainWindow):
                 if not mine and QMessageBox.question(
                         self, "Replace project?",
                         f"{p.name} is already a Kinetrace project folder.\n\nReplace that project with this one? "
-                        "(Its last save stays in its .history folder until the next save.)",
+                        "(Its last save stays in its .history folder until the next save.)" + self._drops_cameras(p),
                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                     return None
             elif not projectfile.holds_only_own_entries(p):      # (I244) a failed first save leaves only its .cache
@@ -13043,6 +13059,7 @@ class MainWindow(QMainWindow):
         active = proj.active
         self.project = proj
         self._wand_result = (None, None)      # (I33)
+        self._detached_from = None
         runtimes: list[_ViewRuntime | None] = [None] * proj.n_views
         runtimes[active] = self._views[0]
         drop: list[int] = []
@@ -13102,6 +13119,8 @@ class MainWindow(QMainWindow):
             # file name (autosave only ever writes the recovery folder).
             kept = self.project_path
             self.project_path = None
+            # (G230) Save As onto that folder later must say which cameras it would drop from it
+            self._detached_from = (Path(kept).resolve() if kept else None, list(lost))
             # (I168) a detached project: its own id and no base save, so its recovery copy is never
             # offered later as "unsaved changes to the full project" nor saved over it
             self._project_id, self._saved_at, self._recovery_sig = projectfile.new_id(), None, None

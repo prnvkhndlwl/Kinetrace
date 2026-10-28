@@ -11,6 +11,7 @@ CPU, every dialog stubbed; each section makes the user's gesture and FAILS on ea
   [7] (I374) 3D > Carve Volume (Ctrl+4) on a 50 mm ball: the same hull in a metre and a mm world, never cut off
   [8] (G229) names with "<" or "&" read as typed: a run's stop notice, a marked-up notice, a refused name typed in
       LAYERS
+  [9] (G230) Save As onto the project opened without camB names camB and what replacing it drops; No changes nothing
 Run: .venv\\Scripts\\python.exe tests\\verify_ui_behaviour.py   (UI_ONLY=fc,... runs only those sections)
 """
 import os
@@ -731,8 +732,54 @@ def section_names():
     close(win)
 
 
+def _folder_digest(path):
+    import hashlib
+    h = hashlib.sha256()
+    for root, _dirs, files in sorted(os.walk(path)):
+        for f in sorted(files):
+            fp = os.path.join(root, f)
+            h.update(os.path.relpath(fp, path).encode())
+            with open(fp, "rb") as fh:
+                h.update(fh.read())
+    return h.hexdigest()
+
+
+def section_saveas():
+    print("[9] (G230) Save As onto the project opened without a camera names the camera it would drop")
+    va, vb = make_video("saveas/vid/camA.mp4"), make_video("saveas/vid/camB.mp4")
+    proj = make_project("saveas/two.kinetrace", [va, vb])
+    os.replace(vb, vb + ".moved")                         # camB's video is not found when the project opens
+    win = new_window()
+    real_open = QFileDialog.getOpenFileName
+    QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: ("", ""))    # "Locate video": cancelled
+    try:
+        ok = open_project(win, proj)
+    finally:
+        QFileDialog.getOpenFileName = real_open
+    check("(setup) the project opens with camA only", ok and win.project.n_views == 1, win.project and
+          win.project.n_views)
+    before = _folder_digest(proj)
+    n_q = len(QUESTIONS)
+    real_save = QFileDialog.getSaveFileName
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (proj, ""))  # File > Save As: the same folder
+    ANSWER[0] = QMessageBox.No
+    try:
+        win._save_project_as()
+    finally:
+        QFileDialog.getSaveFileName, ANSWER[0] = real_save, QMessageBox.Yes
+    asked = QUESTIONS[n_q:]
+    text = " ".join(str(q[1]) for q in asked)
+    check("[9] Save As asks before replacing it", asked, asked)
+    check("[9] ... and the question names camB, whose points, tracks and calibration it would drop",
+          "camB" in text and "calibration" in text, text[:200])
+    check("[9] answered No, the project folder is untouched", _folder_digest(proj) == before)
+    close(win)
+    os.replace(vb + ".moved", vb)
+
+
 SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close,
-            "undo": section_undo, "ball": section_ball, "hull": section_hull, "names": section_names}
+            "undo": section_undo, "ball": section_ball, "hull": section_hull, "names": section_names,
+            "saveas": section_saveas}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
 for sect, fn in SECTIONS.items():
     if ONLY and sect not in ONLY:
