@@ -12,6 +12,8 @@ CPU, every dialog stubbed; each section makes the user's gesture and FAILS on ea
   [8] (G229) names with "<" or "&" read as typed: a run's stop notice, a marked-up notice, a refused name typed in
       LAYERS
   [9] (G230) Save As onto the project opened without camB names camB and what replacing it drops; No changes nothing
+  [10] (I375) has_click_after: the same answers as the old scan after every kind of edit; the Track label with 15
+       cameras x 20 points x 40,000 frames costs under 5 ms a playhead move (20.7 ms on eaee38b)
 Run: .venv\\Scripts\\python.exe tests\\verify_ui_behaviour.py   (UI_ONLY=fc,... runs only those sections)
 """
 import os
@@ -777,9 +779,95 @@ def section_saveas():
     os.replace(vb + ".moved", vb)
 
 
+def _old_has_click_after(s, pid, frame, end=None):
+    """`TrackingSession.has_click_after` as it was on eaee38b (a scan of the rows after `frame`): the reference."""
+    from kinetrace.session import in_frame
+    end = s.n_frames if end is None else min(s.n_frames, int(end))
+    if not (0 <= pid < s.n_points) or end <= int(frame) + 1:
+        return False
+    rows = slice(int(frame) + 1, end)
+    ok = s.manual[rows, pid] & s.tracked[rows, pid] & s.visibility[rows, pid] & ~s.occluded[rows, pid]
+    return bool(ok.any() and in_frame(s.tracks[rows, pid][ok], s.width, s.height).any())
+
+
+def section_label():
+    print("[10] (I375) Every camera with 15 cameras x 20 points x 40,000 frames: the Track label keeps up with the "
+          "playhead, the same answers")
+    # the same answers, after every kind of edit
+    rng = np.random.default_rng(4)
+    s = TrackingSession("fuzz.mp4", 300, 30.0, 320, 240)
+    for k in range(5):
+        s.add_point(int(rng.integers(0, 300)), 50.0 + 30 * k, 60.0)
+    bad = 0
+    for step in range(60):
+        q, f = int(rng.integers(0, 5)), int(rng.integers(0, 300))
+        kind = step % 5
+        if kind == 0:
+            s.set_position(f, q, float(rng.uniform(0, 320)), float(rng.uniform(0, 240)))        # a click
+        elif kind == 1:
+            s.set_position(f, q, -5.0, float(rng.uniform(0, 240)))                            # outside the picture
+        elif kind == 2:
+            s.clear_window([q], f, min(299, f + int(rng.integers(0, 30))))                     # Delete
+        elif kind == 3:
+            s.set_occluded(f, q, bool(rng.integers(0, 2)))                                     # marked hidden
+        else:
+            s.set_position(f, q, 100.0, 100.0)
+            s.manual[f, q] = False                                                             # a tracked row
+            s._touch()
+        for _ in range(40):
+            p_, f_ = int(rng.integers(-1, 6)), int(rng.integers(-1, 302))     # (a frame < -1 wrapped the old slice)
+            e_ = None if rng.random() < 0.4 else int(rng.integers(0, 320))
+            bad += s.has_click_after(p_, f_, e_) != _old_has_click_after(s, p_, f_, e_)
+    check("[10] 2,400 questions after 60 edits (clicks, out of the picture, Delete, hidden, tracked rows): every "
+          "answer the same as the old scan", bad == 0, f"{bad} differ")
+    # the label on every playhead move
+    from kinetrace import cameraorder
+    from PySide6.QtWidgets import QDialogButtonBox
+    real_exec = cameraorder.CameraOrderDialog.exec
+    cameraorder.CameraOrderDialog.exec = lambda self: (self.buttons.button(QDialogButtonBox.Ok).click(),
+                                                       self.result())[1]
+    ncam, T, npts = 15, 40000, 20
+    vids = [make_video(f"label/cam{i}.mp4", n=40, w=64, h=48) for i in range(ncam)]
+    win = new_window()
+    win._open_video(vids[0])
+    wait(lambda: win.state == READY and not win._loading, 30)
+    real_files = QFileDialog.getOpenFileNames
+    QFileDialog.getOpenFileNames = staticmethod(lambda *a, **k: (vids[1:], ""))
+    try:
+        win._add_video_dialog()                           # File > Add Camera Videos, the other 14
+        pump(1.0)
+    finally:
+        QFileDialog.getOpenFileNames, cameraorder.CameraOrderDialog.exec = real_files, real_exec
+    p = win.project
+    check("(setup) 15 cameras", p is not None and p.n_views == ncam, p and p.n_views)
+    for v in range(ncam):                                 # 40,000-frame cameras (the runtimes say the same length)
+        p.sessions[v] = TrackingSession(vids[v], T, 30.0, 3840, 2160)
+        win._views[v].n_frames = T
+    for _ in range(npts):
+        p.sessions[0].add_empty_point()
+    p.sync_landmarks()
+    for sv in p.sessions:
+        for q in range(sv.n_points):
+            sv.set_position(39990, q, float(rng.integers(100, 3000)), float(rng.integers(100, 2000)))
+    win._set_active_view(0)
+    win._refresh_point_list()
+    win.act_select_all.trigger()
+    win.act_track_all.setChecked(True)
+    times = []
+    for f in range(20000, 20020):
+        win.current = f                                   # the playhead moves one frame
+        t0 = time.perf_counter()
+        win._update_track_button()
+        times.append(time.perf_counter() - t0)
+    per = float(np.median(times)) * 1000
+    print(f"    _update_track_button: {per:.1f} ms per playhead move (median of 20)")
+    check("[10] the Track label costs under 5 ms per playhead move", per < 5.0, f"{per:.1f} ms")
+    close(win)
+
+
 SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close,
             "undo": section_undo, "ball": section_ball, "hull": section_hull, "names": section_names,
-            "saveas": section_saveas}
+            "saveas": section_saveas, "label": section_label}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
 for sect, fn in SECTIONS.items():
     if ONLY and sect not in ONLY:

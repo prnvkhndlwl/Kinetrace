@@ -298,7 +298,8 @@ TRANSIENT = {
     "TrackingSession": {"_dirty", "data_version", "last_interp_hidden_skipped", "video_path", "active_seg",
                         "fingerprint_problem",      # (I266) why a saved fingerprint could not be read
                         "read_problems", "missing_files",       # (I327 / I328) what an open said, once
-                        "region_pose"},                         # (I336) regions' turn from this session's runs
+                        "region_pose",                          # (I336) regions' turn from this session's runs
+                        "_click_index"},                        # (I375) has_click_after's index, by data_version
     "Project": {"path", "dirty", "edits"},
     "MaskTrack": {"native_w", "native_h"},
     "BodyTrack": {"mesh_version", "_version", "_cache", "examined", "stopped_early"},
