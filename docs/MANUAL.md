@@ -1462,7 +1462,8 @@ of a row to select that body part; the selected part's row is drawn brighter.
 - **A gap** — no data there. Either not tracked yet, or deliberately empty
   because the part was out of the picture.
 - **A thin line along the middle of a row** (several cameras only): this camera
-  has no data there, but **another camera** has this body part at that instant.
+  has no data there, but **another camera** has this body part at that instant,
+  on the frame that camera's view shows.
   The rows are always the **working camera's** — the one outlined in blue, bold
   in CAMERAS. Hover the line to see which cameras have it; click that camera's
   view to work in it, and its track becomes the solid bar.
