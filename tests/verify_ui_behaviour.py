@@ -7,6 +7,7 @@ CPU, every dialog stubbed; each section makes the user's gesture and FAILS on ea
   [4] (I370) close while the tracking worker does not stop in 20 s: it is retired, the close waits for it
   [5] (I371, G228) a Track press that starts nothing (last frame, nothing to start from, a declined run) leaves
       Ctrl+Z as it was; T on the last frame says there is nothing ahead
+  [6] (I373) a ball's size hint is its size at the start frame (else the nearest earlier, else the nearest later)
 Run: .venv\\Scripts\\python.exe tests\\verify_ui_behaviour.py   (UI_ONLY=fc,... runs only those sections)
 """
 import os
@@ -35,7 +36,8 @@ QUESTIONS: list = []
 ANSWER = [QMessageBox.Yes]                # what every question is answered (a section may set No)
 QMessageBox.question = staticmethod(lambda *a, **k: (QUESTIONS.append(a[1:3]), ANSWER[0])[1])
 QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
-QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
+WARNINGS: list = []
+QMessageBox.warning = staticmethod(lambda *a, **k: (WARNINGS.append(str(a[1])), QMessageBox.Ok)[1])
 QMessageBox.critical = staticmethod(lambda *a, **k: QMessageBox.Ok)
 QInputDialog.getText = staticmethod(lambda *a, **k: ("", False))
 app = QApplication.instance() or QApplication([])
@@ -541,8 +543,114 @@ def section_undo():
     close(win)
 
 
+def section_ball():
+    print("[6] (I373) a ball tracked from an early frame gets the size it has THERE as its hint")
+    from PySide6.QtCore import Qt
+    import kinetrace.tracker as trk
+    v = make_video("ball/clip.mp4", n=40)
+    win = new_window()
+    win._open_video(v)
+    check("(setup) the video opens", wait(lambda: win.state == READY and win.session is not None
+                                            and not win._loading, 30))
+    s = win.session
+    b = s.add_ball(0, 60.0, 60.0, name="ball")
+    for f in range(20):
+        s.set_position(f, b, 60.0 + f, 60.0)
+        s.radius[f, b] = 10.0 if f < 10 else 40.0      # 10 px on frames 0-9, 40 px from frame 10
+    s.radius[3:6, b] = np.nan                           # no size measured on frames 3-5
+    s.radius[0:2, b] = np.nan                           # ... nor on 0-1
+    s._touch()
+    win._refresh_point_list()
+    got = []
+
+    class Worker:
+        def __init__(self, *a, **k):
+            got.append([bs.radius for bs in (k.get("balls") or [])])
+            self.point_ids = []
+    real_worker = trk.TrackingWorker
+    win._launch_run = lambda w, driver=None: None        # nothing really runs
+    trk.TrackingWorker = Worker
+    try:
+        for start, want, what in ((2, 10.0, "frame 2 (10 px there)"), (12, 40.0, "frame 12 (40 px there)"),
+                                  (4, 10.0, "frame 4 (none there: the nearest earlier one, 10 px)"),
+                                  (0, 10.0, "frame 0 (none before it: the nearest later one, 10 px)")):
+            win._goto(start, force=True)
+            select(win, [b])
+            n0 = len(got)
+            key(win, Qt.Key_T)
+            r = got[n0][0] if len(got) > n0 and got[n0] else None
+            check(f"[6] Track from {what}: size hint {want:g} px", r == want, r)
+    finally:
+        trk.TrackingWorker = real_worker
+        del win._launch_run
+    close(win)
+
+
+def _hull_project(unit, scale):
+    """3 cameras (f 1500 px, 1920 x 1080, 2 m away, 120 deg apart), one landmark at the centre of a 50 mm ball,
+    each camera's silhouette = the ball's disc; `scale` = calibration units per mm."""
+    from kinetrace.calib import Calibration, CameraCalibration, NoUndistort, dlt_from_camera
+    W_, H_, F_ = 1920, 1080, 1500.0
+    K_ = np.array([[F_, 0, W_ / 2], [0, F_, H_ / 2], [0, 0, 1.0]])
+    sessions, cams = [], []
+    for k in range(3):
+        a = np.deg2rad(120.0 * k)
+        pos = np.array([2000.0 * np.cos(a), 2000.0 * np.sin(a), 300.0]) * scale
+        z = -pos / np.linalg.norm(pos)
+        x = np.cross(z, [0, 0, 1.0])
+        x /= np.linalg.norm(x)
+        R = np.stack([x, np.cross(z, x), z])
+        cal = CameraCalibration(dlt_from_camera(K_, R, -R @ pos), W_, H_, NoUndistort(), pixel_origin=0.0)
+        cams.append(cal)
+        v = os.path.join(OUT, f"hull_{unit}", f"cam{k}.mp4")
+        os.makedirs(os.path.dirname(v), exist_ok=True)
+        vw = cv2.VideoWriter(v, cv2.VideoWriter_fourcc(*"mp4v"), 30, (W_, H_))
+        for _f in range(3):
+            vw.write(np.zeros((H_, W_, 3), np.uint8))
+        vw.release()
+        s = TrackingSession(v, 3, 30.0, W_, H_)
+        uv = np.asarray(cal.project(np.zeros((1, 3))))[0]
+        q = s.add_landmark("c")
+        for f in range(3):
+            s.set_position(f, q, float(uv[0]), float(uv[1]))
+        i = s.add_segment("ball")
+        m = np.zeros((H_, W_), np.uint8)
+        cv2.circle(m, (int(round(uv[0])), int(round(uv[1]))), int(round(F_ * 50.0 * scale / np.linalg.norm(pos))),
+                   255, -1)
+        for f in range(3):
+            s.write_mask(f, m > 0, 1.0, 1.0, i=i)
+        sessions.append(s)
+    proj = Project(sessions, ["cam0", "cam1", "cam2"], [0.0, 0.0, 0.0])
+    proj.calibration = Calibration(cams, unit=unit, source="synthetic")
+    path = os.path.join(OUT, f"hull_{unit}", "hull.kinetrace")
+    proj.save(path)
+    return path
+
+
+def section_hull():
+    print("[7] (I374) 3D > Carve Volume in a mm world: the same hull as in metres, not cut off")
+    from PySide6.QtCore import Qt
+    true_vol = 4.0 / 3.0 * np.pi * 50.0 ** 3
+    for unit, scale in (("m", 0.001), ("mm", 1.0)):
+        win = new_window()
+        ok = open_project(win, _hull_project(unit, scale), timeout=60)
+        check(f"(setup) the {unit} project opens", ok)
+        win.act_recon.trigger()                           # Ctrl+3: the landmark's 3D position
+        pump(0.5)
+        n_w = len(WARNINGS)
+        key(win, Qt.Key_4, Qt.ControlModifier)            # Ctrl+4: Carve Volume at This Frame
+        wait(lambda: win._hull_cache, 120)
+        cache = list(win._hull_cache.values())
+        vol = float(cache[0][2].volume()) / scale ** 3 if cache else float("nan")
+        cut = any("cut off" in w_.lower() for w_ in WARNINGS[n_w:])
+        check(f"[7] {unit}: the 50 mm ball's hull is {vol:,.0f} mm3 (sphere {true_vol:,.0f}; a 3-view hull "
+              "over-estimates, within 2x)", 0.5 < vol / true_vol < 2.0, f"{vol:,.0f}")
+        check(f"[7] {unit}: and not 'cut off'", not cut, WARNINGS[n_w:])
+        close(win)
+
+
 SECTIONS = {"fc": section_fc, "every": section_every, "trails": section_trails, "close": section_close,
-            "undo": section_undo}
+            "undo": section_undo, "ball": section_ball}
 ONLY = {x.strip() for x in os.environ.get("UI_ONLY", "").split(",") if x.strip()}
 for sect, fn in SECTIONS.items():
     if ONLY and sect not in ONLY:

@@ -10400,16 +10400,18 @@ class MainWindow(QMainWindow):
     def _ball_specs(self, ball_pids, seeds) -> list:
         """Ball markers: SAM segments them, a circle is fitted, the centre is the
         point (balls.py) - prompts from this frame on, seeded from the ball's
-        current position, the last known radius as the size hint."""
+        current position, its radius on this frame as the size hint (I373: else the nearest earlier
+        one, else the nearest later one; it was the video's LAST one, 40 px for a ball 10 px here)."""
         from kinetrace.tracker import BallSpec
         s = self.session
         balls = []
         for pid in ball_pids:
             q = s.points[pid]
             prompts = {f: cs for f, cs in (q.ball_prompts or {}).items() if f >= self.current}
-            rad = s.radius[:, pid]
-            known = rad[np.isfinite(rad)]
-            balls.append(BallSpec(pid, prompts, seeds[pid], float(known[-1]) if len(known) else None,
+            known = np.nonzero(np.isfinite(s.radius[:, pid]))[0]
+            before = known[known <= self.current]
+            at = before[-1] if len(before) else (known[0] if len(known) else None)
+            balls.append(BallSpec(pid, prompts, seeds[pid], float(s.radius[at, pid]) if at is not None else None,
                                   self._seg_backend))
         return balls
 
