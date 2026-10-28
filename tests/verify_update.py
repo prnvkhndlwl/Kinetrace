@@ -477,6 +477,38 @@ pump(timeout=0.3)
 updatedialog.UpdateDialog.exec = _exec
 check(calls == [], "the check must wait until the dialog is shown")
 
+# (X45) git is asked on the update's own thread: a slow git (3 s) never freezes the window
+inst_git = make_install("gui_git")
+(inst_git / ".git").mkdir()
+git_seen = []
+real_blocker = update.git_blocker
+
+
+def _slow_blocker(root):
+    git_seen.append(threading.current_thread().name)
+    time.sleep(3.0)
+    return None
+
+
+update.git_blocker = _slow_blocker
+ticks = []
+tick = QTimer()
+tick.setInterval(20)
+tick.timeout.connect(lambda: ticks.append(time.perf_counter()))
+tick.start()
+dlg = updatedialog.UpdateDialog(win, root=inst_git, local="1.0.0")
+dlg.show()                                               # as Help -> Check for Updates does
+reached = pump(lambda: dlg.state == "available", 20)
+tick.stop()
+update.git_blocker = real_blocker
+gap = max((b - a for a, b in zip(ticks, ticks[1:])), default=99.0)
+check(reached and "git checkout" in dlg.body.toPlainText(), f"git install: available + the git note ({dlg.state})")
+check(git_seen == ["kinetrace-update"], f"git asked on the update thread, not the window's: {git_seen}")
+check(gap < 0.5, f"the window kept repainting while git answered: longest gap {gap:.2f} s")
+dlg.reject()
+dlg.deleteLater()
+print(f"  a 3 s git answer: asked on the update thread, longest window gap {gap:.2f} s (X45) OK")
+
 inst_g = make_install("gui")
 restarted = []
 dlg = updatedialog.UpdateDialog(win, root=inst_g, local="1.0.0", busy=win._update_busy,

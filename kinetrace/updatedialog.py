@@ -102,6 +102,16 @@ def _run(relay: _Relay, fn) -> None:
     threading.Thread(target=body, name="kinetrace-update", daemon=True).start()
 
 
+def _look(local: str, root: Path) -> tuple:
+    """The check, on the update thread: (release, newer, "git" | "zip", why Update now must wait or
+    None). git is asked here, never on the window's thread (X45: a slow or broken git froze the window
+    for as long as it took)."""
+    rel, newer = update.check(local)
+    how = update.install_kind(root)
+    blocker = update.git_blocker(root) if newer and how == "git" else None
+    return rel, newer, how, blocker
+
+
 class UpdateDialog(QDialog):
     """checking -> uptodate | available -> applying -> done, or error.
 
@@ -164,7 +174,8 @@ class UpdateDialog(QDialog):
         self.bar.setVisible(True)
         self._buttons(("Close", QDialogButtonBox.RejectRole, self.reject))
         self._connect(self._on_checked, self._on_error)
-        _run(self._relay, lambda _p: update.check(self._local))
+        local, root = self._local, self._root
+        _run(self._relay, lambda _p: _look(local, root))
 
     def _connect(self, done, failed) -> None:
         """Route the next result to (done, failed), dropping the previous step's pair."""
@@ -184,7 +195,7 @@ class UpdateDialog(QDialog):
                       ("Close", QDialogButtonBox.RejectRole, self.reject))
 
     def _on_checked(self, out) -> None:
-        rel, newer = out
+        rel, newer, how, blocker = out                   # `_look`'s answer: nothing slow runs here
         self.release = rel
         self.bar.setVisible(False)
         if not newer:
@@ -197,10 +208,8 @@ class UpdateDialog(QDialog):
             return
         self.state = "available"
         self.title.setText(f"Kinetrace {rel.version} is available — you have {self._local}")
-        how, blocker = update.install_kind(self._root), None
         if how == "git":
-            blocker = update.git_blocker(self._root)
-            note = (blocker or f"This folder is a git checkout: it will be moved forward to {rel.tag}.")
+            note =(blocker or f"This folder is a git checkout: it will be moved forward to {rel.tag}.")
         else:
             note = ("Only Kinetrace's own files are replaced; your projects, models, recovery copies, "
                     "saved skeletons and settings are kept.")
