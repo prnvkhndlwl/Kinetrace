@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import csv
 import io
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
@@ -74,11 +75,19 @@ def default_view_name(index: int) -> str:
 
 
 def rate_of(fps: float, ref_fps: float) -> float:
-    """Frames of a view per reference frame, from the two nominal rates.
-    Rounded so 239.76 / 119.88 is exactly 2.0 rather than 2.0000000001."""
+    """Frames of a view per reference frame, from the two nominal rates: the exact ratio, snapped to
+    a simple fraction (denominator up to 1000) only when within a billionth of it - float noise, so a
+    2x rig is exactly 2.0 rather than 2.0000000001 - and 100 / 120 is 5/6 to the last bit (I364: cut
+    to 6 decimals it was 0.833333, and that camera was 0.013 frames early by reference frame 40,000).
+    A millionth would be too wide: fractions up to /1000 lie closer together than that, so a real
+    ratio such as 23.976 / 25 would be moved to 679 / 708."""
     if fps <= 0 or ref_fps <= 0:
         return 1.0
-    return float(round(fps / ref_fps, 6))
+    r = fps / ref_fps
+    if not np.isfinite(r):
+        return float(r)                  # refused in words by Project (I214)
+    q = float(Fraction(r).limit_denominator(1000))
+    return q if abs(q - r) <= 1e-9 * r else float(r)
 
 
 def half_up(x) -> int | np.ndarray:
@@ -216,16 +225,23 @@ class Project:
         stopped)."""
         if not (0 <= src < self.n_views and 0 <= dst < self.n_views):
             return None
-        # Python's round() sends .5 to the EVEN integer, so with a half-frame
-        # offset or a 2x camera the mapped frames alternated down / up: some
-        # repeated, their neighbours never shown or exported (I19). Ties go up
-        # one way and down the other way, so a switch there and back lands on
-        # the frame it started from.
-        x = self.map_frame_exact(src, dst, int(frame))
-        local = int(np.floor(x + 0.5)) if src <= dst else int(np.ceil(x - 0.5))
+        local = self.map_index(src, dst, int(frame))
         if local < 0 or local >= self.sessions[dst].n_frames:
             return None
         return local
+
+    def map_index(self, src: int, dst: int, frames) -> int | np.ndarray:
+        """`map_frame`'s whole frame for each of `frames` (a number or an array), with no range check.
+        Python's round() sends .5 to the EVEN integer, so with a half-frame offset or a 2x camera the
+        mapped frames alternated down / up: some repeated, their neighbours never shown or exported
+        (I19). Ties go up one way and down the other way, so a switch there and back lands on the
+        frame it started from. The same float64 steps as `map_frame_exact`, element by element (G225:
+        the timeline's other-camera line used `local_index`, whose tie always goes up, and sat one
+        frame off the other cameras' tiles)."""
+        t = (np.asarray(frames, np.float64) - self.offsets[src]) / self.rates[src]
+        x = self.rates[dst] * t + self.offsets[dst]
+        out = (np.floor(x + 0.5) if src <= dst else np.ceil(x - 0.5)).astype(np.int64)
+        return int(out) if out.ndim == 0 else out
 
     def local_index(self, view: int, t) -> int | np.ndarray:
         """The whole local frame of `view` nearest reference instant `t` (a

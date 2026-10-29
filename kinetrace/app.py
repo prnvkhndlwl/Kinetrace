@@ -4809,9 +4809,10 @@ class MainWindow(QMainWindow):
         """(G173) Where the OTHER cameras have each of the working camera's landmarks tracked at the same
         instant: (key, (T, N) bool) for the timeline -- its lanes are the working camera's, and a point
         tracked only in another view showed an empty lane (owner 2026-10-07: "the point P1 is tracked in
-        the top right frame but it is not showing up in the timeline of P1"). Frames are matched through
-        the offsets and rates (`Project.local_index`). Cached until a camera's data, its timing or the
-        working camera changes; (None, None) with one camera."""
+        the top right frame but it is not showing up in the timeline of P1"). Frames are matched the way
+        the other cameras' tiles are (`Project.map_index`, map_frame's rule: G225, `local_index` sat a
+        frame off them at every .5 tie). Cached until a camera's data, its timing or the working camera
+        changes; (None, None) with one camera."""
         p, s = self.project, self.session
         if p is None or s is None or p.n_views < 2 or s.n_points == 0:
             return None, None
@@ -4821,14 +4822,14 @@ class MainWindow(QMainWindow):
         if cache is not None and cache[0] == key:
             return key, cache[1]
         out = np.zeros((s.n_frames, s.n_points), bool)
-        t = (np.arange(s.n_frames, dtype=np.float64) - p.offsets[p.active]) / p.rates[p.active]
+        frames = np.arange(s.n_frames)
         for v in p.others():
             sv = p.sessions[v]
             pairs = [(j, sv.pid_by_name(m.name)) for j, m in enumerate(s.points)]
             pairs = [(j, q) for j, q in pairs if q is not None]
             if not pairs or sv.n_frames == 0:
                 continue
-            fv = p.local_index(v, t)
+            fv = p.map_index(p.active, v, frames)
             inside = (fv >= 0) & (fv < sv.n_frames)
             idx = np.clip(fv, 0, sv.n_frames - 1)
             js, qs = [j for j, _ in pairs], [q for _, q in pairs]
@@ -4838,20 +4839,19 @@ class MainWindow(QMainWindow):
 
     def _landmark_cameras_at(self, pid: int, frame: int) -> list[str]:
         """(G173) The other cameras that have the working camera's landmark `pid` tracked at the instant of
-        `frame` (the timeline's tooltip on its thin line)."""
+        `frame` (the timeline's tooltip on its thin line), on the frame each one's tile shows (G225)."""
         p, s = self.project, self.session
         if p is None or s is None or p.n_views < 2 or not (0 <= pid < s.n_points):
             return []
         name = s.points[pid].name
-        t = p.reference_time(p.active, frame)
         out = []
         for v in p.others():
             sv = p.sessions[v]
             q = sv.pid_by_name(name)
             if q is None:
                 continue
-            fv = p.local_index(v, t)
-            if 0 <= fv < sv.n_frames and sv.tracked[fv, q]:
+            fv = p.map_frame(p.active, v, frame)
+            if fv is not None and sv.tracked[fv, q]:
                 out.append(p.name(v))
         return out
 

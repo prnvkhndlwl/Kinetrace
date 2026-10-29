@@ -150,6 +150,10 @@ MAP = [
                       "retrack.py", "canvas.py", "trackio.py", "pixels.py", "app.py", "calibview.py", "spots.py",
                       "balls.py")],
      ["verify_pixel_centre"]),
+    # (I364-I366, G225, R50) one rounding rule for frame numbers and rate ratios: rate_of, map_frame / map_index,
+    # the timeline's other-camera line, Re-track's probes, GoPro frames, wanddata's time helpers
+    ([K + f for f in ("project.py", "app.py", "timeline.py", "retrack.py", "gpmf.py", "wanddata.py", "calib.py")],
+     ["verify_time_rules"]),
     # install, update, device, errors
     ([K + f for f in ("device.py", "downloads.py", "paths.py", "update.py", "updatedialog.py", "crashlog.py",
                       "errors.py", "welcome.py", "macapp.py", "winapp.py", "winlaunch.py", "appicon.py",

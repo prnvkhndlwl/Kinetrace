@@ -17,8 +17,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from kinetrace.calib import even_indices, residual_scale, sample_tracks_at
+from kinetrace.calib import even_indices, local_frame, residual_scale, sample_tracks_at
 from kinetrace.kinematics import contiguous_runs
+from kinetrace.project import half_up
 
 
 def raw_track(session, j: int) -> np.ndarray:
@@ -63,7 +64,7 @@ class RunView:
 
     def local_frame(self, k: int, t):
         """Reference instant -> run camera k's local frame, fractional (`Project.local_frame`)."""
-        return self.rates[k] * np.asarray(t, np.float64) + self.offsets[k]
+        return local_frame(t, self.rates[k], self.offsets[k])
 
 
 def retimed(project, offsets=None) -> RunView:
@@ -130,8 +131,7 @@ def _sample_name(project, name: str, t: np.ndarray) -> np.ndarray:
         if j is None:
             continue
         rt = raw_track(s, j)[:, None]                  # (T, 1, 2)
-        # vectorised Project.local_frame: rate * t + offset for every instant
-        local = project.rates[c] * np.asarray(t, np.float64) + project.offsets[c]
+        local = local_frame(t, project.rates[c], project.offsets[c])      # every instant at once
         out[:, c] = sample_tracks_at(rt, local)[:, 0]
     return out
 
@@ -218,7 +218,7 @@ def collect_static_at(project, name: str, t, window: int = STATIC_WINDOW) -> np.
         if j is None or np.isfinite(out[c]).all():
             continue
         tr = raw_track(s, j)
-        local = float(project.rates[c]) * float(t) + float(project.offsets[c])
+        local = float(local_frame(t, float(project.rates[c]), float(project.offsets[c])))
         lo = max(int(np.ceil(local - window - 1e-9)), 0)
         hi = min(int(np.floor(local + window + 1e-9)), len(tr) - 1)
         if hi < lo:
@@ -261,7 +261,9 @@ def best_common_frame(project, names: list[str], min_views: int = 2, static: boo
     off = [float(o) for o in project.offsets]
     cand = set()
     for (c, nm), f in placed.items():
-        tt = np.floor((f - off[c]) / rate[c] + 0.5).astype(np.int64)  # the instant each placed frame shows
+        # the instant each placed frame shows; a .5 tie UP (not reference_index's down): these are only
+        # candidate instants, each checked below against every camera's placed frames
+        tt = half_up((f - off[c]) / rate[c])
         cand.update(int(x) for x in tt[(tt >= t0) & (tt <= t1)])
     if not cand:
         return None
@@ -275,7 +277,7 @@ def best_common_frame(project, names: list[str], min_views: int = 2, static: boo
                 continue
             # collect_static_at's rule: a placed frame within STATIC_WINDOW of the local frame (interpolation
             # needs one within a frame, so this also covers every camera collect_at finds)
-            local = rate[c] * tc.astype(np.float64) + off[c]
+            local = local_frame(tc, rate[c], off[c])
             lo = np.maximum(np.ceil(local - STATIC_WINDOW - 1e-9), 0)
             hi = np.minimum(np.floor(local + STATIC_WINDOW + 1e-9), s.n_frames - 1)
             n = np.searchsorted(f, hi, side="right") - np.searchsorted(f, lo, side="left")
@@ -514,7 +516,7 @@ def _classify_shifts(fitted: dict, clock_ticked: bool) -> tuple[dict, dict, dict
     {camera: fitted}, shift {camera: whole frames}): a whole-frame suggestion only from WHOLE_MIN on;
     FRACTION_MIN..WHOLE_MIN is a fraction of a frame, never rounded into a suggestion (I300)."""
     f = _centered(fitted, clock_ticked)
-    shift = {c: int(np.floor(v + 0.5)) for c, v in f.items()}          # (no banker's rounding)
+    shift = {c: half_up(v) for c, v in f.items()}                      # (no banker's rounding)
     sugg = {c: shift[c] for c in f if shift[c] != 0 and abs(f[c]) >= WHOLE_MIN}
     frac = {c: f[c] for c in f if FRACTION_MIN <= abs(f[c]) < WHOLE_MIN}
     return sugg, frac, shift
@@ -644,7 +646,7 @@ def timing_check(project, name_a: str, name_b: str, views: list[int], lens_model
         tracks[v] = (_undistorted_track(s, ja, models[v]), _undistorted_track(s, jb, models[v]))
 
     def sample(v, shift):
-        local = project.rates[v] * t + project.offsets[v] + shift
+        local = local_frame(t, project.rates[v], project.offsets[v]) + shift
         a = sample_tracks_at(tracks[v][0], local)[:, 0]
         b = sample_tracks_at(tracks[v][1], local)[:, 0]
         return a, b

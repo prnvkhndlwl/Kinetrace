@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from kinetrace.calib import BLAME_MARGIN, epipolar_polyline, intersect_polylines
+from kinetrace.project import half_up
 
 MIN_RUN = 3             # frames: shorter runs are noise, not a slide
 GAP_JOIN = 2            # runs separated by <= this many clean frames are one stretch
@@ -333,8 +334,8 @@ def plan(project, threshold_px, min_run: int = MIN_RUN) -> list[Stretch]:
             continue
         # (I9) a landmark that LEAVES the picture during the stretch (its first frame on
         # the border) would be re-tracked as a border patch through frames that must be
-        # blank: probe a few frames inside the stretch too
-        for f in sorted({int(round(st.local0 + q * (st.local1 - st.local0))) for q in (0.25, 0.5, 0.75, 1.0)}
+        # blank: probe a few frames inside the stretch too (half_up, I365: round() probed 12 of 10..15, not 13)
+        for f in sorted({half_up(st.local0 + q * (st.local1 - st.local0)) for q in (0.25, 0.5, 0.75, 1.0)}
                         - {st.local0}):
             out_why: list[str] = []
             if ray_target(project, st.view, st.name, f, why=out_why) is None and out_why:
