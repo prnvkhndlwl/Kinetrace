@@ -630,12 +630,11 @@ def g128_reference_nudges():
     from kinetrace.camerapanel import CameraPanel
     p = CameraPanel()
     p.update_rows(["camA", "camB"], [0.0, 5.0], 0, ["s", "s"])
+    # (G234) the offset box's own arrows are the nudges: they go off with the box
     nudges = lambda row: [b for b in row.findChildren(QToolButton) if b.text() in ("◂", "▸")]  # noqa: E731
-    r0, r1 = nudges(p._rows[0]), nudges(p._rows[1])
-    check("G128 the reference row's nudge buttons are disabled with its offset box",
-          len(r0) == 2 and not any(b.isEnabled() for b in r0) and not p._rows[0].spin.isEnabled(),
-          [b.isEnabled() for b in r0])
-    check("G128 the other rows' nudges stay on", len(r1) == 2 and all(b.isEnabled() for b in r1))
+    check("G234 no second arrow pair beside the offset box", not nudges(p._rows[0]) and not nudges(p._rows[1]))
+    check("G128 the reference row's offset box (and so its arrows) is disabled", not p._rows[0].spin.isEnabled())
+    check("G128 the other rows' offset box stays on", p._rows[1].spin.isEnabled())
 
 
 # ----------------------------------------------------------------- folderimport

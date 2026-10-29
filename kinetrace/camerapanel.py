@@ -6,8 +6,8 @@ shows when the reference is at frame 0" (a camera switched on N frames after the
 reference has offset -N). That holds whichever camera you are working in — the
 numbers never shift under you when you switch.
 
-A row shows the camera name, a spin box for its **frame offset**, and a nudge
-pair. Raising the offset by one shows that camera one frame later against the
+A row shows the camera name and a spin box for its **frame offset** (its ▲▼ are
+the nudges, G234). Raising the offset by one shows that camera one frame later against the
 same playhead — you nudge until the flash / clap / first contact lines up with
 the working view. Retiming a camera moves only THAT camera's picture, the
 working one's too (I380). (G233) "Align all cameras to their current visible
@@ -21,7 +21,7 @@ instant).
 (G169) With many cameras every row is ONE compact line -- its disclosure ▶, its
 eye (show / hide the camera's view: a hidden view is not decoded, and the views
 left get the room), its number, name and offset -- so all of them fit; ▶ opens
-the row's controls (the offset box and its nudges, the frame rate, remove). The
+the row's controls (the offset box, the frame rate, remove). The
 numbers are the cameras' ORDER (camera 1 = the reference), the order of
 calibrations, 3D and exports; Camera order... changes it.
 
@@ -56,8 +56,8 @@ def _dim_label(text: str = "") -> QLabel:
 
 class _CameraRow(QWidget):
     """One camera: a compact line -- disclosure, eye, number + name, offset (G169) -- and, opened,
-    its controls: remove on that line, the offset box with its nudges, the frame rate and the status
-    line."""
+    its controls: remove on that line, the offset box (its ▲▼ step one frame), the frame rate and the
+    status line."""
 
     offset_changed = Signal(int, float)   # (view index, new offset in this view's frames)
     remove_requested = Signal(int)
@@ -145,16 +145,9 @@ class _CameraRow(QWidget):
         # focus-policy pass, so this is set here
         self.spin.setFocusPolicy(Qt.ClickFocus)
         self.spin.editingFinished.connect(self.spin.clearFocus)
+        # (G234) the box's own ▲▼ are the nudges (one frame later / earlier): a ◂ ▸ pair beside it did
+        # the same thing twice
         row.addWidget(self.spin)
-        self.nudges: list[QToolButton] = []
-        for text, delta, tip in (("◂", -1, "one frame earlier"), ("▸", +1, "one frame later")):
-            b = QToolButton()
-            b.setText(text)
-            b.setToolTip(f"Show this camera {tip}")
-            b.setProperty("compact", True)       # theme: tight padding, the row must fit the panel
-            b.clicked.connect(lambda _=False, d=delta: self.spin.setValue(self.spin.value() + d))
-            row.addWidget(b)
-            self.nudges.append(b)
         self.rate = QLabel("")                # "×2" for a camera at twice the reference rate
         self.rate.setStyleSheet(f"color: {theme.TEXT_DIM};")
         self.rate.setToolTip("Frames of this camera per frame of the reference camera\n"
@@ -196,9 +189,9 @@ class _CameraRow(QWidget):
         self.details.setVisible(on)
         self.btn_remove.setVisible(on)
         self.summary.setVisible(not on and bool(self._offset_text))
-        self.btn_expand.setText("▼" if on else "▶")      # not the nudges' ◂ ▸ (one frame earlier / later)
+        self.btn_expand.setText("▼" if on else "▶")
         self.btn_expand.setToolTip("Hide this camera's controls" if on else
-                                   "Show this camera's controls: its offset and nudges, its frame rate, remove")
+                                   "Show this camera's controls: its offset, its frame rate, remove")
         if emit:
             self.expand_toggled.emit(self.index)
 
@@ -260,9 +253,7 @@ class _CameraRow(QWidget):
         # is nothing to type there. Every other camera stays editable whichever
         # one you happen to be working in — its offset means the same thing
         # either way ("its frame when the reference is at frame 0").
-        self.spin.setEnabled(not reference)
-        for b in self.nudges:               # the arrows only move the box: off with it (G128)
-            b.setEnabled(not reference)
+        self.spin.setEnabled(not reference)  # its ▲▼ go off with it (G128)
         self.spin.setToolTip(
             "This camera is the reference: every other offset is measured\n"
             "against it, so it is 0 by definition. To retime the set, change\n"
@@ -270,11 +261,12 @@ class _CameraRow(QWidget):
             if reference else
             "The frame this camera shows when the reference camera is at its frame 0.\n"
             "A camera switched on N frames AFTER the reference has offset -N;\n"
-            "one switched on earlier has +N. Raising it by one shows this camera one\n"
-            "frame later; only this camera's picture moves. Nudge until the same moment\n"
-            "shows in this view and camera 1's, or type a number you know (a sync table,\n"
-            "a measured sub-frame offset). To line up every camera in one press: Align all\n"
-            "cameras to their current visible frame, above the list.")
+            "one switched on earlier has +N.\n"
+            "▲ shows this camera one frame later, ▼ one frame earlier; only this\n"
+            "camera's picture moves. Step until the same moment shows in this view and\n"
+            "in camera 1's, or type a number you know (a sync table, a measured sub-frame\n"
+            "offset). To line up every camera in one press: Align all cameras to their\n"
+            "current visible frame, above the list.")
         self.btn_remove.setEnabled(removable)
         self.status.setText(status)
         self.btn_fps.setVisible(bool(fps))

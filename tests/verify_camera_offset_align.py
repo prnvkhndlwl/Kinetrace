@@ -209,6 +209,10 @@ _shown = QToolButton.text(btn)            # what it draws (offscreen fonts are m
 assert _shown == btn.text() or (_shown.endswith("…") and btn.text() in btn.toolTip()), \
     f"a narrow panel shortens the name with ... and the tooltip keeps it whole: {_shown!r}"
 print(f"[5] the button ({btn.width()} px) shows {_shown!r} and never widens the dock OK")
+# (G234) one arrow pair: the offset box's own (a second pair beside it did the same thing)
+assert not [b for r in win.cameras._rows for b in r.findChildren(QToolButton) if b.text() in ("◂", "▸")], \
+    "no second arrow pair beside the offset box"
+print("[5] one arrow pair per offset box (G234) OK")
 
 win._dev_probe.wait(180_000)
 win.close()

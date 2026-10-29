@@ -542,9 +542,9 @@ def sec_h():
         pump(0.2)
         assert abs(p.offsets[3] - (wrong - 3)) < 1e-9 and p.calibration is not None
         cal_now = p.calibration
-        nudge = win.cameras._rows[1].nudges[1]              # CAMERAS: camera 2's "one frame later" button
-        nudge.click()
-        nudge.click()
+        box = win.cameras._rows[1].spin                     # CAMERAS: camera 2's offset box, its ▲ twice (G234)
+        box.stepUp()
+        box.stepUp()
         pump(0.1)
         hand = float(p.offsets[1])
         if win.act_undo.isEnabled():
