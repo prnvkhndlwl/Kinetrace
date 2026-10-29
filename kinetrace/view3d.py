@@ -1376,10 +1376,9 @@ def render_scene(scene: Scene3D, size: tuple[int, int], azimuth: float, elevatio
 def _light_preference(value: bool | None = None) -> bool:
     """(G202) The 3D window's Light background, remembered for every project (the app's settings file, as the
     annotator's name): read it, or store `value`."""
-    from PySide6.QtCore import QSettings
     from kinetrace import recovery
     try:
-        st = QSettings(str(recovery.settings_path()), QSettings.IniFormat)
+        st = recovery.settings()
         if value is not None:
             st.setValue("view3d/light_background", bool(value))
             return bool(value)

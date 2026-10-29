@@ -6635,7 +6635,7 @@ class MainWindow(QMainWindow):
         """settings.ini in the Kinetrace folder (`recovery.settings_path`), never the registry
         or a plist: deleting the folder removes it (Mac install audit P1)."""
         from kinetrace import recovery
-        return QSettings(str(recovery.settings_path()), QSettings.IniFormat)
+        return recovery.settings()
 
     def _default_annotator(self) -> str:
         try:

@@ -67,6 +67,13 @@ def settings_path() -> Path:
     return root / "settings.ini" if _writable(root) else _user_dir().parent / "settings.ini"
 
 
+def settings():
+    """(R55) THE QSettings on `settings_path()` (INI format): the window's preferences, the recent
+    projects, the 3D window's background. Qt is imported here only: this module stays Qt-free."""
+    from PySide6.QtCore import QSettings
+    return QSettings(str(settings_path()), QSettings.IniFormat)
+
+
 def folder() -> tuple[Path, bool]:
     """(recovery folder, True if it is the per-user fallback)."""
     global _cached
