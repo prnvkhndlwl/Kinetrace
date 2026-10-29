@@ -14,8 +14,8 @@ Gestures (active only when interaction is enabled; G59, owner 2026-10-02):
     Ctrl+click anywhere  -> reposition the selected point there
     Alt+click            -> look here (where this spot can be in the other cameras)
     wheel                -> zoom (anchored under cursor); R fits, middle-drag pans
-Add (N) armed: click = a new point (or continue the selected one), drag = a
-circle region tracked as a group (Add ▾ picks circle / rectangle / polygon: a
+Point (N) armed: click = a new point (or continue the selected one), drag = a
+circle region tracked as a group (Point ▾ picks circle / rectangle / polygon: a
 rectangle is a drag, a polygon is click-click-click + Enter).
 Segment tool (S, armed): click = "this is the segment", Shift+click = "not the
 segment", drag = box around it; right-click a prompt marker to remove it.

@@ -5058,7 +5058,7 @@ class MainWindow(QMainWindow):
                      QEvent.MouseButtonDblClick, QEvent.Wheel)
 
     def _other_app_windows(self) -> list:
-        """The app's windows other than the main one: the floated Segment & Points panel,
+        """The app's windows other than the main one: the floated Layers panel,
         the 3D view, the Body window."""
         return [w for w in (self.view3d, getattr(self, "dock", None), getattr(self, "body_win", None))
                 if w is not None]
@@ -5136,7 +5136,7 @@ class MainWindow(QMainWindow):
             # navigate it. Offered to the hotkey table first, Escape deselected the
             # point and left the menu open, and F / Delete acted behind it (G6)
             return False
-        # the Segment & Points panel may be floated (its own top-level window):
+        # the Layers panel may be floated (its own top-level window):
         # it is still this window's panel, so its focus keeps the hotkeys (I68)
         mine = (self, self.view3d, getattr(self, "dock", None), getattr(self, "body_win", None))
         active = QApplication.activeWindow()

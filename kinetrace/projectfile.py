@@ -1,5 +1,6 @@
 """The Kinetrace project: a FOLDER `name.kinetrace/` of plain files that other
-programs can read and write (format 2, I145). See docs/FORMAT.md.
+programs can read and write (a folder since format 2, I145; now format 4, `FORMAT_VERSION`).
+See docs/FORMAT.md.
 
     kinetrace.json            format, version, app version, project id, saved at, cameras
     README.txt                what every file is (written by Kinetrace)
@@ -12,7 +13,7 @@ programs can read and write (format 2, I145). See docs/FORMAT.md.
     cameras/<folder>/view.json        this camera's frame, zoom, selection, timeline zoom
     cameras/<folder>/points.csv       one row per landmark (its tracks file in `file`, its animal in
                                       `animal`, "" = Scene; G153)
-    cameras/<folder>/tracks/<landmark>.csv   frame,x,y,confidence,visible,hand_placed,hidden
+    cameras/<folder>/tracks/<landmark>.csv   frame,x,y,confidence,visible,hand_placed,imported,hidden
                                       (+ radius for ball markers); only frames with data
     cameras/<folder>/events.csv, notes.csv, ball_prompts.json, spots.json, segment.json (the first
                                       animal: name, colour, clicks, its skeleton and hold)

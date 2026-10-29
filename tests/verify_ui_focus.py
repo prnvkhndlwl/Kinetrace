@@ -337,7 +337,7 @@ app.setActiveWindow(win)
 pump()
 print("3D window keeps the frame keys OK")
 
-# ---- I68: the Segment & Points panel floated: its focus still takes the hotkeys --
+# ---- I68: the Layers panel floated: its focus still takes the hotkeys --
 win.dock.setFloating(True)
 pump(0.3)
 if win.layers.n_point_rows():
