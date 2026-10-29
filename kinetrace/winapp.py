@@ -196,7 +196,7 @@ def write_link(path: Path, spec: dict) -> None:
         finally:
             for o in (pf, store, link):
                 _release(o)
-    os.replace(tmp, path)
+    _paths.replace_retry(tmp, path, 10, 0.2)        # (X51) the shell may hold the old shortcut for a moment
 
 
 def read_link(path: Path) -> dict:
@@ -265,7 +265,7 @@ def write_icon(dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".new")
     tmp.write_bytes(ico_bytes(images))
-    os.replace(tmp, dest)
+    _paths.replace_retry(tmp, dest, 10, 0.2)        # (X51) Explorer may hold the old icon for a moment
 
 
 # ------------------------------------------------------------------ build / stale

@@ -15618,6 +15618,9 @@ def show_install_welcome(win) -> None:
 
 
 def main():
+    # The same three switches as __main__.py, on purpose (R56): __main__ sets them first, before any
+    # library is imported (the copy that counts for `python -m kinetrace`); these cover a start that
+    # calls main() directly (a test, a script), where setdefault keeps whatever was already set
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")   # no telemetry (see __main__.py)
     os.environ.setdefault("DO_NOT_TRACK", "1")
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # Apple GPU: unsupported ops go to the CPU
@@ -15649,7 +15652,8 @@ def main():
         # under python.exe and shows Python's icon (G41)
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kinetrace.Kinetrace")
+            from kinetrace.winapp import APP_ID          # the one id: the pinned shortcut carries it too (R56)
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
         except Exception:     # noqa: BLE001 - cosmetic only
             pass
     app = QApplication(sys.argv)
