@@ -95,15 +95,17 @@ class ApplyResult:
 # ------------------------------------------------------------------ versions
 
 def parse_version(text: str) -> tuple[int, ...]:
-    """"v1.10.2" -> (1, 10, 2); anything that is not a number counts as 0."""
-    parts = re.split(r"[.\-+]", str(text).strip().lstrip("vV"))
-    out = []
-    for p in parts[:4]:
-        m = re.match(r"\d+", p)
-        out.append(int(m.group()) if m else 0)
-    while len(out) < 3:
-        out.append(0)
-    return tuple(out)
+    """The sort key of a version: "v1.10.2" -> (1, 10, 2, 1). After major, minor, patch comes 1 for a
+    release or 0 for a pre-release, then the pre-release's own numbers: "0.7.0-beta.1" -> (0, 7, 0, 0, 1),
+    so a pre-release sorts below its release and rc1 below rc2 (X47: the suffix used to count as a 4th
+    number, so 0.7.0-beta.1 never saw 0.7.0). A "+build" part is ignored; a missing number counts as 0.
+    Only a pre-release's NUMBERS are compared, not its words (beta.2 > rc.1), and a 4th release number
+    is ignored: enough while releases are plain numbers (the release rule, .claude/skills/release)."""
+    s = str(text).strip().lstrip("vV").split("+", 1)[0]
+    m = re.match(r"(\d*)(?:\.(\d+))?(?:\.(\d+))?(.*)", s)
+    out = tuple(int(g) if g else 0 for g in m.groups()[:3])
+    pre = m.group(4).lstrip(".-")
+    return out + ((0, *(int(n) for n in re.findall(r"\d+", pre))) if pre else (1,))
 
 
 def is_newer(remote: str, local: str = APP_VERSION) -> bool:
@@ -492,6 +494,30 @@ def apply(release: Release, root: Path = ROOT, progress=None) -> ApplyResult:
                               "files in the Kinetrace folder and try again.") from None
     finally:
         shutil.rmtree(root / STAGING, ignore_errors=True)
+
+
+def preload() -> list[str]:
+    """(X46) Load every Kinetrace module into this process BEFORE an update writes files. The app
+    imports many of its parts only when first used (calibration, lens, body, 3D, exports); after an
+    update, Later (or Cancel at the save question) kept the OLD program running, which then loaded
+    those parts from the NEW files ("cannot import name ..."). Loaded first, this process stays one
+    release until it restarts. Run on the update's thread, never the window's (it imports torch);
+    about 1.5 s. Returns the modules that could not be loaded (logged; the update goes on)."""
+    import importlib
+    import logging
+    import pkgutil
+    import kinetrace
+    failed = []
+    for m in pkgutil.iter_modules(kinetrace.__path__):
+        if m.name == "__main__":
+            continue
+        try:
+            importlib.import_module("kinetrace." + m.name)
+        except Exception:       # noqa: BLE001 - one part that cannot load must not stop the update
+            logging.getLogger("kinetrace.errors").exception(        # THE error log (crashlog)
+                "preload before the update: kinetrace.%s", m.name)
+            failed.append("kinetrace." + m.name)
+    return failed
 
 
 # ------------------------------------------------------------------ restart

@@ -594,6 +594,42 @@ check(len(outs) == 3 and back_png is not None and (back_png & truth_masks[40]).s
       > 0.98, "silhouettes out as one PNG per frame", str(outs))
 check(win._undo_snap is None, "a mask import that CREATES the segment is not an undo step (the message says how "
       "to remove it)")
+# (X44) folders named with an accent or in another script: cv2.imwrite / imread cannot open such a path on
+# Windows (I222's gap): File -> Export wrote nothing ("cannot write the PNG files there"), Import said
+# "not a readable image"
+from kinetrace import paths as _paths  # noqa: E402
+for _name in ("José", "数据", "Ελλάδα"):
+    intl = os.path.join(OUT, _name)
+    shutil.rmtree(intl, ignore_errors=True)
+    os.makedirs(intl)
+    try:
+        win._export_one("sil_png", os.path.join(intl, "sil.png"))
+        err = ""
+    except Exception as e:      # noqa: BLE001 - the old code raised here
+        err = f"{type(e).__name__}: {e}"
+    mdir_i = os.path.join(intl, "sil_masks")
+    got = sorted(os.listdir(mdir_i)) if os.path.isdir(mdir_i) else []
+    back = (cv2.imdecode(np.fromfile(os.path.join(mdir_i, got[-1]), np.uint8), cv2.IMREAD_GRAYSCALE) > 0
+            if got else None)
+    check(len(got) == 3 and back is not None
+          and (back & truth_masks[40]).sum() / (back | truth_masks[40]).sum() > 0.98,
+          f"silhouette PNGs written into a folder named {ascii(_name)}", err or str(got))
+    said["warn"] = []
+    QFileDialog.getExistingDirectory = staticmethod(lambda *a, _d=mdir_i, **k: _d)
+    win._import_masks()                                     # File -> Import -> Silhouettes, that folder
+    m = win.session.masks
+    iou = min((m.rasterize(f, H, W) & t).sum() / (m.rasterize(f, H, W) | t).sum() for f, t in truth_masks.items())
+    check(not said["warn"] and m.n_masked() == 3 and iou > 0.98 and win._undo_snap is not None,
+          f"and read back from it by File -> Import -> Silhouettes", "; ".join(said["warn"]))
+    if win._undo_snap is not None:
+        win._undo_run()                                     # the section goes on from 3 imported frames
+_img = (np.random.RandomState(3).rand(40, 60) > 0.5).astype(np.uint8) * 255
+_a, _b = os.path.join(OUT, "bytes_cv2.png"), os.path.join(OUT, "bytes_paths.png")
+cv2.imwrite(_a, _img)
+check(_paths.write_image(_b, _img) and open(_a, "rb").read() == open(_b, "rb").read(),
+      "paths.write_image writes the same bytes as cv2.imwrite")
+check(np.array_equal(_paths.read_image(_b, cv2.IMREAD_GRAYSCALE), _img)
+      and _paths.read_image(os.path.join(OUT, "no such.png")) is None, "paths.read_image reads it back; a missing file is None")
 more = os.path.join(OUT, "masks_more")
 os.makedirs(more, exist_ok=True)
 cv2.imwrite(os.path.join(more, "mask_000070.png"), truth_masks[40].astype(np.uint8) * 255)

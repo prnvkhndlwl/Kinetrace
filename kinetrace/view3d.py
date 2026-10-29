@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QFormLayout, QGridLayout, QHBoxLayout, QLabel, QPushButton,
                                QSizePolicy, QVBoxLayout, QWidget)
 
-from kinetrace import theme
+from kinetrace import paths, theme
 from kinetrace.canvas import bgr_pixmap
 from kinetrace.calib import PIXEL_CONVENTIONS, Calibration, CameraCalibration
 from kinetrace.calibio import load_calibration
@@ -2007,7 +2007,7 @@ class View3D(QWidget):
                                px=float(scale), show_grid=self.chk_grid.isChecked(),
                                show_world=self.chk_world.isChecked(), trail=self._trail(), palette=self._palette(),
                                rays=self._rays(), legend=True)
-        if not cv2.imwrite(path, img):
+        if not paths.write_image(path, img):              # any folder name (X44)
             raise OSError(f"the picture could not be written to {path}")
 
     def _save_clicked(self) -> None:

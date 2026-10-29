@@ -222,7 +222,8 @@ until you do) — the reminder only counts days, it does not go online. If there
 stopped, and a full disk is named as such). Only the program's own files are replaced: your
 projects, downloaded models, unsaved-work copies, saved skeletons, the tour's demo
 video and settings are kept. **Restart now** then closes the program (asking first if you have
-unsaved work) and starts the new version. If the new version needs extra
+unsaved work) and starts the new version; **Later** keeps the version you are running until you
+next start the program. If the new version needs extra
 supporting software, that first start installs it, which takes a few minutes
 and needs the internet.
 
@@ -3991,8 +3992,10 @@ clean retry and loses none of your work.
 **The program will not start / an error mentions "encodings" or "103".**
 The folder was moved or renamed while the program was set up in it. Run
 `run.bat` (Mac: `Kinetrace.command`, Ubuntu: `./run.sh`) once; it repairs
-itself (on Windows it also renews the Kinetrace shortcut, which pointed at the
-old place).
+itself, also in a folder whose name has brackets or `&`, such as
+"Program Files (x86)". On Windows it also renews the Kinetrace shortcut, which pointed at the
+old place. A folder name with letters outside English (an accent, as in "José") is not yet
+repaired this way: move the folder to a place whose path has only English letters.
 
 **A red notice says "Something went wrong", or the program closed by itself.**
 Kinetrace keeps a record of every error it meets — what went wrong, where in

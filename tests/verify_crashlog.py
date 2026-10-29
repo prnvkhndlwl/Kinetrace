@@ -282,4 +282,62 @@ log = read(os.path.join(d, crashlog.LOG_NAME))
 assert r.returncode == 0, (r.returncode, r.stdout[-500:], r.stderr[-1500:])
 assert "==== Kinetrace child started" in log and "ended normally" in log and "  ERROR  " not in log, log[-1500:]
 print("the real main() starts, attaches the window, closes and ends its session OK")
+
+# (X48) Mac / Linux: a log lock another window holds is given up after the tries, as on Windows (it used to
+# wait as long as the other window held it). Emulated here on every OS: os.name "posix" and a stand-in fcntl
+# whose blocking call would wait (it raises after 5 s instead, so the old code fails rather than hangs); the
+# real two-process check runs on the Ubuntu pull-request job (verify_portable [7]).
+import types  # noqa: E402
+
+held = {"on": True}
+calls = []
+
+
+def _flock(fd, op):
+    calls.append(op)
+    if op & _fake.LOCK_UN:
+        return
+    if held["on"]:
+        if op & _fake.LOCK_NB:
+            raise BlockingIOError(11, "Resource temporarily unavailable")
+        time.sleep(5.0)
+        raise RuntimeError("a blocking flock: waits as long as the other window holds the log")
+
+
+_fake = types.SimpleNamespace(LOCK_SH=1, LOCK_EX=2, LOCK_NB=4, LOCK_UN=8, flock=_flock)
+_lockfile = os.path.join(OUT, "posix.lock")
+_saved = (os.name, sys.modules.get("fcntl"), getattr(crashlog, "_LOCK_TRIES", None))
+os.name, sys.modules["fcntl"], crashlog._LOCK_TRIES = "posix", _fake, 20
+try:
+    t0 = time.perf_counter()
+    try:
+        with crashlog._shared_lock(_lockfile):
+            waited, err = time.perf_counter() - t0, ""
+    except RuntimeError as e:
+        waited, err = time.perf_counter() - t0, str(e)
+    gave_up = not err and 0.5 < waited < 3.0 and _fake.LOCK_UN not in calls
+    held["on"], calls[:] = False, []
+    with crashlog._shared_lock(_lockfile):
+        got = list(calls)
+    released = calls[len(got):] == [_fake.LOCK_UN]
+    # a file system without locks (NFS without lockd: ENOLCK) is not waited on: the entry is written at once
+    _fake.flock = lambda fd, op: (_ for _ in ()).throw(OSError(37, "No locks available"))
+    t0 = time.perf_counter()
+    with crashlog._shared_lock(_lockfile):
+        no_locks_wait = time.perf_counter() - t0
+finally:
+    os.name = _saved[0]
+    if _saved[1] is None:
+        sys.modules.pop("fcntl", None)
+    else:
+        sys.modules["fcntl"] = _saved[1]
+    if _saved[2] is None:
+        del crashlog._LOCK_TRIES
+    else:
+        crashlog._LOCK_TRIES = _saved[2]
+assert gave_up, f"Mac / Linux: a held log lock is given up after the tries: waited {waited:.1f} s {err}"
+assert got == [_fake.LOCK_EX | _fake.LOCK_NB] and released, (got, calls)
+assert no_locks_wait < 0.3, f"a file system without locks is not waited on: {no_locks_wait:.1f} s"
+print(f"Mac / Linux (emulated): a held log lock is given up after {waited:.1f} s (20 tries), a free one "
+      "is taken at once and released (X48) OK")
 print("verify_crashlog PASSED")

@@ -53,6 +53,36 @@ def write_atomic(path, text: str, encoding: str = "utf-8", newline: str | None =
     replace_retry(tmp, path)
 
 
+def write_image(path, img) -> bool:
+    """(X44, I222) `cv2.imwrite` for any folder name: OpenCV on Windows cannot open a path with a
+    non-ASCII character ("José", CJK, Greek) and answers False with no reason. The picture is encoded
+    in memory (the same encoder, the same bytes) and written with Python's own file API. The format
+    follows the suffix; False = the picture could not be encoded."""
+    import cv2
+    ok, enc = cv2.imencode(Path(path).suffix or ".png", img)
+    if not ok:
+        return False
+    Path(path).write_bytes(enc.tobytes())
+    return True
+
+
+def read_image(path, flags: int | None = None):
+    """(X44) `cv2.imread` for any folder name (see `write_image`): the picture, or None when the file
+    is missing, empty or not a picture OpenCV can read. `flags` default: cv2.IMREAD_COLOR."""
+    import cv2
+    import numpy as np
+    try:
+        buf = np.fromfile(str(path), np.uint8)
+    except OSError:
+        return None
+    if buf.size == 0:
+        return None
+    try:
+        return cv2.imdecode(buf, cv2.IMREAD_COLOR if flags is None else flags)
+    except cv2.error:
+        return None
+
+
 @dataclass
 class Place:
     what: str            # one short phrase

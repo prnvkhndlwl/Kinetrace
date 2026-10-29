@@ -50,11 +50,18 @@ def check(cond, what):
 
 # ---------------------------------------------------------------- [1] versions
 print("[1] versions")
-check(update.parse_version("v1.10.2") == (1, 10, 2), "parse v1.10.2")
-check(update.parse_version("2") == (2, 0, 0), "parse 2")
+check(update.parse_version("v1.10.2")[:3] == (1, 10, 2), "parse v1.10.2")
+check(update.parse_version("2")[:3] == (2, 0, 0), "parse 2")
 check(update.is_newer("1.10.0", "1.9.9") and not update.is_newer("1.2.0", "1.2.0"), "numeric compare")
 check(update.is_newer("v1.2.1", "1.2.0") and not update.is_newer("1.1.9", "1.2.0"), "tag compare")
 print("  1.10 > 1.9, equal is not newer OK")
+# (X47) a pre-release suffix sorts BELOW the same numbers without one (it used to count as a 4th number)
+check(update.is_newer("0.7.0", "0.7.0-beta.1"), "0.7.0 is newer than 0.7.0-beta.1")
+check(not update.is_newer("0.7.0-rc1", "0.7.0"), "0.7.0-rc1 is not newer than 0.7.0")
+check(update.is_newer("0.7.0-rc2", "0.7.0-rc1") and update.is_newer("0.7.0-rc1", "0.6.9"), "rc2 > rc1 > 0.6.9")
+check(not update.is_newer("1.2.3+build5", "1.2.3") and not update.is_newer("1.2.3", "1.2.3+build5"),
+      "a +build part is ignored")
+print("  0.7.0 > 0.7.0-rc2 > 0.7.0-rc1 > 0.6.9; +build ignored (X47) OK")
 
 
 # ---------------------------------------------------------- a fake GitHub
@@ -470,6 +477,38 @@ pump(timeout=0.3)
 updatedialog.UpdateDialog.exec = _exec
 check(calls == [], "the check must wait until the dialog is shown")
 
+# (X45) git is asked on the update's own thread: a slow git (3 s) never freezes the window
+inst_git = make_install("gui_git")
+(inst_git / ".git").mkdir()
+git_seen = []
+real_blocker = update.git_blocker
+
+
+def _slow_blocker(root):
+    git_seen.append(threading.current_thread().name)
+    time.sleep(3.0)
+    return None
+
+
+update.git_blocker = _slow_blocker
+ticks = []
+tick = QTimer()
+tick.setInterval(20)
+tick.timeout.connect(lambda: ticks.append(time.perf_counter()))
+tick.start()
+dlg = updatedialog.UpdateDialog(win, root=inst_git, local="1.0.0")
+dlg.show()                                               # as Help -> Check for Updates does
+reached = pump(lambda: dlg.state == "available", 20)
+tick.stop()
+update.git_blocker = real_blocker
+gap = max((b - a for a, b in zip(ticks, ticks[1:])), default=99.0)
+check(reached and "git checkout" in dlg.body.toPlainText(), f"git install: available + the git note ({dlg.state})")
+check(git_seen == ["kinetrace-update"], f"git asked on the update thread, not the window's: {git_seen}")
+check(gap < 0.5, f"the window kept repainting while git answered: longest gap {gap:.2f} s")
+dlg.reject()
+dlg.deleteLater()
+print(f"  a 3 s git answer: asked on the update thread, longest window gap {gap:.2f} s (X45) OK")
+
 inst_g = make_install("gui")
 restarted = []
 dlg = updatedialog.UpdateDialog(win, root=inst_g, local="1.0.0", busy=win._update_busy,
@@ -480,8 +519,37 @@ check(calls, "the check ran once shown")
 check("1.1.0 is available" in dlg.title.text() and "Faster tracking" in dlg.body.toPlainText()
       and "projects, models" in dlg.body.toPlainText(), dlg.body.toPlainText())
 check(dlg.buttons["Update now"].isEnabled(), "Update now enabled for a ZIP install")
+# (X46) every module of the running app is loaded BEFORE the update writes a file: Later (or Cancel at the
+# save question) then keeps running one release, not the old app importing the new files on first use
+import pkgutil  # noqa: E402
+import kinetrace as _kt  # noqa: E402
+_mods = {"kinetrace." + m.name for m in pkgutil.iter_modules(_kt.__path__) if m.name != "__main__"}
+_unloaded = sorted(n for n in _mods if n not in sys.modules)
+check(_unloaded, "precondition: some of the app's modules are not loaded yet")
+missing_at_apply = []
+_real_apply = update.apply
+
+
+def _apply_spy(*a, **k):
+    missing_at_apply.append(sorted(n for n in _mods if n not in sys.modules))
+    return _real_apply(*a, **k)
+
+
+update.apply = _apply_spy
+torch_before = "torch" in sys.modules
+ticks = []
+tick.start()
 QTest.mouseClick(dlg.buttons["Update now"], Qt.LeftButton)
-check(pump(lambda: dlg.state == "done"), f"installed: {dlg.state} {dlg.body.toPlainText()[:300]}")
+check(pump(lambda: dlg.state == "done", 60), f"installed: {dlg.state} {dlg.body.toPlainText()[:300]}")
+tick.stop()
+update.apply = _real_apply
+gap = max((b - a for a, b in zip(ticks, ticks[1:])), default=99.0)
+print(f"  loading them (torch loaded before: {torch_before}): longest window gap {gap:.2f} s")
+check(gap < 1.0, f"the window keeps repainting while the modules load: longest gap {gap:.2f} s")
+check(missing_at_apply == [[]], f"loaded before the update wrote files ({len(_unloaded)} were not): "
+      f"{missing_at_apply[0][:8] if missing_at_apply else 'apply never ran'}")
+check(update.preload() == [], "every module of this checkout loads")
+print(f"  Update now loads the app's {len(_unloaded)} not-yet-used modules before writing (X46) OK")
 check(read(inst_g, "kinetrace/__init__.py").endswith('"1.1.0"\n') and "Restart" in dlg.body.toPlainText(),
       dlg.body.toPlainText())
 QTest.mouseClick(dlg.buttons["Restart now"], Qt.LeftButton)
