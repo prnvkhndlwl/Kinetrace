@@ -74,6 +74,8 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        "verify_lens_attach",
        # (I357-I361) one pixel-centre rule
        "verify_pixel_centre",
+       # (I378) the point models' map between the native and the shrunk picture
+       "verify_point_model_scale",
        # (I363) a checkerboard view with two corners on one spot is flagged and never auto-picked
        "verify_board_merged",
        # (I368-I377, G226-G231) sweep PR 7: the window's behaviour rows
