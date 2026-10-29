@@ -790,8 +790,9 @@ on exactly as it would have without your clicks; a **Moving spot** point starts
 again inside its run. When a point is lost before a later click of yours, it is
 cut where it was lost and picked up again at that click, instead of stopping the
 run (an AllTracker or CoTracker3 point is found lost by **Auto-pause**: with it
-off, the point is not cut, and its track up to your click is the tracker's best
-guess); a point that has no position on the frame you start from joins the run at
+off, only a stretch where the tracker itself says the point is out of sight, and
+unsure, for 16 frames is left blank; a stretch where it is merely unsure keeps the
+tracker's best guess up to your click, red on the timeline); a point that has no position on the frame you start from joins the run at
 its first click. When a point starts again the video waits a moment (its new
 tracker needs a few frames before its first positions) - it never goes back.
 Clicks on many points at once use more of the graphics card: when a press may
@@ -3822,9 +3823,11 @@ track at the first unreliable frame** (red on the timeline), so the data ends
 exactly where the tracking stopped being trustworthy. Click the point where it
 really is and press Track. Leave it on while you are learning. Turn it off for
 footage with a lot of hiding-behind-things, where you would rather review
-afterwards than be interrupted. With it off, a body part the program has lost
-is left **blank from the first frame of the loss** (never the program's guess),
-and the run goes on.
+afterwards than be interrupted. With it off, the run goes on: a body part the
+tracker itself says is out of sight, and unsure, for 16 frames in a row is left
+**blank from the first of those frames** (never the program's guess); a stretch
+where it is only unsure keeps the tracker's positions, drawn red on the timeline
+for you to check.
 
 **Keep its points on its silhouette** (not a switch in the bottom bar: a
 setting of each animal — right-click the animal in LAYERS; **off** until you
@@ -4266,7 +4269,9 @@ again at that click. (When the animal keeps its points on its silhouette, a part
 that leaves the outline stops the run the same way - or, with a click of yours
 further on, is cut and picked up again - whether Auto-pause is on or off.) It also
 stops a run when a part is hidden just as the ROI zoomed view has to move. With
-Auto-pause off, a lost part is left blank from the first frame of the loss.
+Auto-pause off, a part the tracker says is out of sight (and unsure) for 16 frames
+is left blank from the first of them; a merely unsure stretch keeps its positions,
+red on the timeline.
 
 **Ball marker** — a round marker (a wand ball, a reflective dot, a dropped
 ball) found in every frame by outlining it and fitting a circle; the circle's

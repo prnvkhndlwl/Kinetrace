@@ -197,7 +197,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>O</td><td>onion skin: ghost markers of the previous (solid) and next (dashed) frame</td></tr>
 <tr><td class=k>L</td><td>loupe: magnifier under the cursor with a crosshair on the exact pixel</td></tr>
 <tr><td class=k>M</td><td>several cameras: the working camera alone, filling the view area (the others pause); <b>M</b> again puts every camera back where it was — the same as View → Other cameras → Only the working camera (Ctrl+2)</td></tr>
-<tr><td class=k>View → Trails</td><td>Off / Last 10 frames / Custom… (any length) — fading, optional upcoming path; in every camera while Track ▾ → Every camera is ticked; View → Display filter: contrast / brighten / frame difference (display only)</td></tr>
+<tr><td class=k>View → Trails</td><td>Off / Last 10 frames / Custom… (up to 1000 frames) — fading, optional upcoming path; in every camera while Track ▾ → Every camera is ticked; View → Display filter: contrast / brighten / frame difference (display only)</td></tr>
 <tr><td class=k>drag (armed)</td><td>outline a region in the Point ▾ shape (circle or rectangle; a polygon is clicked corner by corner) → tracked as one point (its fitted center)</td></tr>
 <tr><td class=k>Ctrl+click</td><td>move the selected point here (one Ctrl+Z step)</td></tr>
 <tr><td class=k>right-click (LAYERS) / hold right (marker)</td><td>the point's menu: rename · lock to seed appearance · data source · hidden on this frame · may leave its silhouette · Move to (another animal / Scene) · use it as its animal's head · tracker · delete</td></tr>
@@ -1233,9 +1233,12 @@ class MainWindow(QMainWindow):
             "the playhead jumps there and the point is selected: click where it really is, then\n"
             "Track. A point with a click of yours further on does not stop the run: it is cut where\n"
             "it was lost and starts again at that click. Also stops when the segment is lost for 16\n"
-            "frames, or a ball marker is lost inside the picture. Uncheck to always run to the end\n"
-            "(a lost point is then not cut). A landmark held on its animal's silhouette that leaves it\n"
-            "stops the run - or, with a click ahead, is cut - either way.",
+            "frames, or a ball marker is lost inside the picture, or (ROI on) a point is hidden just as\n"
+            "the zoomed view has to move. Uncheck to always run to the end: a point the model says is out\n"
+            "of sight and unsure for 16 frames is then left blank from the first of them, a merely unsure\n"
+            "stretch keeps its positions (red), and a point hidden when the zoomed view moves ends there.\n"
+            "A landmark held on its animal's silhouette that leaves it stops the run - or, with a click\n"
+            "ahead, is cut - either way.",
             checked=True)
 
         self.btn_roi = self._tool_button(
@@ -2160,7 +2163,8 @@ class MainWindow(QMainWindow):
         act_keys = QAction("&Keyboard && Mouse Reference…", self, triggered=self._show_hotkeys)
         self.act_updates = QAction("Check for &Updates…", self, triggered=self._check_updates)
         self.act_updates.setToolTip(
-            "Asks GitHub whether a newer Kinetrace has been published and, if so, installs it and restarts. "
+            "Asks GitHub whether a newer Kinetrace has been published and, if so, installs it; Restart now "
+            "starts the new version, Later keeps this one running until you next start Kinetrace. "
             "Your projects, models and settings are kept. Nothing is checked unless you ask.")
         self.act_about = QAction(f"&About {APP_NAME}…", self, triggered=self._show_about)
         self.act_about.setToolTip("Version, licence, where Kinetrace comes from, and the models it builds on")
