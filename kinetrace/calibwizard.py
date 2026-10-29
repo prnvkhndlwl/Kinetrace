@@ -168,6 +168,64 @@ def solve(kwargs: dict, frame_mode: str, drop, axes, lens_models, lens_summaries
     return res, grav
 
 
+# ---------------------------------------------------------------- the rig solve's lens inputs (R59)
+# THE rules for what a rig solve gets from the cameras' lens profiles, shared by the wand wizard
+# (`build_inputs`, `CamerasPage`) and the ChArUco route (`charucowizard.rig_inputs`). `lenses` = one
+# profile or None per camera; `ticked` = the cameras this run calibrates (I272).
+
+def undistort_views(arr, models):
+    """Undistort every camera's pixels with its profile's model (None = left as clicked). Arrays are
+    (F, C, 2, 2) wand ends, (B, C, 2) points or (N, C, 2) drops: the camera is always axis 1, the last
+    axis is xy. Returned unchanged (the same object) when no camera has a model."""
+    if arr is None or not any(m is not None for m in models):
+        return arr
+    out = np.array(arr, np.float64, copy=True)
+    for c, m in enumerate(models):
+        if m is None:
+            continue
+        sl = out[:, c]
+        out[:, c] = m.undistort(sl.reshape(-1, 2)).reshape(sl.shape)
+    return out
+
+
+def start_focals(lenses, ticked, known=None) -> list[float] | None:
+    """Per-camera starting focal lengths: the profile's where there is one, the user's `known` value
+    (a list, "I know it") where there is not; NaN for a camera with neither (I221: the solve then
+    searches the grid for those cameras alone). None when no ticked camera has a profile and no value
+    is known."""
+    if not any(lenses[c] is not None for c in ticked) and known is None:
+        return None
+    out = []
+    for c, l in enumerate(lenses):
+        if l is not None:
+            out.append(l.f_square)
+        elif known is not None and c < len(known):
+            out.append(float(known[c]))
+        else:
+            out.append(float("nan"))
+    return out
+
+
+def principal_points(lenses, sizes, ticked) -> list | None:
+    """Per-camera principal points: the profile's, else the picture's centre ((w - 1) / 2, (h - 1) / 2:
+    pixel centres). None when no ticked camera has a profile."""
+    if not any(lenses[c] is not None for c in ticked):
+        return None
+    return [(l.principal if l is not None else ((w - 1) / 2.0, (h - 1) / 2.0)) for l, (w, h) in zip(lenses, sizes)]
+
+
+def focal_free(lenses, ticked):
+    """What `calibrate_wand(estimate_focal=...)` gets (I144): True (every focal length free) unless
+    every ticked camera has a profile (I35); then a camera SHARING its profile with another ticked one
+    refines its focal length from the profile's (identical cameras still differ by up to ~1 %), a camera
+    with its own profile keeps it (False when none shares)."""
+    if not ticked or not all(lenses[c] is not None for c in ticked):
+        return True
+    free = [c in ticked and any(j != c and _lens.same_profile(lenses[j], l) for j in ticked)
+            for c, l in enumerate(lenses)]
+    return free if any(free) else False
+
+
 def build_inputs(project, st: dict, offsets=None):
     """What a run hands `solve`, sampled at `offsets` (one per project camera; None = the project's
     own; I271 / I303: the refine loop and pending offsets calibrate at offsets the project does not
@@ -183,22 +241,10 @@ def build_inputs(project, st: dict, offsets=None):
     bg = wd.collect_extra_points(p, extras, views=sel) if extras else None
     if bg is not None and bg.shape[0] == 0:
         bg = None
-    models = st["models"]
-    any_lens = any(m is not None for m in models)
+    models = st["models"]                      # the ticked cameras'
 
     def _und(arr):
-        """Undistort every camera's pixels with its profile. Arrays are (F, C, 2, 2) wand ends,
-        (B, C, 2) points or (N, C, 2) drops: the camera is always axis 1, the last axis is xy (the
-        ticked cameras)."""
-        if arr is None or not any_lens:
-            return arr
-        out = np.array(arr, np.float64, copy=True)
-        for c, m in enumerate(models):
-            if m is None:
-                continue
-            sl = out[:, c]
-            out[:, c] = m.undistort(sl.reshape(-1, 2)).reshape(sl.shape)
-        return out
+        return undistort_views(arr, models)
 
     raw_uv, raw_bg = uv, bg                    # the clicks as digitized: coverage is measured on these
     kwargs = dict(wand_uv=_und(uv), wand_length=st["length"], sizes=st["sizes"],
@@ -930,30 +976,15 @@ class CamerasPage(QWizardPage):
         camera with neither (I221: "find it automatically" on a rig where only
         some cameras have a profile - the solve then searches the grid for those
         cameras alone; a width-based guess here made it skip the search and fail
-        for most rigs). None when no camera's focal length is known."""
-        p = self.wiz.project
-        lenses = self.usable_lenses()
-        known = self.r_known.isChecked()
-        ticked = self.wiz.views()             # (I272) decided over the cameras this run calibrates
-        if not any(lenses[c] is not None for c in ticked) and not known:
-            return None
-        out = []
-        for c, l in enumerate(lenses):
-            if l is not None:
-                out.append(l.f_square)
-            elif known and c < len(self._spins):
-                out.append(float(self._spins[c].value()))
-            else:
-                out.append(float("nan"))
-        return out
+        for most rigs). None when no camera's focal length is known. The rule: `start_focals` (R59)."""
+        known = [float(sp.value()) for sp in self._spins] if self.r_known.isChecked() else None
+        # (I272) decided over the cameras this run calibrates
+        return start_focals(self.usable_lenses(), self.wiz.views(), known)
 
     def principal(self) -> list | None:
+        """`principal_points` (R59) for every project camera."""
         p = self.wiz.project
-        lenses = self.usable_lenses()
-        if not any(lenses[c] is not None for c in self.wiz.views()):
-            return None
-        return [(l.principal if l is not None else ((s.width - 1) / 2.0, (s.height - 1) / 2.0))
-                for l, s in zip(lenses, p.sessions)]
+        return principal_points(self.usable_lenses(), [(s.width, s.height) for s in p.sessions], self.wiz.views())
 
     def all_lensed(self) -> bool:
         """Every camera of this run (the ticked ones, I272) has a lens profile."""
@@ -967,14 +998,8 @@ class CamerasPage(QWizardPage):
         without a profile frees every focal length (unchanged, I35); with a
         profile on every camera, a camera SHARING its profile with another
         refines its focal length from the profile's (identical cameras still
-        differ by up to ~1 %), a camera with its own profile keeps it."""
-        if not self.all_lensed():
-            return True
-        lenses = self.usable_lenses()
-        ticked = self.wiz.views()
-        free = [c in ticked and any(j != c and _lens.same_profile(lenses[j], l) for j in ticked)
-                for c, l in enumerate(lenses)]
-        return free if any(free) else False
+        differ by up to ~1 %), a camera with its own profile keeps it. The rule: `focal_free` (R59)."""
+        return focal_free(self.usable_lenses(), self.wiz.views())
 
     def distortion_per_camera(self):
         """What `calibrate_wand(estimate_distortion=...)` gets (I35): the tick
