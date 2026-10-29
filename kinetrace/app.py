@@ -4722,11 +4722,17 @@ class MainWindow(QMainWindow):
         self._refresh_cameras()                  # the eyes rest while only the working camera is shown (G169)
 
     def _on_view_offset(self, i: int, offset: float):
-        if self.project is None:
+        p = self.project
+        if p is None:
             return
-        had_3d, before = self.project.reconstruction is not None, list(self.project.offsets)
-        self.project.set_offset(i, float(offset))
-        self._retimed(had_3d, list(self.project.offsets) != before)   # an unchanged value drops nothing (I206)
+        had_3d, before = p.reconstruction is not None, list(p.offsets)
+        # (I380) retiming the WORKING camera moves its picture, not the others': the playhead counts in its
+        # frames, so it follows the offset and the instant on screen stays (the other cameras with it)
+        t = p.reference_time(p.active, self.current) if i == p.active else None
+        p.set_offset(i, float(offset))
+        if t is not None and p.offsets[i] != before[i]:
+            self._goto(int(p.local_index(p.active, t)), force=True)
+        self._retimed(had_3d, list(p.offsets) != before)   # an unchanged value drops nothing (I206)
 
     def _retimed(self, had_3d: bool, changed: bool = True, reason: str = "camera timing changed") -> None:
         """After a camera's offset or rate was set (R25: five copies): when the timing really changed, the
