@@ -475,7 +475,7 @@ solve for the cameras.</p>
 <li>the wand video of every camera opened as the cameras of this project (＋ Add video
 in the CAMERAS panel), with their offsets aligned;</li>
 <li>the two wand ends tracked as two landmarks with the <b>same names in every camera</b>
-(for example <i>wand A</i> and <i>wand B</i>): place them with N (or Add ▾ → Ball marker
+(for example <i>wand A</i> and <i>wand B</i>): place them with N (or Point ▾ → Ball marker
 for a ball on the wand's end), press Track, correct
 where needed. A few hundred frames spread over the recording is ideal; the wizard goes on from
 {MIN_FRAMES} frames, but a stable result wants at least {GOOD_FRAMES};</li>
