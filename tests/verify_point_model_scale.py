@@ -21,7 +21,9 @@ The clip (tests/out/point_model_scale/far4k.avi, lossless, 3840 x 2160, 48 frame
       (LK on, ROI on: three points across the picture, so the crop is declined). D's last frame = its click +
       the disc's move, < 0.1 px (main ~2.6 px)
   [d] a picture that is not shrunk (1024 x 576): the worker's tracks ARE the stand-in's answers, bit for bit
-[a] and [c] FAIL on main 48ca2fc. Run: .venv\\Scripts\\python.exe tests\\verify_point_model_scale.py
+  [e] ROI on, two dots moving together 800 x 250 px: the crop (1530 x 849 at (85, 526)) is offset AND shrunk;
+      both dots < 0.1 px on the last frame (main: (+0.48, +0.27))
+[a], [c] and [e] FAIL on main 48ca2fc. Run: .venv\\Scripts\\python.exe tests\\verify_point_model_scale.py
 """
 import os
 import shutil
@@ -116,7 +118,7 @@ def make_clip(name, w, h, objects):
 
 
 # ------------------------------------------------------------------ the stand-in "perfect tracker"
-BIG, SMALL = 110, 24        # small-picture px: the whole disc (radius 340 / 3.75 = 91); a dot (sigma 2.1)
+BIG, SMALL = 110, 40        # small-picture px: the whole disc (radius 340 / 3.75 = 91); a dot (sigma 2.1-5.4)
 
 
 def half_of(frame, q):
@@ -266,7 +268,9 @@ def section_c():
     win._goto(0, force=True)
     pump(0.05)
     for c in SEEDS:
-        win.btn_add.setChecked(True)
+        if not win.btn_add.isChecked():
+            QTest.keyClick(win, Qt.Key_N)           # N arms Add point (the click places the point)
+            pump(0.05)
         canvas_click(win, *c)
     s = win.session
     check("three points placed", s.n_points == 3, s.n_points)
@@ -297,7 +301,32 @@ def section_d():
           f"max |diff| {np.nanmax(np.abs(tr - ans)):.3g}")
 
 
-for fn in (section_a, section_b, section_c, section_d):
+def section_e():
+    print("[e] ROI on, two dots moving together: the crop has its own origin AND is shrunk")
+    p0, q0, move = np.array([400.3, 700.6]), np.array([1300.7, 1200.2]), np.array([800.0, 250.0])
+    v = make_clip("crop4k.avi", W4, H4, [(p0, p0 + move, "gauss"), (q0, q0 + move, "gauss")])
+    crops = []
+    orig = TrackingWorker._compute_crop
+
+    def spy(self, *a, **k):
+        c = orig(self, *a, **k)
+        crops.append(c)
+        return c
+
+    TrackingWorker._compute_crop = spy
+    try:
+        tr = worker_run(v, [p0, q0], T, refine=False, roi=True)
+    finally:
+        TrackingWorker._compute_crop = orig
+    shrunk = [c for c in crops if c is not None and max(c[2], c[3]) > 1024]
+    check(f"a crop away from the picture's origin, larger than the model's 1024 (shrunk): {len(shrunk)} of "
+          f"{len(crops)} segments", shrunk and all(c[0] > 0 and c[1] > 0 for c in shrunk), crops[:3])
+    for k, (s0, name) in enumerate(((p0, "P"), (q0, "Q"))):
+        e = tr[T - 1, k] - (s0 + move)
+        check(f"{name}: last-frame error {fmt(e)} < 0.1 px (main: P (+0.48, +0.27))", np.all(np.abs(e) < 0.1))
+
+
+for fn in (section_a, section_b, section_c, section_d, section_e):
     try:
         fn()
     except Exception as e:  # noqa: BLE001
