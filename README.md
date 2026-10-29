@@ -90,7 +90,7 @@ step ([details](https://github.com/prnvkhndlwl/Kinetrace/wiki/Working-with-Other
 
 | | |
 |---|---|
-| Points on 4K video, against known ground truth | **0.74 px** mean error (the sub-pixel refinement takes it from 3.7 px) |
+| Points on 4K video, against known ground truth | **0.75 px** mean error (the sub-pixel refinement takes it from 3.7 px) |
 | Wand calibration of a real six-camera rig, against easyWand | 3D points agree to **0.18 cm** median |
 | Triangulation, against DLTdv on the same clicks | **0.07 mm** |
 

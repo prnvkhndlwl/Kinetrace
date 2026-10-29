@@ -150,6 +150,9 @@ MAP = [
                       "retrack.py", "canvas.py", "trackio.py", "pixels.py", "app.py", "calibview.py", "spots.py",
                       "balls.py")],
      ["verify_pixel_centre"]),
+    # (I378) the point models' native <-> shrunk-picture map (a stand-in tracker, the app's Track press)
+    ([K + f for f in ("tracker.py", "alltracker_backend.py", "pixels.py", "segmenter.py")],
+     ["verify_point_model_scale"]),
     # (I364-I366, G225, R50) one rounding rule for frame numbers and rate ratios: rate_of, map_frame / map_index,
     # the timeline's other-camera line, Re-track's probes, GoPro frames, wanddata's time helpers
     ([K + f for f in ("project.py", "app.py", "timeline.py", "retrack.py", "gpmf.py", "wanddata.py", "calib.py")],
