@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QLineF, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QCursor, QImage, QPainter, QPainterPath, QPen,
                            QPixmap, QPolygonF, QTransform)
 from PySide6.QtWidgets import (QApplication, QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem,
@@ -49,6 +49,7 @@ HIT_RADIUS_PX = 14      # screen px within which a click grabs a point
 MARKER_RADIUS = 3.0     # screen px (3 by default, was 7)
 TRAIL_FRAMES = 10          # View -> Trails' preset ("Last 10 frames") and the default (G33)
 TRAIL_MAX = 1000          # the longest Custom... trail
+TRAIL_DRAWN = 300         # (G227) a longer trail is drawn through every n-th frame (see _MotionOverlay._trail)
 DRAG_CIRCLE_PX = 6      # screen px of movement before a press becomes a drag (a pan, a circle)
 LONG_PRESS_MS = 500     # a right press held this long opens the point's menu (G59)
 MIN_GROUP_RADIUS = 8.0  # native px; a smaller circle is treated as a plain click
@@ -224,6 +225,39 @@ class _MotionOverlay(QGraphicsItem):
     def boundingRect(self) -> QRectF:
         return self.rect
 
+    @staticmethod
+    def _trail(painter: QPainter, pts: np.ndarray, color, alphas: np.ndarray, width: float, style) -> None:
+        """One trail: a line between every two neighbouring frames that both have a position, segment j
+        with opacity `alphas[j]`. (G227) The fade's opacity is a whole number that steps only every few
+        segments, so each run of segments of one opacity goes to Qt in ONE drawLines call, in order: the
+        same lines with the same pens, the same picture, without a pen and two points made per segment
+        (1000-frame trails on 20 points took ~180 ms a repaint).
+        A trail longer than TRAIL_DRAWN frames is drawn through every n-th frame of each stretch with data
+        (and the stretch's last frame), n = ceil(length / TRAIL_DRAWN): never across a frame without data,
+        the fade the same; up to TRAIL_DRAWN frames every frame is drawn, exactly as before."""
+        ok = np.isfinite(pts).all(axis=1)
+        step = -(-(len(pts) - 1) // TRAIL_DRAWN)
+        if step <= 1:
+            idx = np.nonzero(ok[:-1] & ok[1:])[0]
+            ends = idx + 1
+        else:
+            edge = np.diff(np.r_[0, ok.astype(np.int8), 0])
+            keep = [np.unique(np.r_[np.arange(r0, r1, step), r1 - 1])
+                    for r0, r1 in zip(np.nonzero(edge == 1)[0], np.nonzero(edge == -1)[0]) if r1 - r0 >= 2]
+            if not keep:
+                return
+            idx = np.concatenate([k[:-1] for k in keep])
+            ends = np.concatenate([k[1:] for k in keep])
+        if not len(idx):
+            return
+        a = alphas[ends - 1]                     # a segment's opacity: that of its last frame-to-frame step
+        segs = np.concatenate([pts[idx], pts[ends]], axis=1).tolist()        # (x0, y0, x1, y1) as floats
+        start = 0
+        for end in [*(np.nonzero(np.diff(a))[0] + 1).tolist(), len(idx)]:
+            painter.setPen(QPen(QColor(*color, int(a[start])), width, style))
+            painter.drawLines([QLineF(*s) for s in segs[start:end]])
+            start = end
+
     def paint(self, painter: QPainter, option, widget=None):
         scale = painter.worldTransform().m11() or 1.0
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -237,26 +271,14 @@ class _MotionOverlay(QGraphicsItem):
             pts = self.past[i] if i < len(self.past) else None
             if pts is not None and len(pts) >= 2:
                 k = len(pts) - 1
-                for j in range(k):
-                    a, b = pts[j], pts[j + 1]
-                    if not (np.isfinite(a).all() and np.isfinite(b).all()):
-                        continue
-                    alpha = int(40 + 200 * (j + 1) / k)
-                    pen = QPen(QColor(*color, alpha), (2.2 if bold else 1.5) / scale)
-                    painter.setPen(pen)
-                    painter.drawLine(QPointF(float(a[0]), float(a[1])), QPointF(float(b[0]), float(b[1])))
+                self._trail(painter, pts, color, (40 + 200 * np.arange(1, k + 1) / k).astype(int),
+                            (2.2 if bold else 1.5) / scale, Qt.SolidLine)
             # future path: dashed, dimmer, fading away from now
             pts = self.future[i] if i < len(self.future) else None
             if pts is not None and len(pts) >= 2:
                 k = len(pts) - 1
-                for j in range(k):
-                    a, b = pts[j], pts[j + 1]
-                    if not (np.isfinite(a).all() and np.isfinite(b).all()):
-                        continue
-                    alpha = int(30 + 150 * (k - j) / k)
-                    pen = QPen(QColor(*color, alpha), 1.2 / scale, Qt.DashLine)
-                    painter.setPen(pen)
-                    painter.drawLine(QPointF(float(a[0]), float(a[1])), QPointF(float(b[0]), float(b[1])))
+                self._trail(painter, pts, color, (30 + 150 * (k - np.arange(k)) / k).astype(int),
+                            1.2 / scale, Qt.DashLine)
             # onion skin: hollow ghost at the previous (thin) and next (dashed) frame
             r = GHOST_RADIUS / scale
             cur = self.current[i] if self.current is not None and i < len(self.current) else None

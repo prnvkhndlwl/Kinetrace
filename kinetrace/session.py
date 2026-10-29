@@ -462,6 +462,7 @@ class TrackingSession:
         self.current_frame = 0  # persisted so projects reopen where the user left off
         self.ui_state: dict = dict(DEFAULT_UI_STATE)
         self.data_version = 0   # bumped on every mutation (timeline repaint/cache key)
+        self._click_index: dict[int, tuple[int, np.ndarray]] = {}   # (I375) `_usable_clicks`, by data_version
         self.dirty = False
         self._name_counter = 0
         self._event_counter = 0
@@ -740,13 +741,27 @@ class TrackingSession:
         """(I316) Has `pid` a usable hand click after `frame` (before `end`, exclusive)? For a point with no
         position on `frame` (a joiner) that is exactly "a run from `frame` starts it at a click" (`reseed_frames`
         not empty); with a click on `frame` the speed click right after it is no restart. Cheap: the Track
-        button asks it on every playhead move."""
+        button asks it on every playhead move, for every point in every camera (I375: a search in
+        `_usable_clicks`, no longer a scan of the rows after `frame`: 22 ms a move at 15 cameras x 40,000 frames)."""
         end = self.n_frames if end is None else min(self.n_frames, int(end))
         if not (0 <= pid < self.n_points) or end <= int(frame) + 1:
             return False
-        rows = slice(int(frame) + 1, end)
-        ok = self.manual[rows, pid] & self.tracked[rows, pid] & self.visibility[rows, pid] & ~self.occluded[rows, pid]
-        return bool(ok.any() and in_frame(self.tracks[rows, pid][ok], self.width, self.height).any())
+        f = self._usable_clicks(pid)
+        i = int(np.searchsorted(f, int(frame) + 1))
+        return bool(i < len(f) and f[i] < end)
+
+    def _usable_clicks(self, pid: int) -> np.ndarray:
+        """(I375) The frames, ascending, where `pid` has a usable hand click (`hand_clicks`' rule: placed by
+        hand, tracked, visible, not marked hidden, inside the picture), kept until the data changes: every
+        edit moves `data_version` on (the rule the timeline's cache stands on too)."""
+        hit = self._click_index.get(pid)
+        if hit is not None and hit[0] == self.data_version:
+            return hit[1]
+        ok = self.manual[:, pid] & self.tracked[:, pid] & self.visibility[:, pid] & ~self.occluded[:, pid]
+        f = np.flatnonzero(ok)
+        f = f[in_frame(self.tracks[f, pid], self.width, self.height)]
+        self._click_index[pid] = (self.data_version, f)
+        return f
 
     def reseed_frames(self, pid: int, start: int, end: int) -> list[int]:
         """(I316) Where a run from `start` (bounded by `end`, exclusive) starts `pid` again: the last

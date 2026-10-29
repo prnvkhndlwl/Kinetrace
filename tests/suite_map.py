@@ -64,6 +64,10 @@ MAP = [
     # (I316, I318, PR B) a re-seed session per click for the point models: the run driver, the frames it reads
     # from the cache, the app's plan of the sessions and their writes
     ([K + f for f in ("tracker.py", "video_source.py", "session.py", "app.py", "spots.py")], ["verify_hand_restart"]),
+    # (sweep PR 7, I368-I377, G226-G231) the window's behaviour rows: frame checks, the Track button and press,
+    # trails, close, undo, balls, the volume hull, notices, Save As, the Body menu, video paths
+    ([K + f for f in ("app.py", "canvas.py", "widgets.py", "session.py", "projectfile.py", "framecheck.py")],
+     ["verify_ui_behaviour"]),
     # (D9 choice 3, G217) Only fill the gaps: the gaps' plan, the pop-up's third choice, the runs over the gaps
     ([K + f for f in ("session.py", "app.py", "trackchoice.py", "tracker.py", "video_source.py")], ["verify_gap_fill"]),
     # (G216, G219) a tracker per camera and "Hand only": the Tracker menu, the passes of a press over every
@@ -79,6 +83,8 @@ MAP = [
     ([K + "app.py"], ["verify_wand_subset", "verify_wand_sync_gui"]),
     # (I305) the automatic 3D result follows every 2D gesture; the saved result's format
     ([K + f for f in ("app.py", "projectfile.py", "session.py")], ["verify_auto3d"]),
+    # (I372) the end of a run and the recovery copy: 3D in the background, an opened recovery copy made again once
+    ([K + f for f in ("app.py", "projectfile.py", "session.py", "recovery.py", "calib.py")], ["verify_recovery_3d"]),
     # (I309, G206, G207) the 3D window during a run, why a point has no 3D, the camera rays
     ([K + f for f in ("app.py", "view3d.py", "calib.py")], ["verify_live3d"]),
     ([K + "threads.py"], ["verify_sweep_fixes", "verify_review_infra", "verify_review_tracking", "verify_review_ui",

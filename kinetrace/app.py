@@ -9,6 +9,7 @@ Threading rules (the GUI thread never blocks):
 from __future__ import annotations
 
 import contextlib
+import html
 import os
 import sys
 import time
@@ -956,6 +957,7 @@ class MainWindow(QMainWindow):
         self._place_kind = "point"          # what the next armed click creates: "point" | "ball"
         self._retrack = None                # an automatic epipolar re-track in progress (see _retrack_start)
         self._gaps = None                   # (D9 choice 3) "Only fill the gaps" in progress (see _start_gap_fill)
+        self._detached_from = None          # (G230) (the project folder, [its cameras left out]) of an open without them
         self._stopping_for_close = False    # `_stop_runs_for_close` is running: no window opens meanwhile
         self._retrack_last = None
         self._trail_custom = 30             # the last length typed into View → Trails → Custom…
@@ -1066,6 +1068,7 @@ class MainWindow(QMainWindow):
         self.grid.name_of = lambda i: self.project.name(i) if self.project is not None else ""
         self._wire_canvas(self.grid.canvases[0])
         self.toast = Toast(self.grid)   # important notices float over the video
+        self.toast.literal = self._typed_names      # (G229) shown as typed, never as markup
         self._build_ui_rest()
         # opening videos / a project: a card over the window says what is happening
         # (G31: without it the wait looked like a frozen app)
@@ -2386,7 +2389,8 @@ class MainWindow(QMainWindow):
         busy_body = self._body_worker is not None and self._body_worker.isRunning()
         has_body = s is not None and s.has_body()
         self.act_body_run.setEnabled(has_video and not tracking and not busy_body)
-        self.act_body_view.setEnabled(has_video)
+        # (G231) with no body pose the window had only the video again: a result is needed (an open one closes)
+        self.act_body_view.setEnabled(bool(has_video and (has_body or self.act_body_view.isChecked())))
         self.act_body_video.setEnabled(has_body and not tracking and self._body_video is None)
         self.act_body_joints.setEnabled(has_body and not tracking)
         self.act_body_angles.setEnabled(has_body and not tracking)
@@ -2835,7 +2839,11 @@ class MainWindow(QMainWindow):
                 blocked = (None if any(p is not None and j["view"] != p.active for j in jobs)
                            else self._hand_only_text(scope))
             elif scope:
-                blocked = (f"The selected point(s) have no position on frame {self.current}. Select a "
+                # (G226) the Hand-only rule: an every-camera press whose cameras (`jobs`, the label's "N cams")
+                # include another camera runs there, even when the working camera has no position here
+                p = self.project
+                blocked = (None if any(p is not None and j["view"] != p.active for j in jobs) else
+                           f"The selected point(s) have no position on frame {self.current}. Select a "
                            "point that exists here, or place it here first (click it on the video)")
             elif s is not None and s.animal is not None:
                 blocked = ("Nothing to track from this frame: place a point (N), press S and click the "
@@ -4175,12 +4183,18 @@ class MainWindow(QMainWindow):
             th.made.connect(lambda fp, r=rt, u=by_user: self._fc_made(r, fp, u))
             th.checked.connect(lambda res, r=rt, u=by_user: self._fc_checked(r, res, u))
             th.failed.connect(lambda msg: self.toast.show_message(msg, "warn", 10000))
-            th.finished.connect(self._fc_finished)
+            th.finished.connect(lambda t=th: self._fc_finished(t))      # (I369) which check ended
             self._fc_job = th
             th.start(QThread.Priority.LowPriority)
             return
 
-    def _fc_finished(self) -> None:
+    def _fc_finished(self, ended) -> None:
+        if ended is not self._fc_job:
+            # (I369) a check `_fc_stop` cancelled (and retired): its `finished`, queued, arrives after the next
+            # project's check started and used to retire THAT one (its result lost, the window frozen 2 s). The
+            # queue still goes on (review): after one camera's check was stopped, the others wait in it
+            QTimer.singleShot(0, self._fc_next)
+            return
         th, self._fc_job = self._fc_job, None
         if th is not None:
             th.wait(2000)
@@ -4940,11 +4954,13 @@ class MainWindow(QMainWindow):
         restored.video_path = self.info.path
         proj.active = mine                        # the opened video is this camera's picture
         self._project_id = pid                    # keep writing to the same recovery
+        self._sync3d_rebuild_open = True          # (I372) a recovery copy: its 3D may lag its tracks, made again once
         self._adopt_project(proj)      # the whole project, one camera too: its name, lens, exports
         self.project.dirty = True
 
     def _teardown_video(self):
         self._fc_stop()                     # (I266) the frame checks of the video that is going
+        self._detached_from = None          # (G230) the cameras left out belong to the project that is going
         self._live3d = None                 # (I309) a run's overlay belongs to the project that is going
         for th in (self._body_worker, self._body_video):
             if th is not None and th.isRunning():
@@ -6056,8 +6072,9 @@ class MainWindow(QMainWindow):
             return
         self._refresh_skeleton_menu()
         self.toast.show_message(
-            f"Template <b>{t['name']}</b> saved ({len(t['landmarks'])} points, {len(t['bones'])} bones): select "
-            f"another animal and choose it under Skeleton ▾. ({Path(str(path)).name})", "success", 9000)
+            f"Template <b>{html.escape(t['name'], quote=False)}</b> saved ({len(t['landmarks'])} points, "
+            f"{len(t['bones'])} bones): select another animal and choose it under Skeleton ▾. "
+            f"({Path(str(path)).name})", "success", 9000)
 
     def _save_template_asking(self, t: dict, no_means: str = "") -> "Path | None | bool":
         """Save a skeleton template to skeletons/; a template of that name already there is replaced only
@@ -6979,9 +6996,9 @@ class MainWindow(QMainWindow):
             return
         from kinetrace.session import starts_formula
         if starts_formula(name):              # (M7) a spreadsheet would run it as a formula
-            self.toast.show_message(f"“{name.strip()}”: a name may not start with = + - or @ (a spreadsheet "
-                                    "opening the events export would run it as a formula), so those "
-                                    "characters were left out.", "warn", 8000)
+            self.toast.show_message(f"“{html.escape(name.strip(), quote=False)}”: a name may not start with = + - "
+                                    "or @ (a spreadsheet opening the events export would run it as a formula), "
+                                    "so those characters were left out.", "warn", 8000)
         s.add_event(name, start, end)
         self._on_events_changed()
         e = s.events[-1]
@@ -7114,13 +7131,26 @@ class MainWindow(QMainWindow):
             self._undo_extra.update(extra)
         self.act_undo.setEnabled(True)
 
+    def _typed_names(self) -> list[str]:
+        """(G229) The names the user typed that notices show - every camera's points and animals, the
+        cameras - for the notice float (`Toast.literal`): shown as typed, never read as markup."""
+        p = self.project
+        if p is None:
+            return []
+        out = {p.name(v) for v in range(p.n_views)}
+        for s in p.sessions:
+            out.update(q.name for q in s.points)
+            out.update(a.name for a in s.segments)
+        return [n for n in out if n]
+
     def _set_run_undo_point(self, snaps: dict) -> None:
         """One Ctrl+Z for a run that went through several cameras: `snaps` = {view: the snapshot
         taken before the run}; the working camera's is the undo point (a fresh one when it ran
         nothing), the others' ride along (R10; `_multi_finish`, `_passes_finish`, the re-track's
         Keep)."""
         p = self.project
-        self._set_undo_point(snaps.get(p.active, self.session.snapshot()),
+        # (I376) not `snaps.get(p.active, snapshot())`: the default was a whole snapshot made every time
+        self._set_undo_point(snaps[p.active] if p.active in snaps else self.session.snapshot(),
                              {v: sn for v, sn in snaps.items() if v != p.active})
 
     def _begin_edit(self, names=None, animals=None) -> None:
@@ -7595,9 +7625,9 @@ class MainWindow(QMainWindow):
         from kinetrace.session import starts_formula
         if starts_formula(desired):
             # a spreadsheet would run it as a formula when an export is opened (M7, owner decision)
-            self.toast.show_message(f"“{desired}” was not used: a name may not start with = + - or @, "
-                                    "because a spreadsheet opening an export would run it as a formula.",
-                                    "warn", 8000)
+            self.toast.show_message(f"“{html.escape(desired, quote=False)}” was not used: a name may not start "
+                                    "with = + - or @, because a spreadsheet opening an export would run it as a "
+                                    "formula.", "warn", 8000)
             return self.session.points[pid].name
         p = self.project
         old = self.session.points[pid].name
@@ -9870,13 +9900,19 @@ class MainWindow(QMainWindow):
             self.toast.show_message("One moment — the silhouette preview is still computing.",
                                     "info", 4000)
             return
+        if stop_after is None and not step and not quiet and self.current >= self.n_frames - 1:
+            # (G228) a run from the last frame ends at once: it used to start and stop with only a flash
+            self.toast.show_message(
+                f"Already at the last frame ({self.current}): there is nothing ahead to track. Go to the frame "
+                "where tracking should start and press <b>T</b>.", "info", 7000)
+            return
         self._step_run = bool(step)
         self._say_what_runs(scope, pids, animal_ok)
         # (G217) the press asked about the data ahead already (the Track pop-up replaced "Re-track from here?")
 
-        if not quiet:
-            self._undo_snap = s.snapshot()
-        self.act_undo.setEnabled(False)  # re-enabled when the run ends
+        # (I371) the undo point as it is now, made the undo point only once a run starts: a press that starts
+        # nothing (nothing to start from, a declined run) used to replace it, and Ctrl+Z then restored nothing
+        snap = s.snapshot() if not quiet else None
 
         from kinetrace.tracker import TrackingWorker        # lazy: imports torch
         # (I320, G217) the press's choice: keep the hand clicks (the run writes round them and Moving spot
@@ -9913,7 +9949,6 @@ class MainWindow(QMainWindow):
             self.toast.show_message(
                 f"Nothing to start from on frame {self.current}: place a point with <b>N</b>, a ball "
                 "with Point ▾ → Ball marker, or press <b>S</b> and click the segment here.", "warn", 7000)
-            self.act_undo.setEnabled(self._undo_snap is not None)       # no run: Ctrl+Z stays what it was
             return
         # (I316) each Moving spot point's usable clicks from the start frame on: it starts again at them
         hand = ({sp.pid: s.hand_clicks(sp.pid, self.current, end) for sp in spot_specs} if keep else None)
@@ -9947,8 +9982,10 @@ class MainWindow(QMainWindow):
         if plan:
             w = self._with_sessions(w, plan, backend, seg.animals, end)
             if w is None:
-                self.act_undo.setEnabled(self._undo_snap is not None)       # the user declined: nothing ran
-                return None
+                return None                                                  # the user declined: nothing ran
+        if not quiet:
+            self._undo_snap = snap
+        self.act_undo.setEnabled(False)  # re-enabled when the run ends
         if build_only:
             return w                    # one camera of a simultaneous run (I141)
         self._launch_run(w)
@@ -10384,16 +10421,18 @@ class MainWindow(QMainWindow):
     def _ball_specs(self, ball_pids, seeds) -> list:
         """Ball markers: SAM segments them, a circle is fitted, the centre is the
         point (balls.py) - prompts from this frame on, seeded from the ball's
-        current position, the last known radius as the size hint."""
+        current position, its radius on this frame as the size hint (I373: else the nearest earlier
+        one, else the nearest later one; it was the video's LAST one, 40 px for a ball 10 px here)."""
         from kinetrace.tracker import BallSpec
         s = self.session
         balls = []
         for pid in ball_pids:
             q = s.points[pid]
             prompts = {f: cs for f, cs in (q.ball_prompts or {}).items() if f >= self.current}
-            rad = s.radius[:, pid]
-            known = rad[np.isfinite(rad)]
-            balls.append(BallSpec(pid, prompts, seeds[pid], float(known[-1]) if len(known) else None,
+            known = np.nonzero(np.isfinite(s.radius[:, pid]))[0]
+            before = known[known <= self.current]
+            at = before[-1] if len(before) else (known[0] if len(known) else None)
+            balls.append(BallSpec(pid, prompts, seeds[pid], float(s.radius[at, pid]) if at is not None else None,
                                   self._seg_backend))
         return balls
 
@@ -11841,10 +11880,13 @@ class MainWindow(QMainWindow):
         if self._writer_busy():
             self._save_worker.wait()
 
-    def _freeze_now(self, pid: str, target, **kw):
+    def _freeze_now(self, pid: str, target, sync3d: bool = True, **kw):
         """(R49) The project as it is now, for a writer: the working state recorded first, and (I305) the 3D
-        result brought up to date with the data being written."""
-        self._sync_3d(force=True)
+        result brought up to date with the data being written. `sync3d` False (I372, owner 2026-10-28: the
+        recovery copy): the 3D result as it stands - the end of a run no longer computes it on the window's
+        thread for the copy; a recovery copy makes its 3D again once when it is opened (`_open_project_impl`)."""
+        if sync3d:
+            self._sync_3d(force=True)
         self._sync_ui_state()
         return projectfile.freeze(self.project, self._ui_global_state(), pid, target=target, **kw)
 
@@ -11878,7 +11920,8 @@ class MainWindow(QMainWindow):
         info = dict(base_saved_at=self._saved_at,
                     last_path=str(self.project_path) if self.project_path else None,
                     videos=[x.video_path for x in p.sessions], temporary=self._saved_at is None)
-        frozen = self._freeze_now(pid, self.project_path, binary_tracks=True, layout=self._project_layout())
+        frozen = self._freeze_now(pid, self.project_path, sync3d=False, binary_tracks=True,
+                                  layout=self._project_layout())
 
         def done(ok, err):
             if ok:
@@ -11928,9 +11971,10 @@ class MainWindow(QMainWindow):
     def _run_in_progress(self) -> bool:
         """A Track press is not over yet: a run is going, or what follows it is still to come -- the
         second pass of a two-pass run, the next camera of an every-camera run, the next re-track
-        stretch (each starts from a timer once the one before has ended)."""
+        stretch, the next run of "Only fill the gaps" (I368) (each starts from a timer once the one
+        before has ended)."""
         return (self.state == TRACKING or self._passes is not None or self._multi is not None
-                or self._retrack is not None)
+                or self._retrack is not None or self._gaps is not None)
 
     def _save_project(self) -> bool:
         if self.project is not None and self._run_in_progress():
@@ -12058,6 +12102,19 @@ class MainWindow(QMainWindow):
         more = f"\n  … and {len(lines) - most} more" if len(lines) > most else ""
         return "Changed since your last save:\n" + "\n".join(f"  • {x}" for x in lines[:most]) + more + "\n\n"
 
+    def _drops_cameras(self, folder: Path) -> str:
+        """(G230) For the replace questions: when `folder` is the project this work was opened from without
+        some of its cameras, the sentence saying what replacing it loses; else ""."""
+        det = self._detached_from
+        if det is None or det[0] is None or folder.resolve() != det[0]:
+            return ""
+        lost = det[1]
+        one = len(lost) == 1
+        return (f"\n\nThis work was opened from that project WITHOUT {', '.join(lost)} (the video was not found): "
+                f"replacing it removes {'that camera' if one else 'those cameras'} - "
+                f"{'its' if one else 'their'} points, tracks and calibration - from the project, which is the only "
+                f"place they are kept.")
+
     def _project_target(self, path: str) -> Path | None:
         """Where Save As may put a project folder (I145), or None after saying
         why not: never inside another project's folder, never over a folder
@@ -12078,8 +12135,9 @@ class MainWindow(QMainWindow):
                     self, "Save as this project?",
                     f"You chose the project folder\n{inside}\n\nSave this work as {inside.name}, replacing "
                     "what that project holds now? (Its last save stays in its .history folder until the next "
-                    "save.)\n\nNo: choose another place or name (a project cannot be put inside another "
-                    "project).", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                    "save.)" + self._drops_cameras(inside) + "\n\nNo: choose another place or name (a project "
+                    "cannot be put inside another project).",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return None
             return inside
         if p.is_dir():
@@ -12088,7 +12146,7 @@ class MainWindow(QMainWindow):
                 if not mine and QMessageBox.question(
                         self, "Replace project?",
                         f"{p.name} is already a Kinetrace project folder.\n\nReplace that project with this one? "
-                        "(Its last save stays in its .history folder until the next save.)",
+                        "(Its last save stays in its .history folder until the next save.)" + self._drops_cameras(p),
                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                     return None
             elif not projectfile.holds_only_own_entries(p):      # (I244) a failed first save leaves only its .cache
@@ -12765,7 +12823,7 @@ class MainWindow(QMainWindow):
         path = str(projectfile.project_root(path))   # kinetrace.json -> its folder, the project
         if self.state == TRACKING:
             return
-        self._sync3d_rebuild_open = recovered is not None      # (I305) see _sync_3d
+        self._sync3d_rebuild_open = False        # (I305, I372) set once it is known what opens (_open_project_impl)
         pname = Path(path).name
         # the card shows at once: reading the file happens right here
         ptok = self._busy_push(f"Opening {pname}", "Reading the project file…", 0,
@@ -12788,6 +12846,10 @@ class MainWindow(QMainWindow):
         if got is None:
             return
         plan = self._decide_unsaved_work(path, recovered, pname, *got, discard_pid=discard_pid)
+        # (I372) what opens is a recovery copy - chosen in Recover Unsaved Work, or this file's unsaved changes
+        # restored: its 3D result may lag its tracks (written mid-run, or without the end-of-run refresh), so
+        # it is made again once. Only `recovered` used to count: "Restore them?" kept a stale result.
+        self._sync3d_rebuild_open = plan.unsaved
         self._set_project_home(path, recovered, plan)
         proj = plan.proj
         located = self._locate_project_videos(proj)
@@ -13001,6 +13063,7 @@ class MainWindow(QMainWindow):
         active = proj.active
         self.project = proj
         self._wand_result = (None, None)      # (I33)
+        self._detached_from = None
         runtimes: list[_ViewRuntime | None] = [None] * proj.n_views
         runtimes[active] = self._views[0]
         drop: list[int] = []
@@ -13060,6 +13123,8 @@ class MainWindow(QMainWindow):
             # file name (autosave only ever writes the recovery folder).
             kept = self.project_path
             self.project_path = None
+            # (G230) Save As onto that folder later must say which cameras it would drop from it
+            self._detached_from = (Path(kept).resolve() if kept else None, list(lost))
             # (I168) a detached project: its own id and no base save, so its recovery copy is never
             # offered later as "unsaved changes to the full project" nor saved over it
             self._project_id, self._saved_at, self._recovery_sig = projectfile.new_id(), None, None
@@ -13992,7 +14057,11 @@ class MainWindow(QMainWindow):
         def work():
             cams = p.calibration.padded(p.n_views)          # (I273) one per camera, None = not calibrated
             span = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))) if len(pts) > 1 else 0.0
-            margin = max(2.0 * span, 0.05)
+            # (I374) the smallest box: a fortieth of the way to the nearest camera with a silhouette, in the
+            # calibration's own unit (it was 0.05 units: right in metres, a 1.6 mm box in a mm world)
+            near = min(float(np.linalg.norm(cams[c].center() - pts.mean(axis=0)))
+                       for c, m in enumerate(masks) if m is not None and cams[c] is not None)
+            margin = max(2.0 * span, 0.025 * near)
             cut_off = False
             for _grow in range(5):
                 lo, hi = bounds_from_points(pts, margin)
@@ -14086,9 +14155,11 @@ class MainWindow(QMainWindow):
         blocks changed) rather than by hooking each edit. Only the changed cells are recomputed
         (`calib.update_reconstruction`, the same bits as Ctrl+3); a change of calibration, timing or cameras
         rebuilds the whole result once it has been still for a tick. Never while a Track press is not over
-        (between its passes / cameras / stretches too), opening, busy or a dialog is up. `force` (every
-        writer, `_freeze_now`): now, whatever is up, no waiting tick, and on this thread - what is saved
-        is always the result of the data saved. The project's own "changed" state is left to the edit."""
+        (between its passes / cameras / stretches too), opening, busy or a dialog is up. `force` (Save and the
+        other project writers, `_freeze_now`): now, whatever is up, no waiting tick, and on this thread - what
+        is saved is always the result of the data saved. (I372) The recovery copy is written without it: an
+        opened recovery copy makes its 3D again once instead. The project's own "changed" state is left to the
+        edit."""
         p = self.project
         if p is None or self._sync3d_busy or self._run_in_progress() or self._loading:
             return
@@ -14553,7 +14624,8 @@ class MainWindow(QMainWindow):
         if on:
             if self.body_win is None:
                 self.body_win = BodySideBySide(self)
-                self.body_win.closed.connect(lambda: self.act_body_view.setChecked(False))
+                # (G231, review) closed by its X: the menu entry follows at once (greyed out with no pose)
+                self.body_win.closed.connect(lambda: (self.act_body_view.setChecked(False), self._apply_state()))
                 self.body_win.export_requested.connect(self._export_body_video)
             self.body_win.show()
             self._refresh_body_view(force=True)
@@ -15279,6 +15351,8 @@ class MainWindow(QMainWindow):
             while self.worker is not None and not self.worker.wait(100) and time.time() < t_end:
                 QApplication.processEvents()
             QApplication.processEvents()
+            if self.worker is not None and self.worker.isRunning():
+                _retire(self.worker)        # (I370) it outlived the wait: the close waits for it (`wait_all`)
         else:
             self._user_paused = False        # (I331) nothing ran: no pause is pending (a Cancel keeps the window)
         if self._overlay is not None:
