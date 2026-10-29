@@ -1165,13 +1165,17 @@ class TrackingWorker(QThread):
             from kinetrace.device import alltracker_max_dim
             at_dim = alltracker_max_dim(str(device))     # (R41) device is the model's, never None here
         scale, ww, wh = fit_within(cw, ch, at_dim if use_at else WORKING_MAX_DIM)
-        # align-corners convention, matching the model's internal rescaling
-        to_native = np.array([(cw - 1) / max(ww - 1, 1), (ch - 1) / max(wh - 1, 1)], np.float32)
-        to_working = 1.0 / to_native
+        # (I378) the picture is shrunk by cv2 (INTER_AREA), so a model position maps back with the pixel-centre rule,
+        # per axis (I61). The models' own align-corners resize stays inside them: they answer in the pixels of the
+        # picture they are given. The align-corners scale here put a point that crossed a 4K picture 2 px off.
+        # Not shrunk = the positions as they are, bit for bit
+        shrunk = scale < 1.0
+        s_xy = np.array([cw / ww, ch / wh])
         # display path: full frame at working res (crops would break the canvas)
         disp = self._display_size()
 
-        q_work = ((q_seeds_arr - origin) * to_working).astype(np.float32)   # (Q, 2) crop-working px
+        q_crop = q_seeds_arr - origin
+        q_work = (centre_unscale(q_crop, s_xy) if shrunk else q_crop).astype(np.float32)   # (Q, 2) crop-working px
         queries = None
         if not use_at:
             queries = torch.tensor(
@@ -1211,7 +1215,8 @@ class TrackingWorker(QThread):
             nonlocal pending, restart_seeds
             tr_q, vis_q, conf_q = step_out
             L = min(tr_q.shape[0], 2 * step, n_frames_fed)
-            tr = tr_q[-L:] * to_native[None, None, :] + origin[None, None, :]
+            tr_w = tr_q[-L:]
+            tr = (centre_scale(tr_w, s_xy) if shrunk else tr_w) + origin[None, None, :]
             vi = vis_q[-L:].astype(bool)
             cf = conf_q[-L:]
             w0 = seg_start + n_frames_fed - L
