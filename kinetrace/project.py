@@ -766,8 +766,7 @@ class Project:
 
     # ---------------------------------------------------------------- exports
 
-    def export_multi_dltdv(self, path: str | Path, flip_y: bool = False,
-                           pixel_origin: float = 1.0) -> list[str]:
+    def export_multi_dltdv(self, path: str | Path, flip_y: bool = False) -> list[str]:
         """One DLTdv/Argus xypts file covering EVERY view, which is what a 3D
         reconstruction consumes: one row per instant, columns grouped
         `pt{n}_cam{k}_X/Y`, cameras in view order. Rows are the overlapping
@@ -779,16 +778,16 @@ class Project:
         Pixel convention: DLTdv8's by default -- TOP-left origin, first pixel
         = 1 (x + 1, y + 1), the frame a DLTdv8 project's clicks and DLT
         coefficients are in (see `calib.CameraCalibration`). `flip_y=True`
-        writes the older bottom-left variant (y' = H - y per view height).
+        writes the older bottom-left variant (y' = H - y per view height). Both through
+        `session.dltdv_xy`, the one-camera export's conversion too (R58).
 
         Landmarks are matched BY NAME across views (that is what triangulation
         needs); a name missing from a view, or no data there, exports as NaN
         like DLTdv's own files (I20: blank cells read as 0 in MATLAB's csvread).
         Writes a `*_pointnames.csv` sidecar (names, the convention, which video
         is camK, the frame basis) and returns the files written."""
-        from kinetrace.session import dltdv_convention_text
+        from kinetrace.session import dltdv_convention_text, dltdv_xy
         path = Path(path)
-        po = float(pixel_origin)
         names: list[str] = []
         for s in self.sessions:                  # union, first-seen order
             for q in s.points:
@@ -810,9 +809,8 @@ class Project:
                     if f is None or j is None or not exp[c][f, j]:
                         cells.append("NaN,NaN")
                         continue
-                    x, y = s.tracks[f, j]
-                    yy = (s.height - float(y)) if flip_y else float(y) + po
-                    cells.append(f"{float(x) + po:.4f},{yy:.4f}")
+                    xx, yy = dltdv_xy(*s.tracks[f, j], s.height, flip_y)
+                    cells.append(f"{xx:.4f},{yy:.4f}")
             lines.append(",".join(cells))
         path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
         side = path.with_name(path.stem + "_pointnames.csv")
@@ -822,7 +820,7 @@ class Project:
         w = csv.writer(buf, lineterminator="\n")
         w.writerow(["name", "cameras"])
         w.writerows([nm, self.n_views] for nm in names)
-        w.writerow(["convention", dltdv_convention_text(flip_y, po)])
+        w.writerow(["convention", dltdv_convention_text(flip_y)])
         # (I356) the other cameras are at their NEAREST WHOLE frame (map_frame; DLTdv works in whole frames),
         # not interpolated to the instant: say so, and give each camera's offset so a fractional one shows
         w.writerow(["rows", f"row k = frame k (from 0) of {self.name(ref)}, the reference camera; the other "
