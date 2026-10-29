@@ -400,7 +400,7 @@ The rest of this section describes the same parts in more detail.
 │ 1 Open video ✓ › 2 Segment › 3 Skeleton › 4 Track  │ Layers               │
 ├────────────────────────────────────────────────────┤ CAMERAS  + Add video │
 │                                                    │ cam1 (reference)     │
-│                                                    │ offset 0.000  ◂ ▸    │
+│                                                    │ offset 0.000 ▲▼      │
 │                    the video                       │                      │
 │                (click things here)                 │ LAYERS               │
 │                                                    │ + Animal  + Point    │
@@ -497,13 +497,14 @@ to bring the names back. The Track button always keeps its words.
   **number** and name (camera 1 is marked **(reference)**) and its offset. The
   number is the camera's place in the **camera order** — the order of
   calibrations, 3D and exports (*Camera order…* under the list changes it).
-  **▶** opens the row: **Align here** and **×** (remove this camera) on its
-  first line, its **offset** — the frame this camera shows when the reference
-  camera is at its frame 0 — with **◂ ▸** to nudge it a frame at a time (and
-  **×2** for a camera filming at twice the reference rate), then its frame rate
-  and a count of its points and tracked frames. With one video there is a
-  single row and nothing to set; **＋ Add video** adds another camera of the
-  same event (section 10).
+  **▶** opens the row: **×** (remove this camera) on its first line, its
+  **offset** — the frame this camera shows when the reference camera is at its
+  frame 0 — whose **▲▼** step it a frame at a time (and **×2** for a camera
+  filming at twice the reference rate), then its frame rate and a count of its
+  points and tracked frames. With two or more cameras, **Align all cameras to
+  their current visible frame** above the list lines every camera up in one
+  press (section 10). With one video there is a single row and nothing to set;
+  **＋ Add video** adds another camera of the same event (section 10).
 - **LAYERS** — everything you track, as a tree. Each **animal** (one
   individual animal, or any object you follow) is a row with its points
   underneath; then a **Scene** row holds the points that belong to no animal —
@@ -1587,8 +1588,8 @@ first camera you load**. It is marked **(reference)** in the panel, its offset i
 **always 0**, and you cannot change it — there is nothing to change, it *is* the
 zero.
 
-(For the same reason the reference camera's offset box and its **◂ ▸**
-nudge buttons are greyed out.)
+(For the same reason the reference camera's offset box and its **▲▼**
+arrows are greyed out.)
 
 Every other camera's offset then reads as one plain sentence:
 
@@ -1703,12 +1704,25 @@ the numbers just get measured from the new starting point.
    confirm it appears at the same time in each view.
    The manual way, for a stubborn camera: move to a moment that *every* camera
    recorded — a flash, a hand clap, the animal first touching the ground,
-   anything unmistakable. Then for each other camera, tap **◂** or **▸** to
-   shift it a frame at a time until it shows that same moment. If it is
-   already showing the right moment, just press **Align here** and the offset
-   is worked out for you. Align here works on the reference camera's row too:
-   the reference never moves (it is the clock), so it sets the offset of the
-   camera you are working in, and every other camera keeps its own.
+   anything unmistakable. Then there are two ways:
+   - **One camera at a time:** open its row (**▶**) and press the offset box's
+     **▲** (this camera one frame later) or **▼** (one frame earlier) until it
+     shows that same moment. Only that camera's picture moves — also when it is
+     the camera you are working in (then the timeline's playhead moves one frame
+     with it, so every other camera stays where it is).
+   - **Every camera in one press:** untick **Sync all** (Active view only), so
+     each camera stays where you leave it. Click camera 1 and scrub it to the
+     moment; then click each other camera and scrub it to the same moment. Press
+     **Align all cameras to their current visible frame** (above the camera
+     list): every camera you parked gets the offset that makes its frame match
+     camera 1's, and each keeps the picture it shows. *Example:* camera 1 shows
+     the flash on its frame 600 and camera 5 on its frame 540 — camera 5's offset
+     becomes −60. A camera counts as parked only once you have *moved* it: one
+     you never clicked, or only looked at, keeps its offset — a measured
+     sub-frame one too (the status bar names it) — and **Ctrl+Z** undoes the
+     whole press. Pressed under Sync all,
+     the button changes nothing: it switches to Active view only and the status
+     bar says these steps.
 4. The panel then reports the **overlap** — the stretch of frames for which every
    camera has a picture. 3D needs only two cameras to see a landmark at the
    same instant, so it can reach a little beyond that stretch.
@@ -1757,8 +1771,8 @@ the camera has a lens profile: **lens ✓** (attached and used), **lens ✗**
 **no lens**. Hover it for what the camera records (picture size, frame rate, a
 video that plays turned), its lens and whether the 3D calibration covers it;
 click it for **3D → Cameras Overview…**, the same for every camera in one
-table (with GoPro footage also the camera's own report, below). **▶** opens it: **Align here** and **×** on the
-first line, and the offset box with **◂ ▸** (and ×2 for a camera recording at
+table (with GoPro footage also the camera's own report, below). **▶** opens it: **×** on the
+first line, and the offset box with its **▲▼** (and ×2 for a camera recording at
 twice the reference rate) underneath. **×** removes that camera from the
 project; it asks first when the camera has tracked frames, and its tracks go
 with it.

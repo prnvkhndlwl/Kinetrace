@@ -6,13 +6,13 @@ shows when the reference is at frame 0" (a camera switched on N frames after the
 reference has offset -N). That holds whichever camera you are working in — the
 numbers never shift under you when you switch.
 
-A row shows the camera name, a spin box for its **frame offset**, and a nudge
-pair. Raising the offset by one shows that camera one frame later against the
+A row shows the camera name and a spin box for its **frame offset** (its ▲▼ are
+the nudges, G234). Raising the offset by one shows that camera one frame later against the
 same playhead — you nudge until the flash / clap / first contact lines up with
-the working view, and that is the whole alignment workflow. "Align here" does
-the same in one click once both views are parked on the same event. On the
-reference's row it sets the WORKING camera's offset instead (the reference is
-the clock and never moves; every other camera keeps its offset, G13).
+the working view. Retiming a camera moves only THAT camera's picture, the
+working one's too (I380). (G233) "Align all cameras to their current visible
+frame", one button for the whole rig, does it in one press once every camera is
+parked on the same event: each parked camera's offset is set against camera 1.
 
 The active row is the camera being tracked; selecting another row switches to
 it (the playhead follows through the offsets, so the picture stays on the same
@@ -21,9 +21,9 @@ instant).
 (G169) With many cameras every row is ONE compact line -- its disclosure ▶, its
 eye (show / hide the camera's view: a hidden view is not decoded, and the views
 left get the room), its number, name and offset -- so all of them fit; ▶ opens
-the row's controls (Align here, the offset box and its nudges, the frame rate,
-remove). The numbers are the cameras' ORDER (camera 1 = the reference), the
-order of calibrations, 3D and exports; Camera order... changes it.
+the row's controls (the offset box, the frame rate, remove). The
+numbers are the cameras' ORDER (camera 1 = the reference), the order of
+calibrations, 3D and exports; Camera order... changes it.
 
 The panel is data-free: `MainWindow` rebuilds it from the `Project` and acts on
 its signals.
@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget,
 
 from kinetrace import icons, theme
 from kinetrace.project import REFERENCE_VIEW
-from kinetrace.widgets import ElidedLabel, wrap_caption
+from kinetrace.widgets import ElidedButton, ElidedLabel, wrap_caption
 
 OFFSET_LIMIT = 10_000_000     # frames; far beyond any real clip
 OFFSET_DECIMALS = 3           # sub-frame sync is measured to ~0.01 frame; show a little more
@@ -56,11 +56,10 @@ def _dim_label(text: str = "") -> QLabel:
 
 class _CameraRow(QWidget):
     """One camera: a compact line -- disclosure, eye, number + name, offset (G169) -- and, opened,
-    its controls: Align here and remove on that line, the offset box with its nudges, the frame rate
-    and the status line."""
+    its controls: remove on that line, the offset box (its ▲▼ step one frame), the frame rate and the
+    status line."""
 
     offset_changed = Signal(int, float)   # (view index, new offset in this view's frames)
-    align_requested = Signal(int)
     remove_requested = Signal(int)
     fps_requested = Signal(int)           # the frame-rate button (G38)
     shown_toggled = Signal(int, bool)     # (G169) its eye: (view index, shown)
@@ -115,15 +114,7 @@ class _CameraRow(QWidget):
         self.lens_badge.clicked.connect(lambda: self.overview_requested.emit(self.index))
         self.lens_badge.setVisible(False)
         top.addWidget(self.lens_badge)
-        # "Align here" sits on the name line: on the offset line it made the row
-        # wider than the panel and was clipped with the x and the > (G3)
-        self.btn_align = QToolButton()
-        self.btn_align.setText("Align here")
-        self.btn_align.setToolTip(
-            "Take the frame this camera is showing right now as the match for the\n"
-            "working camera's current frame, and set the offset from that.")
-        self.btn_align.clicked.connect(lambda: self.align_requested.emit(self.index))
-        top.addWidget(self.btn_align)
+        # remove sits on the name line: on the offset line it made the row wider than the panel (G3)
         self.btn_remove = QToolButton()
         self.btn_remove.setText("×")
         self.btn_remove.setToolTip("Remove this camera from the project (its tracks are dropped)")
@@ -147,6 +138,10 @@ class _CameraRow(QWidget):
         self.spin.setSingleStep(1.0)          # by hand you align whole frames
         self.spin.setFixedWidth(88)            # the offset line must fit the narrowest panel
         self.spin.setToolTip("")   # set per row: the reference reads differently
+        # (I380) a typed number is ONE retime, on Enter / leaving the box: per keystroke, "97" passed 9 on
+        # the way, which could clamp the working camera's playhead and lose the instant (and dropped 3D
+        # and started a decode each time); the arrows and the wheel still act at once
+        self.spin.setKeyboardTracking(False)
         self.spin.valueChanged.connect(
             lambda v: self.offset_changed.emit(self.index, float(v)))
         # give the keyboard back as soon as the edit is done (hotkeys, and no
@@ -154,16 +149,9 @@ class _CameraRow(QWidget):
         # focus-policy pass, so this is set here
         self.spin.setFocusPolicy(Qt.ClickFocus)
         self.spin.editingFinished.connect(self.spin.clearFocus)
+        # (G234) the box's own ▲▼ are the nudges (one frame later / earlier): a ◂ ▸ pair beside it did
+        # the same thing twice
         row.addWidget(self.spin)
-        self.nudges: list[QToolButton] = []
-        for text, delta, tip in (("◂", -1, "one frame earlier"), ("▸", +1, "one frame later")):
-            b = QToolButton()
-            b.setText(text)
-            b.setToolTip(f"Show this camera {tip}")
-            b.setProperty("compact", True)       # theme: tight padding, the row must fit the panel
-            b.clicked.connect(lambda _=False, d=delta: self.spin.setValue(self.spin.value() + d))
-            row.addWidget(b)
-            self.nudges.append(b)
         self.rate = QLabel("")                # "×2" for a camera at twice the reference rate
         self.rate.setStyleSheet(f"color: {theme.TEXT_DIM};")
         self.rate.setToolTip("Frames of this camera per frame of the reference camera\n"
@@ -203,13 +191,11 @@ class _CameraRow(QWidget):
             return
         self._expanded = on
         self.details.setVisible(on)
-        self.btn_align.setVisible(on)
         self.btn_remove.setVisible(on)
         self.summary.setVisible(not on and bool(self._offset_text))
-        self.btn_expand.setText("▼" if on else "▶")      # not the nudges' ◂ ▸ (one frame earlier / later)
+        self.btn_expand.setText("▼" if on else "▶")
         self.btn_expand.setToolTip("Hide this camera's controls" if on else
-                                   "Show this camera's controls: Align here, its offset and nudges, its frame "
-                                   "rate, remove")
+                                   "Show this camera's controls: its offset, its frame rate, remove")
         if emit:
             self.expand_toggled.emit(self.index)
 
@@ -271,9 +257,7 @@ class _CameraRow(QWidget):
         # is nothing to type there. Every other camera stays editable whichever
         # one you happen to be working in — its offset means the same thing
         # either way ("its frame when the reference is at frame 0").
-        self.spin.setEnabled(not reference)
-        for b in self.nudges:               # the arrows only move the box: off with it (G128)
-            b.setEnabled(not reference)
+        self.spin.setEnabled(not reference)  # its ▲▼ go off with it (G128)
         self.spin.setToolTip(
             "This camera is the reference: every other offset is measured\n"
             "against it, so it is 0 by definition. To retime the set, change\n"
@@ -281,23 +265,12 @@ class _CameraRow(QWidget):
             if reference else
             "The frame this camera shows when the reference camera is at its frame 0.\n"
             "A camera switched on N frames AFTER the reference has offset -N;\n"
-            "one switched on earlier has +N. Nudge with the arrows until the same\n"
-            "moment shows in both views, or park it on that moment and press Align here.")
-        # on the reference's row it sets the WORKING camera's offset (G13)
-        self.btn_align.setEnabled(not active)
-        # a disabled button still shows its tooltip: say WHY it is off (G13)
-        self.btn_align.setToolTip(
-            "This is the working camera: Align here is on the OTHER cameras' rows.\n"
-            "Park this camera on a moment, park another camera on the same moment,\n"
-            "and press Align here on that camera's row."
-            if active else
-            "Take the frame the reference is showing right now as the match for the\n"
-            "working camera's current frame. The reference is the clock (offset 0)\n"
-            "and does not move: the WORKING camera's offset is set, and every other\n"
-            "camera keeps its own."
-            if reference else
-            "Take the frame this camera is showing right now as the match for the\n"
-            "working camera's current frame, and set the offset from that.")
+            "one switched on earlier has +N.\n"
+            "▲ shows this camera one frame later, ▼ one frame earlier; only this\n"
+            "camera's picture moves. Step until the same moment shows in this view and\n"
+            "in camera 1's, or type a number you know (a sync table, a measured sub-frame\n"
+            "offset). To line up every camera in one press: Align all cameras to their\n"
+            "current visible frame, above the list.")
         self.btn_remove.setEnabled(removable)
         self.status.setText(status)
         self.btn_fps.setVisible(bool(fps))
@@ -318,7 +291,7 @@ class CameraPanel(QWidget):
 
     activate_requested = Signal(int)
     offset_changed = Signal(int, float)
-    align_requested = Signal(int)
+    align_requested = Signal()           # (G233) Align all cameras to their current visible frame
     remove_requested = Signal(int)
     add_requested = Signal()
     fps_requested = Signal(int)          # a row's frame-rate button (G38)
@@ -361,13 +334,35 @@ class CameraPanel(QWidget):
         self.btn_add.clicked.connect(self.add_requested)
         head.addWidget(self.btn_add)
         lay.addLayout(head)
+        # (G233) ONE button for the whole rig (it replaced each row's Align here), on its own line: its long
+        # name must never set the dock's width (G3), so it takes the width it is given
+        self.btn_align_all = ElidedButton("Align all cameras to their current visible frame")
+        self.btn_align_all.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.btn_align_all.setFocusPolicy(Qt.NoFocus)
+        self.btn_align_all.setToolTip(
+            "Align all cameras to their current visible frame: line every camera up in time\n"
+            "with camera 1 (the reference clock) in one press.\n"
+            "1. Pick a moment every camera saw: a flash, a clap, a foot touching down.\n"
+            "2. Untick Sync all (Active view only), so each camera stays where you leave it.\n"
+            "    (Pressing this button under Sync all switches it for you and says these steps.)\n"
+            "3. Click camera 1 and scrub it to that moment; then click each other camera and\n"
+            "    scrub it to the same moment.\n"
+            "4. Press this button: every camera you parked gets the offset that makes its frame\n"
+            "    match camera 1's. Each one keeps the picture it shows.\n"
+            "Example: camera 1 shows the flash on its frame 600 and camera 5 on its frame 540:\n"
+            "camera 5's offset becomes -60.\n"
+            "A camera you did not move (never clicked, or only looked at) keeps its offset; the\n"
+            "status bar names it. Ctrl+Z undoes it.")
+        self.btn_align_all.clicked.connect(self.align_requested)
+        self.btn_align_all.setVisible(False)  # shown with a second camera
+        lay.addWidget(self.btn_align_all)
 
         self.list = QListWidget()
         self.list.setSelectionMode(QListWidget.SingleSelection)
         self.list.setToolTip("The cameras, in their ORDER (camera 1 = the reference clock; the order of\n"
                              "calibrations, 3D and exports). The highlighted one is being tracked: click\n"
                              "another to switch to it. The eye shows / hides a camera's view; ▶ opens its\n"
-                             "controls (Align here, offset, frame rate).")
+                             "controls (offset, frame rate, remove).")
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # (G175) no vertical item padding: an item is exactly its row's height (`_fit_row`), and the
         # theme's 4 px above and below squeezed the 23 px row to 15 px -- the name lost its descenders
@@ -426,7 +421,6 @@ class CameraPanel(QWidget):
         while len(self._rows) < n:
             row = _CameraRow(len(self._rows))
             row.offset_changed.connect(self.offset_changed)
-            row.align_requested.connect(self.align_requested)
             row.remove_requested.connect(self.remove_requested)
             row.fps_requested.connect(self.fps_requested)
             row.shown_toggled.connect(self.shown_toggled)
@@ -492,6 +486,7 @@ class CameraPanel(QWidget):
         self.btn_show_all.setToolTip("Show every camera's view again (each eye in the list shows / hides one)")
         self.btn_show_all.setVisible(several and n_hidden > 0)
         self.btn_order.setVisible(several)
+        self.btn_align_all.setVisible(several)
 
     def set_sync(self, on: bool) -> None:
         """Mirror the app's choice without emitting `sync_toggled` back."""
