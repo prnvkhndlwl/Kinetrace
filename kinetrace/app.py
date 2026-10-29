@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
-from PySide6.QtCore import QEvent, QEventLoop, QObject, QRect, QSettings, QSize, Qt, QTimer, QThread, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap, QShortcut
-from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, QApplication, QDialog, QDialogButtonBox,
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QRect, QSettings, Qt, QTimer, QThread, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QApplication, QDialog, QDialogButtonBox,
                                QDockWidget, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
                                QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QProgressDialog,
@@ -15618,8 +15618,6 @@ def show_install_welcome(win) -> None:
 
 
 def main():
-    import os
-    import sys
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")   # no telemetry (see __main__.py)
     os.environ.setdefault("DO_NOT_TRACK", "1")
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # Apple GPU: unsupported ops go to the CPU

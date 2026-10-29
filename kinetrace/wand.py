@@ -70,7 +70,6 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import NamedTuple
 
 import cv2

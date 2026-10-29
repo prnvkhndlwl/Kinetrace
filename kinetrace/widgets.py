@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import html
 import re
-from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon, QTextCursor
@@ -456,7 +455,6 @@ class OnboardingStrip(QWidget):
         self._chips: list[QToolButton] = []
         self._labels = ["1  Open video  (Ctrl+O)", "2  Segment the animal  (S, optional)",
                         "3  Skeleton / landmarks  (optional)", "4  Track"]
-        from PySide6.QtCore import QSize
         for i, text in enumerate(self._labels):
             b = QToolButton()
             b.setText(text)
@@ -473,7 +471,7 @@ class OnboardingStrip(QWidget):
                 lay.addWidget(arrow)
         # the hint is guidance, NOT a fifth step: a rule separates it from the
         # numbered chips and it sits hard right, against the close button
-        from PySide6.QtWidgets import QFrame, QSizePolicy
+        from PySide6.QtWidgets import QFrame
         lay.addSpacing(6)
         rule = QFrame()
         rule.setFrameShape(QFrame.VLine)
