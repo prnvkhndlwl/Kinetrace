@@ -222,7 +222,7 @@ HOTKEYS_HTML = f"""
 <h3>Several cameras</h3><table>
 <tr><td class=k>＋ Add video</td><td>CAMERAS panel (top of the right dock): put every camera of the same event in one project. Each view shows its own points and silhouette; up to 15</td></tr>
 <tr><td class=k>File → Open Folder of Videos</td><td>every video of a folder listed: tick the ones to import, put them in <b>camera order</b> (Move up / Move down; camera 1 = the reference clock; the order of calibrations, 3D and exports), and they open as one project — saved at once as &lt;folder&gt;.kinetrace unless you untick it. <b>＋ Add video</b> asks the order of the cameras added; <b>Camera order…</b> under the CAMERAS list changes it any time</td></tr>
-<tr><td class=k>offset  ▲▼</td><td><b>the frame this camera shows when camera 1 (the reference) is at its frame 0</b>: a camera switched on 12 frames after the reference has offset −12, one switched on earlier a positive offset. The first camera loaded is the reference: its offset is 0 by definition and locked, so every other number is measured against it and stays put when you switch cameras. Scrub to something every camera saw (a flash, a clap, first contact) and step a camera's offset with its ▲ (one frame later) / ▼ (earlier) until it lines up: only that camera's picture moves, also the working camera's (the playhead moves with it). Or line every camera up in one press: untick <b>Sync all</b>, park camera 1 and each other camera on the moment (click it, scrub), and press <b>Align all cameras to their current visible frame</b> — camera 1 on the flash at its frame 600 and camera 5 at its frame 540 gives camera 5 the offset −60; a camera you did not click keeps its offset; Ctrl+Z undoes it. The panel then reports the overlap window</td></tr>
+<tr><td class=k>offset  ▲▼</td><td><b>the frame this camera shows when camera 1 (the reference) is at its frame 0</b>: a camera switched on 12 frames after the reference has offset −12, one switched on earlier a positive offset. The first camera loaded is the reference: its offset is 0 by definition and locked, so every other number is measured against it and stays put when you switch cameras. Scrub to something every camera saw (a flash, a clap, first contact) and step a camera's offset with its ▲ (one frame later) / ▼ (earlier) until it lines up: only that camera's picture moves, also the working camera's (the playhead moves with it). Or line every camera up in one press: untick <b>Sync all</b>, park camera 1 and each other camera on the moment (click it, scrub), and press <b>Align all cameras to their current visible frame</b> — camera 1 on the flash at its frame 600 and camera 5 at its frame 540 gives camera 5 the offset −60; a camera you did not move (never clicked, or only looked at) keeps its offset; Ctrl+Z undoes it. The panel then reports the overlap window</td></tr>
 <tr><td class=k>click a view</td><td>switch to that camera. Every camera has the same list of points (in the same order); their positions, the silhouette, events and the timeline are always the <i>working</i> camera's; the playhead keeps the same instant and the selected point stays selected. With <b>N (Point) armed</b> the click switches AND places the point in the camera clicked; otherwise it only switches. Switching puts the segment tool down, drops a half-marked event and forgets the undo step; the tool toggles (Auto-pause, ROI, Body, Follow, the point model…) stay as you set them</td></tr>
 <tr><td class=k>guides &amp; ◇</td><td>with a calibration: the selected point's <b>dashed line</b> from every other camera that has it, run to the picture's edges (dotted where a lens model is only guessing). Once <b>two cameras</b> have it, every camera's lines turn faint and each camera that has it shows its <b>3D rmse</b> beside it (the reconstruction residual in px — green good, yellow usable, red poor; also in the status bar). Once two <i>other</i> cameras have it, a <b>◇</b> shows where they put it (the lines fade; A or a click on it places it); in a camera that already has it, the ◇ shows how many px its placement is from the others'. No ◇ when those cameras disagree or see it along one line — the line's label says why. A camera added after calibrating gets none; the others keep theirs</td></tr>
 <tr><td class=k>View → Other cameras</td><td><b>Sync all views</b> (the default: every camera follows the playhead; a single step shows every camera's new picture at once) · <b>Active view only</b> (Ctrl+Shift+2, or untick <i>Sync all</i> in the CAMERAS panel: only the working camera reads its video; the others stay on the picture they last showed, veiled, until you tick Sync all again or click one to work in it — its guides still come from the others' tracks) ·<b>Only the working camera</b> (Ctrl+2: the others are hidden and stop decoding)</td></tr>
@@ -683,9 +683,13 @@ class _ViewRuntime:
         self.window = SCRUB_WINDOW           # (I306) frames kept around the playhead; `_rebudget_caches` sets it
         self.seek: SeekService | None = None
         self.want_frame: int | None = None   # frame last requested (stale-reply guard)
-        # (G233) the user worked in this camera since Active view only began, so the frame it shows is one
-        # they chose: "Align all cameras to their current visible frame" retimes only parked cameras
-        self.parked = False
+        # (G233) one parking round (Active view only) for "Align all cameras to their current visible frame":
+        # `taken_at` = the frame this camera showed when the user took it up in the round (None = not worked in
+        # yet); `parked_frame` = the frame the user left it on after MOVING it there (camera 1, the clock: after
+        # working in it at all) -- the one an alignment uses, and the one it keeps showing; None = not parked.
+        # A camera only looked at is not parked: it keeps its offset, a measured sub-frame one included
+        self.taken_at: int | None = None
+        self.parked_frame: int | None = None
         self.bad_frames: set = set()         # frames already reported as undecodable (I40)
         self.seek_plan = None                # (I266) how this computer reaches the file's frames, once checked
         self.frame_check = None              # (I266) the last fingerprint.CheckResult on this computer
@@ -4598,11 +4602,14 @@ class MainWindow(QMainWindow):
         # it is and knows it is current, G27)
         self._views[p.active].want_frame = self.current
         self._views[i].want_frame = None
-        self._views[p.active].parked = self._views[i].parked = True     # (G233) both show a frame the user chose
+        self._views[p.active].parked_frame = self._parked_frame_now(p.active)     # (G233) moved there, or not parked
         target = p.set_active(i)
         p.session.ui_state.update(carried)
         self.grid.set_active(i)
         self._apply_active_view(target if target is not None else p.session.current_frame)
+        # (G233) taken up in the round at the frame the switch put it on; parked again only once moved
+        self._views[i].taken_at = self.current if self._sync_mode == "active" else None
+        self._views[i].parked_frame = None
         self._update_disagreement()            # the band is per camera: recompute for this one
         j = p.session.pid_by_name(keep) if keep is not None else None
         # selects it (and shows its epipolar guides) and the whole selection, by name; ClearAndSelect
@@ -4736,7 +4743,12 @@ class MainWindow(QMainWindow):
         t = p.reference_time(p.active, self.current) if i == p.active else None
         p.set_offset(i, float(offset))
         if t is not None and p.offsets[i] != before[i]:
-            self._goto(int(p.local_index(p.active, t)), force=True)
+            target = int(p.local_index(p.active, t))
+            self._goto(target, force=True)
+            if target != self.current:           # past its video's ends: the playhead stopped there
+                self.statusBar().showMessage(
+                    f"{p.name(i)} has no frame at this moment with offset {p.offsets[i]:+g}: it shows its "
+                    f"{'first' if target < 0 else 'last'} frame, so the other cameras moved with it", 8000)
         self._retimed(had_3d, list(p.offsets) != before)   # an unchanged value drops nothing (I206)
 
     def _retimed(self, had_3d: bool, changed: bool = True, reason: str = "camera timing changed") -> None:
@@ -4752,15 +4764,23 @@ class MainWindow(QMainWindow):
 
     def _align_all_cameras(self):
         """(G233) "Align all cameras to their current visible frame" (the flash / clap step, the whole rig in
-        one press): every PARKED camera (`_ViewRuntime.parked`: worked in since Active view only began, so
-        the user chose its frame) gets the offset that lines its frame up with camera 1's; camera 1 is the
-        clock; a camera not parked keeps its offset and is named. Each parked camera keeps its picture. One
-        Ctrl+Z (`_apply_offsets_undoable`). Under Sync all nothing can be parked (every camera follows the
-        playhead): the press changes nothing, switches to Active view only and says the steps."""
+        one press): every PARKED camera (`_parked_frame_now`: the user MOVED it while working in it since Active
+        view only began; camera 1 once worked in at all) gets the offset that lines its frame up with camera
+        1's; camera 1 is the clock; a camera not parked -- never worked in, or only looked at -- keeps its
+        offset and is named. Each parked camera keeps its picture. One Ctrl+Z (`_apply_offsets_undoable`).
+        Under Sync all nothing can be parked (every camera follows the playhead): the press changes nothing,
+        switches to Active view only and says the steps; with only the working camera on screen it says to
+        show the others."""
         p = self.project
         if p is None or self.state != READY or p.n_views < 2:
             return
         ref = p.name(REFERENCE_VIEW)
+        if self.act_solo.isChecked():
+            self.statusBar().showMessage(
+                "Nothing changed: only the working camera is on screen (View → Other cameras → Only the working "
+                "camera, Ctrl+2). Show the other cameras, park each on the same moment, then press Align all "
+                "cameras again.", 12000)
+            return
         if self._sync_mode != "active":
             self._set_sync_mode("active")
             self.statusBar().showMessage(
@@ -4769,8 +4789,7 @@ class MainWindow(QMainWindow):
                 f"click {ref} and scrub to it, then click each other camera and scrub to the same moment; then "
                 f"press Align all cameras again.", 20000)
             return
-        parked = {v: int(self.current if v == p.active else self._views[v].want_frame) for v in range(p.n_views)
-                  if v == p.active or (self._views[v].parked and self._views[v].want_frame is not None)}
+        parked = {v: int(f) for v in range(p.n_views) if (f := self._parked_frame_now(v)) is not None}
         if REFERENCE_VIEW not in parked:
             self.statusBar().showMessage(
                 f"Nothing changed: {ref} (camera 1, the clock every offset is measured from) is not parked yet. "
@@ -4778,8 +4797,8 @@ class MainWindow(QMainWindow):
             return
         if len(parked) < 2:
             self.statusBar().showMessage(
-                f"Nothing changed: only {ref} is parked. Click another camera, scrub it to the same moment as "
-                f"{ref}, then press Align all cameras again.", 12000)
+                f"Nothing changed: only {ref} is parked. Click another camera and scrub it to the same moment as "
+                f"{ref} (a camera you only look at keeps its offset), then press Align all cameras again.", 12000)
             return
         before = list(p.offsets)
         rec = self._apply_offsets_undoable(p.aligned_offsets(parked))
@@ -4793,6 +4812,25 @@ class MainWindow(QMainWindow):
             + (f" · already lined up: {', '.join(lined)}" if lined else "")
             + (f" · kept (not parked): {', '.join(kept)}" if kept else "")
             + (" · Ctrl+Z undoes it" if rec is not None else ""), 20000)
+
+    def _begin_parking(self) -> None:
+        """(G233) A new parking round (every Sync all / Active view only switch): nothing parked; under Active
+        view only the working camera is taken up at its frame now."""
+        p = self.project
+        for k, rt in enumerate(self._views):
+            rt.parked_frame = None
+            rt.taken_at = (self.current if p is not None and k == p.active and self._sync_mode == "active"
+                           else None)
+
+    def _parked_frame_now(self, v: int) -> int | None:
+        """(G233) The frame camera `v` is parked on, or None: the working camera's playhead once the user moved
+        it in this round (camera 1, the clock: once worked in at all), another camera's `parked_frame`."""
+        p, rt = self.project, self._views[v]
+        if v != p.active:
+            return rt.parked_frame
+        if rt.taken_at is None:
+            return None
+        return self.current if (v == REFERENCE_VIEW or self.current != rt.taken_at) else None
 
     def _refresh_cameras(self):
         """Repaint the CAMERAS panel from the project."""
@@ -5443,7 +5481,7 @@ class MainWindow(QMainWindow):
                 # hidden (solo): give the decoder thread and its VideoCapture
                 # back — at 15 cameras that is 14 open 4K captures for nothing
                 rt.want_frame = None
-                rt.parked = False                # (G233) shown again, it shows this instant, not its parked frame
+                rt.parked_frame = rt.taken_at = None   # (G233) shown again, it shows this instant, not its parked frame
                 rt.stop()
                 continue
             f = p.map_frame(p.active, i, self.current)
@@ -5452,7 +5490,9 @@ class MainWindow(QMainWindow):
                 # Active view only (G27): this camera is not decoded; it keeps the
                 # picture it last showed, veiled, with the markers of THAT frame
                 cv.set_stale(True)
-                f = rt.want_frame           # never None here: _tile_stale needs a frame already shown
+                # never None here: _tile_stale needs a frame already shown, or a parked one (G233: kept even
+                # when its picture was dropped -- Camera order, Shift+C, an instant outside its recording)
+                f = rt.parked_frame if rt.parked_frame is not None else rt.want_frame
                 self.grid.set_caption(
                     i, f"{p.name(i)}  ·  frame {f} · not following (Active view only) — click to work in it")
             else:
@@ -5466,7 +5506,8 @@ class MainWindow(QMainWindow):
                 cv.clear_masks()                # every animal's silhouette (G189)
                 continue
             f = min(f, rt.n_frames - 1)
-            if rt.want_frame != f and not cv.is_stale():
+            # a veiled camera is not decoded on a move; only a parked one whose picture was dropped asks once (G233)
+            if rt.want_frame != f and (not cv.is_stale() or rt.want_frame is None):
                 rt.want_frame = f
                 cached = rt.cache.get(f)
                 if self._lock is not None:
@@ -5550,9 +5591,7 @@ class MainWindow(QMainWindow):
         # Sync all: the others come back to the playhead now. Active view only: they
         # are at this instant already, and stay where they are from the next move on
         self._companions_stale = False
-        # (G233) a new parking round: only the working camera shows a frame the user chose so far
-        for k, rt in enumerate(self._views):
-            rt.parked = self.project is not None and k == self.project.active
+        self._begin_parking()
         self.cameras.set_sync(mode == "all")
         self._refresh_companions()
         self._refresh_guides()
@@ -8702,6 +8741,8 @@ class MainWindow(QMainWindow):
             return False
         f = p.map_frame(p.active, v, self.current)
         rt = self._views[v]
+        if rt.parked_frame is not None:          # (G233) parked: it shows its parked frame until the round ends
+            return f is None or rt.parked_frame != min(f, rt.n_frames - 1)
         # a camera that has shown nothing yet (just added, or a project reopened in
         # this mode) is decoded once, at this instant; after that it stays put
         return f is not None and rt.want_frame is not None and rt.want_frame != min(f, rt.n_frames - 1)

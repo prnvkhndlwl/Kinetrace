@@ -159,6 +159,22 @@ assert p.offsets[1] == 9.0, p.offsets
 assert after[1] == before[1] + 5 and after[0] == before[0] and after[2] == before[2], \
     f"typed 4 -> 9: only camB moves, by 5 frames: {before} -> {after}"
 print(f"[2] typed offset: frames {before} -> {after}, only camB moved OK")
+# (review) a number of several digits is ONE retime: per keystroke "97" passed 9, clamped the playhead at 0
+# and lost the instant (camB ended on 88, not 7)
+p.set_offset(1, 100.0)
+win._refresh_cameras()
+win._goto(10, force=True)
+settle()
+before = shown()
+QTest.mouseClick(row.spin, Qt.LeftButton)
+row.spin.selectAll()
+QTest.keyClicks(row.spin, "97")
+QTest.keyClick(row.spin, Qt.Key_Return)
+settle()
+after = shown()
+assert p.offsets[1] == 97.0 and after[1] == 7 and after[0] == before[0] and after[2] == before[2], \
+    f"typed 100 -> 97: camB 10 -> 7, the others stay: {before} -> {after}"
+print(f"[2] typed two digits: frames {before} -> {after}, one retime OK")
 p.set_offset(1, 3.0)
 win._refresh_cameras()
 settle()
@@ -199,6 +215,87 @@ win.act_undo.trigger()
 settle()
 assert p.offsets == off0, f"Ctrl+Z puts every offset back: {p.offsets} vs {off0}"
 print("[4] one Ctrl+Z puts the offsets back OK")
+
+
+def new_round():
+    """Sync all, then the Align button: a new parking round starts in the working camera."""
+    if not win.cameras.btn_sync.isChecked():
+        QTest.mouseClick(win.cameras.btn_sync, Qt.LeftButton)
+        settle()
+    QTest.mouseClick(btn, Qt.LeftButton)
+    settle()
+    assert win._sync_mode == "active"
+
+
+def set_offsets(offs):
+    for v, o in enumerate(offs):
+        p.set_offset(v, o)
+    win._refresh_cameras()
+    settle()
+
+
+# ---- [6] (review) only a camera the user MOVED is parked -------------------------------------------------
+# a: the camera worked in when the round began, never moved, keeps its offset (it was retimed +40 before)
+set_offsets([0.0, 0.0, 0.0])
+if not win.cameras.btn_sync.isChecked():
+    QTest.mouseClick(win.cameras.btn_sync, Qt.LeftButton)
+    settle()
+click_row(2)
+win._goto(100, force=True)
+settle()
+new_round()
+click_row(0)
+win._goto(60, force=True)
+settle()
+click_row(1)
+win._goto(50, force=True)
+settle()
+QTest.mouseClick(btn, Qt.LeftButton)
+settle()
+msg = win.statusBar().currentMessage()
+assert p.offsets == [0.0, -10.0, 0.0] and p.name(2) in msg.split("kept")[-1], (p.offsets, msg)
+print(f"[6a] the camera the round began in, not moved: kept ({p.offsets}) OK")
+# b: a camera only looked at keeps a measured sub-frame offset (it was rounded to a whole frame before)
+set_offsets([0.0, -10.4, -25.0])
+new_round()
+click_row(0)
+win._goto(60, force=True)
+settle()
+click_row(1)                       # only looked at
+click_row(2)
+win._goto(35, force=True)          # camC on world frame 60
+settle()
+QTest.mouseClick(btn, Qt.LeftButton)
+settle()
+assert p.offsets == [0.0, -10.4, -25.0], f"camB only looked at keeps -10.4: {p.offsets}"
+print(f"[6b] a camera only looked at keeps its sub-frame offset ({p.offsets}) OK")
+# c: a parked camera stays parked when the working camera's instant is outside its recording
+set_offsets([0.0, -30.0, 0.0])
+new_round()
+click_row(0)
+win._goto(60, force=True)
+settle()
+click_row(1)
+win._goto(50, force=True)
+settle()
+click_row(2)
+win._goto(20, force=True)          # camB maps to frame -10 now: outside its recording
+settle()
+QTest.mouseClick(btn, Qt.LeftButton)
+settle()
+msg = win.statusBar().currentMessage()
+assert p.offsets == [0.0, -10.0, -40.0] and "kept" not in msg, f"camB parked at 50 is aligned: {p.offsets}, {msg!r}"
+print(f"[6c] parked camB aligned though its frame was off the playhead's instant ({p.offsets}) OK")
+# d: with only the working camera on screen the press says to show the others
+win.act_solo.setChecked(True)
+settle()
+off0 = list(p.offsets)
+QTest.mouseClick(btn, Qt.LeftButton)
+settle()
+assert p.offsets == off0 and "Ctrl+2" in win.statusBar().currentMessage(), win.statusBar().currentMessage()
+win.act_solo.setChecked(False)
+settle()
+print("[6d] only the working camera on screen: nothing changed, it says to show the others OK")
 
 # ---- [5] its long name never widens the dock (G3 pitfall) -------------------------------------------
 assert btn.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored, "the button must not set the panel's width"

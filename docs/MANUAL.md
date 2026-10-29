@@ -1717,8 +1717,10 @@ the numbers just get measured from the new starting point.
      list): every camera you parked gets the offset that makes its frame match
      camera 1's, and each keeps the picture it shows. *Example:* camera 1 shows
      the flash on its frame 600 and camera 5 on its frame 540 — camera 5's offset
-     becomes −60. A camera you did not click keeps its offset (the status bar
-     names it), and **Ctrl+Z** undoes the whole press. Pressed under Sync all,
+     becomes −60. A camera counts as parked only once you have *moved* it: one
+     you never clicked, or only looked at, keeps its offset — a measured
+     sub-frame one too (the status bar names it) — and **Ctrl+Z** undoes the
+     whole press. Pressed under Sync all,
      the button changes nothing: it switches to Active view only and the status
      bar says these steps.
 4. The panel then reports the **overlap** — the stretch of frames for which every

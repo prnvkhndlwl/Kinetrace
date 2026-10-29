@@ -138,6 +138,10 @@ class _CameraRow(QWidget):
         self.spin.setSingleStep(1.0)          # by hand you align whole frames
         self.spin.setFixedWidth(88)            # the offset line must fit the narrowest panel
         self.spin.setToolTip("")   # set per row: the reference reads differently
+        # (I380) a typed number is ONE retime, on Enter / leaving the box: per keystroke, "97" passed 9 on
+        # the way, which could clamp the working camera's playhead and lose the instant (and dropped 3D
+        # and started a decode each time); the arrows and the wheel still act at once
+        self.spin.setKeyboardTracking(False)
         self.spin.valueChanged.connect(
             lambda v: self.offset_changed.emit(self.index, float(v)))
         # give the keyboard back as soon as the edit is done (hotkeys, and no
@@ -347,7 +351,8 @@ class CameraPanel(QWidget):
             "    match camera 1's. Each one keeps the picture it shows.\n"
             "Example: camera 1 shows the flash on its frame 600 and camera 5 on its frame 540:\n"
             "camera 5's offset becomes -60.\n"
-            "A camera you did not click keeps its offset (the status bar names it). Ctrl+Z undoes it.")
+            "A camera you did not move (never clicked, or only looked at) keeps its offset; the\n"
+            "status bar names it. Ctrl+Z undoes it.")
         self.btn_align_all.clicked.connect(self.align_requested)
         self.btn_align_all.setVisible(False)  # shown with a second camera
         lay.addWidget(self.btn_align_all)
