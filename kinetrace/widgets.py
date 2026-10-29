@@ -461,7 +461,8 @@ class ElidedButton(QToolButton):
         return QSize(self.fontMetrics().horizontalAdvance(self._full) + self._pad(), QToolButton.sizeHint(self).height())
 
     def minimumSizeHint(self):               # noqa: N802 - Qt name
-        return QSize(self.fontMetrics().horizontalAdvance("Align…") + self._pad(),
+        """Its first few characters: a long text must never widen the window."""
+        return QSize(self.fontMetrics().horizontalAdvance(self._full[:5] + "…") + self._pad(),
                      QToolButton.minimumSizeHint(self).height())
 
     def _elide(self) -> None:
