@@ -3295,8 +3295,8 @@ class MainWindow(QMainWindow):
             head.setFlags(Qt.NoItemFlags)
             lst.addItem(head)
             for p, n in group:
-                size = "" if p.what.startswith("Kinetrace folder") or "registry" in p.note \
-                    else f"   [{paths.human(n)}]"
+                # (G232) the Kinetrace folder's own row shows its size too (what uninstalling frees)
+                size = "" if "registry" in p.note else f"   [{paths.human(n)}]"
                 it = QListWidgetItem(f"   {p.what}: {p.path}{size}" + (f"   ({p.note})" if p.note else ""))
                 it.setData(Qt.UserRole, str(p.path) if "registry" not in p.note else "")
                 lst.addItem(it)

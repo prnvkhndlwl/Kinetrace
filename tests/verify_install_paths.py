@@ -77,6 +77,10 @@ act.trigger()
 app.processEvents()
 rows = seen.get("rows") or []
 assert rows and rows[0].startswith("Inside the Kinetrace folder"), rows
+# (G232) the whole folder is measured anyway: its row shows the size (what uninstalling frees)
+assert any(t.strip().startswith("Kinetrace folder (the app):") and f"{ROOT}   [" in t for t in rows), \
+    "G232: the Kinetrace folder's row shows its size: " + repr([t for t in rows if "Kinetrace folder (" in t])
+print("[2] the Kinetrace folder's row shows its size (G232): OK")
 assert any("Environment" in t and str(ROOT / ".venv") in t and "[" in t for t in rows), rows
 assert any(t.startswith("Outside the Kinetrace folder") for t in rows), rows
 assert seen["after_heading"] == [], "a heading row must open nothing"
