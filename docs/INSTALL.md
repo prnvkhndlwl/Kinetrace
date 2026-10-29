@@ -252,7 +252,8 @@ Joints…** says, beside the SAM 3D Body model, what is still missing.
 **Inside the Kinetrace folder** (deleting the folder removes all of these):
 the environment (`.venv`), the models (`models/`), the error and install logs
 (`logs/`), unsaved-work recovery copies (`recovery/`), saved skeletons
-(`skeletons/`), your settings (`settings.ini`), on a Mac `Kinetrace.app` and on
+(`skeletons/`), the tour's demo video (`demo/`, made by Help → Take the Interface
+Tour), your settings (`settings.ini`), on a Mac `Kinetrace.app` and on
 Windows the `Kinetrace` shortcut (its icon is `.venv\kinetrace.ico`).
 
 **Outside it:**
@@ -321,14 +322,15 @@ Your projects and exports are not touched by any of this.
 
 **Help → Check for Updates…** asks GitHub for the newest version (one request;
 nothing about you is sent, and nothing is checked unless you ask), shows what is
-new, and **Update now** installs it. When you have not checked for 30 days, a
+new, and **Update now** installs it (**Restart now** starts the new version; **Later**
+keeps the one you are running until you next start Kinetrace). When you have not checked for 30 days, a
 note at start says so (click it to check; it comes back at most once a week
 until you do); that reminder only counts days, it never goes online. A folder
 made with `git clone` is updated with git: on a Mac whose Command Line Tools
 are missing or broken (often after a macOS upgrade), *Update now* stays off and
 the window says how to repair them (`xcode-select --install` in Terminal), or
 run `git pull` in the folder yourself. Only changed files are replaced; `.venv/`,
-`models/`, `recovery/`, `logs/`, `skeletons/`, `settings.ini` and your footage
+`models/`, `recovery/`, `logs/`, `skeletons/`, `demo/`, `settings.ini` and your footage
 are never touched. When the app will not start, double-click `update.bat`
 (Windows) or `Update.command` (Mac), or run `bash update.sh` (`--check` only
 looks).
