@@ -183,41 +183,34 @@ p.set_active(1)                          # switching cameras must not renumber
 assert p.offsets[0] == 0 and p.offsets == [0, -SHIFT], \
     f"switching the working camera must not move any offset: {p.offsets}"
 assert [p.map_frame(0, j, 40) for j in range(p.n_views)] == _before
-# aligning the reference against another camera moves the WORKING camera, keeping it 0
-p.align_to(0, 20, 40)                    # cam1 frame 20 == cam2 frame 40
-assert p.offsets[0] == 0, "the reference stays 0 even when it is what you aligned"
-assert p.map_frame(0, 1, 20) == 40, "...and the alignment it expressed still holds"
-# G13: with three cameras only the working one moves; the third keeps its alignment
+# (G233) the parked frames' offsets: the reference stays 0 whatever was parked
+assert p.aligned_offsets({0: 20, 1: 40}) == [0, 20.0], "cam1 frame 20 == cam2 frame 40"
+# three cameras, one at twice the rate: only the parked ones move, the rest keep their offsets
 from kinetrace.session import TrackingSession as _TS  # noqa: E402
 _p3 = Project([_TS(f"{c}.mp4", 100, 30.0, W, H) for c in "abc"], ["a", "b", "c"], [0, -5, 7])
 _p3.set_rate(2, 2.0)
 for _s in _p3.sessions:
     _s.dirty = False
 _p3.set_active(1)
-_p3.reconstruction = object()
-assert _p3.align_to(0, 30, 50) == 20.0 and _p3.offsets == [0, 20.0, 7], _p3.offsets
-assert _p3.map_frame(0, 1, 30) == 50 and _p3.map_frame(1, 0, 50) == 30
-assert _p3.sessions[1].dirty and not _p3.sessions[2].dirty and _p3.reconstruction is None
-_p3.set_active(2)                         # a 2x working camera: its offset in its own frames
-assert _p3.align_to(0, 30, 70) == 10.0 and _p3.offsets == [0, 20.0, 10.0], _p3.offsets
-assert _p3.map_frame(0, 2, 30) == 70
-_p3.set_active(1)                         # an ordinary row is unchanged: the camera aligned moves
-assert _p3.align_to(2, 40, 50) == -20.0 and _p3.offsets == [0, 20.0, -20.0], _p3.offsets
-assert _p3.map_frame(1, 2, 50) == 40
-print("Align here on the reference moves only the working camera (G13) OK")
+_p3.reconstruction = _rec = object()
+assert _p3.aligned_offsets({0: 30, 1: 50}) == [0, 20.0, 7], "camera c not parked: kept"
+assert _p3.aligned_offsets({0: 30, 2: 70}) == [0, -5, 10.0], "a 2x camera: its offset in its own frames"
+_new = _p3.aligned_offsets({0: 30, 1: 50, 2: 70})
+assert _p3.offsets == [0, -5, 7] and not any(_s.dirty for _s in _p3.sessions) and _p3.reconstruction is _rec, \
+    "aligned_offsets changes nothing itself (the window applies it as one undo step)"
+for _v, _o in enumerate(_new):
+    _p3.set_offset(_v, _o)
+assert _p3.map_frame(0, 1, 30) == 50 and _p3.map_frame(0, 2, 30) == 70 and _p3.map_frame(1, 2, 50) == 70
+try:
+    _p3.aligned_offsets({1: 50, 2: 70})
+    raise AssertionError("the reference must be parked")
+except ValueError:
+    pass
+print("aligned offsets: the parked cameras line up with camera 1, the rest keep theirs (G233) OK")
 p.set_active(0)
 p.set_offset(1, -SHIFT)                  # back to the known-good alignment
 assert p.offsets == [0, -SHIFT]
 print("first camera is the reference (offset 0, not editable, stable) OK")
-
-# ---- Align here: recover the offset from what the views are showing ----------
-p.set_offset(1, 0)
-win._goto(40, force=True)
-settle(0.5)
-win._views[1].want_frame = 40 - SHIFT      # the frame the user nudged it to
-win._align_view_here(1)
-assert p.offsets[1] == -SHIFT, f"Align here must recover the offset, got {p.offsets[1]}"
-print("align-here OK")
 
 # ---- each camera keeps its OWN data; the list of points is shared (G19) -----
 win._goto(40, force=True)
@@ -460,37 +453,37 @@ win._refresh_cameras()
 app.processEvents()
 _rows = win.cameras._rows
 assert len(_rows) >= 2
-for _row in _rows[:2]:                          # (G169) open: Align here, the offset box, the frame rate
+for _row in _rows[:2]:                          # (G169) open: the offset box, the frame rate
     if not _row.expanded():
         _QT.mouseClick(_row.btn_expand, _Q.LeftButton)
 app.processEvents()
-assert _rows[1].btn_align.isVisible() and _rows[1].spin.isVisible(), "an open row shows its controls"
+assert _rows[1].spin.isVisible(), "an open row shows its controls"
 assert not _rows[0].spin.isEnabled(), "the reference camera's offset must not be editable"
 assert "reference" in _rows[0].name.text(), \
     f"the reference row must say so: {_rows[0].name.text()!r}"
 assert _rows[1].spin.isEnabled(), "every other camera's offset stays editable"
-assert not _rows[0].btn_align.isEnabled() and not win.project.active, \
-    "the working camera's own row has nothing to align"
-win._set_active_view(1)
-settle()
-win._refresh_cameras()
-app.processEvents()
-# G13: from another camera the reference row's Align here is live and sets THIS camera
+# (G233) the rig-wide button: park the reference on the moment, then the working camera, press it
 from PySide6.QtCore import Qt as _Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-_rows = win.cameras._rows
-assert _rows[0].btn_align.isEnabled() and not _rows[1].btn_align.isEnabled()
-assert "does not move" in _rows[0].btn_align.toolTip(), _rows[0].btn_align.toolTip()
 _off = list(win.project.offsets)
 win.project.set_offset(1, 0)
-win._goto(30, force=True)
+win._set_sync_mode("active")
+win._goto(30 + SHIFT, force=True)          # the reference on the moment
 settle(0.5)
-win._views[0].want_frame = 30 + SHIFT     # the reference parked on the matching moment
-QTest.mouseClick(_rows[0].btn_align, _Qt.LeftButton)
+win._set_active_view(1)
+settle()
+win._goto(30, force=True)                  # camB on the same moment
+settle(0.5)
+QTest.mouseClick(win.cameras.btn_align_all, _Qt.LeftButton)
 app.processEvents()
-assert win.project.offsets == [0, -SHIFT], f"Align here on the reference: {win.project.offsets}"
-assert win.project.active == 1 and win.current == 30, "the working camera stays where it was"
-assert "aligned to the reference" in win.statusBar().currentMessage(), win.statusBar().currentMessage()
+assert win.project.offsets == [0, -SHIFT], f"Align all cameras: {win.project.offsets}"
+assert win.project.active == 1 and win.current == 30 and win._views[0].want_frame == 30 + SHIFT, \
+    "every parked camera keeps its picture"
+assert "Aligned to" in win.statusBar().currentMessage(), win.statusBar().currentMessage()
+win._set_sync_mode("all")
+win._refresh_cameras()
+app.processEvents()
+_rows = win.cameras._rows
 win.project.set_offset(1, _off[1])
 win._refresh_cameras()
 app.processEvents()

@@ -303,30 +303,22 @@ class Project:
         return int(out) if out.ndim == 0 else out
 
 
-    def align_to(self, i: int, shown_frame: int, active_frame: int) -> float:
-        """Set view `i`'s offset so that `shown_frame` in it lines up with
-        `active_frame` in the active view (the flash/clap alignment step).
-        Whole frames only — the fractional part is a later, measured step.
-
-        On the REFERENCE's row (another camera active) the reference cannot
-        move — it is the clock — so the ACTIVE camera's offset is set instead:
-        the same result as working in the reference and aligning the active
-        camera, and every other camera keeps its alignment to the reference
-        (G13). Returns the offset that changed."""
-        a = self.active
-        if i == REFERENCE_VIEW and a != REFERENCE_VIEW:
-            t = self.reference_time(REFERENCE_VIEW, int(shown_frame))
-            moved, frame = a, int(active_frame)
-        else:
-            t = self.reference_time(a, int(active_frame))
-            moved, frame = i, int(shown_frame)
-        before = list(self.offsets)
-        self.offsets[moved] = float(frame) - self.rates[moved] * t
-        self._normalize()
-        self.sessions[moved].dirty = True
-        if any(abs(x - y) > 1e-12 for x, y in zip(before, self.offsets)):
-            self.reconstruction = None          # triangulated under the old timing (I23)
-        return self.offsets[moved]
+    def aligned_offsets(self, parked: dict) -> list[float]:
+        """(G233) The offsets that line up the cameras' PARKED frames -- `parked`: camera -> the frame it
+        shows, each parked by the user on the same moment (a flash, a clap) -- the flash / clap alignment
+        step. The reference (camera 1) is the clock and does not move; each other parked camera gets the
+        offset that puts its frame at the reference's instant; a camera not in `parked` keeps its offset.
+        Whole frames in, so the result is exact (the fractional part is a later, measured step). Changes
+        nothing itself (the window applies it as one undo step); ValueError when the reference is not
+        parked."""
+        if REFERENCE_VIEW not in parked:
+            raise ValueError("the reference camera is not parked")
+        t = self.reference_time(REFERENCE_VIEW, int(parked[REFERENCE_VIEW]))
+        out = list(self.offsets)
+        for v, frame in parked.items():
+            if v != REFERENCE_VIEW and 0 <= v < self.n_views:
+                out[v] = float(int(frame)) - self.rates[v] * t
+        return out
 
     def set_offset(self, i: int, offset: float) -> None:
         """Retime one camera against the reference. The reference itself has no

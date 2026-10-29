@@ -204,9 +204,11 @@ print("[4] one Ctrl+Z puts the offsets back OK")
 assert btn.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored, "the button must not set the panel's width"
 assert win.cameras.minimumSizeHint().width() < btn.fontMetrics().horizontalAdvance(btn.text()), \
     "the panel's minimum width must not come from the button's text"
-assert btn.width() >= btn.fontMetrics().horizontalAdvance(btn.text()), \
-    f"at the default window size the whole name is readable ({btn.width()} px)"
-print(f"[5] the button fits ({btn.width()} px) and never widens the dock OK")
+from PySide6.QtWidgets import QToolButton  # noqa: E402
+_shown = QToolButton.text(btn)            # what it draws (offscreen fonts are much wider than real ones)
+assert _shown == btn.text() or (_shown.endswith("…") and btn.text() in btn.toolTip()), \
+    f"a narrow panel shortens the name with ... and the tooltip keeps it whole: {_shown!r}"
+print(f"[5] the button ({btn.width()} px) shows {_shown!r} and never widens the dock OK")
 
 win._dev_probe.wait(180_000)
 win.close()

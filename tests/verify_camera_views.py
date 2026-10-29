@@ -3,7 +3,7 @@
   [1] G168  the VIDEO's zoom buttons (lower right) stay in place, visible, while the view is zoomed and
             panned -- they used to scroll away with the picture and came back only on Fit
   [2] G169  CAMERAS: a compact row per camera with an eye (show / hide its view; hidden views are not
-            decoded) and a disclosure that opens the row's controls (Align here, offset, fps, remove)
+            decoded) and a disclosure that opens the row's controls (offset, fps, remove)
   [3] G170  the views are arranged by dragging a view's title bar onto another view (display only:
             the cameras keep their numbers); the arrangement and the hidden cameras come back with
             the project and never make it unsaved
@@ -202,9 +202,9 @@ check(win._views[1].want_frame is not None, "... and it decodes again")
 h0 = lst.visualItemRect(lst.item(1)).height()
 QTest.mouseClick(rows[1].btn_expand, Qt.LeftButton)
 pump(0.2)
-check(rows[1].expanded() and rows[1].details.isVisible() and rows[1].btn_align.isVisible() and rows[1].spin.isVisible()
+check(rows[1].expanded() and rows[1].details.isVisible() and rows[1].spin.isVisible()
       and rows[1].btn_fps.isVisible() and lst.visualItemRect(lst.item(1)).height() > h0 + 20,
-      "its disclosure opens the row: Align here, the offset box, the frame rate (the row grows)",
+      "its disclosure opens the row: the offset box, the frame rate (the row grows)",
       (h0, lst.visualItemRect(lst.item(1)).height()))
 check(not rows[1].summary.isVisible(), "an open row shows its offset in the box, not twice")
 check(row_heights(1)[1] == row_heights(1)[0] and row_heights(1)[2] >= row_heights(1)[3],

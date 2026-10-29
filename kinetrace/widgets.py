@@ -432,6 +432,44 @@ class ElidedLabel(QLabel):
         QLabel.setText(self, shown if shown else self._full)
 
 
+class ElidedButton(QToolButton):
+    """(G233) `ElidedLabel` for a tool button: its one-line text ends in "…" when the button is narrower
+    than it, and a long name never widens the window (G3). `text()` returns the whole text; the tooltip
+    is the caller's (put the whole name in it)."""
+
+    def __init__(self, text: str = ""):
+        super().__init__()
+        self._full = ""
+        self.setText(text)
+
+    def text(self) -> str:                   # noqa: D102 - the full text, never the elided one
+        return self._full
+
+    def setText(self, text: str) -> None:    # noqa: N802 - Qt name
+        self._full = text or ""
+        self._elide()
+
+    def resizeEvent(self, ev):               # noqa: N802 - Qt name
+        super().resizeEvent(ev)
+        self._elide()
+
+    def _pad(self) -> int:
+        """What the style adds around the text: Qt's own hint minus the text it shows now."""
+        return max(0, QToolButton.sizeHint(self).width() - self.fontMetrics().horizontalAdvance(QToolButton.text(self)))
+
+    def sizeHint(self):                      # noqa: N802 - Qt name
+        return QSize(self.fontMetrics().horizontalAdvance(self._full) + self._pad(), QToolButton.sizeHint(self).height())
+
+    def minimumSizeHint(self):               # noqa: N802 - Qt name
+        return QSize(self.fontMetrics().horizontalAdvance("Align…") + self._pad(),
+                     QToolButton.minimumSizeHint(self).height())
+
+    def _elide(self) -> None:
+        room = max(0, self.width() - self._pad())
+        shown = self.fontMetrics().elidedText(self._full, Qt.ElideRight, room) if room else ""
+        QToolButton.setText(self, shown if shown else self._full)
+
+
 class OnboardingStrip(QWidget):
     """The four-step path for a new project — Open, Segment, Skeleton, Track — as a
     slim strip above the video. Done steps get a check, the next step is the

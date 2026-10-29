@@ -683,6 +683,9 @@ class _ViewRuntime:
         self.window = SCRUB_WINDOW           # (I306) frames kept around the playhead; `_rebudget_caches` sets it
         self.seek: SeekService | None = None
         self.want_frame: int | None = None   # frame last requested (stale-reply guard)
+        # (G233) the user worked in this camera since Active view only began, so the frame it shows is one
+        # they chose: "Align all cameras to their current visible frame" retimes only parked cameras
+        self.parked = False
         self.bad_frames: set = set()         # frames already reported as undecodable (I40)
         self.seek_plan = None                # (I266) how this computer reaches the file's frames, once checked
         self.frame_check = None              # (I266) the last fingerprint.CheckResult on this computer
@@ -1645,7 +1648,7 @@ class MainWindow(QMainWindow):
         self.cameras.add_requested.connect(self._add_video_dialog)
         self.cameras.activate_requested.connect(self._set_active_view)
         self.cameras.offset_changed.connect(self._on_view_offset)
-        self.cameras.align_requested.connect(self._align_view_here)
+        self.cameras.align_requested.connect(self._align_all_cameras)
         self.cameras.remove_requested.connect(self._remove_view)
         self.cameras.fps_requested.connect(self._set_camera_fps)
         self.cameras.overview_requested.connect(self._cameras_overview)      # a row's lens badge (G177)
@@ -4594,6 +4597,7 @@ class MainWindow(QMainWindow):
         # it is and knows it is current, G27)
         self._views[p.active].want_frame = self.current
         self._views[i].want_frame = None
+        self._views[p.active].parked = self._views[i].parked = True     # (G233) both show a frame the user chose
         target = p.set_active(i)
         p.session.ui_state.update(carried)
         self.grid.set_active(i)
@@ -4745,27 +4749,49 @@ class MainWindow(QMainWindow):
         self._refresh_companions()
         self._refresh_cameras()
 
-    def _align_view_here(self, i: int):
-        """Take what camera `i` is showing right now as the match for the active
-        camera's current frame (the flash / clap alignment step)."""
+    def _align_all_cameras(self):
+        """(G233) "Align all cameras to their current visible frame" (the flash / clap step, the whole rig in
+        one press): every PARKED camera (`_ViewRuntime.parked`: worked in since Active view only began, so
+        the user chose its frame) gets the offset that lines its frame up with camera 1's; camera 1 is the
+        clock; a camera not parked keeps its offset and is named. Each parked camera keeps its picture. One
+        Ctrl+Z (`_apply_offsets_undoable`). Under Sync all nothing can be parked (every camera follows the
+        playhead): the press changes nothing, switches to Active view only and says the steps."""
         p = self.project
-        if p is None or not (0 <= i < p.n_views) or i == p.active:
+        if p is None or self.state != READY or p.n_views < 2:
             return
-        # on the reference's row the WORKING camera is the one retimed (G13)
-        ref = i == REFERENCE_VIEW
-        shown = self._views[i].want_frame
-        if shown is None:
+        ref = p.name(REFERENCE_VIEW)
+        if self._sync_mode != "active":
+            self._set_sync_mode("active")
             self.statusBar().showMessage(
-                f"{p.name(i)} has no frame at this instant — nudge "
-                f"{p.name(p.active) + chr(39) + 's' if ref else 'its'} offset first", 5000)
+                f"Nothing changed yet: to line the cameras up, each must stand still on the same moment, so the "
+                f"view is now Active view only. Park every camera on a moment they all saw (a flash, a clap): "
+                f"click {ref} and scrub to it, then click each other camera and scrub to the same moment; then "
+                f"press Align all cameras again.", 20000)
             return
-        had_3d, before = p.reconstruction is not None, list(p.offsets)
-        off = p.align_to(i, shown, self.current)
-        self._retimed(had_3d, list(p.offsets) != before)
+        parked = {v: int(self.current if v == p.active else self._views[v].want_frame) for v in range(p.n_views)
+                  if v == p.active or (self._views[v].parked and self._views[v].want_frame is not None)}
+        if REFERENCE_VIEW not in parked:
+            self.statusBar().showMessage(
+                f"Nothing changed: {ref} (camera 1, the clock every offset is measured from) is not parked yet. "
+                f"Click {ref}, scrub it to the moment, then press Align all cameras again.", 12000)
+            return
+        if len(parked) < 2:
+            self.statusBar().showMessage(
+                f"Nothing changed: only {ref} is parked. Click another camera, scrub it to the same moment as "
+                f"{ref}, then press Align all cameras again.", 12000)
+            return
+        before = list(p.offsets)
+        rec = self._apply_offsets_undoable(p.aligned_offsets(parked))
+        moved = [f"{p.name(v)} {p.offsets[v]:+g} (was {before[v]:+g})" for v in sorted(parked)
+                 if v != REFERENCE_VIEW and p.offsets[v] != before[v]]
+        kept = [p.name(v) for v in range(p.n_views) if v not in parked]
+        lined = [p.name(v) for v in sorted(parked) if v != REFERENCE_VIEW and p.offsets[v] == before[v]]
         self.statusBar().showMessage(
-            f"{p.name(p.active)} aligned to the reference {p.name(i)}: offset {off:+g} frames"
-            if ref else
-            f"{p.name(i)} aligned: offset {off:+g} frames against {p.name(p.active)}", 6000)
+            f"Aligned to {ref}'s frame {parked[REFERENCE_VIEW]}: "
+            + ("; ".join(moved) if moved else "no offset changed")
+            + (f" · already lined up: {', '.join(lined)}" if lined else "")
+            + (f" · kept (not parked): {', '.join(kept)}" if kept else "")
+            + (" · Ctrl+Z undoes it" if rec is not None else ""), 20000)
 
     def _refresh_cameras(self):
         """Repaint the CAMERAS panel from the project."""
@@ -5416,6 +5442,7 @@ class MainWindow(QMainWindow):
                 # hidden (solo): give the decoder thread and its VideoCapture
                 # back — at 15 cameras that is 14 open 4K captures for nothing
                 rt.want_frame = None
+                rt.parked = False                # (G233) shown again, it shows this instant, not its parked frame
                 rt.stop()
                 continue
             f = p.map_frame(p.active, i, self.current)
@@ -5522,6 +5549,9 @@ class MainWindow(QMainWindow):
         # Sync all: the others come back to the playhead now. Active view only: they
         # are at this instant already, and stay where they are from the next move on
         self._companions_stale = False
+        # (G233) a new parking round: only the working camera shows a frame the user chose so far
+        for k, rt in enumerate(self._views):
+            rt.parked = self.project is not None and k == self.project.active
         self.cameras.set_sync(mode == "all")
         self._refresh_companions()
         self._refresh_guides()

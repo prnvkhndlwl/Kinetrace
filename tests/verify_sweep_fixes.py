@@ -182,7 +182,8 @@ print("undo restores the skeleton with the names it refers to (I22) OK")
 
 # ---------------------------------------------------------------- I23
 p8 = Project([sess(50, name="a.mp4"), sess(50, name="b.mp4")], ["A", "B"], [0.0, 0.0])
-for fn in (lambda: p8.set_offset(1, 3.0), lambda: p8.set_rate(1, 2.0), lambda: p8.align_to(1, 9, 1)):
+for fn in (lambda: p8.set_offset(1, 3.0), lambda: p8.set_rate(1, 2.0),
+           lambda: [p8.set_offset(v, o) for v, o in enumerate(p8.aligned_offsets({0: 1, 1: 9}))]):   # (G233)
     p8.reconstruction = object()
     fn()
     assert p8.reconstruction is None, "retiming kept a stale reconstruction"
