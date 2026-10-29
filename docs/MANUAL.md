@@ -3992,9 +3992,9 @@ clean retry and loses none of your work.
 **The program will not start / an error mentions "encodings" or "103".**
 The folder was moved or renamed while the program was set up in it. Run
 `run.bat` (Mac: `Kinetrace.command`, Ubuntu: `./run.sh`) once; it repairs
-itself, whatever the folder is called: also a name with brackets or `&`, such as
-"Program Files (x86)", or with letters outside English, such as "José". It says
-"Folder was moved" once; the next start no longer says it. On Windows it also
+itself and says "Folder was moved" once; the next start no longer says it. On Windows
+this works whatever the folder is called: also a name with brackets or `&`, such as
+"Program Files (x86)", or with letters outside English, such as "José". It also
 renews the Kinetrace shortcut, which pointed at the old place.
 
 **A red notice says "Something went wrong", or the program closed by itself.**

@@ -436,8 +436,11 @@ else:
 
 # ------------------------------------------ [6] run.bat in a folder of any name
 print("[6] run.bat repairs a moved folder whatever the folder is called (X43, X50)")
+_BASE = os.path.dirname(getattr(sys, "_base_executable", sys.executable))
 if os.name != "nt":
     ok("skipped: run.bat runs on Windows only")
+elif not (os.path.isdir(os.path.join(_BASE, "DLLs")) and os.path.isdir(os.path.join(_BASE, "Lib", "venv"))):
+    ok(f"skipped: this Python's base ({_BASE}) is not laid out like the private Python run.bat makes")
 else:
     import shutil
     import time
@@ -451,7 +454,7 @@ else:
         site-packages and tests; X50 needs one that writes pyvenv.cfg) and a venv made from it, a stub
         `kinetrace` that only notes which venv started it (no shortcut, no Start menu)."""
         k = SCR / "old" / "K"
-        src, base = Path(sys._base_executable).parent, k / ".venv" / "base"
+        src, base = Path(_BASE), k / ".venv" / "base"
         base.mkdir(parents=True)
         for f in [src / "python.exe", *src.glob("*.dll")]:
             shutil.copy(f, base / f.name)
@@ -500,10 +503,10 @@ else:
                     and started == [str(k / ".venv")]):
                 bad.append(f"'{name}' first run: rc {rc}, {out.strip()[-200:]!r}, pyvenv.cfg {cfg[:120]!r}, "
                            f"app started from {started}")
-                continue
-            rc, out, cfg2, started = _run_bat(k)
-            if "relink" in out or cfg2 != cfg or started != [str(k / ".venv")] * 2:
-                bad.append(f"'{name}' second run: rc {rc}, {out.strip()[-200:]!r}, app started from {started}")
+            else:
+                rc, out, cfg2, started = _run_bat(k)
+                if "relink" in out or cfg2 != cfg or started != [str(k / ".venv")] * 2:
+                    bad.append(f"'{name}' second run: rc {rc}, {out.strip()[-200:]!r}, app started from {started}")
             (k / "started.txt").unlink(missing_ok=True)
         assert not bad, "run.bat did not repair the moved folder: " + " | ".join(bad)
         ok("moved to " + ", ".join(ascii(n) for n in NAMES) + ": one run.bat relinks and starts the app, "
