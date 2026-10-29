@@ -21,13 +21,10 @@ import threading
 import time
 from pathlib import Path
 
+from kinetrace.paths import path_key      # (R54) THE 'same file' key
+
 KEY = "recent/projects"
 MAX = 10
-
-
-def _norm(path) -> str:
-    """The comparison form of a path: absolute, and case-folded where the OS ignores case (Windows)."""
-    return os.path.normcase(os.path.abspath(str(path)))
 
 
 def entry(path, pid: str | None) -> dict:
@@ -49,9 +46,9 @@ def load(settings) -> list[dict]:
         if not isinstance(it, dict) or not isinstance(it.get("path"), str) or not it["path"]:
             continue
         e = entry(Path(it["path"]), it.get("id"))
-        if _norm(e["path"]) in seen:
+        if path_key(e["path"]) in seen:
             continue
-        seen.add(_norm(e["path"]))
+        seen.add(path_key(e["path"]))
         out.append(e)
     return out[:MAX]
 
@@ -69,10 +66,10 @@ def touch(items: list[dict], path, pid: str | None, exists=os.path.exists) -> li
     """`items` with the project at `path` (id `pid`) on top: the same path, or the same id listed at a path that
     no longer `exists` (the project was moved), is replaced, never listed twice; at most `MAX` kept."""
     new = entry(path, pid)
-    key = _norm(new["path"])
+    key = path_key(new["path"])
     out = [new]
     for it in items:
-        if _norm(it["path"]) == key:
+        if path_key(it["path"]) == key:
             continue
         if new["id"] and it.get("id") == new["id"] and not exists(it["path"]):
             continue                      # moved: its new place is the entry on top
@@ -81,8 +78,8 @@ def touch(items: list[dict], path, pid: str | None, exists=os.path.exists) -> li
 
 
 def remove(items: list[dict], path) -> list[dict]:
-    key = _norm(path)
-    return [it for it in items if _norm(it["path"]) != key]
+    key = path_key(path)
+    return [it for it in items if path_key(it["path"]) != key]
 
 
 def clear(settings) -> bool:
