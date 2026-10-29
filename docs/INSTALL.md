@@ -40,7 +40,7 @@ like). Or clone it with git,
 `git clone https://github.com/prnvkhndlwl/Kinetrace.git`, which makes a folder
 called **`Kinetrace`**; *Help → Check for Updates…* then updates it with
 `git pull`. The name and the place do not matter, and the folder can be moved
-or renamed later (the launcher repairs itself).
+or renamed later, to any name (the launcher repairs itself).
 
 **Where to put it.** Somewhere in your own user folder that is **not synced to
 the cloud**, for example:

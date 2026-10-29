@@ -435,59 +435,82 @@ else:
     ok(f"24 frames tracked on the CPU, mean {np.nanmean(err):.2f} px vs GT (max {np.nanmax(err):.2f})")
 
 # ------------------------------------------ [6] run.bat in a folder of any name
-print("[6] run.bat repairs a moved folder whatever the folder is called (X43)")
+print("[6] run.bat repairs a moved folder whatever the folder is called (X43, X50)")
+_BASE = os.path.dirname(getattr(sys, "_base_executable", sys.executable))
 if os.name != "nt":
     ok("skipped: run.bat runs on Windows only")
+elif not (os.path.isdir(os.path.join(_BASE, "DLLs")) and os.path.isdir(os.path.join(_BASE, "Lib", "venv"))):
+    ok(f"skipped: this Python's base ({_BASE}) is not laid out like the private Python run.bat makes")
 else:
     import shutil
+    import time
     from pathlib import Path
     SCR = Path(OUT) / "portable_runbat"
-    WHOAMI = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "whoami.exe"
+    NAMES = ("plain", "t (x)", "a & b", "bang!", "100%", "c^d", "José", "日本語")
     shutil.rmtree(SCR, ignore_errors=True)
 
-    def _folder(name: str, moved: bool = True) -> Path:
-        """A copy of the real run.bat in SCR/<name>/K with stub interpreters: moved = a venv
-        that cannot start (whoami.exe, so the relink runs) and a pyvenv.cfg naming the old place."""
-        k = SCR / name / "K"
-        (k / ".venv" / "Scripts").mkdir(parents=True)
-        (k / ".venv" / "base").mkdir(parents=True)
+    def _folder() -> Path:
+        """SCR/old/K: the real run.bat, a REAL private Python (a copy of this interpreter's base, without
+        site-packages and tests; X50 needs one that writes pyvenv.cfg) and a venv made from it, a stub
+        `kinetrace` that only notes which venv started it (no shortcut, no Start menu)."""
+        k = SCR / "old" / "K"
+        src, base = Path(_BASE), k / ".venv" / "base"
+        base.mkdir(parents=True)
+        for f in [src / "python.exe", *src.glob("*.dll")]:
+            shutil.copy(f, base / f.name)
+        shutil.copytree(src / "DLLs", base / "DLLs")
+        shutil.copytree(src / "Lib", base / "Lib", ignore=shutil.ignore_patterns(
+            "site-packages", "__pycache__", "test", "idlelib", "tkinter", "turtledemo"))
+        subprocess.run([str(base / "python.exe"), "-I", "-m", "venv", "--without-pip", str(k / ".venv")],
+                       check=True, capture_output=True, timeout=120)
         (k / ".venv" / "kinetrace-install.json").write_text("{}")
         (k / "models" / "alltracker" / "nets").mkdir(parents=True)
         (k / "models" / "alltracker" / "nets" / "alltracker.py").write_text("")
-        shutil.copy(WHOAMI, k / ".venv" / "base" / "python.exe")
-        if moved:
-            shutil.copy(WHOAMI, k / ".venv" / "Scripts" / "python.exe")
-            (k / ".venv" / "pyvenv.cfg").write_text("home = X:\\old place\n")
-        else:       # this checkout's venv launcher, pointed (read only) at its real base: it starts
-            shutil.copy(sys.executable, k / ".venv" / "Scripts" / "python.exe")
-            (k / ".venv" / "pyvenv.cfg").write_text(
-                f"home = {os.path.dirname(sys._base_executable)}\ninclude-system-site-packages = false\n")
+        (k / "kinetrace").mkdir()
+        (k / "kinetrace" / "__init__.py").write_text("")
+        (k / "kinetrace" / "winapp.py").write_text("")
+        (k / "kinetrace" / "__main__.py").write_text(
+            "import sys\nopen('started.txt', 'a', encoding='utf-8').write(sys.prefix + '\\n')\n")
         shutil.copy(os.path.join(ROOT, "run.bat"), k / "run.bat")
         return k
 
-    def _run_bat(k: Path) -> tuple[int, str, str]:
+    def _run_bat(k: Path) -> tuple[int, str, bytes, list]:
         p = subprocess.run('cmd /c ""' + str(k / "run.bat") + '""', cwd=str(k), stdin=subprocess.DEVNULL,
-                           capture_output=True, text=True, timeout=120, errors="replace")
-        return p.returncode, (p.stdout or "") + (p.stderr or ""), \
-            (k / ".venv" / "pyvenv.cfg").read_text(errors="replace")
+                           capture_output=True, timeout=120)
+        started = k / "started.txt"
+        return p.returncode, (p.stdout + p.stderr).decode("utf-8", "replace"), \
+            (k / ".venv" / "pyvenv.cfg").read_bytes(), \
+            started.read_text(encoding="utf-8").splitlines() if started.exists() else []
 
     try:
-        bad = []
-        for name in ("plain", "t (x)", "a & b", "bang!", "100%", "c^d"):
-            k = _folder(name)
-            rc, out, cfg = _run_bat(k)
-            lines = dict(ln.split(" = ", 1) for ln in cfg.splitlines() if " = " in ln)
+        bad, prev = [], SCR / "old"
+        _folder()
+        for name in NAMES:              # the user's gesture: move the folder, double-click run.bat twice
+            for wait in range(40):      # a just-ended python.exe can hold the folder for a moment
+                try:
+                    os.rename(prev, SCR / name)
+                    break
+                except PermissionError:
+                    if wait == 39:
+                        raise
+                    time.sleep(0.25)
+            prev, k = SCR / name, SCR / name / "K"
+            rc, out, cfg, started = _run_bat(k)
+            lines = dict(ln.split(" = ", 1) for ln in cfg.decode("utf-8", "replace").splitlines() if " = " in ln)
             base = str(k / ".venv" / "base")
-            if not ("Folder was moved - relinking" in out and "unexpected" not in out.lower()
-                    and lines.get("home") == base and lines.get("executable") == base + "\\python.exe"):
-                bad.append(f"'{name}': rc {rc}, {out.strip()[:160]!r}, pyvenv.cfg {cfg.strip()[:120]!r}")
-        assert not bad, "run.bat did not relink in: " + " | ".join(bad)
-        ok("relinked in folders named plain, 't (x)', 'a & b', 'bang!', '100%', 'c^d'")
-        k = _folder("still here", moved=False)
-        before = (k / ".venv" / "pyvenv.cfg").read_text()
-        rc, out, cfg = _run_bat(k)
-        assert "relinking" not in out and cfg == before, (out[:300], cfg)
-        ok("a folder that was not moved keeps its pyvenv.cfg")
+            if not ("Folder was moved - relink" in out and "unexpected" not in out.lower()
+                    and lines.get("home") == base and lines.get("executable") == base + "\\python.exe"
+                    and started == [str(k / ".venv")]):
+                bad.append(f"'{name}' first run: rc {rc}, {out.strip()[-200:]!r}, pyvenv.cfg {cfg[:120]!r}, "
+                           f"app started from {started}")
+            else:
+                rc, out, cfg2, started = _run_bat(k)
+                if "relink" in out or cfg2 != cfg or started != [str(k / ".venv")] * 2:
+                    bad.append(f"'{name}' second run: rc {rc}, {out.strip()[-200:]!r}, app started from {started}")
+            (k / "started.txt").unlink(missing_ok=True)
+        assert not bad, "run.bat did not repair the moved folder: " + " | ".join(bad)
+        ok("moved to " + ", ".join(ascii(n) for n in NAMES) + ": one run.bat relinks and starts the app, "
+           "the next starts it without relinking")
     finally:
         shutil.rmtree(SCR, ignore_errors=True)
 
