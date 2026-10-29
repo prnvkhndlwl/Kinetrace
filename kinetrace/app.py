@@ -1423,7 +1423,7 @@ class MainWindow(QMainWindow):
             "and hip on the body through 270 frames where CoTracker3 drifts off; halves the error on "
             "a small textured feature. About 2x slower.")
         self.act_pm_cotracker.setToolTip(
-            "Meta's online point tracker with the app's LK sub-pixel refinement: 0.74 px at 4K on "
+            "Meta's online point tracker with the app's LK sub-pixel refinement: 0.75 px at 4K on "
             "high-contrast dots; drifts along textureless bodies.")
         # a third point model for small, fast, featureless targets (I160, G56)
         self.act_pm_spot = QAction(
