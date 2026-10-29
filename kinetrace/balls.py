@@ -337,10 +337,14 @@ class BallTracker:
     # ------------------------------------------------------ groups (I143)
     @staticmethod
     def _prompt_centre(p: BallPrompt):
-        """Where a prompt puts its ball (the mean of its clicks), or None."""
+        """Where a prompt puts its ball, or None: the mean of its positive clicks (of every click when
+        none is positive or there are no labels). THE rule for the crop, the groups and the position
+        `_step_one` registers (R57: the crop used to average the negative clicks too)."""
         if p.points is not None and len(p.points):
             pt = np.asarray(p.points, np.float64).reshape(-1, 2)
-            return float(pt[:, 0].mean()), float(pt[:, 1].mean())
+            lab = np.asarray(p.labels if p.labels is not None else np.ones(len(pt)), int).ravel()
+            pos = pt[lab > 0] if (lab > 0).any() else pt
+            return float(pos[:, 0].mean()), float(pos[:, 1].mean())
         return None
 
     def _items(self, prompts) -> list[tuple[int, tuple[float, float]]]:
@@ -543,8 +547,7 @@ class BallTracker:
             # is registered and misses
             pt = np.asarray(p.points, np.float64).reshape(-1, 2)
             lab = np.asarray(p.labels if p.labels is not None else np.ones(len(pt)), int).ravel()
-            pos = pt[lab > 0] if (lab > 0).any() else pt
-            xy = (float(pos[:, 0].mean()), float(pos[:, 1].mean()))
+            xy = self._prompt_centre(p)
             r = p.radius
             box = _click_box(xy[0] - x0, xy[1] - y0, r)
             sel = np.array([self._inside(self.crop, q) for q in pt], bool)
