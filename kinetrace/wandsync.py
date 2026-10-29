@@ -168,13 +168,9 @@ def _cal(res):
 
 
 def _frames(rv, a: str, b: str) -> np.ndarray:
+    """Reference instants where both wand ends are seen by >= 2 of the run's cameras."""
     _, frames = wd.collect_wand(rv, a, b, max_frames=10 ** 9)
     return np.asarray(frames, np.int64)
-
-
-def wand_frames(project, a: str, b: str, offsets=None, views=None) -> np.ndarray:
-    """Reference instants where both wand ends are seen by >= 2 of the run's cameras."""
-    return _frames(_run(project, views, offsets), a, b)
 
 
 # --------------------------------------------------------------------------------------- the estimate

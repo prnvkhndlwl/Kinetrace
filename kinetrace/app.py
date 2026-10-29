@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
-from PySide6.QtCore import QEvent, QEventLoop, QObject, QRect, QSettings, QSize, Qt, QTimer, QThread, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap, QShortcut
-from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QAbstractItemView, QApplication, QDialog, QDialogButtonBox,
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QRect, QSettings, Qt, QTimer, QThread, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QAbstractSpinBox, QTextEdit, QApplication, QDialog, QDialogButtonBox,
                                QDockWidget, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
                                QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QProgressDialog,
@@ -3299,8 +3299,8 @@ class MainWindow(QMainWindow):
             head.setFlags(Qt.NoItemFlags)
             lst.addItem(head)
             for p, n in group:
-                size = "" if p.what.startswith("Kinetrace folder") or "registry" in p.note \
-                    else f"   [{paths.human(n)}]"
+                # (G232) the Kinetrace folder's own row shows its size too (what uninstalling frees)
+                size = "" if "registry" in p.note else f"   [{paths.human(n)}]"
                 it = QListWidgetItem(f"   {p.what}: {p.path}{size}" + (f"   ({p.note})" if p.note else ""))
                 it.setData(Qt.UserRole, str(p.path) if "registry" not in p.note else "")
                 lst.addItem(it)
@@ -5062,7 +5062,7 @@ class MainWindow(QMainWindow):
                      QEvent.MouseButtonDblClick, QEvent.Wheel)
 
     def _other_app_windows(self) -> list:
-        """The app's windows other than the main one: the floated Segment & Points panel,
+        """The app's windows other than the main one: the floated Layers panel,
         the 3D view, the Body window."""
         return [w for w in (self.view3d, getattr(self, "dock", None), getattr(self, "body_win", None))
                 if w is not None]
@@ -5140,7 +5140,7 @@ class MainWindow(QMainWindow):
             # navigate it. Offered to the hotkey table first, Escape deselected the
             # point and left the menu open, and F / Delete acted behind it (G6)
             return False
-        # the Segment & Points panel may be floated (its own top-level window):
+        # the Layers panel may be floated (its own top-level window):
         # it is still this window's panel, so its focus keeps the hotkeys (I68)
         mine = (self, self.view3d, getattr(self, "dock", None), getattr(self, "body_win", None))
         active = QApplication.activeWindow()
@@ -6639,7 +6639,7 @@ class MainWindow(QMainWindow):
         """settings.ini in the Kinetrace folder (`recovery.settings_path`), never the registry
         or a plist: deleting the folder removes it (Mac install audit P1)."""
         from kinetrace import recovery
-        return QSettings(str(recovery.settings_path()), QSettings.IniFormat)
+        return recovery.settings()
 
     def _default_annotator(self) -> str:
         try:
@@ -12622,7 +12622,7 @@ class MainWindow(QMainWindow):
             targets = [(labels.index(choice), p.active)]
         if len(targets) == 1:
             self._undo_snap = p.sessions[targets[0][1]].snapshot()   # one undo step
-            self.act_undo.setEnabled(targets[0][1] == p.active)
+            self.act_undo.setEnabled(True)            # one target = the active camera (R52)
         else:
             self._undo_snap = None                                   # the undo holds one camera only
         said = []
@@ -15622,8 +15622,9 @@ def show_install_welcome(win) -> None:
 
 
 def main():
-    import os
-    import sys
+    # The same three switches as __main__.py, on purpose (R56): __main__ sets them first, before any
+    # library is imported (the copy that counts for `python -m kinetrace`); these cover a start that
+    # calls main() directly (a test, a script), where setdefault keeps whatever was already set
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")   # no telemetry (see __main__.py)
     os.environ.setdefault("DO_NOT_TRACK", "1")
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")  # Apple GPU: unsupported ops go to the CPU
@@ -15655,7 +15656,8 @@ def main():
         # under python.exe and shows Python's icon (G41)
         try:
             import ctypes
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kinetrace.Kinetrace")
+            from kinetrace.winapp import APP_ID          # the one id: the pinned shortcut carries it too (R56)
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
         except Exception:     # noqa: BLE001 - cosmetic only
             pass
     app = QApplication(sys.argv)

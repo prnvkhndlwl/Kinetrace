@@ -90,8 +90,10 @@ check(all(got.get(k) == v for k, v in spec.items()), "target, arguments, folder,
 check(got.get("app_id") == "Kinetrace.Kinetrace" == winapp.APP_ID,
       "the taskbar id is the app's own (app.main registers Kinetrace.Kinetrace)", got.get("app_id"))
 app_src = (ROOT / "kinetrace" / "app.py").read_text(encoding="utf-8")
-check(f'SetCurrentProcessExplicitAppUserModelID("{winapp.APP_ID}")' in app_src,
-      "app.main registers the same id (one taskbar button for the pinned shortcut and the window)")
+check("from kinetrace.winapp import APP_ID" in app_src and "SetCurrentProcessExplicitAppUserModelID(APP_ID)" in app_src
+      and app_src.count(winapp.APP_ID) == 0,
+      "app.main registers the same id, read from winapp.APP_ID (one taskbar button for the pinned shortcut "
+      "and the window; R56: no second copy of the text)")
 check(spec["arguments"].startswith("-I ") and "winlaunch.py" in spec["arguments"],
       "the launcher runs isolated: standard library only", spec["arguments"])
 ico = winapp.icon_path(A).read_bytes()
@@ -99,6 +101,28 @@ n = struct.unpack("<HHH", ico[:6])[2]
 entries = [struct.unpack("<BBBBHHII", ico[6 + 16 * i:22 + 16 * i]) for i in range(n)]
 check(n == len(winapp.ICON_SIZES) and all(ico[e[7]:e[7] + 8] == b"\x89PNG\r\n\x1a\n" for e in entries)
       and entries[-1][0] == 0, "the icon: every size, PNG entries, 256 written as 0", (n, entries[-1][:2]))
+# (X51) another program (Explorer drawing the icon, the shell reading the shortcut) holds the file for a
+# moment: the rewrite waits and retries like every other save (paths.replace_retry), it does not fail
+import threading  # noqa: E402
+
+
+def held(path: Path, seconds: float = 0.4) -> threading.Timer:
+    f = open(path, "rb")                       # no FILE_SHARE_DELETE: os.replace onto it is refused while open
+    t = threading.Timer(seconds, f.close)
+    t.start()
+    return t
+
+
+for what, target, write in (("Kinetrace.lnk", lnk, lambda: winapp.write_link(lnk, spec)),
+                            ("kinetrace.ico", winapp.icon_path(A), lambda: winapp.write_icon(winapp.icon_path(A)))):
+    timer = held(target)
+    try:
+        write()
+        ok, err = True, ""
+    except OSError as e:
+        ok, err = False, repr(e)
+    timer.join()
+    check(ok and target.exists(), f"{what} held open for 0.4 s by another program: still rewritten", err)
 
 # ---------------------------------------------------------------- [2] stale
 print("[2] stale: a new layout, a moved folder")

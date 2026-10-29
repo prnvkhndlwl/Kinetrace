@@ -791,7 +791,6 @@ class OverlayDialog:
         "All shown cameras together", whose suggested file is `together_path`. `together_has`: (any
         shown camera has silhouettes, any has skeleton bones) -- the Draw ticks follow the cameras the
         video will hold, not only the working one."""
-        from PySide6.QtCore import Qt
         from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                        QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                                        QPushButton, QRadioButton, QSpinBox, QVBoxLayout, QWidget)

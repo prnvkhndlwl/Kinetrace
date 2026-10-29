@@ -305,12 +305,6 @@ def _digest(path: Path) -> str | None:
         return None
 
 
-def _replace(src: Path, dst: Path, tries: int = 10) -> None:
-    """os.replace, retried: Windows refuses while another program has the file open (R43)."""
-    from kinetrace.paths import replace_retry
-    replace_retry(src, dst, tries, 0.2)
-
-
 GITHUB_HOSTS = ("api.github.com", "codeload.github.com", "github.com")
 
 
@@ -424,7 +418,7 @@ def apply_zip(root: Path, zip_path: Path, version: str, tag: str = "") -> ApplyR
                     (root / o).unlink()
                 except OSError:
                     pass
-        _replace(stage / rel, target)
+        _paths.replace_retry(stage / rel, target, 10, 0.2)    # R43: retried while another program holds it
         res.changed.append(rel)
     member_lower = {m.lower() for m in members}
     for rel in sorted(old - set(members)):

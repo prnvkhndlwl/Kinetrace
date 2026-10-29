@@ -20,7 +20,7 @@ import numpy as np
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
-                               QVBoxLayout, QWidget)
+                               QVBoxLayout)
 
 from kinetrace import fingerprint as fpm
 from kinetrace import theme

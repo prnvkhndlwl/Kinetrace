@@ -255,10 +255,18 @@ def _midline_array(sm, T: int) -> np.ndarray:
     return mk
 
 
+def dltdv_xy(x, y, height, flip_y: bool) -> tuple[float, float]:
+    """(R58) THE pixel conversion of a DLTdv xypts export (`export_dltdv_csv`, `Project.export_multi_dltdv`):
+    Kinetrace's 0-based pixel centres -> DLTdv8's top-left, first pixel = 1 (x + 1, y + 1); `flip_y` = the
+    older bottom-left variant (H - y, 1-based from the bottom edge). A calibration's convention is
+    `CameraCalibration.to_dlt_pixels`' instead."""
+    return float(x) + 1.0, ((height - float(y)) if flip_y else float(y) + 1.0)
+
+
 def dltdv_convention_text(flip_y: bool, pixel_origin: float = 1.0) -> str:
     """One plain sentence naming the pixel convention an xypts file was
-    written in, for its sidecar and the export dialog. Both writers write
-    DLTdv8's first-pixel-1 numbering, so `pixel_origin` is always 1."""
+    written in (`dltdv_xy`'s), for its sidecar and the export dialog. Both
+    writers write DLTdv8's first-pixel-1 numbering, so `pixel_origin` is always 1."""
     if flip_y:
         return "bottom-left origin; y counted from the bottom edge; first pixel = 1 (older DLTdv, Argus Clicker)"
     return "top-left origin; first pixel = 1 (DLTdv8 / MATLAB)"
@@ -1938,14 +1946,12 @@ class TrackingSession:
         header = ",".join(f"pt{k + 1}_cam1_X,pt{k + 1}_cam1_Y" for k in range(self.n_points))
         lines = [header]
         exp = self.exportable
-        po = 1.0                       # DLTdv8 numbers pixels from 1 (the only variant written)
         for t in range(self.n_frames):
             cells = []
             for j in range(self.n_points):
                 if exp[t, j]:
-                    x, y = self.tracks[t, j]
-                    yy = (self.height - float(y)) if flip_y else float(y) + po
-                    cells.append(f"{float(x) + po:.3f},{yy:.3f}")
+                    xx, yy = dltdv_xy(*self.tracks[t, j], self.height, flip_y)
+                    cells.append(f"{xx:.3f},{yy:.3f}")
                 else:
                     cells.append("NaN,NaN")
             lines.append(",".join(cells))
@@ -1957,7 +1963,7 @@ class TrackingSession:
             w = csv.writer(fh, lineterminator="\n")
             w.writerow(["index", "name"])
             w.writerows([f"pt{k + 1}", pt.name] for k, pt in enumerate(self.points))
-            w.writerow(["convention", dltdv_convention_text(flip_y, po)])
+            w.writerow(["convention", dltdv_convention_text(flip_y)])
 
     def export_animal_csv(self, path: str | Path, i: int | None = None) -> None:
         """Segment `i`'s (the active one's) silhouette per frame: presence, score, bbox, centroid,

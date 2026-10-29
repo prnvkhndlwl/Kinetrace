@@ -834,8 +834,9 @@ class TrackingWorker(QThread):
         w = int(round(21 * max(1.0, max(nw, nh) / 1920.0)))
         self._lk_win = min(w | 1, 51)
         # refinement only pays off when native res is well above the model's
-        # internal ~512px resolution (at 4K it cuts error ~5x; at <=1024 it
-        # just adds noise on top of already-native-scale predictions)
+        # internal ~512px resolution (at 4K it cuts error ~5x); off when the long
+        # side is <= 768 px (1.5 x 512), where it just adds noise on top of
+        # already-native-scale predictions -- 1024x768 and 1280x720 ARE refined
         self._do_refine = self.refine and max(nw, nh) / 512.0 > 1.5
         self._templates: dict[int, np.ndarray] = {}   # pid -> seed NCC template
         self._template_frac: dict[int, np.ndarray] = {}   # pid -> seed minus the template's centre pixel

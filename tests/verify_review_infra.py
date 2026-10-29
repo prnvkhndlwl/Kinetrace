@@ -176,14 +176,15 @@ def _i218():
     z.write_bytes(zip_bytes({"install.py": "# installer v2\n", "requirements.txt": "numpy\nnewpackage\n",
                              "kinetrace/__init__.py": 'APP_VERSION = "1.1.0"\n',
                              "kinetrace/zz_locked.py": "x = 1\n"}))
-    real = update._replace
+    # (R56) the update replaces each file through paths.replace_retry, the one replace of every save
+    real = update._paths.replace_retry
 
-    def locked(src, dst, tries=10):
+    def locked(src, dst, tries=20, delay=0.1):
         if Path(dst).name == "zz_locked.py":
             raise PermissionError(13, "the file is in use")
-        return real(src, dst, tries)
+        return real(src, dst, tries, delay)
 
-    update._replace = locked
+    update._paths.replace_retry = locked
     try:
         try:
             update.apply_zip(inst, z, "1.1.0")
@@ -191,7 +192,7 @@ def _i218():
         except PermissionError:
             pass
     finally:
-        update._replace = real
+        update._paths.replace_retry = real
     check((inst / "install.py").read_text() == "# installer v2\n", "install.py was replaced before the failure")
     check(not (inst / ".venv" / "kinetrace-install.json").exists(),
           "the install marker is gone after the half-failed update (the next start runs install.py)")

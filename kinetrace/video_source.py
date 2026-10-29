@@ -14,7 +14,6 @@ Never loads the whole video into memory. Three cooperating pieces:
 
 from __future__ import annotations
 
-import bisect
 import os
 import queue
 import threading

@@ -439,7 +439,9 @@ def write_matlab(models: Models, path) -> None:
     older releases), ImageSize [rows cols], RadialDistortion [k1 k2 k3],
     TangentialDistortion [p1 p2], RotationMatrix (= R', MATLAB's row-vector
     form) and TranslationVector (1x3); and K_opencv / R / t (x_cam = R X + t,
-    0-based pixels)."""
+    0-based pixels). A fisheye camera's RadialDistortion holds its 4
+    Kannala-Brandt numbers [k1 k2 k3 k4], TangentialDistortion is [0 0], and
+    `fisheye` is 1 (0 for every other camera)."""
     from scipy.io import savemat
     cams = []
     for m in models.cameras:

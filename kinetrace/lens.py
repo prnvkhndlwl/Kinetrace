@@ -1252,13 +1252,7 @@ def draw_board_review(bgr: np.ndarray, corners: np.ndarray, pattern: tuple[int, 
         cv2.circle(img, p0, int(max(4, r * 2.5)), (60, 120, 255), max(1, r - 1),
                    cv2.LINE_AA)                                      # corner 0
     if axes and prof is not None:
-        for lab, a, b in board_axes(corners, pattern, square, prof):
-            o = tuple(np.round(_on_thumb(a, scale)).astype(int))
-            q = tuple(np.round(_on_thumb(b, scale)).astype(int))
-            col = AXIS_COLORS_BGR[lab]
-            cv2.arrowedLine(img, o, q, col, 2, cv2.LINE_AA, tipLength=0.25)
-            cv2.putText(img, lab, (q[0] + 3, q[1] + 4), cv2.FONT_HERSHEY_SIMPLEX,
-                        0.45, col, 1, cv2.LINE_AA)
+        _draw_axes(img, corners, pattern, square, prof, scale)
     return img
 
 
@@ -1278,16 +1272,22 @@ def _draw_seen_board(img, c, m, corners, pattern, square, prof, scale, axes, eve
         cv2.circle(img, (int(round(c[0, 0])), int(round(c[0, 1]))), int(max(4, r * 2.5)), (60, 120, 255),
                    max(1, r - 1), cv2.LINE_AA)
     if axes and prof is not None:
-        for lab, a, b in board_axes(corners, pattern, square, prof):
-            o = tuple(np.round(_on_thumb(a, scale)).astype(int))
-            q = tuple(np.round(_on_thumb(b, scale)).astype(int))
-            col = AXIS_COLORS_BGR[lab]
-            cv2.arrowedLine(img, o, q, col, 2, cv2.LINE_AA, tipLength=0.25)
-            cv2.putText(img, lab, (q[0] + 3, q[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
+        _draw_axes(img, corners, pattern, square, prof, scale)
     return img
 
 
 AXIS_COLORS_BGR = {"X": (60, 60, 240), "Y": (60, 220, 60), "Z": (240, 160, 60)}
+
+
+def _draw_axes(img, corners, pattern, square, prof, scale) -> None:
+    """(R60) The board's X / Y / Z arrows and letters on a review picture, `scale` = video pixels to its
+    pixels: the one drawing for a whole board (`draw_board_review`) and a partly seen one (`_draw_seen_board`)."""
+    for lab, a, b in board_axes(corners, pattern, square, prof):
+        o = tuple(np.round(_on_thumb(a, scale)).astype(int))
+        q = tuple(np.round(_on_thumb(b, scale)).astype(int))
+        col = AXIS_COLORS_BGR[lab]
+        cv2.arrowedLine(img, o, q, col, 2, cv2.LINE_AA, tipLength=0.25)
+        cv2.putText(img, lab, (q[0] + 3, q[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, col, 1, cv2.LINE_AA)
 
 
 def board_axes(corners: np.ndarray, pattern: tuple[int, int], square: float,
@@ -1428,55 +1428,9 @@ def _fit_shape(corner_list, pattern, square, base: "LensProfile", fix: tuple = (
     coefficients) and only the focal length -- one, the pixels are square -- and the centre fitted
     to the boards; an axis in `fix` keeps `base`'s centre. Same returns as `_fit`. Sparse least
     squares over (f, cx, cy) + six pose numbers per board; each board's pose starts from solvePnP
-    on its corners undistorted with `base`."""
-    from scipy.optimize import least_squares
-    from scipy.sparse import lil_matrix
-    if any(_seen(c) is not None for c in corner_list):
-        return _fit_shape_seen(corner_list, pattern, square, base, fix)     # (I321) ChArUco views
-    obj = _object_points(pattern, square)
-    obj3 = obj.reshape(-1, 1, 3)
-    D = np.asarray(base.dist, np.float64).reshape(4, 1)
-    K0 = base.K_square()
-    imgs = [np.asarray(c, np.float64).reshape(-1, 2) for c in corner_list]
-    x0 = [K0[0, 0]] + ([] if fix[0] else [K0[0, 2]]) + ([] if fix[1] else [K0[1, 2]])
-    n_in = len(x0)
-    for c in imgs:
-        und = cv2.fisheye.undistortPoints(c.reshape(-1, 1, 2), K0, D).reshape(-1, 2)
-        _ok, rv, tv = cv2.solvePnP(obj, und, np.eye(3), None)
-        x0 += np.asarray(rv, np.float64).ravel().tolist() + np.asarray(tv, np.float64).ravel().tolist()
-    npt = obj.shape[0]
-
-    def K_of(x):
-        cx = K0[0, 2] if fix[0] else x[1]
-        cy = K0[1, 2] if fix[1] else x[1 + (0 if fix[0] else 1)]
-        return np.array([[x[0], 0.0, cx], [0.0, x[0], cy], [0.0, 0.0, 1.0]])
-
-    def res(x):
-        K = K_of(x)
-        out = []
-        for v, c in enumerate(imgs):
-            q = x[n_in + 6 * v:n_in + 6 * v + 6]
-            pr, _ = cv2.fisheye.projectPoints(obj3, q[:3], q[3:], K, D)
-            out.append((pr.reshape(-1, 2) - c).ravel())
-        return np.concatenate(out)
-    S = lil_matrix((2 * npt * len(imgs), len(x0)), dtype=int)
-    for v in range(len(imgs)):
-        rows = slice(2 * npt * v, 2 * npt * (v + 1))
-        S[rows, :n_in] = 1
-        S[rows, n_in + 6 * v:n_in + 6 * v + 6] = 1
-    sol = least_squares(res, np.asarray(x0, np.float64), jac_sparsity=S, x_scale="jac", method="trf")
-    K = K_of(sol.x)
-    r = sol.fun.reshape(-1, npt, 2)
-    per_view = [_rms_px(rv) for rv in r]
-    rms = _rms_px(r.reshape(-1, 2))
-    tilts = [_board_tilt_deg(sol.x[n_in + 6 * v:n_in + 6 * v + 3]) for v in range(len(imgs))]
-    return rms, K, np.asarray(base.dist, np.float64).ravel(), per_view, tilts
-
-
-def _fit_shape_seen(corner_list, pattern, square, base: "LensProfile", fix: tuple = (False, False)):
-    """(I321) `_fit_shape` for views that may miss corners: each board contributes the corners it
-    saw (its residual rows found by offset, not by one fixed count per board). Same model, solver
-    and returns."""
+    on its corners undistorted with `base`. (I321) A view may miss corners (a ChArUco board): each
+    board contributes the corners it saw, its residual rows found by offset. (R60) The one solver: on
+    complete views it is bit for bit the full-view copy it replaced."""
     from scipy.optimize import least_squares
     from scipy.sparse import lil_matrix
     obj = _object_points(pattern, square)
@@ -1597,42 +1551,11 @@ def _fisheye_flags() -> int:
 
 
 def _fit(corner_list, pattern, square, size, fisheye: bool):
-    if any(_seen(c) is not None for c in corner_list):
-        return _fit_seen(corner_list, pattern, square, size, fisheye)       # (I321) ChArUco views
-    obj = _object_points(pattern, square)
-    if fisheye:
-        # the fisheye solver wants every view as a (1, N, k) float64 array
-        objs = [obj.reshape(1, -1, 3) for _ in corner_list]
-        imgs = [c.reshape(1, -1, 2).astype(np.float64) for c in corner_list]
-        K = np.zeros((3, 3))
-        D = np.zeros((4, 1))
-        flags = _fisheye_flags()
-        rms, K, D, rvecs, tvecs = cv2.fisheye.calibrate(
-            objs, imgs, size, K, D, flags=flags,
-            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 60, 1e-7))
-        dist = D.ravel()
-        per_view = []
-        for o, im, r, t in zip(objs, imgs, rvecs, tvecs):
-            proj, _ = cv2.fisheye.projectPoints(o, r, t, K, D)
-            per_view.append(_rms_px(proj.reshape(-1, 2) - im.reshape(-1, 2)))
-    else:
-        objs = [obj.astype(np.float32) for _ in corner_list]
-        imgs = [c.astype(np.float32) for c in corner_list]
-        flags = cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K3
-        rms, K, D, rvecs, tvecs = cv2.calibrateCamera(objs, imgs, size, None, None, flags=flags)
-        dist = D.ravel()
-        per_view = []
-        for o, im, r, t in zip(objs, imgs, rvecs, tvecs):
-            proj, _ = cv2.projectPoints(o, r, t, K, D)
-            per_view.append(_rms_px(proj.reshape(-1, 2) - im.reshape(-1, 2)))
-    tilts = [_board_tilt_deg(r) for r in rvecs]        # the board normal vs the optical axis
-    return float(rms), np.asarray(K, np.float64), np.asarray(dist, np.float64), per_view, tilts
-
-
-def _fit_seen(corner_list, pattern, square, size, fisheye: bool):
-    """(I321) `_fit` for views that may miss corners (a ChArUco board partly out of the picture or
-    covered): each view is fitted on the corners it saw, against those corners' own board
-    positions. The same solvers, flags and returns as `_fit`."""
+    """One lens model fitted to the boards: (rms, K, dist, per-view rms, board tilts). (I321) Each view
+    is fitted on the corners it saw, against those corners' own board positions (a ChArUco board partly
+    out of the picture or covered; a checkerboard view sees them all). (R60) The one solver: on complete
+    views it is bit for bit the full-view copy it replaced (OpenCV on one thread; its default threads
+    vary the last digits from run to run, with either copy)."""
     obj = _object_points(pattern, square)
     pairs = []
     for c in corner_list:

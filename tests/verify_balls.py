@@ -224,6 +224,17 @@ assert (modes[5], modes[20], modes[50]) == (2, 2, 3) and worst(res, gt) < 0.5, m
 tk, res, _ = run_mock(lambda f, o: None if (o == 2 and f >= 20) else ((900.0 if o == 1 else 1200.0), 700.0, RC),
                       (WC, HC), 40, [1, 2])
 assert tk.drop_reason.get(2) == "lost" and len(res[1]) == 40, "a ball lost inside a shared crop is 'lost'"
+# (R57) one rule for where a prompt puts its ball: the mean of its POSITIVE clicks (all clicks when none is
+# positive), for the crop / grouping (_prompt_centre) and for the position the ball is registered at
+pr = balls.BallPrompt(5, points=np.array([[900.0, 700.0], [1500.0, 700.0]]), labels=np.array([1, 0]), radius=RC)
+c = balls.BallTracker._prompt_centre(pr)
+tk = balls.BallTracker(MockSeg(lambda f, o: (900.0, 700.0, RC)), (WC, HC))
+tk.step(np.full((HC, WC, 3), 200, np.uint8), 0, [pr])
+print(f"a yes click at x=900 + a 'not this' click at x=1500: crop centre {c}, registered at {tk.active[5].xy}")
+assert c == (900.0, 700.0) and np.allclose(tk.active[5].xy, c, atol=1e-6), \
+    "R57: the crop and the registered ball use one centre (after the step: the fitted circle's)"
+assert balls.BallTracker._prompt_centre(balls.BallPrompt(6, points=np.array([[10.0, 20.0], [30.0, 40.0]]))) \
+    == (20.0, 30.0), "no labels = every click counts"
 print("mock-SAM guards OK")
 
 # ---------------------------------------------------------------- the clip

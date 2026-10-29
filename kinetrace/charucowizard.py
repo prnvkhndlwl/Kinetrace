@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QFormLayout, QGroupBox, 
 from kinetrace import charuco, theme
 from kinetrace import lens as _lens
 from kinetrace.charucoui import CharucoFields
-from kinetrace.calibwizard import _Cancelled
+from kinetrace.calibwizard import _Cancelled, focal_free, principal_points, start_focals, undistort_views
 from kinetrace.errors import plain_error
 from kinetrace.lenswizard import VERDICT_COLORS, _dim, stop_page_threads
 
@@ -93,36 +93,21 @@ def rig_inputs(scan: charuco.RigScan, lenses: dict):
     cameras with `lenses` ({project camera: profile fitted to it, or absent}): the rules of the wand
     wizard (`calibwizard.build_inputs` / `CamerasPage`): profiled cameras straightened, their
     focal length and centre from the profile; a focal length refined only where cameras share a
-    profile (I144) or some camera has none (I35)."""
+    profile (I144) or some camera has none (I35). The rules ARE the wand wizard's functions (R59), with
+    every scan camera ticked; distortion is never estimated here (the board's corners come from lenses
+    already fitted or from none)."""
     wand_uv, L, bg_uv, frames, _bgf = charuco.pairs_and_extras(scan)
-    C = len(scan.cameras)
+    ticked = list(range(len(scan.cameras)))
     lens_list = [lenses.get(v) for v in scan.cameras]
     models = [(l.undistort_model() if l is not None else None) for l in lens_list]
     summaries = [(l.summary() if l is not None else None) for l in lens_list]
-
-    def und(arr):
-        if arr is None or not any(m is not None for m in models):
-            return arr
-        out = np.array(arr, np.float64, copy=True)
-        for c, m in enumerate(models):
-            if m is None:
-                continue
-            sl = out[:, c]
-            out[:, c] = m.undistort(sl.reshape(-1, 2)).reshape(sl.shape)
-        return out
     bg = bg_uv if len(bg_uv) else None
-    any_lens = any(l is not None for l in lens_list)
-    every = all(l is not None for l in lens_list)
-    focal = ([float(l.f_square) if l is not None else float("nan") for l in lens_list] if any_lens else None)
-    principal = ([tuple(l.principal) if l is not None else ((w - 1) / 2.0, (h - 1) / 2.0)
-                  for l, (w, h) in zip(lens_list, scan.sizes)] if any_lens else None)
-    if every:
-        free = [any(j != c and _lens.same_profile(lens_list[j], l) for j in range(C)) for c, l in enumerate(lens_list)]
-        est = free if any(free) else False
-    else:
-        est = True
-    kwargs = dict(wand_uv=und(wand_uv), wand_length=L, sizes=list(scan.sizes), coverage_uv=wand_uv,
-                  coverage_bg_uv=bg, frame_ids=frames, focal=focal, principal=principal, bg_uv=und(bg),
+    focal = start_focals(lens_list, ticked)
+    principal = principal_points(lens_list, scan.sizes, ticked)
+    est = focal_free(lens_list, ticked)
+    kwargs = dict(wand_uv=undistort_views(wand_uv, models), wand_length=L, sizes=list(scan.sizes),
+                  coverage_uv=wand_uv, coverage_bg_uv=bg, frame_ids=frames, focal=focal, principal=principal,
+                  bg_uv=undistort_views(bg, models),
                   estimate_focal=est, estimate_distortion=False, unit="m", names=list(scan.names))
     return kwargs, models, summaries, frames
 

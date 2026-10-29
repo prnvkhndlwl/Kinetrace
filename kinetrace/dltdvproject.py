@@ -34,6 +34,7 @@ import numpy as np
 
 from kinetrace.calib import (Calibration, CameraCalibration, LWMUndistort, NoUndistort, dlt_column_calibrated,
                              match_dltdv_lenses)
+from kinetrace.paths import path_key
 from kinetrace.project import half_up
 
 MAX_BYTES = 2 * 1024 ** 3          # the dense block of clicked rows (rows x points x videos x 2 x 8 bytes)
@@ -498,11 +499,6 @@ def _read_v73(path) -> DLTdvProject:
 
 # -------------------------------------------------------------------- videos and the 3D check
 
-def _key(p) -> str:
-    import os
-    return os.path.normcase(os.path.abspath(str(p)))
-
-
 def find_videos(dv: DLTdvProject, folder: str | None = None) -> list[str | None]:
     """Each video, by its base name: where the project says, then beside the .mat, in the .mat's parent folder
     and in `folder` (the one the user was asked for) -- in each of those also inside a sub-folder named like
@@ -522,13 +518,13 @@ def find_videos(dv: DLTdvProject, folder: str | None = None) -> list[str | None]
         hit = None
         for c in cands:
             try:
-                if _key(c) not in taken and c.is_file():
+                if path_key(c) not in taken and c.is_file():
                     hit = str(c)
                     break
             except OSError:
                 continue
         if hit is not None:
-            taken.add(_key(hit))
+            taken.add(path_key(hit))
         out.append(hit)
     return out
 
