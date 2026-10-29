@@ -182,22 +182,27 @@ def locked_once(src, dst, *a, **k):
     return real_os_replace(src, dst, *a, **k)
 
 
+# every status-bar message is recorded, not just the last one: the frame fingerprint is made in the background
+# after the video opens, and on a slow machine its message lands right after the autosave's and replaces it
+said = []
+w.statusBar().messageChanged.connect(said.append)
 os.replace = locked_once
 w.statusBar().clearMessage()
+del said[:]
 try:
     w._autosave(wait=True)
     pump(0.1)
 finally:
     os.replace = real_os_replace
-check(n_lock[0] == 1 and recovery.find(pid1) is not None and "kept safe" in w.statusBar().currentMessage(),
+check(n_lock[0] == 1 and recovery.find(pid1) is not None and any("kept safe" in m for m in said),
       "(I290) a recovery info file locked for a moment is still written: the copy is found after a crash",
-      f"locked {n_lock[0]}, found {recovery.find(pid1) is not None}, said {w.statusBar().currentMessage()!r}")
+      f"locked {n_lock[0]}, found {recovery.find(pid1) is not None}, said {said}")
 # (I290, review) a lock that outlasts the retries: the window never waits on it (the info file is written on the
 # save worker), nothing is raised in a slot, the status bar says so, and the next autosave writes it
 import threading  # noqa: E402
 os.remove(recovery.paths(pid1)[1])
 w.session.set_position(3, 0, 92.0, 96.0)
-where, raised, said = [], [], []
+where, raised = [], []
 
 
 def locked_always(src, dst, *a, **k):
@@ -209,7 +214,7 @@ def locked_always(src, dst, *a, **k):
 
 real_hook = sys.excepthook
 sys.excepthook = lambda *e: raised.append(e[1])
-w.statusBar().messageChanged.connect(said.append)
+del said[:]
 os.replace = locked_always
 try:
     w._autosave(wait=True)
@@ -219,13 +224,14 @@ finally:
 check(where and not any(where) and not raised and recovery.find(pid1) is None
       and any("Could not keep a recovery copy" in m for m in said),
       "(I290) a lock that outlasts the retries: written off the GUI thread, said, never raised in a slot",
-      f"on the GUI thread {where[:3]}, raised {raised}, said {said[-2:]}")
+      f"on the GUI thread {where[:3]}, raised {raised}, said {said}")
+del said[:]
 w._autosave(wait=True)
 pump(0.1)
 sys.excepthook = real_hook
 w.statusBar().messageChanged.disconnect(said.append)
-check(recovery.find(pid1) is not None and "kept safe" in said[-1],
-      "(I290) the next autosave writes the info file once the lock is gone", str(said[-2:]))
+check(recovery.find(pid1) is not None and any("kept safe" in m for m in said),
+      "(I290) the next autosave writes the info file once the lock is gone", str(said))
 
 # ------------------------------------------------------------------ 2
 print("\n[2] Save: .history, edits during a save stay unsaved, a failed write changes nothing")

@@ -439,7 +439,8 @@ def main(argv=None) -> int:
     s.add_argument("output")
     s.add_argument("--to", choices=list(P3_FORMATS))
     s.add_argument("--calibration", help="the calibration these points were made with: they are written in the "
-                                         "world of the cameras `convert calibration` exports from it")
+                                         "world of the cameras `convert calibration` exports from it (--to dltdv: "
+                                         "the world of its dltCoefs.csv)")
     s.add_argument("--size", action="append", help="WIDTHxHEIGHT, once for all cameras or once per camera "
                                                    "(with --calibration, for a file that records no sizes)")
     s.add_argument("--pixels", choices=list(PIXELS), help="with --calibration: how a dltCoefs.csv / easyWand "
