@@ -552,7 +552,14 @@ check(win.session is not None and win.session.n_points == 3, "the video opens an
 if win.session is not None and win.session.n_points == 3:
     d = np.abs(win.session.tracks[:, :3] - src.tracks)[exp].max()
     check(np.array_equal(win.session.tracked, exp) and d <= 5e-4 + 1e-4, "at the right frames and positions", str(d))
-    win._undo_run()
+    # (R52) a one-camera import leaves Undo on, and the real Ctrl+Z press takes it back
+    check(win.act_undo.isEnabled(), "Edit -> Undo is on after a one-camera import")
+    from PySide6.QtCore import Qt  # noqa: E402
+    from PySide6.QtTest import QTest  # noqa: E402
+    win.activateWindow()
+    win.canvas.setFocus()
+    QTest.keyClick(win.canvas, Qt.Key_Z, Qt.ControlModifier)
+    pump(0.2)
     check(win.session.n_points == 0, "Ctrl+Z undoes the import")
 win._import_tracks_dialog(os.path.join(OUT, "dlc_multi.csv"))
 check(said["warn"] and "multi-animal" in said["warn"][-1] and win.session.n_points == 0,

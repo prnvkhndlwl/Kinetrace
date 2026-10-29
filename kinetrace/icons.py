@@ -138,17 +138,6 @@ def mask() -> QIcon:
 
 
 @lru_cache(maxsize=None)
-def body() -> QIcon:
-    """On-body constraint: a point held inside an outline."""
-    def d(p, c):
-        p.drawEllipse(QRectF(3, 4, 14, 12))
-        p.setBrush(QBrush(c))
-        p.drawEllipse(QRectF(8.25, 8.25, 3.5, 3.5))
-        p.setBrush(Qt.NoBrush)
-    return _icon(d)
-
-
-@lru_cache(maxsize=None)
 def follow() -> QIcon:
     """Follow: a crosshair reticle."""
     def d(p, c):

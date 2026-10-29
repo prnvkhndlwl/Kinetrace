@@ -12618,7 +12618,7 @@ class MainWindow(QMainWindow):
             targets = [(labels.index(choice), p.active)]
         if len(targets) == 1:
             self._undo_snap = p.sessions[targets[0][1]].snapshot()   # one undo step
-            self.act_undo.setEnabled(targets[0][1] == p.active)
+            self.act_undo.setEnabled(True)            # one target = the active camera (R52)
         else:
             self._undo_snap = None                                   # the undo holds one camera only
         said = []
