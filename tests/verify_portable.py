@@ -506,7 +506,7 @@ else:
                 bad.append(f"'{name}' second run: rc {rc}, {out.strip()[-200:]!r}, app started from {started}")
             (k / "started.txt").unlink(missing_ok=True)
         assert not bad, "run.bat did not repair the moved folder: " + " | ".join(bad)
-        ok("moved to " + ", ".join(repr(n) for n in NAMES) + ": one run.bat relinks and starts the app, "
+        ok("moved to " + ", ".join(ascii(n) for n in NAMES) + ": one run.bat relinks and starts the app, "
            "the next starts it without relinking")
     finally:
         shutil.rmtree(SCR, ignore_errors=True)

@@ -114,20 +114,17 @@ rem moved or renamed, .venv\pyvenv.cfg still points at the old absolute path
 rem and the venv launcher exits with code 103. Detect that by trying to start
 rem it (a string compare would hit findstr's 127-char limit on long paths) and
 rem repoint the venv at wherever we are now.
-rem (X43) No ( ) block here, and the path is read only as !VENV_HOME!: delayed
-rem expansion pastes it in after cmd has read the line, so a ( ) & ^ % or ! in
-rem the folder's name ("Program Files (x86)") cannot end a block or start a
-rem command. VENV_HOME is set before delayed expansion is on: a ! survives.
-set "VENV_HOME=%~dp0.venv\base"
-if not exist "%VENV_HOME%\python.exe" goto :linked
+rem (X43, X50) The private Python writes pyvenv.cfg itself, in UTF-8, from its
+rem own location: the folder's path never passes through a cmd line, so a
+rem ( ) & ^ % or ! in its name ("Program Files (x86)") cannot end a block or
+rem start a command, and a letter outside English ("Jose" with an accent) is not
+rem written in the console's code page, which Python cannot read back. The
+rem file is written before the message: a message the console cannot show must
+rem not stop the repair. (No % or ! inside RELINK: cmd would expand them.)
+set "RELINK=import os, sys, platform; h = os.path.dirname(sys.executable); open(os.path.join('.venv', 'pyvenv.cfg'), 'w', encoding='utf-8').write(''.join(k + ' = ' + v + '\n' for k, v in (('home', h), ('include-system-site-packages', 'false'), ('version', platform.python_version()), ('executable', sys.executable)))); print('Folder was moved - relinked .venv to ' + h)"
+if not exist ".venv\base\python.exe" goto :linked
 ".venv\Scripts\python.exe" -c "pass" >nul 2>nul && goto :linked
-setlocal EnableDelayedExpansion
-echo Folder was moved - relinking .venv to !VENV_HOME!
-> ".venv\pyvenv.cfg" echo home = !VENV_HOME!
->> ".venv\pyvenv.cfg" echo include-system-site-packages = false
->> ".venv\pyvenv.cfg" echo version = 3.12.10
->> ".venv\pyvenv.cfg" echo executable = !VENV_HOME!\python.exe
-endlocal
+".venv\base\python.exe" -I -X utf8 -c "%RELINK%"
 :linked
 rem the Kinetrace shortcut: made when missing, rewritten after a folder move or a newer shortcut layout
 ".venv\Scripts\python.exe" -m kinetrace.winapp --if-stale --quiet >nul 2>nul
