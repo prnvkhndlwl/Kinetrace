@@ -261,7 +261,7 @@ Windows the `Kinetrace` shortcut (its icon is `.venv\kinetrace.ico`).
 - **Your projects, exports and calibration files**: wherever you save them.
   They are never deleted by an update or by uninstalling.
 - Only if the Kinetrace folder cannot be written (installed read-only): the
-  logs and recovery copies go to `%LOCALAPPDATA%\Kinetrace` (Windows),
+  logs, recovery copies and the tour's demo video go to `%LOCALAPPDATA%\Kinetrace` (Windows),
   `~/Library/Application Support/Kinetrace` (Mac) or `~/.local/share/kinetrace`
   (Ubuntu).
 - Kinetrace 0.4.1 and earlier kept your name for notes in the registry

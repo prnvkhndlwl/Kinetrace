@@ -240,7 +240,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>click / drag lanes</td><td>seek (the timeline IS the scrubber)</td></tr>
 <tr><td class=k>click a ribbon</td><td>select the event's frame window AND jump to its start (right-click: rename, retime, delete)</td></tr>
 <tr><td class=k>Shift+drag</td><td><b>select a frame window AND the lanes under the drag</b> → Delete clears exactly those: drag over the segment lane to remove the <i>silhouettes</i> in that stretch, over point lanes to remove <i>their</i> tracks, over both to remove both (one Ctrl+Z). Drag in the ruler to select the window without naming lanes — Delete then uses the point panel's selection, as before. Right-click inside the band for the same choices</td></tr>
-<tr><td class=k>Shift+= / Shift+− (or ⊕ ⊖ ⤢)</td><td>zoom the time axis around the playhead (also Ctrl+wheel; on a US keyboard &#43; is Shift+=, so it zooms the time axis too); ⤢ shows the whole video; middle-drag pans; when zoomed, every frame gets its own pixels so you can click exactly the frame you want</td></tr>
+<tr><td class=k>Shift with = / &#43; / − (or ⊕ ⊖ ⤢)</td><td>zoom the time axis around the playhead (also Ctrl+wheel; a key that needs Shift counts: &#43; on a US keyboard, = on a German one); ⤢ shows the whole video; middle-drag pans; when zoomed, every frame gets its own pixels so you can click exactly the frame you want</td></tr>
 <tr><td class=k>wheel</td><td>scroll point lanes when they overflow</td></tr>
 <tr><td class=k>splitter bar</td><td>drag (above the panel) to give the timeline more lanes</td></tr>
 </table>
@@ -248,7 +248,7 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>Ctrl+1</td><td>show / hide the right panel (LAYERS). Floated as its own window, it keeps the hotkeys</td></tr>
 <tr><td class=k>narrow window</td><td>the tool buttons at the bottom show only their icons; hover one to see what it does. Menu entries explain themselves on hover too</td></tr>
 <tr><td class=k>wheel</td><td>zoom the video under the cursor</td></tr>
-<tr><td class=k>= / − &nbsp;(or keypad &#43;)</td><td>zoom the video around the pointer (&#43; too, on a keyboard where it needs no Shift)</td></tr>
+<tr><td class=k>= / &#43; / − without Shift</td><td>zoom the video around the pointer (the keypad's &#43; / − too)</td></tr>
 <tr><td class=k>R</td><td>reset view (fit the video)</td></tr>
 <tr><td class=k>Shift+R</td><td>reset every camera's view (fit each video; R fits only the working one)</td></tr>
 <tr><td class=k>H (or Pan)</td><td>pan tool: left-drag pans instead of editing (does nothing until a video is open); H, Esc, or picking Point (N) or Segment (S) ends it — only one of Pan / Point / Segment is on at a time. Middle-drag always pans, any time — even while tracking</td></tr>

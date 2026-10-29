@@ -439,7 +439,7 @@ tracked; you can also close it with **×**, and **View → Getting started
 strip** brings it back.
 
 **The middle** is your video. This is where you click on things. You can zoom
-with the mouse wheel (or **=** and **−**, or the zoom-out / zoom-in buttons in
+with the mouse wheel (or **=** / **+** and **−** without Shift, or the zoom-out / zoom-in buttons in
 the picture's lower-right corner) and pan by holding the left button and
 moving the mouse (the middle button works too, and so does the **Pan** tool,
 key **H**). A plain left **click** on the video places the point selected in
@@ -1501,8 +1501,9 @@ or mark hidden, press **J** again.
 **To move through the video,** click or drag anywhere along it.
 
 **To see individual frames,** zoom the time axis: hold **Shift** and press
-**=** or **−** (or hold **Ctrl** and scroll the wheel over the panel). On a US
-keyboard, **+** is Shift and **=**, so it zooms the timeline too, not the video. Zoomed in
+**=** (or **+**) or **−** (or hold **Ctrl** and scroll the wheel over the panel). A
+key that needs Shift on your keyboard counts as Shift: on a US keyboard **+** is
+Shift and **=**, so it zooms the timeline, not the video; on a German one **=** does. Zoomed in
 far enough, every frame gets its own column of pixels and you can click precisely
 the one you want. A small scroll bar appears along the bottom edge showing where
 you are in the whole video — drag it to move, or drag the timeline itself with
@@ -3214,7 +3215,7 @@ next camera's picture and export again for each one.
 | **DLTdv8 xypts CSV** | to load one camera into DLTdv8. Written the way DLTdv8 writes its own files: pixels counted from 1, origin at the top-left, `NaN` where there is no data. A DLTdv export is exactly two files: the points file and the `_pointnames.csv` beside it, which names the body parts (the real names, quoted properly even when one contains a comma) and states this |
 | **DLTdv xypts CSV, bottom-left origin** | the same for older DLTdv versions and Argus Clicker, which count y from the bottom edge. If a re-imported file lands upside down, you picked the wrong one of these two |
 | **Sparse TSV** | only the frames that actually have data — much smaller for sparse tracks |
-| **MATLAB (.mat)** | to load straight into MATLAB, including confidence, which frames you placed by hand, each point's animal, every animal's silhouette, events and notes. Pixels are counted from 0 like the Wide CSV (the file's `pixel_convention` says so; add 1 for DLTdv8-style coordinates); `NaN` where there is no data |
+| **MATLAB (.mat)** | to load straight into MATLAB, including confidence, which frames you placed by hand, each point's animal, a summary of every animal's silhouette per frame (area, centre, box, midline; not the outline itself), events and notes. Pixels are counted from 0 like the Wide CSV (the file's `pixel_convention` says so; add 1 for DLTdv8-style coordinates); `NaN` where there is no data |
 | **ALL CAMERAS — DLTdv8 xypts** | **the 3D one.** Every camera in one file (`pt1_cam1_X`, `pt1_cam1_Y`, `pt1_cam2_X` …), landmarks matched across cameras **by name**, DLTdv8's pixel convention. One row per frame of the **reference camera** (the first in CAMERAS), starting at its frame 0; the other cameras are read at their **nearest whole frame** through their offsets (DLTdv works in whole frames, so a fraction of a frame in an offset is not in the rows). A camera that did not film that instant, or has no landmark of that name, gives `NaN`. The `_pointnames.csv` beside it names the landmarks and states the pixel convention, what the rows are, which video is cam1, cam2 …, and each camera's offset and frame rate |
 | **3D landmarks** | the reconstructed positions (after *3D → Reconstruct 3D Landmarks*, Ctrl+3), one row per frame of the reference camera, `NaN` where there is no 3D position, with a second file (`_xyzres.csv`) giving each position's residual, how many cameras saw it and each camera's own error |
 | **3D landmarks — Anipose / DLTdv xyzpts** | the same positions in the layout Anipose writes (`name_x`, `name_y`, `name_z`, `name_error`, `name_ncams`, `fnum`) or DLTdv's own xyzpts file (`pt1_X` …, one row per frame of the reference camera from 0, `NaN` where none, names in `_pointnames.csv`) |
@@ -4072,7 +4073,7 @@ lens it measures to one camera of the project that is open. Two ways to do it:
   page press *Attach to …*.
 - **With nothing open yet:** run the wizard anyway and on the last page press
   **Save lens file…**. Later, open your experiment, choose **3D → Calibrate → Calibrate a
-  Lens (checkerboard)…** again and press *I already have a lens file…*: it goes
+  Lens (checkerboard or ChArUco)…** again and press *I already have a lens file…*: it goes
   straight to the last page, where *Attach to …* gives the lens to the camera
   (or press *Load file…* next to that camera in the wand wizard). A lens
   attached only to the checkerboard video's own project stays there and never
@@ -4421,12 +4422,12 @@ view keys work. Hover over any button or menu entry to see what it does.
 
 | Key | Does |
 |---|---|
-| wheel, **=** / **−** (also the keypad's **+**, and **+** on a keyboard where it needs no Shift), or the zoom buttons in the picture's lower-right corner | zoom the video (a sideways swipe on a touchpad does not zoom) |
+| wheel, **=**, **+** or **−** pressed WITHOUT Shift (the keypad's **+** / **−** too), or the zoom buttons in the picture's lower-right corner | zoom the video (a sideways swipe on a touchpad does not zoom) |
 | **R**, or the fit button in that corner | fit the whole picture back in the window |
 | **Shift+R** | fit the whole picture in every camera at once (**R** fits only the camera you are working in) |
 | **H** (the Pan button) | the tool for looking only: while it is on, a click or a right click on a marker edits nothing. Press **H** again or **Esc** to stop — picking **Point** or **Segment** also stops it. Does nothing until a video is open |
 | middle-drag | pan, at any time — even while tracking |
-| **Shift + =** / **Shift + −** (on a US keyboard **+** is Shift + =, so it zooms the timeline), **Ctrl+wheel** over the timeline, or the three magnifier buttons in the timeline's top-left corner | zoom the timeline's time axis (the last button shows the whole video) |
+| **=**, **+** or **−** WITH Shift (so **+** on a US keyboard, which is Shift + =, and **=** on a German one, which is Shift + 0), **Ctrl+wheel** over the timeline, or the three magnifier buttons in the timeline's top-left corner | zoom the timeline's time axis (the last button shows the whole video) |
 | **Ctrl+1** | show / hide the right panel |
 | **Ctrl+2** | show only the camera you are working on (the same as **M**) |
 | **Ctrl+Shift+2** | Active view only: only the working camera reads its video; the others stay where they are until Sync all views (again: back to Sync all views; also *View → Other cameras*) |
