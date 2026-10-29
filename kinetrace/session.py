@@ -263,9 +263,10 @@ def dltdv_xy(x, y, height, flip_y: bool) -> tuple[float, float]:
     return float(x) + 1.0, ((height - float(y)) if flip_y else float(y) + 1.0)
 
 
-def dltdv_convention_text(flip_y: bool) -> str:
+def dltdv_convention_text(flip_y: bool, pixel_origin: float = 1.0) -> str:
     """One plain sentence naming the pixel convention an xypts file was
-    written in (`dltdv_xy`'s), for its sidecar and the export dialog."""
+    written in (`dltdv_xy`'s), for its sidecar and the export dialog. Both
+    writers write DLTdv8's first-pixel-1 numbering, so `pixel_origin` is always 1."""
     if flip_y:
         return "bottom-left origin; y counted from the bottom edge; first pixel = 1 (older DLTdv, Argus Clicker)"
     return "top-left origin; first pixel = 1 (DLTdv8 / MATLAB)"
