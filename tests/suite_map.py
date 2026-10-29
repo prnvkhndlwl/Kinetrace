@@ -91,6 +91,8 @@ MAP = [
                            "verify_review_app3", "verify_downloads"]),
     ([K + "tour.py", K + "demo.py"], ["verify_tour", "verify_ui_focus", "verify_keys_follow"]),
     ([K + "layers.py"], ["verify_layers", "verify_segment_panel", "verify_segment_targets", "verify_animal_gui"]),
+    # (I380, G233) a retime moves only that camera; the rig-wide Align button
+    ([K + f for f in ("app.py", "camerapanel.py", "project.py")], ["verify_camera_offset_align"]),
     ([K + "project.py", K + "folderimport.py", K + "cameraorder.py"],
      ["verify_multicam", "verify_shared_landmarks", "verify_multiview", "verify_camera_views", "verify_projectfile",
       "verify_3d_gui", "verify_open_replace"]),

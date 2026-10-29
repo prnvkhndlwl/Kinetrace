@@ -54,7 +54,7 @@ GPU = ["audit_sweep", "verify_balls", "verify_animal", "verify_tracker", "verify
 # no output redirect) or the stderr guard it checks cannot fail; see CLAUDE.md
 CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery", "verify_interop", "verify_shared_landmarks", "verify_multiview", "verify_loading", "verify_stress", "verify_3d", "verify_wand", "verify_lens", "verify_body",
        "verify_onbody_rules", "verify_silhouette_loops", "verify_sync",
-       "verify_timeline_events", "verify_menu_paths", "verify_scrub", "verify_multicam", "verify_3d_gui", "verify_ui_focus",
+       "verify_timeline_events", "verify_menu_paths", "verify_scrub", "verify_multicam", "verify_camera_offset_align", "verify_3d_gui", "verify_ui_focus",
        "verify_annotate", "verify_display", "verify_render", "verify_segment_panel", "verify_point_menu",
        "verify_wand_gui", "verify_wand_subset", "verify_calib3d", "verify_auto3d", "verify_live3d", "verify_lens_gui", "verify_body_gui", "verify_sweep_fixes", "verify_crashlog", "verify_update", "verify_downloads",
        "verify_spots", "verify_alltracker_mps", "verify_install_paths", "verify_winapp",
