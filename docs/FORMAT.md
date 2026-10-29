@@ -20,8 +20,10 @@ what counts.
 files as an ordinary **zip archive** named `name.kinetrace`; Kinetrace opens
 it like the folder, and `convert unpack` turns it back into a folder.
 
-Everything here describes **format version 2** (2026-09-29). Format 1 (a zip
-with one long `tracks.csv` per camera) still opens; see the end.
+Everything here describes **format version 4**, the one Kinetrace writes today
+(the folder layout dates from format 2, 2026-09-29; what formats 3 and 4 added
+is listed under `kinetrace.json` below). Format 1 (a zip with one long
+`tracks.csv` per camera) still opens; see the end.
 
 ## Conventions (the same in every file)
 
@@ -97,7 +99,7 @@ the file).
 ### `kinetrace.json`
 
 ```json
-{"format": "kinetrace-project", "format_version": 4, "app_version": "0.3.0",
+{"format": "kinetrace-project", "format_version": 4, "app_version": "0.6.0",
  "project_id": "5f0c…", "saved_at": "2026-09-29T21:04:11.482113+00:00",
  "cameras": [{"folder": "cam1", "name": "cam1"}], "videos_relative_to": "project"}
 ```
@@ -446,7 +448,7 @@ beside them; the DLTdv exports do not. For reference:
 | **older DLTdv, Argus** | first pixel = 1, y up from the **bottom** edge | xypts (the sidecar's `convention` line says `bottom-left`); Argus lens profile lines `cam f w h cx cy AR k1 k2 t1 t2 k3` (OpenCV pixels; a line with a negative AR is y up, as Argus's ChArUco script writes it: cy' = h − cy, read back turned). The ChArUco wizard's *Save for Argus…* writes Argus's ChArUco files: `camera_profile.txt` (tab-separated, a line per camera from 1, 6 decimals, y up), `paired_pts-xypts.csv` (`pt1_cam1_x, pt1_cam1_y, … pt2_camC_y`, a row per board instant: the long edge's end corners) and `unpaired_pts-xypts.csv` (`pt1_cam1_x …`, a row per other corner seen by two or more cameras): raw pixels, y' = h − y, `nan` where unseen |
 | **Anipose / aniposelib** | OpenCV | `calibration.toml`: `[cam_0]` `name`, `size = [w, h]`, `matrix` (K), `distortions` (k1 k2 p1 p2 k3; 4 + `fisheye = true`), `rotation` (Rodrigues vector), `translation`; x_cam = R X + t. 3D output CSV `name_x, name_y, name_z, name_error, name_ncams, name_score, …, fnum` |
 | **OpenCV** | 0-based | FileStorage `.yml` / `.json`: per camera `camera_matrix`, `distortion_coefficients`, `image_width`, `image_height`, `rvec`, `tvec`, `R` |
-| **MATLAB Computer Vision Toolbox** | first pixel = **1** | `K` (R2022b+) or `IntrinsicMatrix` (= K'), `ImageSize` = [rows cols], `RadialDistortion` [k1 k2 k3], `TangentialDistortion` [p1 p2], `RotationMatrix` (= R', row-vector form), `TranslationVector` (1 × 3); Kinetrace's .mat also carries `K_opencv`, `R`, `t` |
+| **MATLAB Computer Vision Toolbox** | first pixel = **1** | `K` (R2022b+) or `IntrinsicMatrix` (= K'), `ImageSize` = [rows cols], `RadialDistortion` [k1 k2 k3], `TangentialDistortion` [p1 p2], `RotationMatrix` (= R', row-vector form), `TranslationVector` (1 × 3); Kinetrace's .mat also carries `K_opencv`, `R`, `t` and `fisheye` (1 or 0). A **fisheye** camera (`fisheye` = 1) holds its 4 fisheye (Kannala-Brandt) numbers k1..k4 in `RadialDistortion` and zeros in `TangentialDistortion`; MATLAB's `cameraParameters` takes only 2 or 3 radial numbers, so read such a camera's lens from these fields yourself |
 | **Blender** | — | a script: lens = fx · sensor width / image width (horizontal fit), shift from the picture's centre pixel (w − 1) / 2, camera matrix [R' \| −R't] · diag(1, −1, −1) (Blender cameras look down −Z) |
 
 A calibration made by easyWand or DLTdv usually describes a **mirrored**

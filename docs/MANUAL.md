@@ -439,7 +439,7 @@ tracked; you can also close it with **×**, and **View → Getting started
 strip** brings it back.
 
 **The middle** is your video. This is where you click on things. You can zoom
-with the mouse wheel (or **+** and **−**, or the zoom-out / zoom-in buttons in
+with the mouse wheel (or **=** / **+** and **−** without Shift, or the zoom-out / zoom-in buttons in
 the picture's lower-right corner) and pan by holding the left button and
 moving the mouse (the middle button works too, and so does the **Pan** tool,
 key **H**). A plain left **click** on the video places the point selected in
@@ -790,8 +790,9 @@ on exactly as it would have without your clicks; a **Moving spot** point starts
 again inside its run. When a point is lost before a later click of yours, it is
 cut where it was lost and picked up again at that click, instead of stopping the
 run (an AllTracker or CoTracker3 point is found lost by **Auto-pause**: with it
-off, the point is not cut, and its track up to your click is the tracker's best
-guess); a point that has no position on the frame you start from joins the run at
+off, only a stretch where the tracker itself says the point is out of sight, and
+unsure, for 16 frames is left blank; a stretch where it is merely unsure keeps the
+tracker's best guess up to your click, red on the timeline); a point that has no position on the frame you start from joins the run at
 its first click. When a point starts again the video waits a moment (its new
 tracker needs a few frames before its first positions) - it never goes back.
 Clicks on many points at once use more of the graphics card: when a press may
@@ -1500,7 +1501,9 @@ or mark hidden, press **J** again.
 **To move through the video,** click or drag anywhere along it.
 
 **To see individual frames,** zoom the time axis: hold **Shift** and press
-**+** or **−** (or hold **Ctrl** and scroll the wheel over the panel). Zoomed in
+**=** (or **+**) or **−** (or hold **Ctrl** and scroll the wheel over the panel). A
+key that needs Shift on your keyboard counts as Shift: on a US keyboard **+** is
+Shift and **=**, so it zooms the timeline, not the video; on a German one **=** does. Zoomed in
 far enough, every frame gets its own column of pixels and you can click precisely
 the one you want. A small scroll bar appears along the bottom edge showing where
 you are in the whole video — drag it to move, or drag the timeline itself with
@@ -2209,8 +2212,10 @@ On each picture:
   should lie along the board and stand up out of it. If they point somewhere
   silly, that view is wrong;
 * **a number** — how far that view's corners are from where the fitted lens
-  says they should be. Under 0.6 px is good and shown in green; over 1.5 px is
-  red and worth a look.
+  says they should be. On a 1080p picture, 0.6 px or less is good and shown in
+  green, up to 1.2 px is usable (yellow), and over 1.2 px is red and worth a
+  look. Both limits grow with the picture's long side: on 4K they are 1.2 and
+  2.4 px.
   Instead of the number, a board may read **poor: corners merged** in red. Two
   neighbouring corners were found on the same spot. This happens where the
   board's squares are only a few pixels wide, near the edge of a fisheye
@@ -2785,12 +2790,14 @@ needs a calibration and *Re-track Disagreeing Stretches* a reconstruction; and
 **File → Export → Mesh of This Frame…** stays grey until a volume is carved at
 this frame.
 
-**A calibration must cover every camera.** If you add a camera to a project
-that is already calibrated, the calibration is kept, in the project and in its
-saved file, but 3D waits until every camera is calibrated, and the program tells
-you so when you add it. Calibrate again with all the cameras, import a
-calibration that includes the new one, or remove the new camera again with its
-**×** in the CAMERAS panel to get 3D back. Meanwhile the dashed guides and the ◇
+**A camera the calibration does not cover is left out of 3D.** If you add a
+camera to a project that is already calibrated, the calibration is kept, in the
+project and in its saved file, and 3D (Reconstruct, Volume, the 3D view) goes
+on with the calibrated cameras — two are enough. The program tells you so when
+you add the camera, and each 3D step names the cameras it left out. For example,
+with cameras 1 and 2 calibrated and camera 3 added later, 3D uses cameras 1 and
+2 only. To bring camera 3 in, track the wand in it and calibrate again, or
+import a calibration that includes it. Meanwhile the dashed guides and the ◇
 (below) keep working among the cameras the calibration does cover; the new
 camera simply gets none.
 
@@ -3208,7 +3215,7 @@ next camera's picture and export again for each one.
 | **DLTdv8 xypts CSV** | to load one camera into DLTdv8. Written the way DLTdv8 writes its own files: pixels counted from 1, origin at the top-left, `NaN` where there is no data. A DLTdv export is exactly two files: the points file and the `_pointnames.csv` beside it, which names the body parts (the real names, quoted properly even when one contains a comma) and states this |
 | **DLTdv xypts CSV, bottom-left origin** | the same for older DLTdv versions and Argus Clicker, which count y from the bottom edge. If a re-imported file lands upside down, you picked the wrong one of these two |
 | **Sparse TSV** | only the frames that actually have data — much smaller for sparse tracks |
-| **MATLAB (.mat)** | to load straight into MATLAB, including confidence, the silhouette, events and notes. Pixels are counted from 0 like the Wide CSV (the file's `pixel_convention` says so; add 1 for DLTdv8-style coordinates); `NaN` where there is no data |
+| **MATLAB (.mat)** | to load straight into MATLAB, including confidence, which frames you placed by hand, each point's animal, a summary of every animal's silhouette per frame (area, centre, box, midline; not the outline itself), events and notes. Pixels are counted from 0 like the Wide CSV (the file's `pixel_convention` says so; add 1 for DLTdv8-style coordinates); `NaN` where there is no data |
 | **ALL CAMERAS — DLTdv8 xypts** | **the 3D one.** Every camera in one file (`pt1_cam1_X`, `pt1_cam1_Y`, `pt1_cam2_X` …), landmarks matched across cameras **by name**, DLTdv8's pixel convention. One row per frame of the **reference camera** (the first in CAMERAS), starting at its frame 0; the other cameras are read at their **nearest whole frame** through their offsets (DLTdv works in whole frames, so a fraction of a frame in an offset is not in the rows). A camera that did not film that instant, or has no landmark of that name, gives `NaN`. The `_pointnames.csv` beside it names the landmarks and states the pixel convention, what the rows are, which video is cam1, cam2 …, and each camera's offset and frame rate |
 | **3D landmarks** | the reconstructed positions (after *3D → Reconstruct 3D Landmarks*, Ctrl+3), one row per frame of the reference camera, `NaN` where there is no 3D position, with a second file (`_xyzres.csv`) giving each position's residual, how many cameras saw it and each camera's own error |
 | **3D landmarks — Anipose / DLTdv xyzpts** | the same positions in the layout Anipose writes (`name_x`, `name_y`, `name_z`, `name_error`, `name_ncams`, `fnum`) or DLTdv's own xyzpts file (`pt1_X` …, one row per frame of the reference camera from 0, `NaN` where none, names in `_pointnames.csv`) |
@@ -3577,7 +3584,7 @@ their own column in the results, followed from frame to frame.
 
 **Use this camera's measured focal length** — a 3D model has to guess how wide
 the lens is. If you have calibrated this camera's lens (*3D → Calibrate → Calibrate a Lens
-(checkerboard)…*), tick this and the distances in metres come out right. Only
+(checkerboard or ChArUco)…*), tick this and the distances in metres come out right. Only
 the focal length is used — the frames are not straightened first — and the
 angles do not depend on it. Without a lens profile for this camera the box is
 greyed out.
@@ -3817,9 +3824,11 @@ track at the first unreliable frame** (red on the timeline), so the data ends
 exactly where the tracking stopped being trustworthy. Click the point where it
 really is and press Track. Leave it on while you are learning. Turn it off for
 footage with a lot of hiding-behind-things, where you would rather review
-afterwards than be interrupted. With it off, a body part the program has lost
-is left **blank from the first frame of the loss** (never the program's guess),
-and the run goes on.
+afterwards than be interrupted. With it off, the run goes on: a body part the
+tracker itself says is out of sight, and unsure, for 16 frames in a row is left
+**blank from the first of those frames** (never the program's guess); a stretch
+where it is only unsure keeps the tracker's positions, drawn red on the timeline
+for you to check.
 
 **Keep its points on its silhouette** (not a switch in the bottom bar: a
 setting of each animal — right-click the animal in LAYERS; **off** until you
@@ -3894,14 +3903,6 @@ marker hides the very thing you are trying to see.
 **Mask** (bottom bar, on by default) — shows or hides every silhouette on the
 video; the checkbox on an animal's row in LAYERS shows or hides just that
 animal's.
-
-**Settings** (**Ctrl+,**, or the last entry of the **Segment ▾** dropdown) —
-your name for events and notes (*Annotator*), the segmentation model, a
-**Hugging Face token**, and *Mask opacity* (how see-through the silhouette is
-drawn). The token is needed only for SAM 3, whose files Meta releases on
-request: ask for access at `huggingface.co/facebook/sam3`, create a *read* token
-in your Hugging Face account settings, paste it and press *Save token*. It is
-stored inside the program's folder.
 
 ### Which point model should I use?
 
@@ -4072,7 +4073,7 @@ lens it measures to one camera of the project that is open. Two ways to do it:
   page press *Attach to …*.
 - **With nothing open yet:** run the wizard anyway and on the last page press
   **Save lens file…**. Later, open your experiment, choose **3D → Calibrate → Calibrate a
-  Lens (checkerboard)…** again and press *I already have a lens file…*: it goes
+  Lens (checkerboard or ChArUco)…** again and press *I already have a lens file…*: it goes
   straight to the last page, where *Attach to …* gives the lens to the camera
   (or press *Load file…* next to that camera in the wand wizard). A lens
   attached only to the checkerboard video's own project stays there and never
@@ -4190,10 +4191,12 @@ from above have these pairs swapped: swap their names, or track again, before
 exporting.
 
 **Tracking is slow.** Check the bottom bar: if it says CPU rather than a graphics
-card, that is why. Otherwise, high resolution simply costs time — 4K runs at
-roughly 15–20 frames per second on a good card with the CoTracker3 point model,
-and about half that with AllTracker, the default (**Track ▾** chooses). An
-outline adds its own time on top.
+card, that is why. Otherwise, high resolution simply costs time. Measured on a
+4K clip with 8 points on a fast NVIDIA card: about 14 frames per second with
+AllTracker, the default, and 32–42 with the CoTracker3 point model (**Track ▾**
+chooses). So 10 000 frames of 4K take about 12 minutes with AllTracker and
+4–5 with CoTracker3; a slower card takes longer. An outline adds its own
+time on top.
 
 **It tracked only one body part when you wanted all of them (or nothing at all).**
 Track follows exactly what is selected in LAYERS: a point row is that point, an
@@ -4267,7 +4270,9 @@ again at that click. (When the animal keeps its points on its silhouette, a part
 that leaves the outline stops the run the same way - or, with a click of yours
 further on, is cut and picked up again - whether Auto-pause is on or off.) It also
 stops a run when a part is hidden just as the ROI zoomed view has to move. With
-Auto-pause off, a lost part is left blank from the first frame of the loss.
+Auto-pause off, a part the tracker says is out of sight (and unsure) for 16 frames
+is left blank from the first of them; a merely unsure stretch keeps its positions,
+red on the timeline.
 
 **Ball marker** — a round marker (a wand ball, a reflective dot, a dropped
 ball) found in every frame by outlining it and fitting a circle; the circle's
@@ -4278,9 +4283,10 @@ drawn red on the timeline.
 
 **Derived landmark** — a body part computed from the silhouette's shape rather
 than followed by appearance. Shown with a dotted square in LAYERS and
-a dotted ring with an italic name on the video. Needs no clicking, and cannot
-be placed by hand: to place it yourself, right-click it → *Data source* →
-*Track by appearance*.
+a dotted ring with an italic name on the video. Needs no clicking, but you can
+still place it by hand on a frame where the silhouette got it wrong: your click
+stays, and later silhouette runs do not move it. To follow it by appearance
+instead, right-click it → *Data source* → *Track by appearance*.
 
 **Event** — a named stretch of frames you mark for your own reference.
 
@@ -4416,12 +4422,12 @@ view keys work. Hover over any button or menu entry to see what it does.
 
 | Key | Does |
 |---|---|
-| wheel, **+** / **−**, or the zoom buttons in the picture's lower-right corner | zoom the video (a sideways swipe on a touchpad does not zoom) |
+| wheel, **=**, **+** or **−** pressed WITHOUT Shift (the keypad's **+** / **−** too), or the zoom buttons in the picture's lower-right corner | zoom the video (a sideways swipe on a touchpad does not zoom) |
 | **R**, or the fit button in that corner | fit the whole picture back in the window |
 | **Shift+R** | fit the whole picture in every camera at once (**R** fits only the camera you are working in) |
 | **H** (the Pan button) | the tool for looking only: while it is on, a click or a right click on a marker edits nothing. Press **H** again or **Esc** to stop — picking **Point** or **Segment** also stops it. Does nothing until a video is open |
 | middle-drag | pan, at any time — even while tracking |
-| **Shift + +** / **Shift + −**, **Ctrl+wheel** over the timeline, or the three magnifier buttons in the timeline's top-left corner | zoom the timeline's time axis (the last button shows the whole video) |
+| **=**, **+** or **−** WITH Shift (so **+** on a US keyboard, which is Shift + =, and **=** on a German one, which is Shift + 0), **Ctrl+wheel** over the timeline, or the three magnifier buttons in the timeline's top-left corner | zoom the timeline's time axis (the last button shows the whole video) |
 | **Ctrl+1** | show / hide the right panel |
 | **Ctrl+2** | show only the camera you are working on (the same as **M**) |
 | **Ctrl+Shift+2** | Active view only: only the working camera reads its video; the others stay where they are until Sync all views (again: back to Sync all views; also *View → Other cameras*) |
