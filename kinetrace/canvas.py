@@ -498,7 +498,7 @@ class VideoCanvas(QGraphicsView):
         self._markers: list[_Marker] = []
         self._regions: list[QGraphicsPathItem] = []       # dashed region outlines (circle/rect/polygon)
         self._occluded = np.zeros(0, bool)
-        self._region_shape = "circle"       # Add ▾: what an armed drag draws
+        self._region_shape = "circle"       # Point ▾: what an armed drag draws
         self._poly_pts: list[QPointF] = []  # polygon-in-progress vertices (native px)
         self._display_filter = "none"
         self._raw_rgb: np.ndarray | None = None
@@ -1014,7 +1014,7 @@ class VideoCanvas(QGraphicsView):
         self.cancel_gesture()
 
     def set_region_shape(self, shape: str) -> None:
-        """Add ▾: what an armed drag draws — circle (drag), rectangle (drag)
+        """Point ▾: what an armed drag draws — circle (drag), rectangle (drag)
         or polygon (click each corner, Enter closes)."""
         if shape in REGION_SHAPES:
             self._region_shape = shape

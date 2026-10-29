@@ -305,7 +305,6 @@ def _digest(path: Path) -> str | None:
         return None
 
 
-
 GITHUB_HOSTS = ("api.github.com", "codeload.github.com", "github.com")
 
 
