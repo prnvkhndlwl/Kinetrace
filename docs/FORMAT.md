@@ -99,7 +99,7 @@ the file).
 ### `kinetrace.json`
 
 ```json
-{"format": "kinetrace-project", "format_version": 4, "app_version": "0.6.0",
+{"format": "kinetrace-project", "format_version": 4, "app_version": "0.7.0",
  "project_id": "5f0c…", "saved_at": "2026-09-29T21:04:11.482113+00:00",
  "cameras": [{"folder": "cam1", "name": "cam1"}], "videos_relative_to": "project"}
 ```
