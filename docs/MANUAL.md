@@ -2386,7 +2386,7 @@ five pages and explains each one:
    brings it back if you close it. It is a picture you can turn before you
    use the calibration: each camera as a small pyramid where it stands, pointing where it
    looks, its **field of view** for the cameras you pick in **Fields of view ▾**
-   (none at first; *Show in 3D* picks all): the picture's edges, the lens bend
+   (none at first, so the picture stays clear): the picture's edges, the lens bend
    included, inside the box around the 3D points (around the wand when there
    are none). The box walls the camera sees are tinted in its colour (a camera
    that sees the whole box tints all three), its sides are filled faintly where

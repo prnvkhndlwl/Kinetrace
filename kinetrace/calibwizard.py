@@ -1998,7 +1998,7 @@ class RunPage(QWizardPage):
             self.view3d = View3D(self.wiz)
             self.view3d.setWindowTitle("3D view of this calibration")
         self.view3d.scene.unit = res.unit
-        self.view3d.set_calib_picture(pic, ("points", "pyramids", "fov"))
+        self.view3d.set_calib_picture(pic, ("points", "pyramids"))
         self.view3d.show()
         self.view3d.raise_()
 
