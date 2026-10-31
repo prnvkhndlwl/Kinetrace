@@ -1681,7 +1681,7 @@ class View3D(QWidget):
         self._picture_changed()
         boxes = {"points": self.chk_calib, "pyramids": self.chk_pyr, "cover": self.chk_cover}
         for k in ticks:
-            if k == "fov":                    # asked for by name (the wand wizard's Show in 3D): every camera
+            if k == "fov":                    # asked for by name: every camera
                 self._set_fov_all(True, quiet=True)
                 continue
             boxes[k].blockSignals(True)

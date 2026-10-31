@@ -236,8 +236,8 @@ def drive_all(wiz):
     # (G200) the picture opened by itself, with the wand and the cameras of THIS run
     v = page.view3d
     assert v is not None and v.isVisible(), "the 3D picture must open after the solve"
-    # (G209) Show in 3D asks for the fields of view by name: every camera's is picked
-    assert v.chk_calib.isChecked() and v.chk_pyr.isChecked() and v._fov_views() == {int(a.data()) for a in v.fov_actions}
+    # (G235, owner 2026-10-30) the fields of view start off: the menu lists every camera, none is picked
+    assert v.chk_calib.isChecked() and v.chk_pyr.isChecked() and v.fov_actions and not v._fov_on(), v._fov_views()
     assert len(v.scene.calib.end_frame) == 2 * len(page.wiz.result.wand_xyz)
     v.close()
     pump(0.1)
