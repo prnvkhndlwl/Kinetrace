@@ -427,9 +427,9 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
         "conventions": {"frames": "counted from 0",
                         "pixels": "OpenCV pixel centres, counted from 0 (top-left pixel centre = 0, 0)",
                         "blank": "no data"}})
-    # (G244) a recovery copy lives elsewhere and a single file holds no video: both keep every full path
+    # (G244) a recovery copy lives elsewhere (by project id): it keeps every full path
     cams = _freeze_cameras(project, folders, target or getattr(project, "path", None), layout,
-                           keep_full=binary_tracks or layout != "folder")
+                           keep_full=binary_tracks)
     files["project.json"] = _json({"cameras": cams, "active_camera": project.names[project.active],
                                    "exports_on_save": list(getattr(project, "exports", []) or [])})   # (G42)
     files["state.json"] = _json(_clean_json(state))
@@ -462,7 +462,8 @@ def _inside(rel: str | None) -> bool:
 def _freeze_cameras(project, folders: list[str], where, layout: str, keep_full: bool = True) -> list[dict]:
     """project.json's camera entries: video path (relative to the project, and
     the full path), size, rate, offset. (G244) Unless `keep_full`, a video INSIDE
-    the project folder is stored by its place there only: that place is tried
+    the project folder (for the one-file form: in or under the folder the file is
+    written to) is stored by its place there only: that place is tried
     first on opening and moves with the folder, so the full path (folder names of
     this computer, often a user name, in a folder people hand to each other) adds
     nothing. A video elsewhere keeps its full path: it is how it is found again

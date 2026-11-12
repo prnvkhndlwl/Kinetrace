@@ -136,10 +136,17 @@ check("path" not in va2 and va2.get("relative_path") == "videos/camA.mp4", "save
 fz = pf.freeze(q, {"tools": {}}, pf.new_id(), target=moved, binary_tracks=True)
 rc = json.loads(text_of(fz.files["project.json"]))["cameras"][0]["video"]
 check(bool(rc.get("path")), "a recovery copy keeps the full path", str(rc))
+# the one-file form ("one file to send"): the same rule, from the folder the file is written to
 one = os.path.join(OUT, "moved", "single.kinetrace.zip")
 fz = pf.freeze(q, {"tools": {}}, pf.new_id(), target=one, layout="zip")
-zc = json.loads(text_of(fz.files["project.json"]))["cameras"][0]["video"]
-check(bool(zc.get("path")), "the single-file form keeps the full path (the video is not inside it)", str(zc))
+zc = json.loads(text_of(fz.files["project.json"]))["cameras"]
+check("path" not in zc[0]["video"] and zc[0]["video"].get("relative_path") == "study.kinetrace/videos/camA.mp4",
+      "the one-file form stores a video under its own folder by its place only", str(zc[0]["video"]))
+check(bool(zc[1]["video"].get("path")), "... and keeps the full path of a video elsewhere", str(zc[1]["video"]))
+pf.save(q, one, single_file=True)
+z = pf.load(one)
+check(os.path.isfile(z.sessions[0].video_path) and os.path.samefile(z.sessions[0].video_path, want),
+      "the one-file form opens with camA's video where it is", z.sessions[0].video_path)
 
 # ---- the Error Report ------------------------------------------------------------------------------
 from kinetrace import crashlog  # noqa: E402
