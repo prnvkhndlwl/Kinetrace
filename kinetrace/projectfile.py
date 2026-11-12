@@ -427,7 +427,9 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
         "conventions": {"frames": "counted from 0",
                         "pixels": "OpenCV pixel centres, counted from 0 (top-left pixel centre = 0, 0)",
                         "blank": "no data"}})
-    cams = _freeze_cameras(project, folders, target or getattr(project, "path", None), layout)
+    # (G244) a recovery copy lives elsewhere and a single file holds no video: both keep every full path
+    cams = _freeze_cameras(project, folders, target or getattr(project, "path", None), layout,
+                           keep_full=binary_tracks or layout != "folder")
     files["project.json"] = _json({"cameras": cams, "active_camera": project.names[project.active],
                                    "exports_on_save": list(getattr(project, "exports", []) or [])})   # (G42)
     files["state.json"] = _json(_clean_json(state))
@@ -449,9 +451,22 @@ def freeze(project, state: dict, project_id: str, *, target: str | Path | None =
     return fz
 
 
-def _freeze_cameras(project, folders: list[str], where, layout: str) -> list[dict]:
-    """project.json's camera entries: video path (absolute and relative to the
-    project), size, rate, offset."""
+def _inside(rel: str | None) -> bool:
+    """Whether a video's relative path stays inside the folder it starts from."""
+    if not rel:
+        return False
+    q = PurePosixPath(rel)
+    return bool(q.parts) and not q.is_absolute() and ".." not in q.parts and ":" not in q.parts[0]
+
+
+def _freeze_cameras(project, folders: list[str], where, layout: str, keep_full: bool = True) -> list[dict]:
+    """project.json's camera entries: video path (relative to the project, and
+    the full path), size, rate, offset. (G244) Unless `keep_full`, a video INSIDE
+    the project folder is stored by its place there only: that place is tried
+    first on opening and moves with the folder, so the full path (folder names of
+    this computer, often a user name, in a folder people hand to each other) adds
+    nothing. A video elsewhere keeps its full path: it is how it is found again
+    after the project folder alone has moved."""
     base = (Path(where).resolve() if layout == "folder" else Path(where).resolve().parent) if where else None
     cams = []
     for i, s in enumerate(project.sessions):
@@ -461,8 +476,11 @@ def _freeze_cameras(project, folders: list[str], where, layout: str) -> list[dic
                 rel = PurePosixPath(Path(os.path.relpath(s.video_path, base)).as_posix()).as_posix()
             except ValueError:                       # another drive on Windows
                 rel = None
+        video = {"path": str(s.video_path), "relative_path": rel}
+        if not keep_full and _inside(rel):
+            video = {"relative_path": rel}
         cams.append({"name": project.names[i], "folder": folders[i],
-                     "video": {"path": str(s.video_path), "relative_path": rel},
+                     "video": video,
                      "n_frames": int(s.n_frames), "fps": float(s.fps),
                      "file_fps": float(getattr(s, "file_fps", s.fps)),   # the file's own rate (G38)
                      "width": int(s.width), "height": int(s.height),
@@ -1822,6 +1840,11 @@ def read(path: str | Path):
     if not isinstance(state.get("tools"), dict):
         state["tools"] = {}
     sessions, names, offsets, rates = _read_cameras(src, pj)
+    # (G244) a video stored by its place in the project folder only: its full path is that place, here and now
+    for s_, cam in zip(sessions, pj["cameras"]):
+        v = cam.get("video") or {}
+        if not s_.video_path and isinstance(v.get("relative_path"), str) and v["relative_path"]:
+            s_.video_path = str(video_base(path, meta) / Path(*PurePosixPath(v["relative_path"]).parts))
     active = names.index(pj["active_camera"]) if pj.get("active_camera") in names else 0
     p = Project(sessions, names, offsets, active, rates)
     for s in p.sessions:                         # window-wide toggles live once, in state.json
@@ -1874,7 +1897,7 @@ def _read_cameras(src: _Source, pj: dict) -> tuple[list, list, list, list]:
         if not (np.isfinite(rate) and rate > 0):
             raise ProjectFileError(f"{where}: rate {cam.get('rate')!r} must be a number above 0 "
                                    "(this camera's frame rate / the first camera's)")
-        s = TrackingSession(str((cam.get("video") or {}).get("path", "")), T, fps, w, h)
+        s = TrackingSession(str((cam.get("video") or {}).get("path") or ""), T, fps, w, h)
         try:                                     # a project from before G38 has no file_fps: the same rate
             s.file_fps = float(cam.get("file_fps", fps)) or fps
         except (TypeError, ValueError):
@@ -2325,6 +2348,13 @@ this folder), or read its files with any program: every table is a CSV that
 Excel, MATLAB, R or Python open directly. To move the project, move or copy
 this WHOLE folder; keep the videos beside it (or in videos/ inside it) and
 they are found again on any computer.
+
+Before you hand this folder to someone: project.json stores where each video
+is. For a video inside this folder that is only its place in the folder. For a
+video anywhere else it is also the full path on this computer (folder names,
+which can include your user name). To share without it, move the videos into
+this folder: the next time the project is opened and saved, only their
+place in the folder is stored.
 
 Cameras:
 {cams}
