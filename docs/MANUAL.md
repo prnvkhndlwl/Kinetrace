@@ -234,7 +234,7 @@ usual.
 
 **Help → About Kinetrace** shows which version you have, the licence (free for
 any non-commercial use, such as research, teaching and study) and the models
-the program builds on. It also says when Kinetrace uses the internet: only to
+the program builds on. It also says when Kinetrace, once installed, uses the internet: only to
 look for and install a new version when you ask, and to download a model the
 first time it is needed. Your videos, points and projects are never sent
 anywhere. Kinetrace is developed at biomechLab@CMC.
@@ -3120,7 +3120,8 @@ anywhere, even to another computer or operating system, and the program finds
 each video again. For a video inside the project folder the project stores only
 its place in that folder; for a video anywhere else it also stores the full path
 on your computer (folder names, which can include your user name). So before you
-hand a project to someone else, put its videos inside the folder and save. If it cannot (or the project holds no path for a video at
+hand a project to someone else, move (not copy) its videos into the project folder, open the
+project again and save it. If it cannot (or the project holds no path for a video at
 all), it asks you to point it at each one (*Locate video*). If the video you pick has a different number of
 frames from the one the project remembers, it warns you: that is usually another
 cut or take, and the tracks would sit on the wrong frames.

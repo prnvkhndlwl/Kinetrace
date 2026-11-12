@@ -619,6 +619,26 @@ def _i332():
 
 
 
+# ================================================================== G244: handing a project to someone
+print("\n(G244) the video moved into the project folder, the project opened, Ctrl+S")
+import json  # noqa: E402
+
+g_path = saved_project("g244")
+g_vid = clip("g244.mp4", 60)
+g_v = json.load(open(os.path.join(g_path, "project.json"), encoding="utf-8"))["cameras"][0]["video"]
+check(bool(g_v.get("path")), "a video outside the project folder is stored with its full path", str(g_v))
+g_in = os.path.join(g_path, "g244.mp4")
+shutil.move(g_vid, g_in)
+open_project(g_path)
+check(w.info is not None and os.path.samefile(w.info.path, g_in),
+      "the project opens on the video now inside its folder")
+ctrl_s()
+g_v = json.load(open(os.path.join(g_path, "project.json"), encoding="utf-8"))["cameras"][0]["video"]
+check("path" not in g_v and g_v.get("relative_path") == "g244.mp4",
+      "after Ctrl+S the project stores only the video's place in the folder", str(g_v))
+open_project(g_path)
+check(w.info is not None and os.path.samefile(w.info.path, g_in), "... and opens on it again")
+
 ASK["answer"] = QMessageBox.Discard
 w.close()
 pump(0.3)

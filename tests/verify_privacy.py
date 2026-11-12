@@ -167,6 +167,15 @@ if redact is not None:
     check("janedoesnot" in t, "a longer word that starts with the name is left alone", t)
     t = redact("al was here; /home/al/x", home="/home/al", user="al")
     check("al was here" in t and "~/x" in t, "a two-letter user name is hidden only as the user folder", t)
+    t = redact("SAM 3 weights in models/sam-3d-body; /home/sam/x; /media/SAM/y", home="/home/sam", user="sam")
+    check("SAM 3 weights in models/sam-3d-body; ~/x; /media/<user>/y" == t,
+          "a short user name is hidden as a folder, not inside other words", t)
+    t = redact("/usr/lib/root/x.py and /root/x.py", home="/root", user="root")
+    check(t == "/usr/lib/root/x.py and ~/x.py", "the user folder is hidden only at the start of a path", t)
+    long_home = "C:\\" + "Users\\" + "longnameperson"
+    t = redact("C:\\" + "Users\\" + "LONGNA~1\\AppData\\Local\\Temp\\x.py", home=long_home,
+               user="longnameperson")
+    check("LONGNA" not in t and "AppData" in t, "Windows' short spelling of the user folder is hidden too", t)
     t = redact("token hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345 sent", home="/home/x1", user="x1")
     check("AbCdEf" not in t and "hf_<hidden>" in t, "anything shaped like a Hugging Face token is hidden", t)
     logs = os.path.join(OUT, "Jane Doe", "logs")
@@ -235,7 +244,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from kinetrace import updatedialog  # noqa: E402
 
 about = updatedialog.about_html()
-check("goes online only" in about and "Hugging Face" in about and "GitHub" in about
+check("Once installed" in about and "goes online only" in about and "Hugging Face" in about and "GitHub" in about
       and "never sent" in about, "Help > About says when Kinetrace goes online and that nothing is sent",
       about[-400:])
 

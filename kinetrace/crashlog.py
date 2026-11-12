@@ -466,23 +466,40 @@ _PLAIN_USERS = {"user", "users", "admin", "administrator", "root", "owner", "hom
 
 def redact(text: str, home: str | None = None, user: str | None = None) -> str:
     """(G245) `text` as it may be pasted into a public bug report: the user folder reads ~, the user
-    name <user> (as a whole word, 3 letters or more, not a generic account name), and anything shaped
-    like a Hugging Face access token hf_<hidden>. Folder and file names elsewhere (a video on another
-    drive) stay: the report says so. The log files themselves are never changed. Never raises."""
+    name <user> (3 letters or more, not a generic account name: as a folder in a path in any letter
+    case, elsewhere only as a whole word written exactly so; also Windows' short spelling of it,
+    JANEDO~1), and anything shaped like a Hugging Face access token hf_<hidden>. Folder and file names
+    elsewhere (a video on another drive) stay: the report says so. The log files themselves are never
+    changed. Never raises."""
     try:
         if home is None or user is None:
             h, u = _identity()
             home, user = (h if home is None else home), (u if user is None else user)
         out = _TOKEN.sub("hf_<hidden>", text)
-        parts = [re.escape(x) for x in re.split(r"[\\/]+", home.rstrip("\\/"))]
-        if len(parts) >= 2 and len(home.rstrip("\\/")) > 3:          # never "/" or "C:\"
-            # written with / or \ (or the doubled \\ of a quoted string), in any letter case; and only the
-            # folder itself: /home/al is not the start of /home/alice
-            pat = r"(?:\\\\|[\\/])".join(parts) + r"(?![^\\/\s\"'`,;:)\]>])"
+        home = home.rstrip("\\/")
+        raw = re.split(r"[\\/]+", home)
+        named = [n for n in dict.fromkeys([user, raw[-1] if len(raw) >= 2 else ""])
+                 if len(n) >= 3 and n.lower() not in _PLAIN_USERS]
+        # Windows also spells a long (or spaced) folder name its short way: the first six letters, ~1
+        for n in named:
+            short = re.sub(r"[ .+,;=\[\]]", "", n)[:6]
+            if len(short) >= 2:
+                out = re.sub(r"(?<![A-Za-z0-9_])" + re.escape(short) + r"~\d+", "<user>", out, flags=re.IGNORECASE)
+        if len(raw) >= 2 and len(home) > 3:                              # never "/" or "C:\"
+            # written with / or \ (or the doubled \\ of a quoted string), in any letter case; only the
+            # folder itself (/home/al is not the start of /home/alice) and only at the start of a path
+            # (/root is not the end of /usr/lib/root)
+            parts = [re.escape(x) for x in raw]
+            parts[-1] = "(?:" + parts[-1] + "|<user>)"
+            pat = (r"(?<![A-Za-z0-9_.~-])" + r"(?:\\\\|[\\/])".join(parts)
+                   + r"(?![^\\/\s\"'`,;:)\]>])")
             out = re.sub(pat, "~", out, flags=re.IGNORECASE)
-        if len(user) >= 3 and user.lower() not in _PLAIN_USERS:
-            out = re.sub(r"(?<![A-Za-z0-9_])" + re.escape(user) + r"(?![A-Za-z0-9_])", "<user>", out,
-                         flags=re.IGNORECASE)
+        for n in named:
+            # a folder of that name in any path, in any letter case (file systems differ) ...
+            out = re.sub(r"(?<=[\\/])" + re.escape(n) + r"(?=[\\/\s\"']|$)", "<user>", out,
+                         flags=re.IGNORECASE | re.MULTILINE)
+            # ... elsewhere only the word written exactly so (a user "sam" must not eat "SAM 3")
+            out = re.sub(r"(?<![A-Za-z0-9_\\/-])" + re.escape(n) + r"(?![A-Za-z0-9_\\/-])", "<user>", out)
         return out
     except Exception:      # noqa: BLE001 - a report that cannot be cleaned is still a report
         return text
@@ -503,8 +520,9 @@ def report_text() -> str:
     out = [f"Kinetrace error report — {time.strftime('%Y-%m-%d %H:%M')}",
            f"Log: {lp}",
            f"Crash log: {cp}",
-           "Nothing in these files is sent anywhere; paste this text (or attach the files) to a bug report.",
-           "In this text your user folder is written ~ and your user name <user>.",
+           "Nothing in these files is sent anywhere; paste this text into a bug report.",
+           "In this text your user folder is written ~ and your user name <user>. The log files themselves",
+           "are not cleaned this way: read them before you attach them anywhere public.",
            ""]
     if not log.strip():
         out.append("No errors have been recorded" + ("." if _logger is not None else

@@ -131,7 +131,8 @@ any more.
   it is tried first, so a project moved together with its videos opens on any
   computer and operating system. `path` is where the video was when the
   project was saved (the full path on that computer). It is written only for a
-  video that is NOT inside the project folder: there the relative path alone
+  video that is NOT inside the project folder (for the one-file form: not in or
+  under the folder the file was written to): there the relative path alone
   says everything, and a folder handed to someone else then carries no folder
   names of the computer it was made on. Then the same file name is looked for in the project
   folder, its `videos/` folder and beside it, then Kinetrace asks.

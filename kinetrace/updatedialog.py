@@ -39,7 +39,7 @@ def about_html(version: str = APP_VERSION) -> str:
         f"<p>ChArUco calibration follows <b>Argus</b> (Jackson, Evangelista, Ray &amp; Hedrick 2016, "
         f"<i>Biology Open</i> 5:1334&ndash;1342), adapted with its authors' permission.</p>"
         # (G247) when the program uses the internet, in one place a user can find
-        f"<p><b>Privacy.</b> Kinetrace goes online only for two things: to look for and install a new "
+        f"<p><b>Privacy.</b> Once installed, Kinetrace goes online only for two things: to look for and install a new "
         f"version when you ask (GitHub), and to download a model the first time it is needed (GitHub, "
         f"Hugging Face). Your videos, points and projects are never sent anywhere, and nothing about how "
         f"you use Kinetrace is collected.</p>"
