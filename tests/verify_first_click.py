@@ -16,10 +16,10 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QPointF, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QMouseEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QAbstractButton, QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from _clean import forget_recovery  # noqa: E402
 
@@ -130,6 +130,27 @@ if ok:
     s = win.session
     click_video(210.0, 160.0)
     check(s.n_points == 1, "the click after the undo places it again")
+    # (review) a double-click is ONE first click: its second press must not hand-place the new point again
+    # (a second undo step: one Ctrl+Z then left the point there)
+    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    pump(0.1)
+    s = win.session
+    win.toast.hide()                      # a notice over the picture would take the click
+    # what a real double-click delivers: press, release, double-click, release (QTest.mouseDClick sends a
+    # different sequence that places nothing here)
+    _vp, _at = win.canvas.viewport(), win.canvas.mapFromScene(QPointF(205.0, 155.0))
+    QTest.mousePress(_vp, Qt.LeftButton, Qt.NoModifier, _at)
+    QTest.mouseRelease(_vp, Qt.LeftButton, Qt.NoModifier, _at)
+    QApplication.sendEvent(_vp, QMouseEvent(QEvent.MouseButtonDblClick, QPointF(_at), QPointF(_vp.mapToGlobal(_at)),
+                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    QTest.mouseRelease(_vp, Qt.LeftButton, Qt.NoModifier, _at)
+    pump(0.15)
+    check(s.n_points == 1, "a double-click on the empty video places one point", f"n_points={s.n_points}")
+    QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+    pump(0.1)
+    check(win.session.n_points == 0, "... and ONE Ctrl+Z takes it back", f"n_points={win.session.n_points}")
+    s = win.session
+    click_video(210.0, 160.0)
 # the strip's second step
 win._refresh_onboarding()
 done = win.onboarding._last_state[0] if win.onboarding._last_state else None
@@ -147,7 +168,6 @@ if s.n_points:
     win.toast.hide()
 
 # the strip's Click a point chip arms the Point tool
-buttons = win.onboarding.findChildren(QAbstractButton)
 if len(win.onboarding._chips) == 3:
     QTest.mouseClick(win.onboarding._chips[1], Qt.LeftButton)
     pump(0.1)
@@ -171,6 +191,41 @@ if s.n_points:
     pump(0.05)
     check(win.toast.isVisible() and not win.toast._timer.isActive(),
           "a stop notice stays on screen (no timer hides it)")
+    # (review) stickiness belongs to ITS notice. On a Toast of its own: the window's may get a notice of
+    # the program's at any moment (a recovery reminder did, and pushed the stop notice out)
+    from PySide6.QtWidgets import QWidget
+    from kinetrace.widgets import Toast
+    host = QWidget()
+    host.resize(900, 300)
+    host.show()
+    tt = Toast(host)
+    tt.show_message("the run stopped", "warn", 0)
+    tt.show_message("saved", "info", 1500)
+    pump(2.2)
+    check(tt.isVisible() and "the run stopped" in tt.text() and "saved" not in tt.text(),
+          "a timed notice beside a waiting one times out; the waiting one stays", tt.text()[:80])
+    tt.show_message("one", "info", 1500)
+    tt.show_message("two", "info", 1500)       # the waiting notice scrolls out: nothing waits any more
+    pump(2.2)
+    check(not tt.isVisible(), "once the waiting notice has scrolled out, the later notices time out")
+    tt.show_message("the run stopped", "warn", 0)
+    tt.show_message("saved", "info", 1500)
+    tt.dismiss_sticky()
+    check(tt.isVisible() and "saved" in tt.text() and "the run stopped" not in tt.text(),
+          "the user acting takes the waiting notice, not the timed one beside it")
+    host.close()
+    # a drop while something is opening is held back like the keyboard and the mouse (review)
+    win._busy_stack.append({"title": "test"})
+    before = win.info.path
+    n_busy = len(win._busy_stack)
+    drop([VID])
+    pump(0.2)
+    check(len(win._busy_stack) == n_busy and win.info.path == before,
+          "a drop while the loading card is up opens nothing")
+    win._busy_stack.pop()
+    win.toast.hide()
+    win._say_stop("unreliable", s.points[0].name, win.current + 5)
+    pump(0.05)
     click_video(220.0, 170.0)
     check(not win.toast.isVisible() or "Auto-paused" not in win.toast.text(),
           "... until the user clicks on the video")

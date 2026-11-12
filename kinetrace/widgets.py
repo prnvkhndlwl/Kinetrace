@@ -93,14 +93,13 @@ class Toast(QLabel):
         self.setToolTip("click to dismiss")
         self.setTextFormat(Qt.RichText)
         self._level = "info"
-        # the notices on screen, oldest first: [text, level, action] -- the action
+        # the notices on screen, oldest first: [text, level, action, waits (G239)] -- the action
         # is what a click does besides closing (G39) and stays with ITS notice
         self._notices: list[list] = []
         self.hide()
-        self._sticky = False        # (G239) a notice shown with ms=0 is up: no timer hides it
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self.hide)
+        self._timer.timeout.connect(self._on_timeout)
         host.installEventFilter(self)
         # (G229) -> the names the user typed (points, animals, cameras) a notice may hold; set by the window
         self.literal = None
@@ -126,26 +125,39 @@ class Toast(QLabel):
     def show_message(self, text: str, level: str = "info", ms: int = 6000, on_click=None) -> None:
         """`on_click` = what clicking the notice does (then it closes); without
         one a click only closes it (G39: a notice that says what can be done
-        should do it when clicked). `ms=0` (G239): the notice stays until the user acts - a click on
-        it, or `dismiss_sticky` (the window calls it on a press on the video and when a run starts)."""
+        should do it when clicked). `ms=0` (G239): THIS notice waits for the user - a click on it, or
+        `dismiss_sticky` (the window calls it on a press on the video and on the user's Track press).
+        A timed notice beside a waiting one still times out by itself."""
+        waits = ms <= 0
         # a second notice while one is still up used to REPLACE it, so the
         # first (often the verdict) was never read (G10): keep the latest two
         live = self.isVisible() and (self._timer.isActive() or self._sticky)
         if not live:
             self._notices = []
-            self._sticky = False
-        elif not self._sticky and ms > 0:
+        elif not waits and self._timer.isActive():
             ms = max(ms, self._timer.remainingTime())
-        self._sticky = self._sticky or ms <= 0
         for n in self._notices:
             if n[0] == text:             # the same notice again: refresh ITS entry, not the pair (G89)
                 n[1] = level
                 if on_click is not None:
                     n[2] = on_click
+                n[3] = n[3] or waits
                 break
         else:
-            self._notices.append([text, level, on_click])
+            self._notices.append([text, level, on_click, waits])
             del self._notices[:-self.SHOWN]
+        self._render()
+        if not waits:
+            self._timer.start(max(1500, int(ms)))
+        elif all(n[3] for n in self._notices):
+            self._timer.stop()           # nothing timed is up; a timed neighbour keeps its own timer
+
+    @property
+    def _sticky(self) -> bool:
+        """(G239) A notice that waits for the user is among those shown."""
+        return any(n[3] for n in self._notices)
+
+    def _render(self) -> None:
         # the colour is the most severe of the notices SHOWN, not of one that scrolled out
         level = max((n[1] for n in self._notices), key=lambda lv: LEVEL_RANK.get(lv, 0))
         has_action = any(n[2] is not None for n in self._notices)
@@ -160,20 +172,28 @@ class Toast(QLabel):
         self._place()
         self.show()
         self.raise_()
-        if self._sticky:
-            self._timer.stop()
+
+    def _on_timeout(self) -> None:
+        """The timed notices' time is up: they go; one that waits for the user stays (review of G239: a
+        waiting notice used to make every later notice wait too)."""
+        self._notices = [n for n in self._notices if n[3]]
+        if self._notices:
+            self._render()
         else:
-            self._timer.start(max(1500, int(ms)))
+            self.hide()
 
     def dismiss_sticky(self) -> None:
-        """(G239) The user acted: a notice that was waiting for that goes."""
-        if self._sticky:
-            self._sticky = False
+        """(G239) The user acted: the notices that were waiting for that go; a timed one stays its time."""
+        if not self._sticky:
+            return
+        self._notices = [n for n in self._notices if not n[3]]
+        if self._notices and self.isVisible():
+            self._render()
+        else:
             self._notices = []
             self.hide()
 
     def mousePressEvent(self, ev):
-        self._sticky = False
         self.hide()
         action = next((n[2] for n in reversed(self._notices) if n[2] is not None), None)
         self._notices = []

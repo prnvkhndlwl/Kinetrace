@@ -77,13 +77,13 @@ _rule = [w for w in _items
 assert _rule, "a rule must separate the numbered chips from the hint"
 assert _items.index(ob._chips[-1]) < _items.index(_rule[0]) < _items.index(ob.hint), \
     "order must be: chips -> rule -> hint"
-assert ob.hint.alignment() & Qt.AlignRight, "the hint sits hard right, away from step 4"
+assert ob.hint.alignment() & Qt.AlignRight, "the hint sits hard right, away from the last step"
 # the QLabel pitfall: a longer hint must never resize the strip or refit the canvas
-ob.set_state([True, False, False, False], "short")
+ob.set_state([True, False, False], "short")
 app.processEvents()
 _geom = (ob.minimumSizeHint().width(), ob.sizeHint().width(), ob.height())
 for _h in ("", "Press S, then click the animal on the video", "x" * 400):
-    ob.set_state([True, False, False, False], _h)
+    ob.set_state([True, False, False], _h)
     app.processEvents()
     assert (ob.minimumSizeHint().width(), ob.sizeHint().width(), ob.height()) == _geom, \
         f"a {len(_h)}-char hint resized the onboarding strip"

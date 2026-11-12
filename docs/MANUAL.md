@@ -722,7 +722,9 @@ notice to move it. You can always move points later by dragging them in LAYERS
 > that is already in the list, a plain click without **N** does the same job:
 > it puts the landmark selected in the list on the frame you are on (that is
 > also how you correct it later — see section 7). With nothing selected, a
-> plain click does nothing at all. If you change your mind after pressing
+> plain click does nothing at all — with one exception: on a video that has no
+> point and no animal yet, your very first click places the first point, so
+> you can start without knowing **N**. If you change your mind after pressing
 > **N**, press **Esc**.
 >
 > Do not select a name with a **dotted** square before pressing **N**: those
@@ -4408,7 +4410,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **N** | arm the crosshair — the next click places a point |
 | click (armed) | place a point, or continue the selected one where it has no data |
 | drag a circle (armed) | track a whole region as one point |
-| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed (a click on a marker just selects that point). Two quick clicks are two clicks, so frame-by-frame digitizing never loses one. A landmark derived from the outline is placed the same way, and tracking the outline again keeps your click |
+| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed (a click on a marker just selects that point), except on a video with no point and no animal yet, where the first click places the first point. Two quick clicks are two clicks, so frame-by-frame digitizing never loses one. A landmark derived from the outline is placed the same way, and tracking the outline again keeps your click |
 | **＋ Point** (LAYERS) | a point with no position yet, in the selected animal (else in Scene), selected — and in every camera's list |
 | **＋ Animal** (LAYERS) | a new animal with no silhouette yet, selected; give it points (**N** + click, or drag points onto it) and, if you like, outline it with **S** |
 | drag points in LAYERS | onto another animal (or one of its points), or onto Scene: they move there and are renamed "*animal part*" in every camera (one Ctrl+Z step) |

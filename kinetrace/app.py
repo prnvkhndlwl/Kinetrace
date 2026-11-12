@@ -177,12 +177,12 @@ HOTKEYS_HTML = f"""
 <tr><td class=k>Ctrl+Z</td><td>undo the last tracking run, bulk edit or hand edit (a click, a right-click clear, Ctrl+click, deleted point, Shift+X) — one step</td></tr>
 </table>
 <h3>Points &amp; regions (on the video)</h3><table>
-<tr><td class=k>N (or Point)</td><td>arm the crosshair: the next click places a new point — stray clicks never edit. It joins the animal selected in LAYERS, else the animal whose silhouette is under the click, else the animal of the selected point, else Scene (a notice says where, with a click to move it)</td></tr>
+<tr><td class=k>N (or Point)</td><td>arm the crosshair: the next click places a new point — stray clicks never edit (only the very first click on a video with nothing on it places the first point). It joins the animal selected in LAYERS, else the animal whose silhouette is under the click, else the animal of the selected point, else Scene (a notice says where, with a click to move it)</td></tr>
 <tr><td class=k>click (armed)</td><td>place a new point — or continue the selected point where it has no data</td></tr>
 <tr><td class=k>hold left + move</td><td>pan the view (from a marker too: points are never dragged — a click places them)</td></tr>
 <tr><td class=k>right-click a marker</td><td>clear that point on <b>this frame only</b> and select it (one Ctrl+Z step); with several points selected, a short right click on one of their markers clears all of them on this frame (points only — the silhouettes are not touched)</td></tr>
 <tr><td class=k>hold right on a marker</td><td>(half a second) the point's menu — the same menu as a right click on its name in LAYERS</td></tr>
-<tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing is placed (a notice on the video says so). One Ctrl+Z step. A click on or right beside the ◇ places it exactly there. A landmark derived from the silhouette is placed by hand the same way: the silhouette fills its other frames and keeps your click</td></tr>
+<tr><td class=k>click (not armed)</td><td><b>annotate by hand</b>: place the point selected in the list here on this frame, replacing what the tracker put there. Nothing selected = nothing is placed (a notice on the video says so), except on a video with no point and no animal yet: there the first click places the first point. One Ctrl+Z step. A click on or right beside the ◇ places it exactly there. A landmark derived from the silhouette is placed by hand the same way: the silhouette fills its other frames and keeps your click</td></tr>
 <tr><td class=k>＋ Point</td><td>LAYERS: a named point with no position yet, in the selected animal (else in Scene), selected (and in every camera's list) — then click it on the video</td></tr>
 <tr><td class=k>A</td><td>with a calibration: place the selected point at the <b>◇</b> — where two or more other cameras put it — exactly (one Ctrl+Z step)</td></tr>
 <tr><td class=k>Alt+click</td><td>with a calibration: <b>look here</b> — where this spot can be in the other cameras (a dashed line there, a "?" ring here). Nothing is edited; Esc clears it</td></tr>
@@ -1106,6 +1106,7 @@ class MainWindow(QMainWindow):
             "— click once per frame", 6000))           # (G215)
         canvas.drop_double_click = self._click_moved_on       # (G215) only after this pair's first click moved on
         canvas.view_clicked.connect(lambda: setattr(self, "_moved_on", False))      # every press starts afresh
+        canvas.view_clicked.connect(lambda: setattr(self, "_first_click_placed", False))   # (G236) likewise
         canvas.view_clicked.connect(lambda: self.toast.dismiss_sticky())    # (G239) the user acted on a stop notice
         canvas.menu_extra = self._extend_point_menu
         canvas.menu_extra_action = self._point_menu_extra_action
@@ -3838,9 +3839,12 @@ class MainWindow(QMainWindow):
         """One dropped video opens as File > Open Video does, one project folder (or its kinetrace.json) as
         Open Project does; anything else is refused in a sentence that says what can be dropped."""
         from kinetrace.folderimport import VIDEO_EXTS
-        if self.state == TRACKING:
+        if self.state == TRACKING or self._run_in_progress():
+            # (review) also between two cameras / passes of one Track press: the window is READY for a moment
             self.toast.show_message("A run is going: pause it (<b>X</b>) before opening another video.", "warn", 7000)
             return
+        if self._loading or QApplication.activeModalWidget() is not None:
+            return          # something is opening, or a question is up: as the keyboard and mouse are held (G71)
         if len(paths) != 1:
             self.toast.show_message(
                 f"{len(paths)} files were dropped: drop <b>one</b> video or one project. For several cameras "
@@ -7402,7 +7406,7 @@ class MainWindow(QMainWindow):
         same click, not one on the frame / point it moved to (review: a double-click put two hand clicks on two
         frames). Otherwise the press goes through as in the other modes (R1-N1: "stay", several cameras, a new
         point, a camera-switching tile click)."""
-        return self._track_mode == "manual" and self._moved_on
+        return (self._track_mode == "manual" and self._moved_on) or getattr(self, "_first_click_placed", False)
 
     def _on_reposition(self, x: float, y: float):
         if self._selected_point() is not None:
@@ -7425,6 +7429,9 @@ class MainWindow(QMainWindow):
             # user makes before knowing N). Through `_on_add`, so it is N + click exactly: one undo step,
             # selected, ready for Track. With any point or animal present the rules below stand (G21).
             self._on_add(x, y)
+            # a double-click's second press is the SAME click (review: it hand-placed the new point again,
+            # a second undo step, so one Ctrl+Z no longer took the first point back)
+            self._first_click_placed = True
             return
         if pid is None or pid >= s.n_points:
             # (G21) the notice goes ON the video: in the status bar alone it was missed,
@@ -9148,6 +9155,9 @@ class MainWindow(QMainWindow):
         if self._loading:                            # (G71) a video / project is opening: nothing starts
             return
         self._drop_tour()                            # (G183) a run never shares the window with the tour
+        # (G239) the USER's Track press answers a stop notice - never a run's own next pass / camera, which
+        # starts a moment after the stop and would take the notice away unread (review)
+        self.toast.dismiss_sticky()
         self._update_track_button(every=all_cameras)     # the reason must be about THIS frame (and Shift+T's cameras)
         blocked = getattr(self, "_track_blocked", None)
         if blocked is not None:
@@ -10041,7 +10051,6 @@ class MainWindow(QMainWindow):
             return None         # a project / video is still opening behind the card (G71)
         if not self._tracking_engine_ready():
             return None
-        self.toast.dismiss_sticky()         # (G239) Track is the user acting on a stop notice
         s = self.session
         scope, pids, run_seg, animal_ok = self._run_targets(only_pids, segment)
         if not pids and not animal_ok:
@@ -12099,6 +12108,7 @@ class MainWindow(QMainWindow):
         `discard` (the user chose Discard, G143): the unsaved work is dropped as
         on close, and this state counts as handled, so a later `_leave_project`
         of the same open does not write it back (an edit after it still would)."""
+        self.toast.dismiss_sticky()     # (G239) a stop notice of the project being left says nothing about the next
         if self.project is None:
             return
         if discard:
