@@ -486,6 +486,21 @@ def progress_words(done: int, total: int, unit: str = "frames") -> str:
     return f"{done} of {int(total)} {unit} ({100 * done // int(total)}%)"
 
 
+LONG_RUN_S = 20 * 60        # (G240) a run on the processor with more than this left says so, once
+LONG_RUN_SETTLE = 48        # ... after this many frames, when the measured speed has settled
+
+
+def _eta_text(seconds: float) -> str:
+    """Time left in the Track label: "40 s", "2 min 05 s", and from an hour on "11 h 05 min" (G240: a run on
+    a computer without a usable graphics card read "665 min 00 s")."""
+    total = max(0, int(seconds + 0.5))
+    mins, secs = divmod(total, 60)
+    if mins >= 60:
+        hours, mins = divmod(mins, 60)
+        return f"{hours} h {mins:02d} min"
+    return f"{mins} min {secs:02d} s" if mins else f"{secs} s"
+
+
 def _crash_text(tb: str, hint: str, fallback: str) -> str:
     """A worker's traceback for the user (G54): the hint (or `fallback`) first, the
     last line in the program's words, the full traceback to the error log --
@@ -514,13 +529,26 @@ def _final_error_lines(tb: str) -> str:
     return "\n".join(reversed(out)).lower()
 
 
-def _model_error_hint(tb: str) -> str:
+def _model_error_hint(tb: str, doing: str = "") -> str:
     """Turn a traceback into one actionable sentence for the user. Only the
     final exception line(s) are matched, with specific markers (G104)."""
     low = _final_error_lines(tb)
-    if "out of memory" in low:
-        return ("The GPU ran out of memory. Close other GPU applications (or pick a smaller "
-                "segmentation model in Settings) and try again.")
+    if any(k in low for k in ("out of memory", "not enough memory", "memoryerror", "unable to allocate",
+                              "defaultcpuallocator", "bad_alloc")):
+        # (G241) by CAUSE and by what was running: every case used to read "The GPU ran out of memory ...
+        # pick a smaller segmentation model", also for the point tracker and for the computer's own memory
+        # (whose PyTorch / NumPy endings matched nothing and got no sentence at all)
+        card = any(k in low for k in ("cuda", "mps", "gpu", "metal"))
+        where = ("The graphics card ran out of memory" if card
+                 else "The computer ran out of memory (RAM)")
+        if doing == "track":
+            fix = ("Close other programs and try again. If the point model is AllTracker, CoTracker3 "
+                   "(Track ▾ → Point model) needs much less memory.")
+        elif doing == "outline":
+            fix = "Close other programs, or pick a smaller segmentation model in Settings, and try again."
+        else:
+            fix = "Close other programs and try again."
+        return f"{where}. {fix}"
     if any(k in low for k in ("gatedrepoerror", "401 client error", "403 client error", "gated repo",
                               "is gated", "gated model")):
         return ("The model weights are gated on Hugging Face. Request access to the model, "
@@ -6464,7 +6492,7 @@ class MainWindow(QMainWindow):
                 self.toast.show_message(tb, "error", 12000)
                 QMessageBox.warning(self, "The segmentation model could not be downloaded", tb)
             return
-        hint = _model_error_hint(tb)
+        hint = _model_error_hint(tb, doing="outline")
         self.toast.show_message("Segmentation failed. " + (hint or "Try the click again, or drag a box."),
                                 "error", 10000)
         QMessageBox.critical(self, "Segmentation failed", _crash_text(
@@ -10802,6 +10830,7 @@ class MainWindow(QMainWindow):
         self._run_start = int(getattr(w, "start_frame", self.current))  # (PR B) a lone joiner's run starts at its click
         self._fps_ema = 0.0
         self._last_emit_t = 0.0
+        self._long_run_said = False             # (G240) one long-run notice per run
         self._run_started = False               # (I339) until the worker says it has its models and reads
         self.state = TRACKING
         self._apply_state()
@@ -10923,13 +10952,28 @@ class MainWindow(QMainWindow):
             # to the run's own end (a second pass / a bounded run ends before the video does)
             end = int(getattr(self._model_worker, "n_frames", self.n_frames) or self.n_frames)
             remaining = (min(end, self.n_frames) - 1 - head) / max(self._fps_ema, 1e-6)
-            mins, secs = divmod(round(remaining), 60)
-            eta = f"{mins} min {secs:02d} s" if mins else f"{secs} s"
+            eta = _eta_text(remaining)
             mw = self._model_worker
             kind = ("Moving spot · " if mw is not None and getattr(mw, "spots", None) and not mw.specs
                     and mw.animal is None and not mw.balls
                     else f"{self._device_kind} · " if self._device_kind else "")
+            # (G240) once the speed has settled: a long run on the processor says so (Moving spot needs no
+            # graphics card, so it is never the reason there)
+            if head - self._run_start >= LONG_RUN_SETTLE and not kind.startswith("Moving spot"):
+                self._say_long_run(remaining)
             self._track_label.setText(f"{kind}tracking {self._fps_ema:.1f} fps · ETA {eta}")
+
+    def _say_long_run(self, remaining: float) -> None:
+        """(G240) A run on the processor with a long time left says so ONCE: how long, why, and what the user
+        can do. A notice only: it never stops, slows or changes a run."""
+        if getattr(self, "_long_run_said", False) or self._device_kind != "CPU" or remaining < LONG_RUN_S:
+            return
+        self._long_run_said = True
+        self.toast.show_message(
+            f"This run will take about <b>{_eta_text(remaining)}</b> at this speed. Kinetrace found no graphics "
+            "card it can use on this computer, so the tracker runs on the processor (<b>Help → System Check</b> "
+            "says what was found). You can leave it running: <b>X</b> pauses at any time and everything tracked "
+            "so far is kept. For a result sooner, pause and track a shorter stretch first.", "info", 30000)
 
     def _on_session_chunk(self, i, w0, tracks, vis, conf):
         """(I316, PR B) A re-seed session of the working camera wrote rows: into the session, frames it owns only."""
@@ -11547,7 +11591,7 @@ class MainWindow(QMainWindow):
                 self.toast.show_message("Tracking could not start: " + str(dl_failed), "error", 12000)
                 QMessageBox.warning(self, "A model could not be downloaded", str(dl_failed))
             return
-        hint = _model_error_hint(tb)
+        hint = _model_error_hint(tb, doing="track")
         self.toast.show_message("Tracking stopped. " + (hint or "Everything tracked before it is kept."),
                                 "error", 10000)
         QMessageBox.critical(self, "Tracking stopped", _crash_text(

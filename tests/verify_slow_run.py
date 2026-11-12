@@ -34,7 +34,8 @@ FAILED = []
 
 
 def check(ok, what, detail=""):
-    print(("OK   " if ok else "FAIL ") + what + (f"  [{detail}]" if detail and not ok else ""))
+    line = ("OK   " if ok else "FAIL ") + what + (f"  [{detail}]" if detail and not ok else "")
+    print(line.encode("ascii", "backslashreplace").decode())      # the console is cp1252
     if not ok:
         FAILED.append(what)
 

@@ -560,7 +560,16 @@ whichever is faster, so the badge is amber only when there is no usable
 graphics card (or, rarely, when the card measured slower). Hover over the
 badge for the measured times and what that means, or open **Help → System
 Check…**. While tracking, the speed readout starts with GPU or CPU and ends
-with an estimated finish time.
+with the estimated time left (for example *ETA 2 min 05 s*, or *ETA 11 h 05
+min* for a long video on a slow computer). When a run on the CPU still has
+more than 20 minutes to go, a notice says so once: how long it will take, why,
+and that **X** pauses at any time with everything tracked so far kept — so a
+long run can simply be left running, or paused and continued later.
+
+If a run stops because the memory ran out, the message says **which** memory:
+the graphics card's, or the computer's own (RAM). Close other programs and try
+again; for the point tracker, CoTracker3 (**Track ▾ → Point model**) needs
+much less memory than AllTracker.
 
 ---
 
