@@ -71,6 +71,11 @@ for name, tb in (("PyTorch on the processor", CPU), ("NumPy", NPY), ("Python", P
 check("cotracker3" in hint(CPU, "track").lower(),
       "out of memory while tracking: names the point model that needs less memory", hint(CPU, "track"))
 check(hint(TB + "ValueError: something else", "track") == "", "another error gets no memory sentence")
+h = hint(TB + "MemoryError: could not map D:/clips/jumps/timestamps.npy", "track")
+check("graphics card" not in h.lower(), "a path with 'jumps' in it is not taken for the Apple graphics card", h)
+h = hint(CUDA, "both")
+check("segmentation model" in h.lower() and "cotracker3" in h.lower(),
+      "a run of silhouettes and points names both ways to need less memory", h)
 
 # ---- G240: time left in hours; one notice for a long run on the processor ----------------------
 eta = getattr(kapp, "_eta_text", None)
@@ -110,6 +115,7 @@ if say is not None:
     check(not win.toast.isVisible(), "a 10-minute run on the processor says nothing extra")
     say(39900.0)
     t = win.toast.text()
+    check("no graphics card" not in t.lower(), "... without claiming there is no graphics card", t[:200])
     check(win.toast.isVisible() and "11 h 05 min" in t and "System Check" in t and "<b>X</b>" in t,
           "a long run on the processor says how long, why, and that X pauses and keeps everything", t[:200])
     win.toast.hide()

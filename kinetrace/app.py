@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import html
 import os
+import re
 import sys
 import time
 import traceback
@@ -538,7 +539,8 @@ def _model_error_hint(tb: str, doing: str = "") -> str:
         # (G241) by CAUSE and by what was running: every case used to read "The GPU ran out of memory ...
         # pick a smaller segmentation model", also for the point tracker and for the computer's own memory
         # (whose PyTorch / NumPy endings matched nothing and got no sentence at all)
-        card = any(k in low for k in ("cuda", "mps", "gpu", "metal"))
+        # whole words: "mps" is inside "jumps" / "timestamps", "metal" inside "metallic" (review)
+        card = re.search(r"\b(cuda|mps|gpu|metal)\b", low) is not None
         where = ("The graphics card ran out of memory" if card
                  else "The computer ran out of memory (RAM)")
         if doing == "track":
@@ -546,6 +548,9 @@ def _model_error_hint(tb: str, doing: str = "") -> str:
                    "(Track ▾ → Point model) needs much less memory.")
         elif doing == "outline":
             fix = "Close other programs, or pick a smaller segmentation model in Settings, and try again."
+        elif doing == "both":       # a run of silhouettes (or balls) AND points: either may have been the one
+            fix = ("Close other programs and try again. A smaller segmentation model (Settings) needs less "
+                   "memory; so does CoTracker3 instead of AllTracker for the points (Track ▾ → Point model).")
         else:
             fix = "Close other programs and try again."
         return f"{where}. {fix}"
@@ -9108,6 +9113,7 @@ class MainWindow(QMainWindow):
         if self._loading:                            # (G71) a video / project is opening: nothing starts
             return
         self._drop_tour()                            # (G183) a run never shares the window with the tour
+        self._long_run_said = False                  # (G240) one long-run notice per Track PRESS, not per pass of it
         self._update_track_button(every=all_cameras)     # the reason must be about THIS frame (and Shift+T's cameras)
         blocked = getattr(self, "_track_blocked", None)
         if blocked is not None:
@@ -10830,7 +10836,6 @@ class MainWindow(QMainWindow):
         self._run_start = int(getattr(w, "start_frame", self.current))  # (PR B) a lone joiner's run starts at its click
         self._fps_ema = 0.0
         self._last_emit_t = 0.0
-        self._long_run_said = False             # (G240) one long-run notice per run
         self._run_started = False               # (I339) until the worker says it has its models and reads
         self.state = TRACKING
         self._apply_state()
@@ -10964,15 +10969,17 @@ class MainWindow(QMainWindow):
             self._track_label.setText(f"{kind}tracking {self._fps_ema:.1f} fps · ETA {eta}")
 
     def _say_long_run(self, remaining: float) -> None:
-        """(G240) A run on the processor with a long time left says so ONCE: how long, why, and what the user
-        can do. A notice only: it never stops, slows or changes a run."""
+        """(G240) A run on the processor with a long time left says so ONCE per Track press: how long (this
+        pass of the run), why, and what the user can do. A notice only: it never stops, slows or changes a
+        run. "On the processor" is all it claims: a card may exist and have measured slower, or been switched
+        off with KINETRACE_DEVICE (review)."""
         if getattr(self, "_long_run_said", False) or self._device_kind != "CPU" or remaining < LONG_RUN_S:
             return
         self._long_run_said = True
         self.toast.show_message(
-            f"This run will take about <b>{_eta_text(remaining)}</b> at this speed. Kinetrace found no graphics "
-            "card it can use on this computer, so the tracker runs on the processor (<b>Help → System Check</b> "
-            "says what was found). You can leave it running: <b>X</b> pauses at any time and everything tracked "
+            f"This will take about <b>{_eta_text(remaining)}</b> at this speed. On this computer the tracker "
+            "runs on the processor (CPU), not on a graphics card, which is much slower (<b>Help → System "
+            "Check</b> says why). You can leave it running: <b>X</b> pauses at any time and everything tracked "
             "so far is kept. For a result sooner, pause and track a shorter stretch first.", "info", 30000)
 
     def _on_session_chunk(self, i, w0, tracks, vis, conf):
@@ -11591,7 +11598,12 @@ class MainWindow(QMainWindow):
                 self.toast.show_message("Tracking could not start: " + str(dl_failed), "error", 12000)
                 QMessageBox.warning(self, "A model could not be downloaded", str(dl_failed))
             return
-        hint = _model_error_hint(tb, doing="track")
+        # (G241, review) by what the run really ran: a Track press also runs the silhouette model (an animal
+        # row, a ball marker), and then the point model is not the one to change
+        w = self.worker
+        outlines = bool(w is not None and (getattr(w, "animal", None) is not None or getattr(w, "balls", None)))
+        points = bool(w is not None and getattr(w, "specs", None))
+        hint = _model_error_hint(tb, doing="both" if outlines and points else "outline" if outlines else "track")
         self.toast.show_message("Tracking stopped. " + (hint or "Everything tracked before it is kept."),
                                 "error", 10000)
         QMessageBox.critical(self, "Tracking stopped", _crash_text(
