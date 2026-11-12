@@ -373,7 +373,7 @@ print("lens wizard attached a GOOD profile to every camera OK")
 for c in range(N_CAM):
     bd, sc = p.lenses[c].board, scans[c]
     assert bd.get("video") == os.path.basename(board_videos[c]), bd.get("video")
-    assert os.path.normcase(bd.get("path", "")) == os.path.normcase(os.path.abspath(board_videos[c])), bd.get("path")
+    assert "path" not in bd, bd.get("path")          # (G243) the name only: a profile is handed to other people
     assert bd["size"] == list(sc.size) and bd["rotation"] == 0 and bd["pattern"] == [9, 6], bd
     assert abs(bd["square_m"] - 0.024) < 1e-12, bd["square_m"]
     assert len(bd["frames"]) == p.lenses[c].n_views and set(bd["frames"]) <= set(sc.frames), bd["frames"]

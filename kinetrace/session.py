@@ -2018,7 +2018,9 @@ class TrackingSession:
             "event_end": np.array([e.end for e in self.events], np.float64),
             "event_notes": np.array([e.note for e in self.events], dtype=object),
             "fps": self.fps,
-            "video_path": str(self.video_path),
+            # (G243) the file's NAME: this file is handed to other people, and the folder it sat in on this
+            # computer (a user name, a study's name) is not theirs to read. The key keeps its name for scripts
+            "video_path": Path(str(self.video_path)).name,
             "video_size": np.array([self.width, self.height]),
             # MATLAB users expect 1-based pixels; say what these are rather
             # than leave them to find a one-pixel shift in their 3D

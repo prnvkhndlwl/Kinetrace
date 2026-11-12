@@ -202,7 +202,11 @@ class LensProfile:
                 "K": np.asarray(self.K, np.float64).tolist(), "dist": np.asarray(self.dist, np.float64).tolist(),
                 "fisheye": bool(self.fisheye), "rms": (None if not np.isfinite(self.rms) else float(self.rms)),
                 "n_views": int(self.n_views), "source": self.source, "report": report,
-                "rotation": None if self.rotation is None else int(self.rotation), "board": self.board}
+                "rotation": None if self.rotation is None else int(self.rotation),
+                # (G243) a profile is handed from person to person: the board video by NAME, never the folder
+                # it sat in (an older profile's record still carries "path": dropped here)
+                "board": ({k: v for k, v in self.board.items() if k != "path"}
+                          if isinstance(self.board, dict) else self.board)}
 
     @staticmethod
     def from_json(d: dict) -> "LensProfile":
@@ -574,7 +578,6 @@ def record_turn(prof: LensProfile, video: str, size: tuple[int, int], rotation: 
     turn and the board record change; K, dist and the picture size are the profile's own. The video
     must have the profile's picture size (the one check there is that it is the board video)."""
     import copy
-    import os
     name = Path(video).name
     w, h = int(prof.width), int(prof.height)
     if prof.rotation is not None:
@@ -590,7 +593,7 @@ def record_turn(prof: LensProfile, video: str, size: tuple[int, int], rotation: 
     rot = int(rotation) % 360
     out = copy.deepcopy(prof)
     out.rotation = rot
-    out.board = {"video": name, "path": os.path.abspath(video), "size": [w, h], "rotation": rot, "named_later": True}
+    out.board = {"video": name, "size": [w, h], "rotation": rot, "named_later": True}      # no folder (G243)
     if oren:
         out.board["gopro_orientation"] = str(oren)
     said = board_sentence(out.board) + " The profile did not record which way that video was turned: read from it now."
@@ -1084,13 +1087,12 @@ def _scan_charuco(path, spec, max_candidates, progress, should_cancel, downscale
 
 
 def board_record(scan: ScanResult, used: list[int], pattern: tuple[int, int], square_m: float) -> dict:
-    """Where a checkerboard fit's boards came from, for `LensProfile.board`: the video (file name and
-    full path, picture size, its turn) and the VIDEO frame numbers of the boards the fit used (`used` =
+    """Where a checkerboard fit's boards came from, for `LensProfile.board`: the video (file name only,
+    G243; picture size, its turn) and the VIDEO frame numbers of the boards the fit used (`used` =
     scan numbering; 0 = the video's first frame), with the board's inner corners and square. A
     profile's `report["views_used"]` counts the boards the fit was given, not frames: these do."""
-    import os
     frames = [int(scan.frames[i]) for i in (used or []) if 0 <= int(i) < len(scan.frames)]
-    out = {"video": Path(scan.video).name, "path": os.path.abspath(scan.video) if scan.video else "",
+    out = {"video": Path(scan.video).name if scan.video else "",
            "size": [int(v) for v in scan.size], "rotation": scan.rotation, "frames": frames,
            "pattern": [int(v) for v in pattern], "square_m": float(square_m)}
     if scan.gopro_orientation:                      # (I275) GoPro's mounting tag, for tracing
