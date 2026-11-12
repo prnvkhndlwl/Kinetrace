@@ -97,6 +97,7 @@ class Toast(QLabel):
         # is what a click does besides closing (G39) and stays with ITS notice
         self._notices: list[list] = []
         self.hide()
+        self._sticky = False        # (G239) a notice shown with ms=0 is up: no timer hides it
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.hide)
@@ -125,14 +126,17 @@ class Toast(QLabel):
     def show_message(self, text: str, level: str = "info", ms: int = 6000, on_click=None) -> None:
         """`on_click` = what clicking the notice does (then it closes); without
         one a click only closes it (G39: a notice that says what can be done
-        should do it when clicked)."""
+        should do it when clicked). `ms=0` (G239): the notice stays until the user acts - a click on
+        it, or `dismiss_sticky` (the window calls it on a press on the video and when a run starts)."""
         # a second notice while one is still up used to REPLACE it, so the
         # first (often the verdict) was never read (G10): keep the latest two
-        live = self.isVisible() and self._timer.isActive()
+        live = self.isVisible() and (self._timer.isActive() or self._sticky)
         if not live:
             self._notices = []
-        else:
+            self._sticky = False
+        elif not self._sticky and ms > 0:
             ms = max(ms, self._timer.remainingTime())
+        self._sticky = self._sticky or ms <= 0
         for n in self._notices:
             if n[0] == text:             # the same notice again: refresh ITS entry, not the pair (G89)
                 n[1] = level
@@ -156,9 +160,20 @@ class Toast(QLabel):
         self._place()
         self.show()
         self.raise_()
-        self._timer.start(max(1500, int(ms)))
+        if self._sticky:
+            self._timer.stop()
+        else:
+            self._timer.start(max(1500, int(ms)))
+
+    def dismiss_sticky(self) -> None:
+        """(G239) The user acted: a notice that was waiting for that goes."""
+        if self._sticky:
+            self._sticky = False
+            self._notices = []
+            self.hide()
 
     def mousePressEvent(self, ev):
+        self._sticky = False
         self.hide()
         action = next((n[2] for n in reversed(self._notices) if n[2] is not None), None)
         self._notices = []

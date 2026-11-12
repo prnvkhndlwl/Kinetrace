@@ -785,27 +785,27 @@ class _SegmentSpecs(NamedTuple):
 # ({name}, {frame}, {prev} = frame - 1); one table instead of the sentences spelt out twice (R8).
 _STOP_TEXTS = {
     "segment": dict(
-        short="{name} was lost", ms=15000,
+        short="{name} was lost",
         toast=("Auto-paused: <b>{name}</b> was lost (or left the frame) around frame {frame}. If it is "
                "visible here, press <b>S</b>, click it, then Track. Or turn <b>Auto-pause</b> off (bottom "
                "bar) to run through."),
-        status="Auto-paused: the segment was lost around frame {frame}"),
+        status="Auto-paused: the outline of the animal was lost around frame {frame}"),
     "switched": dict(     # (I260) SAM took another object after losing the animal: stops whatever Auto-pause says
-        short="{name} turned into another object", ms=20000,
-        toast=("Stopped at frame {frame}: <b>{name}</b> disappeared here, and SAM then picked up "
+        short="{name} turned into another object",
+        toast=("Stopped at frame {frame}: <b>{name}</b> disappeared here, and its outline then jumped to "
                "<b>something else</b> (another animal or a look-alike, far from where yours was heading), so "
                "its silhouette ends at frame {prev}. If your animal is visible on a later frame, go there, "
                "press <b>S</b>, click it, then Track."),
-        status="Stopped: the segment was lost at frame {frame} and SAM took another object instead"),
+        status="Stopped: the outline of the animal was lost at frame {frame} and jumped to another object"),
     "ball": dict(
-        short="{name} was lost", ms=15000,
-        toast=("Stopped at frame {frame}: SAM could not find the ball <b>{name}</b> any more, and it had "
+        short="{name} was lost",
+        toast=("Stopped at frame {frame}: the ball <b>{name}</b> could not be found any more, and it had "
                "not reached the picture edge, so its track ends at frame {prev}. If the ball is visible "
                "here, select it, Point ▾ → Ball marker, click it, then Track. A ball that leaves the picture "
                "never stops the run."),
         status="Stopped: the ball {name} was lost at frame {frame}"),
     "spot": dict(
-        short="{name} was not found (Moving spot)", ms=15000,
+        short="{name} was not found (Moving spot)",
         toast=("Stopped at frame {frame}: {said}, so its track ends at frame {prev}. Moving spot stops "
                "instead of guessing. If you can see it here, click it (it is selected) and press Track; "
                "clicking it on the next frame too gives it its speed. If it is not a small spot, switch "
@@ -817,22 +817,22 @@ _STOP_TEXTS = {
                    "sharply)"),
         saw_two="saw two candidates for", saw_none="lost"),
     "exit": dict(
-        short="{name} left the segment", ms=15000,
+        short="{name} left its animal's silhouette",
         toast=("Stopped at frame {frame}: <b>{name}</b> left its animal's silhouette, so its track ends "
                "at frame {prev}{kept}. Click it where it really is and press Track. "
                "If it is allowed off the silhouette, right-click it → <i>May leave its silhouette</i>."),
         status="Stopped: {name} left its animal's silhouette at frame {frame}"),
     "unreliable": dict(
-        short="{name} was lost", ms=12000,
+        short="{name} was lost",
         toast=("Auto-paused: <b>{name}</b> became unreliable at frame {frame}, so its track is cut there "
                "(its timeline lane is empty from this frame on{kept_lane}). It is selected: "
                "click where it really is on the video and press Track — or turn <b>Auto-pause</b> off (bottom "
                "bar) to run through."),
-        status=("Auto-paused: the model lost {name} at frame {frame} (low confidence; its track is cut "
+        status=("Auto-paused: the tracker lost {name} at frame {frame} (it stayed unsure of the spot; its track is cut "
                 "there). Click where it really is and press Track — or turn Auto-pause off to run "
                 "through")),
     "hidden": dict(       # (I335) hidden when the ROI zoom moved: re-asking the model there learns the cover
-        short="{name} was hidden when the zoomed view moved", ms=15000,
+        short="{name} was hidden when the zoomed view moved",
         toast=("Auto-paused: <b>{name}</b> was hidden at frame {frame}, just when the tracker had to move its "
                "zoomed view (ROI) to keep up with the points, so its track is cut there{kept}. Starting it again "
                "on that frame would have made it follow whatever covered it. Go to a frame where it is visible "
@@ -852,6 +852,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         apply_theme(QApplication.instance())  # idempotent; visual only
         self.setWindowTitle(f"{APP_NAME} — {APP_TAGLINE}")
+        self.setAcceptDrops(True)       # (G238) a video or a project let go over the window opens
         self.resize(1280, 860)
 
         self.state = IDLE
@@ -1105,6 +1106,7 @@ class MainWindow(QMainWindow):
             "— click once per frame", 6000))           # (G215)
         canvas.drop_double_click = self._click_moved_on       # (G215) only after this pair's first click moved on
         canvas.view_clicked.connect(lambda: setattr(self, "_moved_on", False))      # every press starts afresh
+        canvas.view_clicked.connect(lambda: self.toast.dismiss_sticky())    # (G239) the user acted on a stop notice
         canvas.menu_extra = self._extend_point_menu
         canvas.menu_extra_action = self._point_menu_extra_action
         canvas.multi_menu = self._maybe_multi_menu
@@ -3801,6 +3803,68 @@ class MainWindow(QMainWindow):
         settled = self._settle_unsaved(f"opening {Path(path).name}")     # (G143)
         if settled is not None:
             self._open_video(path, discard=settled == "discard")
+
+    # ---- (G238) files let go over the window: the same doors as File > Open Video / Open Project ----
+
+    @staticmethod
+    def _dropped_files(ev) -> list[str]:
+        """The local files of a drag from the desktop / a file manager ([] for the window's own drags:
+        camera tiles and LAYERS rows carry their own data and are handled by their widgets)."""
+        md = ev.mimeData()
+        if md is None or not md.hasUrls():
+            return []
+        return [u.toLocalFile() for u in md.urls() if u.isLocalFile() and u.toLocalFile()]
+
+    def dragEnterEvent(self, ev):           # noqa: N802 - Qt name
+        if self._dropped_files(ev):
+            ev.acceptProposedAction()
+        else:
+            ev.ignore()
+
+    def dragMoveEvent(self, ev):            # noqa: N802 - Qt name
+        self.dragEnterEvent(ev)
+
+    def dropEvent(self, ev):                # noqa: N802 - Qt name
+        paths = self._dropped_files(ev)
+        if not paths:
+            ev.ignore()
+            return
+        ev.acceptProposedAction()
+        # after the drop is over: opening may ask Save / Discard / Cancel, and a dialog inside a drop
+        # freezes the file manager the drag came from
+        QTimer.singleShot(0, lambda: self._open_dropped(paths))
+
+    def _open_dropped(self, paths: list[str]) -> None:
+        """One dropped video opens as File > Open Video does, one project folder (or its kinetrace.json) as
+        Open Project does; anything else is refused in a sentence that says what can be dropped."""
+        from kinetrace.folderimport import VIDEO_EXTS
+        if self.state == TRACKING:
+            self.toast.show_message("A run is going: pause it (<b>X</b>) before opening another video.", "warn", 7000)
+            return
+        if len(paths) != 1:
+            self.toast.show_message(
+                f"{len(paths)} files were dropped: drop <b>one</b> video or one project. For several cameras "
+                "use <b>File → Open Folder of Videos</b>.", "info", 9000)
+            return
+        p = Path(paths[0])
+        is_project = ((p.is_dir() and (p / "kinetrace.json").is_file())
+                      or p.name == "kinetrace.json" or p.suffix.lower() == PROJECT_SUFFIX)
+        if is_project:
+            settled = self._settle_unsaved(f"opening {projectfile.project_root(str(p)).name}")
+            if settled is not None:
+                self._open_project_from_path(str(p), discard=settled == "discard")
+        elif p.is_file() and p.suffix.lower() in VIDEO_EXTS:
+            settled = self._settle_unsaved(f"opening {p.name}")
+            if settled is not None:
+                self._open_video(str(p), discard=settled == "discard")
+        elif p.is_dir():
+            self.toast.show_message(
+                "That folder is not a Kinetrace project. For a folder of videos use "
+                "<b>File → Open Folder of Videos</b>.", "info", 9000)
+        else:
+            self.toast.show_message(
+                f"<b>{html.escape(p.name)}</b> is not a video Kinetrace opens. Drop a video file "
+                f"({', '.join(e[1:] for e in VIDEO_EXTS)}) or a Kinetrace project folder.", "info", 9000)
 
     def _settle_unsaved(self, doing: str) -> str | None:
         """(G143) Before another video / project REPLACES this one: the close question (Save /
@@ -9977,6 +10041,7 @@ class MainWindow(QMainWindow):
             return None         # a project / video is still opening behind the card (G71)
         if not self._tracking_engine_ready():
             return None
+        self.toast.dismiss_sticky()         # (G239) Track is the user acting on a stop notice
         s = self.session
         scope, pids, run_seg, animal_ok = self._run_targets(only_pids, segment)
         if not pids and not animal_ok:
@@ -11479,7 +11544,9 @@ class MainWindow(QMainWindow):
             two = why == "ambiguous"
             fmt["said"] = t["said_two" if two else "said_none"].format(**fmt)
             fmt["saw"] = t["saw_two" if two else "saw_none"]
-        self.toast.show_message(t["toast"].format(**fmt), "warn", t["ms"])
+        # (G239) it says what to do next, so it stays until the user does something: a press on the video,
+        # Track, or a click on the notice (it used to vanish after 12-20 s, often unread)
+        self.toast.show_message(t["toast"].format(**fmt), "warn", 0)
         self.statusBar().showMessage(t["status"].format(**fmt), 12000)
 
     def _on_track_error(self, tb: str):
