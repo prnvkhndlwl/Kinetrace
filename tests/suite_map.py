@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUI = ["verify_gui", "verify_oob", "verify_keys_follow", "verify_timeline_events", "verify_semiauto_pan", "verify_stress",
        "verify_annotate", "verify_ui_focus", "verify_display", "verify_segment_panel", "verify_point_menu",
        "verify_sweep_fixes", "verify_review_app1", "verify_review_app2", "verify_review_app3", "verify_review_leftovers",
-       "verify_review_ui", "verify_camera_views", "verify_tour"]
+       "verify_review_ui", "verify_camera_views", "verify_tour", "verify_slow_run"]
 SAVE = ["verify_projectfile", "verify_recovery", "verify_loading", "verify_open_replace", "verify_review_persist",
         "verify_save_during_run", "verify_save_safety"]
 INSTALL = ["verify_portable", "verify_install_paths", "verify_update", "verify_downloads", "verify_crashlog",
