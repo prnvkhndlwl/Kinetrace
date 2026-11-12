@@ -397,7 +397,7 @@ The rest of this section describes the same parts in more detail.
 ```
  File  Edit  View  3D  Body  Help                         ← the menus
 ┌────────────────────────────────────────────────────┬──────────────────────┐
-│ 1 Open video ✓ › 2 Segment › 3 Skeleton › 4 Track  │ Layers               │
+│ 1 Open video ✓ › 2 Click a point › 3 Track         │ Layers               │
 ├────────────────────────────────────────────────────┤ CAMERAS  + Add video │
 │                                                    │ cam1 (reference)     │
 │                                                    │ offset 0.000 ▲▼      │
@@ -427,14 +427,15 @@ menu, the entries that need something you have not done yet — a second camera,
 a calibration — mostly stay clickable and tell you what is missing when you
 click them.
 
-**The strip under the menus** is a four-step checklist: *1 Open video → 2
-Segment the animal → 3 Skeleton / landmarks → 4 Track*. Steps 2 and 3 are
-marked *optional*, because they are. Finished steps get a tick, and the step
-outlined as next is **Track** as soon as a video is open. Click a step to do
-it: 1 opens a video, 2 switches on the Segment tool, 3 opens the list of
-skeletons, and 4 **starts tracking**. Text to the right of the four steps,
-after the dividing line and marked ⓘ, is a hint about what to do next — it is
-advice, not a fifth step. The strip hides itself once something has been
+**The strip under the menus** is a three-step checklist: *1 Open video → 2
+Click a point → 3 Track*. That is the whole of a first project: open a video,
+click the spot you want followed, press Track. Finished steps get a tick, and
+the first step not yet done is outlined as next. Click a step to do it: 1
+opens a video, 2 switches on the Point tool (the next click on the video
+places a point), and 3 **starts tracking**. Outlining the whole animal (**S**)
+and the ready-made skeletons are optional extras; the hint names them once you
+have a point. Text to the right of the three steps, after the dividing line and
+marked ⓘ, is a hint about what to do next — it is advice, not a fourth step. The strip hides itself once something has been
 tracked; you can also close it with **×**, and **View → Getting started
 strip** brings it back.
 
@@ -570,7 +571,10 @@ Work through this once with a short, easy clip before using a clip that matters.
 
 ### Step 1 — Open the video
 
-**File → Open Video…** (or **Ctrl+O**). Pick your file. If the video or
+**File → Open Video…** (or **Ctrl+O**). Pick your file. Or **drag the video
+file from a folder and let it go over the Kinetrace window**: it opens the same
+way (a project folder dropped on the window opens as a project; drop one thing
+at a time). If the video or
 project already open has unsaved changes, you are asked first, as when you
 close the program: **Save**, **Discard** (drop them) or **Cancel** (open
 nothing). Open Project, Open Folder of Videos and Recover Unsaved Work ask the
@@ -605,6 +609,11 @@ behind anything. That is usually not frame 0. Move around with:
 - the **frame box** at the bottom left — type a number and press Enter.
 
 Everything you do next happens on this frame.
+
+> **The shortest way, if you only want one spot followed:** skip steps 3 and 4.
+> On a video with nothing on it yet, **click the spot on the animal** — that
+> first click places your first point (Ctrl+Z takes it back) — and press
+> **Track**. For every further point press **N** first, then click.
 
 ### Step 3 — Outline the animal
 
@@ -2858,7 +2867,8 @@ calibration switches the first one on.
   where that spot can be in the other cameras (a dashed "?" ring marks the spot;
   **Esc** clears it). A plain click with no body part selected places nothing
   either, and says so on the video: press **N** to add a point, or select one in
-  LAYERS first.
+  LAYERS first. (The one exception: on a video with no point and no animal at
+  all, the first plain click places the first point.)
 - **Snapping.** Right-click the part → **Snap to the other cameras' rays here** moves it
   there for you (the nearest point on one line, the crossing of two or more),
   marks the frame hand-placed, and Track re-seeds from it — that is how a
