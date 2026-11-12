@@ -80,8 +80,8 @@ def stops(win) -> list[Stop]:
              "measures people's joints. <b>Hover over any menu entry</b> and a line says what it does.",
              widget=_menu_bar),
         Stop("strip", "Getting started",
-             "The four steps of a first project: <b>1 Open video → 2 Segment → 3 Skeleton → 4 Track</b>. "
-             "Steps 2 and 3 are optional. Click a step to do it; the text on the right says what to do next.",
+             "The three steps of a first project: <b>1 Open video → 2 Click a point → 3 Track</b>. "
+             "Click a step to do it; the text on the right says what to do next.",
              widget=lambda win: win.onboarding,
              hidden=lambda win: "It is hidden now: <b>View → Getting started strip</b> shows it."),
         Stop("video", "The video",

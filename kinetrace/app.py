@@ -2456,9 +2456,7 @@ class MainWindow(QMainWindow):
         if self.state != READY or self.session is None:
             return
         if k == 1:
-            self.btn_animal.setChecked(True)
-        elif k == 2:
-            self.btn_skeleton.showMenu()
+            self.btn_add.setChecked(True)       # (G237) the Point tool: the next click places a point
         else:
             self._toggle_tracking()
 
@@ -2466,14 +2464,14 @@ class MainWindow(QMainWindow):
         s = self.session
         if s is None or self.state == IDLE:
             self.onboarding.set_state(
-                [False, False, False, False],
+                [False, False, False],
                 "Open a video (Ctrl+O) or a project (Ctrl+Shift+O) to begin  ·  F1 = manual")
             return
         seg = any(s.has_silhouette(k) for k in range(s.n_segments))   # any (G151m)
         # the skeleton step ticks as soon as a skeleton is applied or any landmark exists
         landmarks = any(a.skeleton for a in s.segments) or s.n_points > 0
         tracked = int(s.tracked.sum()) > sum(1 for i in range(s.n_points) if s.tracked[:, i].any())
-        done = [True, seg, landmarks, tracked]
+        done = [True, bool(s.n_points > 0 or seg), tracked]      # (G237) something to track: a point or an outline
         # Segmenting is OPTIONAL. An animal a few pixels across (seen from
         # far away) has no silhouette worth outlining: place a point
         # with N and Track — the tracker zooms into its own crop around it.
@@ -2482,10 +2480,10 @@ class MainWindow(QMainWindow):
             hint = ("Manual mode: N and click the point, F, then click it on each frame (Track ▾ → After a "
                     "click says where the video goes next)")                     # (G215) no Track, no S
         elif not tracked:
-            hint = ("Press N and click the animal (a few pixels is enough), then Track ▶ — or S to "
-                    "outline a larger animal first for silhouette landmarks"
+            hint = ("Click the spot to follow on the animal (a few pixels is enough), then press Track ▶"
                     if not (seg or landmarks) else
-                    "Press Track ▶ now, or Skeleton ▾ first for named landmarks (select one, press N, click it)")
+                    "Press Track ▶ now. More points: N, then click. Optional: S outlines the whole animal, "
+                    "Skeleton ▾ gives named landmarks")
         else:
             hint = "All set — refine, mark events, export (Ctrl+E)"
         self.onboarding.set_state(done, hint)

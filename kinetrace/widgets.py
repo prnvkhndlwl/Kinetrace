@@ -472,8 +472,9 @@ class ElidedButton(QToolButton):
 
 
 class OnboardingStrip(QWidget):
-    """The four-step path for a new project — Open, Segment, Skeleton, Track — as a
-    slim strip above the video. Done steps get a check, the next step is the
+    """The three-step path for a new project — Open, Click a point, Track — as a
+    slim strip above the video (G237: outlining an animal and a skeleton are optional extras,
+    named in the hint, not steps a first project has to read past). Done steps get a check, the next step is the
     accent, each chip is clickable, and the strip hides itself once a project
     has tracked data (View menu brings it back)."""
 
@@ -492,8 +493,7 @@ class OnboardingStrip(QWidget):
         lay.setContentsMargins(10, 4, 6, 4)
         lay.setSpacing(6)
         self._chips: list[QToolButton] = []
-        self._labels = ["1  Open video  (Ctrl+O)", "2  Segment the animal  (S, optional)",
-                        "3  Skeleton / landmarks  (optional)", "4  Track"]
+        self._labels = ["1  Open video  (Ctrl+O)", "2  Click a point  (N)", "3  Track"]
         for i, text in enumerate(self._labels):
             b = QToolButton()
             b.setText(text)
@@ -541,10 +541,8 @@ class OnboardingStrip(QWidget):
 
     def set_state(self, done: list[bool], hint: str = "") -> None:
         from kinetrace import icons
-        # segmenting and the skeleton are both optional (an animal a few pixels
-        # across has no silhouette to outline): after opening a video, Track
-        # is the next step, whatever else has been done
-        nxt = 0 if not done[0] else (3 if not done[3] else None)
+        # (G237) the next step is the first one not done: open, then something to track, then Track
+        nxt = next((i for i, d in enumerate(done) if not d), None)
         key = (tuple(bool(d) for d in done), nxt)
         if key != self._last_state:
             self._last_state = key
