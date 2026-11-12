@@ -7358,6 +7358,12 @@ class MainWindow(QMainWindow):
             return
         s = self.session
         pid = self.selected
+        if s.n_points == 0 and not s.segments:
+            # (G236) a video with nothing on it yet: the first click IS the first point (the gesture a new
+            # user makes before knowing N). Through `_on_add`, so it is N + click exactly: one undo step,
+            # selected, ready for Track. With any point or animal present the rules below stand (G21).
+            self._on_add(x, y)
+            return
         if pid is None or pid >= s.n_points:
             # (G21) the notice goes ON the video: in the status bar alone it was missed,
             # and the look-here cross this click used to draw was taken for a point
