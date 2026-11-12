@@ -93,13 +93,13 @@ class Toast(QLabel):
         self.setToolTip("click to dismiss")
         self.setTextFormat(Qt.RichText)
         self._level = "info"
-        # the notices on screen, oldest first: [text, level, action] -- the action
+        # the notices on screen, oldest first: [text, level, action, waits (G239)] -- the action
         # is what a click does besides closing (G39) and stays with ITS notice
         self._notices: list[list] = []
         self.hide()
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self.hide)
+        self._timer.timeout.connect(self._on_timeout)
         host.installEventFilter(self)
         # (G229) -> the names the user typed (points, animals, cameras) a notice may hold; set by the window
         self.literal = None
@@ -125,23 +125,39 @@ class Toast(QLabel):
     def show_message(self, text: str, level: str = "info", ms: int = 6000, on_click=None) -> None:
         """`on_click` = what clicking the notice does (then it closes); without
         one a click only closes it (G39: a notice that says what can be done
-        should do it when clicked)."""
+        should do it when clicked). `ms=0` (G239): THIS notice waits for the user - a click on it, or
+        `dismiss_sticky` (the window calls it on a press on the video and on the user's Track press).
+        A timed notice beside a waiting one still times out by itself."""
+        waits = ms <= 0
         # a second notice while one is still up used to REPLACE it, so the
         # first (often the verdict) was never read (G10): keep the latest two
-        live = self.isVisible() and self._timer.isActive()
+        live = self.isVisible() and (self._timer.isActive() or self._sticky)
         if not live:
             self._notices = []
-        else:
+        elif not waits and self._timer.isActive():
             ms = max(ms, self._timer.remainingTime())
         for n in self._notices:
             if n[0] == text:             # the same notice again: refresh ITS entry, not the pair (G89)
                 n[1] = level
                 if on_click is not None:
                     n[2] = on_click
+                n[3] = n[3] or waits
                 break
         else:
-            self._notices.append([text, level, on_click])
+            self._notices.append([text, level, on_click, waits])
             del self._notices[:-self.SHOWN]
+        self._render()
+        if not waits:
+            self._timer.start(max(1500, int(ms)))
+        elif all(n[3] for n in self._notices):
+            self._timer.stop()           # nothing timed is up; a timed neighbour keeps its own timer
+
+    @property
+    def _sticky(self) -> bool:
+        """(G239) A notice that waits for the user is among those shown."""
+        return any(n[3] for n in self._notices)
+
+    def _render(self) -> None:
         # the colour is the most severe of the notices SHOWN, not of one that scrolled out
         level = max((n[1] for n in self._notices), key=lambda lv: LEVEL_RANK.get(lv, 0))
         has_action = any(n[2] is not None for n in self._notices)
@@ -156,7 +172,26 @@ class Toast(QLabel):
         self._place()
         self.show()
         self.raise_()
-        self._timer.start(max(1500, int(ms)))
+
+    def _on_timeout(self) -> None:
+        """The timed notices' time is up: they go; one that waits for the user stays (review of G239: a
+        waiting notice used to make every later notice wait too)."""
+        self._notices = [n for n in self._notices if n[3]]
+        if self._notices:
+            self._render()
+        else:
+            self.hide()
+
+    def dismiss_sticky(self) -> None:
+        """(G239) The user acted: the notices that were waiting for that go; a timed one stays its time."""
+        if not self._sticky:
+            return
+        self._notices = [n for n in self._notices if not n[3]]
+        if self._notices and self.isVisible():
+            self._render()
+        else:
+            self._notices = []
+            self.hide()
 
     def mousePressEvent(self, ev):
         self.hide()
@@ -472,8 +507,9 @@ class ElidedButton(QToolButton):
 
 
 class OnboardingStrip(QWidget):
-    """The four-step path for a new project — Open, Segment, Skeleton, Track — as a
-    slim strip above the video. Done steps get a check, the next step is the
+    """The three-step path for a new project — Open, Click a point, Track — as a
+    slim strip above the video (G237: outlining an animal and a skeleton are optional extras,
+    named in the hint, not steps a first project has to read past). Done steps get a check, the next step is the
     accent, each chip is clickable, and the strip hides itself once a project
     has tracked data (View menu brings it back)."""
 
@@ -492,8 +528,7 @@ class OnboardingStrip(QWidget):
         lay.setContentsMargins(10, 4, 6, 4)
         lay.setSpacing(6)
         self._chips: list[QToolButton] = []
-        self._labels = ["1  Open video  (Ctrl+O)", "2  Segment the animal  (S, optional)",
-                        "3  Skeleton / landmarks  (optional)", "4  Track"]
+        self._labels = ["1  Open video  (Ctrl+O)", "2  Click a point  (N)", "3  Track"]
         for i, text in enumerate(self._labels):
             b = QToolButton()
             b.setText(text)
@@ -541,10 +576,8 @@ class OnboardingStrip(QWidget):
 
     def set_state(self, done: list[bool], hint: str = "") -> None:
         from kinetrace import icons
-        # segmenting and the skeleton are both optional (an animal a few pixels
-        # across has no silhouette to outline): after opening a video, Track
-        # is the next step, whatever else has been done
-        nxt = 0 if not done[0] else (3 if not done[3] else None)
+        # (G237) the next step is the first one not done: open, then something to track, then Track
+        nxt = next((i for i, d in enumerate(done) if not d), None)
         key = (tuple(bool(d) for d in done), nxt)
         if key != self._last_state:
             self._last_state = key

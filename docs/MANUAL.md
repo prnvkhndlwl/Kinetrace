@@ -397,7 +397,7 @@ The rest of this section describes the same parts in more detail.
 ```
  File  Edit  View  3D  Body  Help                         ← the menus
 ┌────────────────────────────────────────────────────┬──────────────────────┐
-│ 1 Open video ✓ › 2 Segment › 3 Skeleton › 4 Track  │ Layers               │
+│ 1 Open video ✓ › 2 Click a point › 3 Track         │ Layers               │
 ├────────────────────────────────────────────────────┤ CAMERAS  + Add video │
 │                                                    │ cam1 (reference)     │
 │                                                    │ offset 0.000 ▲▼      │
@@ -427,14 +427,15 @@ menu, the entries that need something you have not done yet — a second camera,
 a calibration — mostly stay clickable and tell you what is missing when you
 click them.
 
-**The strip under the menus** is a four-step checklist: *1 Open video → 2
-Segment the animal → 3 Skeleton / landmarks → 4 Track*. Steps 2 and 3 are
-marked *optional*, because they are. Finished steps get a tick, and the step
-outlined as next is **Track** as soon as a video is open. Click a step to do
-it: 1 opens a video, 2 switches on the Segment tool, 3 opens the list of
-skeletons, and 4 **starts tracking**. Text to the right of the four steps,
-after the dividing line and marked ⓘ, is a hint about what to do next — it is
-advice, not a fifth step. The strip hides itself once something has been
+**The strip under the menus** is a three-step checklist: *1 Open video → 2
+Click a point → 3 Track*. That is the whole of a first project: open a video,
+click the spot you want followed, press Track. Finished steps get a tick, and
+the first step not yet done is outlined as next. Click a step to do it: 1
+opens a video, 2 switches on the Point tool (the next click on the video
+places a point), and 3 **starts tracking**. Outlining the whole animal (**S**)
+and the ready-made skeletons are optional extras; the hint names them once you
+have a point. Text to the right of the three steps, after the dividing line and
+marked ⓘ, is a hint about what to do next — it is advice, not a fourth step. The strip hides itself once something has been
 tracked; you can also close it with **×**, and **View → Getting started
 strip** brings it back.
 
@@ -570,7 +571,10 @@ Work through this once with a short, easy clip before using a clip that matters.
 
 ### Step 1 — Open the video
 
-**File → Open Video…** (or **Ctrl+O**). Pick your file. If the video or
+**File → Open Video…** (or **Ctrl+O**). Pick your file. Or **drag the video
+file from a folder and let it go over the Kinetrace window**: it opens the same
+way (a project folder dropped on the window opens as a project; drop one thing
+at a time). If the video or
 project already open has unsaved changes, you are asked first, as when you
 close the program: **Save**, **Discard** (drop them) or **Cancel** (open
 nothing). Open Project, Open Folder of Videos and Recover Unsaved Work ask the
@@ -605,6 +609,11 @@ behind anything. That is usually not frame 0. Move around with:
 - the **frame box** at the bottom left — type a number and press Enter.
 
 Everything you do next happens on this frame.
+
+> **The shortest way, if you only want one spot followed:** skip steps 3 and 4.
+> On a video with nothing on it yet, **click the spot on the animal** — that
+> first click places your first point (Ctrl+Z takes it back) — and press
+> **Track**. For every further point press **N** first, then click.
 
 ### Step 3 — Outline the animal
 
@@ -713,7 +722,9 @@ notice to move it. You can always move points later by dragging them in LAYERS
 > that is already in the list, a plain click without **N** does the same job:
 > it puts the landmark selected in the list on the frame you are on (that is
 > also how you correct it later — see section 7). With nothing selected, a
-> plain click does nothing at all. If you change your mind after pressing
+> plain click does nothing at all — with one exception: on a video that has no
+> point and no animal yet, your very first click places the first point, so
+> you can start without knowing **N**. If you change your mind after pressing
 > **N**, press **Esc**.
 >
 > Do not select a name with a **dotted** square before pressing **N**: those
@@ -2858,7 +2869,8 @@ calibration switches the first one on.
   where that spot can be in the other cameras (a dashed "?" ring marks the spot;
   **Esc** clears it). A plain click with no body part selected places nothing
   either, and says so on the video: press **N** to add a point, or select one in
-  LAYERS first.
+  LAYERS first. (The one exception: on a video with no point and no animal at
+  all, the first plain click places the first point.)
 - **Snapping.** Right-click the part → **Snap to the other cameras' rays here** moves it
   there for you (the nearest point on one line, the crossing of two or more),
   marks the frame hand-placed, and Track re-seeds from it — that is how a
@@ -4398,7 +4410,7 @@ view keys work. Hover over any button or menu entry to see what it does.
 | **N** | arm the crosshair — the next click places a point |
 | click (armed) | place a point, or continue the selected one where it has no data |
 | drag a circle (armed) | track a whole region as one point |
-| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed (a click on a marker just selects that point). Two quick clicks are two clicks, so frame-by-frame digitizing never loses one. A landmark derived from the outline is placed the same way, and tracking the outline again keeps your click |
+| click (not armed) | place the point selected in the list here, by hand (on or right beside the ◇: exactly at the ◇); nothing selected = nothing placed (a click on a marker just selects that point), except on a video with no point and no animal yet, where the first click places the first point. Two quick clicks are two clicks, so frame-by-frame digitizing never loses one. A landmark derived from the outline is placed the same way, and tracking the outline again keeps your click |
 | **＋ Point** (LAYERS) | a point with no position yet, in the selected animal (else in Scene), selected — and in every camera's list |
 | **＋ Animal** (LAYERS) | a new animal with no silhouette yet, selected; give it points (**N** + click, or drag points onto it) and, if you like, outline it with **S** |
 | drag points in LAYERS | onto another animal (or one of its points), or onto Scene: they move there and are renamed "*animal part*" in every camera (one Ctrl+Z step) |

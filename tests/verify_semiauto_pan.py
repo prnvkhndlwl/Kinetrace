@@ -104,10 +104,19 @@ assert c.horizontalScrollBar().value() != h1, "pan must work while uninteractive
 c.set_interactive(True)
 key(Qt.Key_H)
 assert not c._pan_mode
-# stray clicks must NOT add points — placement requires the N/＋Add arm
+# (G236) a video with nothing on it yet: the first plain click places the first point ...
+assert n_before == 0 and not s.segments
 mouse(c, QEvent.MouseButtonPress, (400, 300))
 mouse(c, QEvent.MouseButtonRelease, (400, 300))
-assert s.n_points == n_before, "a stray click must never add a point"
+assert s.n_points == 1, "the first click on an empty video must place the first point"
+# ... and from then on stray clicks must NOT add points — placement requires the N/＋Add arm
+win._deselect()
+mouse(c, QEvent.MouseButtonPress, (430, 320))
+mouse(c, QEvent.MouseButtonRelease, (430, 320))
+assert s.n_points == 1, "a stray click must never add a point"
+win.toast.hide()
+win._on_delete(0)      # empty again for the armed click below
+assert s.n_points == n_before
 key(Qt.Key_N)
 assert win.btn_add.isChecked() and c._place_mode, "N must arm placement (crosshair)"
 mouse(c, QEvent.MouseButtonPress, (400, 300))
