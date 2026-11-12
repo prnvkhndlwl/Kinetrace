@@ -757,7 +757,8 @@ class SettingsDialog(QDialog):
         hint = QLabel("SAM 3 weights are gated: request access at huggingface.co/facebook/sam3, "
                       "create a read token in your Hugging Face settings, paste it here. It is "
                       "stored inside this folder (models/hf/token) and sent only to Hugging Face, "
-                      "when the weights download.")
+                      "when the weights download. It is a password: never hand that file, or a copy of "
+                      "the Kinetrace folder that holds it, to someone else.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.TEXT_DIM};")
         form.addRow("", hint)

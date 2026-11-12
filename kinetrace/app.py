@@ -3196,7 +3196,7 @@ class MainWindow(QMainWindow):
         from kinetrace.device import cached_device, describe
         sysc = describe() if cached_device() is not None else \
             "(the hardware check has not finished yet: PyTorch is still loading)"
-        return crashlog.report_text() + "\n\n---- System check ----\n" + sysc
+        return crashlog.report_text() + "\n\n---- System check ----\n" + crashlog.redact(sysc)      # (G245)
 
     def _show_error_report(self):
         """Help → Error Report…: what went wrong, with Copy and Open the log
@@ -3215,9 +3215,10 @@ class MainWindow(QMainWindow):
 
         self._text_report("Error report", self._error_report_text(), (760, 480), nowrap=True,
                           extra=("Open the log folder", _open),
-                          note="Nothing is sent anywhere. The report contains file and folder names from this "
-                               "computer (which can include your user name and your video names): read it before "
-                               "you post it somewhere public.")        # (I158)
+                          note="Nothing is sent anywhere. Your user folder is written ~ and your user name "
+                               "<user> in this text (G245); the names of your videos, and of folders outside "
+                               "your user folder, are still in it: read it before you post it somewhere "
+                               "public.")        # (I158)
 
     def _start_menu_here(self) -> bool:
         """The Start menu holds the Kinetrace entry of THIS folder (winapp.py; Windows only)."""
