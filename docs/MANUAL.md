@@ -4206,10 +4206,10 @@ exporting.
 
 **Tracking is slow.** Check the bottom bar: if it says CPU rather than a graphics
 card, that is why. Otherwise, high resolution simply costs time. Measured on a
-4K clip with 8 points on a fast NVIDIA card: about 14 frames per second with
-AllTracker, the default, and 32–42 with the CoTracker3 point model (**Track ▾**
-chooses). So 10 000 frames of 4K take about 12 minutes with AllTracker and
-4–5 with CoTracker3; a slower card takes longer. An outline adds its own
+4K clip with 4 points on a fast NVIDIA card: about 13 frames per second with
+AllTracker, the default, and about 23 with the CoTracker3 point model (**Track ▾**
+chooses). So 10 000 frames of 4K take about 13 minutes with AllTracker and
+about 7 with CoTracker3; a slower card takes longer. An outline adds its own
 time on top.
 
 **It tracked only one body part when you wanted all of them (or nothing at all).**
