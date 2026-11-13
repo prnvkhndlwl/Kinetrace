@@ -329,8 +329,10 @@ def exact_reads(path: str, n_frames: int, should_cancel=lambda: False):
                     return old, False            # the check could not look (the file did not open): keep it
                 a, b = old.pts_map, plan.pts_map
                 # the same map as at open: the window need not drop its pictures and decode again
-                plan.confirmed = (not plan.exact and a is not None and b is not None and a.lead == b.lead
-                                  and abs(a.delta - b.delta) < 1e-6 and len(a.pts) == len(b.pts))
+                # (two maps that expect the same time for every frame are the same map, whatever their lead)
+                from kinetrace.video_source import _first_diff
+                plan.confirmed = (not plan.exact and a is not None and b is not None
+                                  and len(a.pts) == len(b.pts) and _first_diff(a, b) is None)
             set_seek_plan(path, plan)
             return plan, True
     return plan, False

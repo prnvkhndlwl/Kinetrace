@@ -4471,6 +4471,7 @@ class MainWindow(QMainWindow):
         self._drop_reconstruction("a camera was added", had=had_3d, had_hull=had_hull)    # (I206) the camera set changed
         if getattr(info, "fps_note", ""):
             self.toast.show_message(f"{self.project.name(i)}: {info.fps_note}", "warn", 12000)
+        self._say_seek_note(info.path, self.project.name(i), again=True)     # (I383) said when the camera is added
         self._gopro_soon()                       # (G145)
         self._frames_check_soon([self._views[-1]])   # (I266)
         cal = self.project.calibration

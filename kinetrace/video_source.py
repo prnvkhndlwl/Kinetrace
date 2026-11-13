@@ -397,6 +397,7 @@ def probe_video(path: str, vfr_samples: int = 60, progress=None) -> VideoInfo:
                 else:
                     plan.gaps = _gaps(shown)
                     plan.note = _uneven_note(path, plan)
+        say("frames", width=width, height=height, fps=fps, frames=header)     # (again: after "timing")
         if plan is not None:
             n_frames = n_exact or verified_frame_count(cap, header)
         else:
@@ -790,7 +791,9 @@ def _calibrate(s: np.ndarray, first: list, hidden: int) -> list:
         return []
     tol = min(0.25 * float(np.median(pos)), 0.45 * float(pos.min()))
     out = []
-    for lead in dict.fromkeys([0, hidden, *range(1, 65)]):
+    # up to 256 hidden pictures (third review: 64 left a file trimmed 2.5 s into a B-frame stream
+    # without a map, read from its start on every jump, with one frame too many)
+    for lead in dict.fromkeys([0, hidden, *range(1, 257)]):
         if not 0 <= lead <= len(s) - len(f):
             continue
         delta = float(f[0] - s[lead])
