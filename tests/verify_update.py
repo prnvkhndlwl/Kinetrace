@@ -107,6 +107,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ctype = "application/json"
         elif self.path == "/zip":
             body, ctype = SERVED["zip"], "application/zip"
+        elif self.path.split("?")[0].startswith("/api/git/trees/") and SERVED["tree"] == 403:
+            self.send_error(403)                             # GitHub's rate limit
+            return
         elif self.path.split("?")[0].startswith("/api/git/trees/") and SERVED["tree"] is not None:
             SERVED["tree_asked"] = self.path
             body, ctype = json.dumps(SERVED["tree"]).encode(), "application/json"
@@ -259,6 +262,7 @@ for label, zfiles, tree, needles in (
         ("extra", {**V2, "kinetrace/extra.py": "boom = 1\n"}, tree_of(V2), ("kinetrace/extra.py", "does not match")),
         ("missing", _less, tree_of(V2), ("docs/MANUAL.md", "does not match")),
         ("no_list", V2, None, ("could not be checked",)),
+        ("rate_limit", V2, 403, ("could not be checked", "limiting")),
         ("cut_list", V2, tree_of(V2, truncated=True), ("could not be checked",)),
         ("odd_list", V2, {"tree": "nonsense"}, ("could not be checked",))):
     inst_v = make_install("zip_check_" + label)
@@ -282,9 +286,13 @@ SERVED["zip"], SERVED["tree"] = _good_zip, _good_tree
 # standing guard: THIS repository's own archive passes the check (a .gitattributes rule that made the
 # archive differ from the list would make every published update refuse itself)
 import subprocess as _sp
-_arc = _sp.run(["git", "-C", ROOT, "archive", "--format=zip", "--prefix=owner-repo-0000000/", "HEAD"], capture_output=True)
-_ls = _sp.run(["git", "-C", ROOT, "ls-tree", "-r", "-z", "HEAD"], capture_output=True)
-if _arc.returncode == 0 and _ls.returncode == 0 and _arc.stdout:
+try:
+    _arc = _sp.run(["git", "-C", str(ROOT), "archive", "--format=zip", "--prefix=owner-repo-0000000/", "HEAD"],
+                   capture_output=True)
+    _ls = _sp.run(["git", "-C", str(ROOT), "ls-tree", "-r", "-z", "HEAD"], capture_output=True)
+except OSError:                    # no git on this computer
+    _arc = _ls = None
+if _arc is not None and _arc.returncode == 0 and _ls.returncode == 0 and _arc.stdout:
     _tree = {}
     for row in _ls.stdout.decode("utf-8").split("\0"):
         if row:

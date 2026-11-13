@@ -15,9 +15,10 @@ Installing it depends on how the folder was obtained:
 * a ZIP download -> download the release's ZIP into `update/`, check it really
   is a Kinetrace release AND that it holds exactly the files GitHub's API lists
   for the release tag, each with git's own id of its content (I381: a damaged or
-  swapped archive is refused before anything is written; the list and the
-  archive come from two GitHub hosts, so this does not guard against GitHub
-  itself), and write ONLY the files that changed. What each user
+  swapped archive is refused before anything is written. It guards the download
+  itself, its host and its way here; the release's name and links come from
+  GitHub's API, so it does not guard against GitHub or the account), and write
+  ONLY the files that changed. What each user
   owns is never touched (`PROTECTED`: the environment, models, recovery copies,
   logs, saved skeletons, the tour's demo video, footage). Files the previous release had and this one
   dropped are removed, using the list kept in `MANIFEST`.
@@ -360,6 +361,9 @@ def release_tree(tag: str, timeout: float = TIMEOUT_S) -> dict[str, str]:
         r = _open(api_base() + "/git/trees/" + quote(str(tag), safe="") + "?recursive=1", timeout)
     except _NotFound:
         raise _unchecked(tag, "GitHub has no such list") from None
+    except UpdateError as e:        # `_open`'s sentences are about LOOKING for a version: say what this was
+        raise _unchecked(tag, "GitHub is limiting how often this internet connection may ask: wait an hour"
+                         if "limiting" in str(e) else "GitHub could not be reached") from None
     with r:
         try:
             data = json.loads(r.read().decode("utf-8"))
@@ -395,7 +399,10 @@ def verify_members(zf: zipfile.ZipFile, members: dict[str, zipfile.ZipInfo], tre
         raise refuse(f"a file of the release is not in it ({missing[0]}"
                      + (f" and {len(missing) - 1} more" if len(missing) > 1 else "") + ")")
     for rel, info in members.items():
-        data = zf.read(info)
+        try:
+            data = zf.read(info)
+        except Exception:      # noqa: BLE001 - a damaged member (bad CRC, cut data): not the published file
+            raise refuse(f"{rel} cannot be read from the download") from None
         if git_blob_sha1(data) != tree[rel] and git_blob_sha1(data.replace(b"\r\n", b"\n")) != tree[rel]:
             raise refuse(f"{rel} is not the published file")
 
@@ -425,7 +432,8 @@ def apply_zip(root: Path, zip_path: Path, version: str, tag: str = "",
     """Install the release in `zip_path` over the folder `root` (see the module
     docstring for what is and is not touched). `tree` = the release's file list
     (`release_tree`): the archive is checked against it before anything is staged
-    (I381; `apply` always passes it)."""
+    (I381). `apply` always passes it; None = NOT checked, for the tests of the
+    writing phase only."""
     root = Path(root)
     res = ApplyResult(version=version, how="zip")
     try:
@@ -549,8 +557,10 @@ def apply(release: Release, root: Path = ROOT, progress=None) -> ApplyResult:
         return apply_git(root, release.tag, release.version)
     dest = root / STAGING / f"kinetrace-{release.version}.zip"
     try:
+        # (I381) what the archive must hold, file by file: asked for FIRST (a second; a list that cannot
+        # be had must not cost the whole download)
+        tree = release_tree(release.tag)
         download(release.zip_url, dest, progress)        # an UpdateError about the connection / the disk (G94)
-        tree = release_tree(release.tag)                 # (I381) what the archive must hold, file by file
         try:
             return apply_zip(root, dest, release.version, release.tag, tree)
         except OSError as e:                             # only the WRITING phase says "could not be written"
