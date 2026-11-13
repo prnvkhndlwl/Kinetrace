@@ -79,7 +79,20 @@ V2 = {"kinetrace/__init__.py": 'APP_VERSION = "1.1.0"\n', "install.py": "# insta
       "kinetrace/new_module.py": "x = 2\n", "docs/MANUAL.md": "# manual v2\n",
       "models/evil.bin": "must never be written", ".venv/kinetrace-install.json": "{}",
       "recovery/x.kinetrace": "no", "skeletons/lizard.json": "no"}
-SERVED = {"latest": None, "repo": True, "zip": make_release_zip(V2)}
+
+
+def tree_of(files: dict, truncated: bool = False) -> dict:
+    """GitHub's answer to /git/trees/<tag>?recursive=1 for a release holding `files` (I381)."""
+    import hashlib
+    rows = [{"path": "kinetrace", "mode": "040000", "type": "tree", "sha": "0" * 40}]
+    for rel, data in files.items():
+        data = data.encode("utf-8") if isinstance(data, str) else data
+        rows.append({"path": rel, "mode": "100644", "type": "blob", "size": len(data),
+                     "sha": hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()})
+    return {"sha": "0" * 40, "url": "", "tree": rows, "truncated": truncated}
+
+
+SERVED = {"latest": None, "repo": True, "zip": make_release_zip(V2), "tree": tree_of(V2)}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -94,6 +107,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ctype = "application/json"
         elif self.path == "/zip":
             body, ctype = SERVED["zip"], "application/zip"
+        elif self.path.split("?")[0].startswith("/api/git/trees/") and SERVED["tree"] is not None:
+            SERVED["tree_asked"] = self.path
+            body, ctype = json.dumps(SERVED["tree"]).encode(), "application/json"
         else:
             self.send_error(404)
             return
@@ -231,6 +247,61 @@ check(res_d.how == "zip" and read(inst_d, "kinetrace/__init__.py").endswith('"1.
 check(seen and seen[-1][0] == seen[-1][1] == len(SERVED["zip"]), f"download progress: {seen[-1:]}")
 check(not (inst_d / update.STAGING).exists(), "the download is removed")
 print("  download + apply end to end, with progress OK")
+
+# (I381) the download is checked against GitHub's own list of the release's files before anything is written
+check(SERVED.get("tree_asked") == "/api/git/trees/v1.1.0?recursive=1", f"the file list of the tag is asked for: {SERVED.get('tree_asked')}")
+check(update.git_blob_sha1(b"hello\n") == "ce013625030ba8dba906f756967f9e9ca394464a", "a file's id is git's own")
+_rel = update.check("1.0.0")[0]
+_good_zip, _good_tree = SERVED["zip"], SERVED["tree"]
+_less = {k: v for k, v in V2.items() if k != "docs/MANUAL.md"}
+for label, zfiles, tree, needles in (
+        ("altered", {**V2, "kinetrace/new_module.py": "x = 666\n"}, tree_of(V2), ("kinetrace/new_module.py", "does not match")),
+        ("extra", {**V2, "kinetrace/extra.py": "boom = 1\n"}, tree_of(V2), ("kinetrace/extra.py", "does not match")),
+        ("missing", _less, tree_of(V2), ("docs/MANUAL.md", "does not match")),
+        ("no_list", V2, None, ("could not be checked",)),
+        ("cut_list", V2, tree_of(V2, truncated=True), ("could not be checked",)),
+        ("odd_list", V2, {"tree": "nonsense"}, ("could not be checked",))):
+    inst_v = make_install("zip_check_" + label)
+    before = {p: p.read_bytes() for p in inst_v.rglob("*") if p.is_file()}
+    SERVED["zip"], SERVED["tree"] = make_release_zip(zfiles), tree
+    try:
+        update.apply(_rel, inst_v)
+        check(False, f"{label}: the update must be refused")
+    except update.UpdateError as e:
+        msg = str(e)
+        check(all(n in msg for n in needles) and "othing was changed" in msg and update.PAGE in msg,
+              f"{label}: refused in words: '{msg[:120]}'")
+    after = {p: p.read_bytes() for p in inst_v.rglob("*") if p.is_file()}
+    check(after == before, f"{label}: nothing in the install was changed")
+# a file whose line ends the archive converted (the .bat files): the same file
+SERVED["zip"], SERVED["tree"] = _good_zip, tree_of({**V2, "run.bat": "@echo off\nrem same\n"})
+inst_v = make_install("zip_check_crlf")
+res_v = update.apply(_rel, inst_v)
+check(res_v.how == "zip" and read(inst_v, "kinetrace/new_module.py") == "x = 2\n", "CRLF in the archive, LF in the list: accepted")
+SERVED["zip"], SERVED["tree"] = _good_zip, _good_tree
+# standing guard: THIS repository's own archive passes the check (a .gitattributes rule that made the
+# archive differ from the list would make every published update refuse itself)
+import subprocess as _sp
+_arc = _sp.run(["git", "-C", ROOT, "archive", "--format=zip", "--prefix=owner-repo-0000000/", "HEAD"], capture_output=True)
+_ls = _sp.run(["git", "-C", ROOT, "ls-tree", "-r", "-z", "HEAD"], capture_output=True)
+if _arc.returncode == 0 and _ls.returncode == 0 and _arc.stdout:
+    _tree = {}
+    for row in _ls.stdout.decode("utf-8").split("\0"):
+        if row:
+            meta, path = row.split("\t", 1)
+            if meta.split()[1] == "blob":
+                _tree[path] = meta.split()[2]
+    (TMP / "self.zip").write_bytes(_arc.stdout)
+    with zipfile.ZipFile(TMP / "self.zip") as _zf:
+        _members = update._release_members(_zf)
+        try:
+            update.verify_members(_zf, _members, _tree)
+            check(True, f"this repository's own archive ({len(_members)} files) passes the check")
+        except update.UpdateError as e:
+            check(False, f"this repository's own archive must pass the check: {e}")
+else:
+    print("  (no git here: the repository's own archive was not checked)")
+print("  the download is checked against the release's file list (I381) OK")
 bad_rel = update.check("1.0.0")[0]
 for url in ("https://evil.example/kinetrace.zip", "http://github.com/x.zip", "file:///C:/x.zip",
             "https://github.com.evil.example/x.zip"):
