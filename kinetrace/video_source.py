@@ -377,7 +377,10 @@ def probe_video(path: str, vfr_samples: int = 60, progress=None) -> VideoInfo:
         # (I383) a file whose pictures are not evenly spaced in time (a camera that dropped frames)
         # is known HERE, before any reader exists: its plan goes in now, so no jump on it is ever
         # OpenCV's plain seek, and its frame count is what really reads forward (I384)
-        plan = open_plan(path, cap, times, header)
+        old = seek_plan(path)
+        if old is not None and old.file != file_identity(path):
+            set_seek_plan(path, None)                # another file under this name now: not its plan
+        plan = open_plan(path, cap, times, header, say)
         if plan is not None:
             set_seek_plan(path, plan)
             n_frames = _count_forward(cap, path, plan, header) or verified_frame_count(cap, header)
@@ -618,17 +621,19 @@ def _same(a, b) -> bool:
 
 
 def uneven_times(s) -> bool:
-    """(I383) Whether pictures at these times (ms, in picture order) do NOT tick evenly: a step that
-    differs from the usual one by more than 2 % (more than 1 ms in a container that keeps whole
-    milliseconds, where an even 240 fps reads 4, 4, 5). A camera that dropped a frame, a variable rate."""
+    """(I383) Whether pictures at these times (ms, in picture order) do NOT sit on an even grid: one
+    of them is more than a quarter of a frame (plus 1 ms in a container that keeps whole
+    milliseconds) away from where the file's AVERAGE rate puts it. That average is what OpenCV's
+    plain seek counts with, so this is the file kind on which it lands on other pictures: a camera
+    that dropped a frame, a variable rate. Timestamps that only jitter around an even rate (29.97 fps
+    written as 20, 21, 20 ticks of 1/600 s) stay on the grid: even, plain seeks, as before."""
     s = np.asarray(s, np.float64)
-    if len(s) < 3:
+    if len(s) < 3 or not np.all(np.isfinite(s)) or s[-1] <= s[0]:
         return False
-    d = np.diff(s)
-    med = float(np.median(d))
+    step = float(s[-1] - s[0]) / (len(s) - 1)
+    off = np.abs(s - (s[0] + step * np.arange(len(s))))
     whole_ms = bool(np.allclose(s, np.round(s), atol=1e-3))
-    tol = max(0.02 * med, 1e-3) + (1.0 if whole_ms else 0.0)
-    return bool(np.any(np.abs(d - med) > tol))
+    return bool(off.max() > 0.25 * step + (1.0 if whole_ms else 0.0))
 
 
 def mp4_even(path) -> bool | None:
@@ -653,6 +658,8 @@ def mp4_even(path) -> bool | None:
             if minf is None or m.child(minf, "vmhd") is None:
                 continue                                       # not the video track
             elst = m.child(m.child((a, b), "edts"), "elst")
+            if elst is not None and (elst[1] - elst[0] > 1024 ** 2 or elst[1] > m.size):
+                return None
             if elst is not None:
                 v = m.read(elst[0], 1)[0]
                 d = m.full(elst)
@@ -668,8 +675,8 @@ def mp4_even(path) -> bool | None:
                 if played > 1:
                     return None
             stts = m.child(m.child(minf, "stbl"), "stts")
-            if stts is None:
-                return None
+            if stts is None or stts[1] - stts[0] > 64 * 1024 ** 2 or stts[1] > m.size:
+                return None                                    # none, or not a table this size can be
             d = m.full(stts)
             k = struct.unpack(">I", d[:4])[0]
             if k < 1 or len(d) < 4 + 8 * k:
@@ -682,7 +689,7 @@ def mp4_even(path) -> bool | None:
                 runs = runs[:-1]                               # the last picture's own duration
             return len({dur for _, dur in runs}) == 1
         return None
-    except (OSError, struct.error, ValueError, IndexError, TypeError):
+    except (OSError, struct.error, ValueError, IndexError, TypeError, MemoryError, OverflowError):
         return None
     finally:
         m.close()
@@ -713,40 +720,99 @@ def _calibrate(s: np.ndarray, first: list, hidden: int) -> list:
     return out
 
 
-def _pick_map(cap, s: np.ndarray, first: list, hidden: int) -> PtsMap | None:
-    """(I382) The map for this file: the first of `_calibrate`'s that also holds where the file's
-    times are uneven. `cap` (a decoding capture of the file, moved by this) reads a short run of
-    pictures around the first and the last uneven step: under the right map their times name
-    consecutive frames; a map with the wrong lead names nothing there. None when no map holds (the
-    file is then read from its start: exact, slow)."""
-    cands = _calibrate(s, first, hidden)
-    if not cands:
-        return None
-    d = np.diff(s)
-    med = float(np.median(d)) if len(d) else 0.0
-    odd = np.nonzero(np.abs(d - med) > max(0.02 * med, 1e-3))[0] if len(d) else np.empty(0, np.int64)
-    runs = []
-    for g in dict.fromkeys([int(odd[0]), int(odd[-1])] if len(odd) else []):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, g - 12))
-        run = []
-        for _ in range(40):
+def _names(m: PtsMap, times) -> np.ndarray:
+    """`m.index` for many times at once: frame numbers, -1 where a time names nothing."""
+    q = np.asarray(times, np.float64) - m.delta
+    s = m.pts
+    j = np.searchsorted(s, q - m.tol)
+    jc = np.minimum(j, len(s) - 1)
+    ok = (j < len(s)) & (np.abs(s[jc] - q) <= m.tol)
+    j2 = np.minimum(j + 1, len(s) - 1)
+    two = (j + 1 < len(s)) & (np.abs(s[j2] - q) <= m.tol)
+    out = (j - m.lead).astype(np.int64)
+    out[~ok | two | (out < 0)] = -1
+    return out
+
+
+def _first_diff(a: PtsMap, b: PtsMap) -> int | None:
+    """The first frame for which maps `a` and `b` expect different times, or None (they expect the
+    same time for every frame both have: the same map for our use)."""
+    ta, tb = a.pts[a.lead:] + a.delta, b.pts[b.lead:] + b.delta
+    n = min(len(ta), len(tb))
+    bad = np.nonzero(np.abs(ta[:n] - tb[:n]) > min(a.tol, b.tol))[0]
+    return int(bad[0]) if len(bad) else None
+
+
+def _counted_run(cap, alive: list, p0: int):
+    """(frame numbers, times) of pictures COUNTED across frame `p0`: reading starts on a picture
+    every map in `alive` gives the same number below `p0` (the true map is one of them, so that
+    number is right), or on frame 0, and goes on one picture at a time past `p0`. None when no such
+    start is found near enough."""
+    back = 16
+    for _ in range(8):
+        g = max(0, p0 - back)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, g)
+        if not cap.grab():
+            return None
+        q = cap.get(cv2.CAP_PROP_POS_MSEC)
+        if g == 0:
+            c = 0                               # the start of the file is frame 0 by definition
+        else:
+            said = {m.index(q) for m in alive}
+            c = said.pop() if len(said) == 1 else None
+            if c is None or c >= p0:
+                back *= 4
+                continue
+        more = (p0 - c) + 24
+        if more > 4000:
+            return None
+        ks, qs = [c], [q]
+        for i in range(1, more + 1):
             if not cap.grab():
                 break
-            run.append(cap.get(cv2.CAP_PROP_POS_MSEC))
-        if len(run) >= 2:
-            runs.append(run)
-    for m in cands:
-        ok = True
-        for run in runs:
-            names = [m.index(q) for q in run]
-            known = [(k, v) for k, v in enumerate(names) if v is not None]
-            # a time two pictures could claim names nothing (allowed); every NAMED picture must sit
-            # where counting from the first named one puts it, and most must be named
-            if len(known) < max(2, len(run) // 2) or any(v - known[0][1] != k - known[0][0] for k, v in known):
-                ok = False
+            ks.append(c + i)
+            qs.append(cap.get(cv2.CAP_PROP_POS_MSEC))
+        return np.asarray(ks, np.int64), np.asarray(qs, np.float64)
+    return None
+
+
+def _pick_map(cap, s: np.ndarray, first: list, hidden: int) -> PtsMap | None:
+    """(I382) The map for this file, PROVEN, or None (the file is then read from its start: exact,
+    slow). `_calibrate` gives every map that fits the first pictures; on a file whose first
+    pictures tick evenly several fit, and they differ later (an edit list that hides 2 pictures of a
+    30 fps start is 4 frames further on where the file turns to 60 fps). While two remaining maps
+    expect different times for some frame, `cap` (a decoding capture of the file, moved by this)
+    reads pictures COUNTED across the first such frame (`_counted_run`), and every map whose
+    expected times are not the ones read is dropped: at least one of the two goes each time. What
+    is left expects the same time for every frame. Never a guess: when no counted run can be
+    read, there is no map."""
+    alive = _calibrate(s, first, hidden)
+    for _ in range(len(alive) + 2):
+        if not alive:
+            return None
+        a = alive[0]
+        p0 = None
+        for b in alive[1:]:
+            p0 = _first_diff(a, b)
+            if p0 is not None:
                 break
-        if ok:
-            return m
+        if p0 is None:
+            return a
+        seen = _counted_run(cap, alive, p0)
+        if seen is None:
+            return None
+        ks, qs = seen
+
+        def fits(m):
+            j = m.lead + ks
+            if j[-1] >= len(m.pts):
+                return False
+            return bool(np.all(np.abs(m.pts[j] + m.delta - qs) <= m.tol))
+
+        left = [m for m in alive if fits(m)]
+        if len(left) == len(alive):
+            return None
+        alive = left
     return None
 
 
@@ -779,13 +845,15 @@ def _uneven_note(path, plan: "SeekPlan") -> str:
             f'ffmpeg -i "{name}" -vsync cfr -c:v libx264 -crf 18 fixed.mp4 (then track on the new file).')
 
 
-def open_plan(path, cap, first: list, claimed: int) -> "SeekPlan | None":
+def open_plan(path, cap, first: list, claimed: int, say=None) -> "SeekPlan | None":
     """(I383) The seek plan a file needs from the moment it is open, or None (its times tick evenly:
     plain seeks, as before). An MP4 / MOV whose header says every picture lasts the same costs
     nothing more; any other file's packet times are read (no decoding). `cap` = a decoding capture
     of the file (moved by this), `first` = the times of its first pictures read from the start."""
     if mp4_even(path) is True:
         return None
+    if say is not None:
+        say("timing")
     s, keys, npk = packet_times(path)
     if len(s) < 3 or not uneven_times(s):
         return None
@@ -799,15 +867,21 @@ def open_plan(path, cap, first: list, claimed: int) -> "SeekPlan | None":
 
 
 def _gaps(s) -> int:
-    """Frames the times skip, when every step is a whole number of the usual one (else 0)."""
+    """Frames the times skip: only when nearly every step is the usual one and the others are whole
+    numbers of it (a camera that dropped frames). 0 for a variable rate, where steps of two sizes
+    are both normal (it used to read "skips 700 frames" on a 30 -> 60 fps file)."""
     s = np.asarray(s, np.float64)
-    if len(s) < 2:
+    if len(s) < 3:
         return 0
-    step = float(np.median(np.diff(s)))
+    d = np.diff(s)
+    step = float(np.median(d))
     if step <= 0:
         return 0
-    q = (s - s[0]) / step
-    return int(round(q[-1])) - (len(s) - 1) if np.all(np.abs(q - np.round(q)) < 0.25) else 0
+    q = d / step
+    odd = np.abs(q - 1.0) > 0.25
+    if odd.sum() > max(8, 0.02 * len(d)) or np.any(np.abs(q - np.round(q)) > 0.25) or np.any(q[odd] < 1.5):
+        return 0
+    return int(np.round(q[odd]).sum() - odd.sum())
 
 
 def check_seeks(path, n_frames: int, should_cancel=lambda: False) -> SeekPlan:
@@ -897,9 +971,9 @@ def check_seeks(path, n_frames: int, should_cancel=lambda: False) -> SeekPlan:
         return plan
     plan.exact = False
     plan.pts_map = pmap
-    if not plan.wrong:
-        # (I383) the few jumps sampled landed right, but the times are uneven: others land elsewhere
-        # (measured: 162 to 418 of 600 on the test clips). Never "exact" on such a file.
+    if uneven:
+        # (I383) uneven times: never "exact", whatever the few jumps sampled did (measured: 162 to 418
+        # of 600 jumps land elsewhere on the test clips). The same sentence as when the file was opened.
         plan.gaps = _gaps(s)
         plan.note = _uneven_note(path, plan)
         return plan

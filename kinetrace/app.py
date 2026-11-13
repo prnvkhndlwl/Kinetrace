@@ -3690,6 +3690,9 @@ class MainWindow(QMainWindow):
         if stage == "rate":
             return (prefix + f"{w} × {h}" + (f", {fps:.4g} fps" if fps else "") + f", {n:,} frames — "
                     "reading the first frames to check the frame rate…")
+        if stage == "timing":           # (I383) only a file that is not a plain MP4 / MOV with even frames
+            return (prefix + "Reading when each frame was recorded (a large file of this kind takes a "
+                    "while, once per opening)…")
         if stage == "frames":
             return (prefix + f"Checking that all {n:,} frames can be read"
                     + (" (a 4K file takes a few seconds)" if big else "") + "…")
@@ -3938,7 +3941,7 @@ class MainWindow(QMainWindow):
         # the bar counts the stages: open, frame rate, frame count, the timeline, the first picture
         probe.step.connect(lambda st, facts: self._probe is probe and self._busy_step(
             self._probe_message(st, facts, prefix=f"{name}: " if title else ""),
-            {"open": 1, "rate": 2, "frames": 3}.get(st)))
+            {"open": 1, "rate": 2, "timing": 3, "frames": 3}.get(st)))
 
         def done(result):
             probe.wait(1000)
@@ -4049,6 +4052,7 @@ class MainWindow(QMainWindow):
         if getattr(info, "fps_note", ""):
             # every time, speed and camera-rate number depends on it (I37)
             self.toast.show_message(info.fps_note, "warn", 12000)
+        self._say_seek_note(info.path)       # (I383) frames not evenly spaced in time: said at open
         self._frames_check_soon()      # (I266) every camera: its seeks, then its frame fingerprint
         if info.vfr_suspected:
             QMessageBox.warning(
@@ -4224,6 +4228,18 @@ class MainWindow(QMainWindow):
             _retire(th)
             self._fc_job = None
 
+    def _say_seek_note(self, path: str, camera: str = "") -> None:
+        """(I383) Say ONCE what was found about how this file's frames are reached (a camera that
+        dropped frames, a variable rate): at open, when `probe_video` already knows it, else when
+        the background check has found it."""
+        from kinetrace.video_source import seek_plan
+        plan = seek_plan(path)
+        note = getattr(plan, "note", "") if plan is not None and not plan.exact else ""
+        said = self.__dict__.setdefault("_seek_notes_said", set())
+        if note and note not in said:
+            said.add(note)
+            self.toast.show_message((f"{camera}: " if camera else "") + note, "warn", 20000)
+
     def _fc_seeks(self, rt, plan) -> None:
         """A file's seeks were checked: one whose seeks land elsewhere is read exactly from now on, its
         frames decoded so far are dropped from the cache and the picture is decoded again."""
@@ -4241,7 +4257,7 @@ class MainWindow(QMainWindow):
             self._goto(self.current, force=True)
         else:
             self._refresh_companions()
-        self.toast.show_message(f"{self.project.name(i)}: {plan.note}", "warn", 20000)
+        self._say_seek_note(rt.info.path, self.project.name(i))     # once: it may have been said at open
 
     def _fc_made(self, rt, fp, by_user: bool) -> None:
         i = self._view_index(rt)

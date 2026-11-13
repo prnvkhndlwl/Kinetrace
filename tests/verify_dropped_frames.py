@@ -82,6 +82,8 @@ def all_doors(name, path, ref, when):
           f"{len(w)} wrong, first (asked, forward, got) {w[:4]}")
     mixed = every[:]
     random.Random(7).shuffle(mixed)
+    if name in sf.LONG:                      # 1500 frames: every frame once more, on one capture, is enough
+        mixed = mixed[:400]
     w = via_one_capture(path, mixed, ref)
     check(not w, f"{name} {when}: every frame on one capture jumping about", f"{len(w)} wrong, first {w[:4]}")
     w = via_source(path, mixed, ref)
@@ -111,6 +113,12 @@ for name, path in clips.items():
               f"{name}: uneven timestamps are known the moment the video is open (a plan, with a map)",
               repr(plan)[:160])
         check(bool(plan is not None and plan.note), f"{name}: ... with a sentence for the user")
+        if plan is not None and name.startswith("vfr"):
+            check("variable frame rate" in plan.note and "skip" not in plan.note,
+                  f"{name}: a variable rate is not called dropped frames", plan.note[:120])
+        if plan is not None and name.startswith(("dropped", "gap", "mkv")):
+            check("dropped" in plan.note and plan.gaps in (1, 3), f"{name}: the sentence says how many frames "
+                  "the timestamps skip", f"gaps {plan.gaps}: {plan.note[:100]}")
         all_doors(name, path, ref, "at open")
         checked = vs.check_seeks(path, info.n_frames)
         check(not checked.exact and checked.pts_map is not None,
@@ -128,6 +136,14 @@ for name, path in clips.items():
     vs.set_seek_plan(path, None)
 
 # the small rules, on their own
+# jitter around an even rate is even; a dropped frame is not, wherever it is
+even = np.cumsum([0] + [20, 21] * 150) * (1000.0 / 600.0)
+check(not vs.uneven_times(even), "29.97 fps written as 20, 21, 20 ticks is an even rate")
+for at in (3, 150, 296):
+    t = np.arange(300) * (1000.0 / 30.0)
+    t[at:] += 1000.0 / 30.0
+    check(vs.uneven_times(t), f"one frame's worth of time missing at frame {at} of 300 is uneven")
+check(not vs.uneven_times(np.round(np.arange(600) * (1000.0 / 240.0))), "240 fps in whole milliseconds is even")
 m = vs.PtsMap(np.array([0.0, 33.3, 66.7, 66.9, 100.0]), 0, 0.0, 5.0)
 check(m.index(33.3) == 1 and m.index(100.0) == 4, "PtsMap names a picture by its time")
 check(m.index(66.8) is None and m.index(66.7) is None,

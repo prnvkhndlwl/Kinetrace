@@ -75,9 +75,9 @@ def _x264(g: int, bf: int) -> list:
             "-threads", "1", "-x264-params", "threads=1:scenecut=0"]
 
 
-def _encode(path: str, n: int, codec: list, extra=()) -> None:
+def _encode(path: str, n: int, codec: list, extra=(), rate: str = "30") -> None:
     p = subprocess.Popen([_ffmpeg(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                          "-s", "320x240", "-r", "30", "-i", "-", *codec, "-pix_fmt", "yuv420p",
+                          "-s", "320x240", "-r", rate, "-i", "-", *codec, "-pix_fmt", "yuv420p",
                           *BITEXACT, *extra, path], stdin=subprocess.PIPE)
     for i in range(n):
         p.stdin.write(picture(i).tobytes())
@@ -104,7 +104,16 @@ KINDS = {
     "dropped_late_nobf": ("dropped_late_nobf.mp4", True, "timestamps skip 1 frame at frame 400, no B-frames"),
     "mkv_dropped": ("mkv_dropped.mkv", True, "the dropped_late stream in Matroska"),
     "vfr": ("vfr.mp4", True, "variable rate: 30 fps for 150 frames, then 60 fps"),
+    # (review) kinds on which a map chosen without counting was wrong: the start ticks evenly, an
+    # edit list hides pictures, and the rate changes far from the start
+    "gap_at_5": ("gap_at_5.mp4", True, "timestamps skip 1 frame at frame 5"),
+    "dropped_edit": ("dropped_edit.mp4", True, "dropped frames behind an edit list that hides 2 pictures"),
+    "vfr_long": ("vfr_long.mp4", True, "30 fps for 700 frames, then 60 fps (1500 frames)"),
+    "vfr_long_edit": ("vfr_long_edit.mp4", True, "the same behind an edit list that hides 2 pictures"),
+    "vfr3_edit": ("vfr3_edit.mp4", True, "30 / 60 / 30 fps behind an edit list that hides 2 pictures"),
+    "jitter_mov": ("jitter.mov", False, "29.97 fps written in ticks of 1/600 s (20, 21, 20 ...): an even rate"),
 }
+LONG = {"vfr_long", "vfr_long_edit", "vfr3_edit"}       # 1500 frames: the suites ask fewer doors of them
 
 
 def make_clips(folder: str, names=None) -> dict:
@@ -123,11 +132,28 @@ def make_clips(folder: str, names=None) -> dict:
         "vfr": lambda: _encode(P["vfr"], 300, _x264(24, 3),
                                ["-vf", "settb=1/600,setpts='if(lt(N,150),N,150+(N-150)/2)/(30*TB)'",
                                 "-fps_mode", "passthrough", "-video_track_timescale", "600"]),
+        "gap_at_5": lambda: _encode(P["gap_at_5"], 300, _x264(24, 3), _gap("(N+gte(N\\,5))")),
+        "dropped_edit": lambda: _remux(P["dropped_late"], P["dropped_edit"], pre=["-ss", f"{2 / 30:.6f}"]),
+        "vfr_long": lambda: _encode(P["vfr_long"], 1500, _x264(24, 3),
+                                    ["-vf", "settb=1/600,setpts='if(lt(N,700),N,700+(N-700)/2)/(30*TB)'",
+                                     "-fps_mode", "passthrough", "-video_track_timescale", "600"]),
+        "vfr_long_edit": lambda: _remux(P["vfr_long"], P["vfr_long_edit"], pre=["-ss", f"{2 / 30:.6f}"]),
+        "vfr3": lambda: _encode(P["vfr3"], 1500, _x264(24, 3),
+                                ["-vf", "settb=1/600,setpts='if(lt(N,500),N,if(lt(N,1000),500+(N-500)/2,"
+                                        "750+(N-1000)))/(30*TB)'",
+                                 "-fps_mode", "passthrough", "-video_track_timescale", "600"]),
+        "vfr3_edit": lambda: _remux(P["vfr3"], P["vfr3_edit"], pre=["-ss", f"{2 / 30:.6f}"]),
+        "jitter_mov": lambda: _encode(P["jitter_mov"], 300, _x264(12, 0), ["-video_track_timescale", "600"],
+                                      rate="30000/1001"),
     }
+    P["vfr3"] = os.path.join(folder, "vfr3.mp4")
     order = [k for k in KINDS if names is None or k in names]
-    for dep, need in (("editlist", "bframes"), ("mkv_dropped", "dropped_late")):
+    for dep, need in (("editlist", "bframes"), ("mkv_dropped", "dropped_late"), ("dropped_edit", "dropped_late"),
+                      ("vfr_long_edit", "vfr_long")):
         if dep in order and need not in order:
             order.insert(0, need)
+    if "vfr3_edit" in order and not os.path.exists(P["vfr3"]):
+        makers["vfr3"]()
     for k in order:
         if not os.path.exists(P[k]) or os.path.getsize(P[k]) == 0:
             makers[k]()
