@@ -318,9 +318,21 @@ def exact_reads(path: str, n_frames: int, should_cancel=lambda: False):
     own (a test, the CI check) gets it here. Returns (the plan, True when it was checked NOW and kept):
     the frame check shows a fresh one (R29: it repeated this rule)."""
     plan = seek_plan(path)
-    if plan is None or plan.file != file_identity(path):
+    # a plan made when the file was opened (I383) keeps its frames exact meanwhile; the check
+    # still runs once, and the window then says what was found
+    if plan is None or plan.file != file_identity(path) or getattr(plan, "provisional", False):
+        old = plan
         plan = check_seeks(path, n_frames, should_cancel)
         if not should_cancel():
+            if old is not None and getattr(old, "provisional", False) and old.file == plan.file:
+                if plan.checked == 0:
+                    return old, False            # the check could not look (the file did not open): keep it
+                a, b = old.pts_map, plan.pts_map
+                # the same map as at open: the window need not drop its pictures and decode again
+                # (two maps that expect the same time for every frame are the same map, whatever their lead)
+                from kinetrace.video_source import _first_diff
+                plan.confirmed = (not plan.exact and a is not None and b is not None
+                                  and len(a.pts) == len(b.pts) and _first_diff(a, b) is None)
             set_seek_plan(path, plan)
             return plan, True
     return plan, False

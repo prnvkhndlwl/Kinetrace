@@ -3187,15 +3187,22 @@ screen to the fingerprint** — do that on the computer that made the project, a
 save. The program tells you how good that frame is (*GOOD*: it differs clearly
 from its neighbours; *POOR*: pick a faster moment).
 
-**"Jumping to a frame lands on the wrong picture on this computer."** Some files —
-typically from a camera that dropped a frame, so its time stamps skip — make
-jumping to a frame (clicking the timeline, typing a frame number) land a frame or
-two away from where playing from the start arrives. The program checks every
-video for this when it opens it. When it happens, it says so and from then on
-reaches every frame of that video by reading forward from just before it:
-every frame is exact, jumping is a little slower. A video without the problem
-jumps as fast as before. To make it fast again, re-encode it once (the message
-gives the command) and track on the new file.
+**"… its timestamps skip N frame(s): the camera probably dropped them"** (or
+**"… do not follow one steady frame rate"**). Some files — typically from a
+camera that dropped a frame, so its time stamps skip, or one that records at a
+changing rate — make an ordinary jump to a frame (clicking the timeline, typing a
+frame number) land a frame or two away from where playing from the start arrives.
+The program sees this **while it opens the video**, from the times of its frames,
+before the first picture is shown: it says so once, and reaches every frame of
+that video by the frame's own time stamp from the first moment on. Every frame is
+exact, also on the first click; jumping is a little slower, and the frame count is
+the number of pictures that really play. A video with evenly spaced frames jumps
+as fast as before, and a few seconds later a background check compares jumps with
+reading forward on your computer as a second look. To make such a file fast
+again, re-encode it once (the message gives the command) and track on the new
+file. A project you made on such a file with an earlier version may hold clicks
+one frame off, and one frame more than the video now has: check a few frames you
+know.
 
 **A camera whose video you cannot find** (you press Cancel, or it will not open)
 is left out of this session, and the program says so (*Opened without some
@@ -4127,11 +4134,13 @@ one frame off here. Nothing was changed. The window shows the evidence; see
 *Another computer: is frame 1234 still the same picture?* in section 11 for how
 to check it by hand and what to do.
 
-**"Jumping to a frame of … lands on the wrong picture on this computer."** The
-file's time stamps skip (usually a frame the camera dropped), so jumping and
-playing from the start disagreed. From now on every frame of it is read exactly
-(jumping is a little slower). Re-encode it once with the command in the message
-to make it fast again — and track on the new file.
+**"… its timestamps skip N frame(s)"**, **"… do not follow one steady frame
+rate"** or **"Jumping to a frame of … lands on the wrong picture on this
+computer."** The file's frames are not evenly spaced in time (usually a frame
+the camera dropped), so an ordinary jump and playing from the start would
+disagree. Every frame of it is reached by its own time stamp instead, from the
+moment the video is open: exact, a little slower. Re-encode it once with the
+command in the message to make it fast again — and track on the new file.
 
 **The picture looks stale, frozen, or garbled.** Press **Shift+C**. This throws
 away the stored pictures and re-reads the current one from the file. It never

@@ -3690,6 +3690,9 @@ class MainWindow(QMainWindow):
         if stage == "rate":
             return (prefix + f"{w} × {h}" + (f", {fps:.4g} fps" if fps else "") + f", {n:,} frames — "
                     "reading the first frames to check the frame rate…")
+        if stage == "timing":           # (I383) only a file that is not a plain MP4 / MOV with even frames
+            return (prefix + "Reading when each frame was recorded (a large file of this kind takes a "
+                    "while, once per opening)…")
         if stage == "frames":
             return (prefix + f"Checking that all {n:,} frames can be read"
                     + (" (a 4K file takes a few seconds)" if big else "") + "…")
@@ -3938,7 +3941,7 @@ class MainWindow(QMainWindow):
         # the bar counts the stages: open, frame rate, frame count, the timeline, the first picture
         probe.step.connect(lambda st, facts: self._probe is probe and self._busy_step(
             self._probe_message(st, facts, prefix=f"{name}: " if title else ""),
-            {"open": 1, "rate": 2, "frames": 3}.get(st)))
+            {"open": 1, "rate": 2, "timing": 3, "frames": 3}.get(st)))
 
         def done(result):
             probe.wait(1000)
@@ -4049,6 +4052,7 @@ class MainWindow(QMainWindow):
         if getattr(info, "fps_note", ""):
             # every time, speed and camera-rate number depends on it (I37)
             self.toast.show_message(info.fps_note, "warn", 12000)
+        self._say_seek_note(info.path, again=True)   # (I383) frames not evenly spaced in time: said at open
         self._frames_check_soon()      # (I266) every camera: its seeks, then its frame fingerprint
         if info.vfr_suspected:
             QMessageBox.warning(
@@ -4224,12 +4228,32 @@ class MainWindow(QMainWindow):
             _retire(th)
             self._fc_job = None
 
+    def _say_seek_note(self, path: str, camera: str = "", again: bool = False) -> None:
+        """(I383) Say what was found about how this file's frames are reached (a camera that dropped
+        frames, a variable rate): at open (`again`: every time it is opened), when `probe_video`
+        already knows it; when the background check reports, only what was not said for THIS file
+        (two cameras' files may share a name)."""
+        from kinetrace.paths import path_key
+        from kinetrace.video_source import seek_plan
+        plan = seek_plan(path)
+        note = getattr(plan, "note", "") if plan is not None and not plan.exact else ""
+        said = self.__dict__.setdefault("_seek_notes_said", set())
+        key = (path_key(path), note)
+        if note and (again or key not in said):
+            said.add(key)
+            self.toast.show_message((f"{camera}: " if camera else "") + note, "warn", 20000)
+
     def _fc_seeks(self, rt, plan) -> None:
         """A file's seeks were checked: one whose seeks land elsewhere is read exactly from now on, its
         frames decoded so far are dropped from the cache and the picture is decoded again."""
         rt.seek_plan = plan
         i = self._view_index(rt)
         if i < 0 or plan.exact:
+            return
+        if getattr(plan, "confirmed", False):
+            # (I383) the check found the plan the file has had since it was opened: every picture on
+            # screen and in the cache was already reached that way, nothing to drop or decode again
+            self._say_seek_note(rt.info.path, self.project.name(i))
             return
         restart = i == self.project.active or rt.seek is not None
         rt.stop()                            # FIRST: a read under way would file a picture reached the old
@@ -4241,7 +4265,7 @@ class MainWindow(QMainWindow):
             self._goto(self.current, force=True)
         else:
             self._refresh_companions()
-        self.toast.show_message(f"{self.project.name(i)}: {plan.note}", "warn", 20000)
+        self._say_seek_note(rt.info.path, self.project.name(i))     # once: it may have been said at open
 
     def _fc_made(self, rt, fp, by_user: bool) -> None:
         i = self._view_index(rt)
@@ -4447,6 +4471,7 @@ class MainWindow(QMainWindow):
         self._drop_reconstruction("a camera was added", had=had_3d, had_hull=had_hull)    # (I206) the camera set changed
         if getattr(info, "fps_note", ""):
             self.toast.show_message(f"{self.project.name(i)}: {info.fps_note}", "warn", 12000)
+        self._say_seek_note(info.path, self.project.name(i), again=True)     # (I383) said when the camera is added
         self._gopro_soon()                       # (G145)
         self._frames_check_soon([self._views[-1]])   # (I266)
         cal = self.project.calibration
