@@ -453,7 +453,7 @@ class _Damaged150:
     def grab(self):
         if not self.cap.grab():
             return False
-        return plan2.pts_map is None or plan2.pts_map.index(self.cap.get(cv2.CAP_PROP_PTS)) != 150
+        return plan2.pts_map is None or plan2.pts_map.index(self.cap.get(cv2.CAP_PROP_POS_MSEC)) != 150   # (I382) the map names by time
 
     def read(self):
         if not self.grab():

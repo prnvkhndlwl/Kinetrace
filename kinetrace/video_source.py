@@ -380,10 +380,25 @@ def probe_video(path: str, vfr_samples: int = 60, progress=None) -> VideoInfo:
         old = seek_plan(path)
         if old is not None and old.file != file_identity(path):
             set_seek_plan(path, None)                # another file under this name now: not its plan
+            old = None
         plan = open_plan(path, cap, times, header, say)
+        n_exact = 0
         if plan is not None:
             set_seek_plan(path, plan)
-            n_frames = _count_forward(cap, path, plan, header) or verified_frame_count(cap, header)
+            n_exact = _count_forward(cap, path, plan, header)
+            if n_exact and plan.pts_map is not None:
+                # the packets are uneven: are the PICTURES? A trimmed file keeps packets after its last
+                # picture that are never shown (607 packets, 601 pictures, the odd step among the last
+                # six): such a file is even, and keeps the plain seek and the count it always had
+                shown = shown_times(plan.pts_map, n_exact)
+                if not uneven_times(shown, float(cap.get(cv2.CAP_PROP_FPS) or 0.0)):
+                    set_seek_plan(path, old)
+                    plan = None
+                else:
+                    plan.gaps = _gaps(shown)
+                    plan.note = _uneven_note(path, plan)
+        if plan is not None:
+            n_frames = n_exact or verified_frame_count(cap, header)
         else:
             n_frames = verified_frame_count(cap, header)
         if not times:
@@ -620,27 +635,48 @@ def _same(a, b) -> bool:
     return a is not None and b is not None and a.shape == b.shape and float(np.abs(a - b).mean()) <= SEEK_TOL
 
 
-def uneven_times(s) -> bool:
-    """(I383) Whether pictures at these times (ms, in picture order) do NOT sit on an even grid: one
-    of them is more than a quarter of a frame (plus 1 ms in a container that keeps whole
-    milliseconds) away from where the file's AVERAGE rate puts it. That average is what OpenCV's
-    plain seek counts with, so this is the file kind on which it lands on other pictures: a camera
-    that dropped a frame, a variable rate. Timestamps that only jitter around an even rate (29.97 fps
-    written as 20, 21, 20 ticks of 1/600 s) stay on the grid: even, plain seeks, as before."""
+EVEN_MARGIN = 0.25       # frames: how far a picture may sit from its place on the seek's grid (it rounds at 0.5)
+
+
+def uneven_times(s, fps: float | None = None, hidden: int = 0) -> bool:
+    """(I383) Whether OpenCV's plain seek can land on another picture in a file whose pictures have
+    these times (ms, in picture order). The seek counts frames as time x `fps` (the rate the
+    capture reports: frames / duration), rounded -- measured: a picture's CAP_PROP_PTS is exactly
+    round(time x fps) on every clip tried. So the file is EVEN when every picture's time x fps is
+    within `EVEN_MARGIN` of its own number, counted from the first picture shown (packet `hidden`
+    behind an edit list, or packet 0: both are tried), and UNEVEN otherwise: a camera that dropped
+    a frame, a variable rate, and also a perfectly regular file whose reported rate is a little off
+    (a last picture of another duration: 115 of 300 jumps landed one early on such a clip).
+    The LAST picture alone may come late (a trimmed file whose final frame follows a pause): the
+    seek to it lands on the first picture at or past its number, which is still that picture
+    (measured on two real 601-frame clips of this kind: every frame exact on every path).
+    Times kept in whole milliseconds at a rate where half a millisecond is over a fifth of a frame
+    (about 400 fps and up) cannot tell: uneven, never a plain seek. `fps` None = the times' own rate."""
     s = np.asarray(s, np.float64)
-    if len(s) < 3 or not np.all(np.isfinite(s)) or s[-1] <= s[0]:
+    n = len(s)
+    if n < 3 or not np.all(np.isfinite(s)) or s[-1] <= s[0]:
         return False
-    step = float(s[-1] - s[0]) / (len(s) - 1)
-    off = np.abs(s - (s[0] + step * np.arange(len(s))))
-    whole_ms = bool(np.allclose(s, np.round(s), atol=1e-3))
-    return bool(off.max() > 0.25 * step + (1.0 if whole_ms else 0.0))
+    rate = float(fps) if fps and np.isfinite(fps) and fps > 0 else 1000.0 * (n - 1) / float(s[-1] - s[0])
+    quantum = 0.5 * rate / 1000.0 if np.allclose(s, np.round(s), atol=1e-3) else 0.0
+    if quantum > 0.2:
+        return True
+    lim = EVEN_MARGIN + quantum
+    for lead in {0, max(0, min(int(hidden), 64, n - 3))}:
+        e = (s[lead:] - s[lead]) * rate / 1000.0
+        e = e - np.arange(len(e))
+        if float(np.abs(e[:-1]).max()) > lim or float(e[-1]) < -lim:
+            return True
+    return False
 
 
-def mp4_even(path) -> bool | None:
-    """(I383) From an MP4 / MOV header alone, in milliseconds: True when every picture of the video
-    track lasts the same time (the last one may differ) and at most one stretch of it is played --
-    such a file's times tick evenly; False when the durations differ; None when this cannot be told
-    (not such a file, a fragmented one, several edit-list stretches, an unreadable header)."""
+def mp4_even(path, fps: float | None = None) -> bool | None:
+    """(I383) From an MP4 / MOV header alone, in milliseconds: True only when it PROVES the file
+    even -- one video track, at most one stretch of it played, every picture (the last included)
+    lasting the same, the pictures' presentation times (decode time + composition offset) evenly
+    spaced, and the rate `fps` the capture reports equal to that spacing to within `EVEN_MARGIN`
+    of a frame over the whole file. None = not proven (not such a file, a fragmented one, any of
+    the above not so): the packets' own times then decide (`uneven_times`). Never True for a file
+    whose plain seeks could land elsewhere; a wrong None only costs one read through the file."""
     import struct
     try:
         from kinetrace.gpmf import _MP4
@@ -651,44 +687,87 @@ def mp4_even(path) -> bool | None:
         moov = m.child((0, m.size), "moov")
         if moov is None or m.child(moov, "mvex") is not None:
             return None
-        for t, a, b in m.boxes(*moov):
-            if t != "trak":
+        found = None
+        for t_, a, b in m.boxes(*moov):
+            if t_ != "trak":
                 continue
-            minf = m.child(m.child((a, b), "mdia"), "minf")
+            mdia = m.child((a, b), "mdia")
+            minf = m.child(mdia, "minf")
             if minf is None or m.child(minf, "vmhd") is None:
-                continue                                       # not the video track
-            elst = m.child(m.child((a, b), "edts"), "elst")
-            if elst is not None and (elst[1] - elst[0] > 1024 ** 2 or elst[1] > m.size):
+                continue                                       # not a video track
+            if found is not None:
+                return None                                    # two video tracks: which one is read?
+            found = (a, b, mdia, minf)
+        if found is None:
+            return None
+        a, b, mdia, minf = found
+
+        def table(box, limit):
+            if box is None or box[1] > m.size or box[1] - box[0] > limit:
                 return None
-            if elst is not None:
-                v = m.read(elst[0], 1)[0]
-                d = m.full(elst)
-                k = struct.unpack(">I", d[:4])[0]
-                size = 20 if v == 1 else 12
-                played = 0
-                for i in range(min(k, 4096)):
-                    e = d[4 + size * i:4 + size * (i + 1)]
-                    if len(e) < size:
-                        return None
-                    media_time = struct.unpack(">q", e[8:16])[0] if v == 1 else struct.unpack(">i", e[4:8])[0]
-                    played += media_time != -1
-                if played > 1:
-                    return None
-            stts = m.child(m.child(minf, "stbl"), "stts")
-            if stts is None or stts[1] - stts[0] > 64 * 1024 ** 2 or stts[1] > m.size:
-                return None                                    # none, or not a table this size can be
-            d = m.full(stts)
+            return m.read(box[0], 1)[0], m.full(box)
+
+        elst = m.child(m.child((a, b), "edts"), "elst")
+        if elst is not None:
+            got = table(elst, 1024 ** 2)
+            if got is None:
+                return None
+            v, d = got
             k = struct.unpack(">I", d[:4])[0]
-            if k < 1 or len(d) < 4 + 8 * k:
+            size = 20 if v == 1 else 12
+            played = 0
+            for i in range(min(k, 4096)):
+                e = d[4 + size * i:4 + size * (i + 1)]
+                if len(e) < size:
+                    return None
+                media_time = struct.unpack(">q", e[8:16])[0] if v == 1 else struct.unpack(">i", e[4:8])[0]
+                played += media_time != -1
+            if played > 1:
                 return None
-            runs = [struct.unpack(">II", d[4 + 8 * i:12 + 8 * i]) for i in range(k)]
-            runs = [r for r in runs if r[0] > 0]
-            if sum(c for c, _ in runs) < 2:
+        mdhd = m.child(mdia, "mdhd")
+        got = table(mdhd, 4096)
+        if got is None:
+            return None
+        v, d = got
+        scale = struct.unpack(">I", d[8:12] if v == 0 else d[16:20])[0]
+        stbl = m.child(minf, "stbl")
+        got = table(m.child(stbl, "stts"), 64 * 1024 ** 2)
+        if got is None:
+            return None
+        d = got[1]
+        k = struct.unpack(">I", d[:4])[0]
+        if k < 1 or len(d) < 4 + 8 * k:
+            return None
+        runs = np.frombuffer(d, ">u4", 2 * k, 4).reshape(k, 2).astype(np.int64)
+        runs = runs[runs[:, 0] > 0]
+        n = int(runs[:, 0].sum()) if len(runs) else 0
+        if n < 2 or n > 4_000_000 or len(np.unique(runs[:, 1])) != 1:
+            return None                                        # durations differ (the last one too)
+        dur = int(runs[0, 1])
+        if dur <= 0 or scale <= 0:
+            return None
+        ctts = m.child(stbl, "ctts")
+        if ctts is not None:                                   # B-frames: decode order is not picture order
+            got = table(ctts, 64 * 1024 ** 2)
+            if got is None:
                 return None
-            if len(runs) > 1 and runs[-1][0] == 1:
-                runs = runs[:-1]                               # the last picture's own duration
-            return len({dur for _, dur in runs}) == 1
-        return None
+            v, d = got
+            k = struct.unpack(">I", d[:4])[0]
+            if len(d) < 4 + 8 * k:
+                return None
+            raw = np.frombuffer(d, ">u4", 2 * k, 4).reshape(k, 2)
+            cnt = raw[:, 0].astype(np.int64)
+            off = (raw[:, 1].astype(np.int32) if v == 1 else raw[:, 1]).astype(np.int64)
+            if int(cnt.sum()) != n:
+                return None
+            pts = np.sort(np.arange(n, dtype=np.int64) * dur + np.repeat(off, cnt))
+            if not np.all(np.diff(pts) == dur):
+                return None
+        if fps is not None:
+            rate = scale / float(dur)
+            if not (np.isfinite(fps) and fps > 0) or n * abs(float(fps) / rate - 1.0) > EVEN_MARGIN:
+                return None                                    # the capture counts with another rate
+        return True
     except (OSError, struct.error, ValueError, IndexError, TypeError, MemoryError, OverflowError):
         return None
     finally:
@@ -810,6 +889,10 @@ def _pick_map(cap, s: np.ndarray, first: list, hidden: int) -> PtsMap | None:
             return bool(np.all(np.abs(m.pts[j] + m.delta - qs) <= m.tol))
 
         left = [m for m in alive if fits(m)]
+        if int(ks[-1]) < p0:
+            # the file's pictures END before the frame the maps differ on (packets after the last
+            # picture, never shown): every map that fits what was read is right for every picture
+            return left[0] if left else None
         if len(left) == len(alive):
             return None
         alive = left
@@ -836,7 +919,11 @@ def _count_forward(cap, path, plan: "SeekPlan", claimed: int) -> int:
 def _uneven_note(path, plan: "SeekPlan") -> str:
     name = Path(path).name
     what = (f"its timestamps skip {plan.gaps} frame(s): the camera probably dropped them" if plan.gaps > 0
-            else "its frames are not evenly spaced in time (a variable frame rate)")
+            else "the times of its frames do not follow one steady frame rate (a variable rate, or a rate "
+                 "stated a little off)")
+    if plan.gaps == 0 and _coarse(plan):
+        what = ("its frames' times are kept in whole milliseconds, too coarse at this frame rate to tell "
+                "whether the camera dropped frames")
     how = ("Kinetrace reaches every frame of this video by its own timestamp, so every frame is exact; jumping "
            "is a little slower." if plan.pts_map is not None else
            "Kinetrace reaches every frame of this video by reading from its start, so every frame is exact; "
@@ -845,17 +932,32 @@ def _uneven_note(path, plan: "SeekPlan") -> str:
             f'ffmpeg -i "{name}" -vsync cfr -c:v libx264 -crf 18 fixed.mp4 (then track on the new file).')
 
 
+def shown_times(m: PtsMap, n: int) -> np.ndarray:
+    """The times (ms, the decoding capture's clock) of the file's first `n` pictures under map `m`."""
+    return m.pts[m.lead:m.lead + max(0, int(n))] + m.delta
+
+
+def _coarse(plan: "SeekPlan") -> bool:
+    """Whole-millisecond times at a rate too high for them (`uneven_times`' "cannot tell")."""
+    m = plan.pts_map
+    if m is None or len(m.pts) < 3:
+        return False
+    s = m.pts
+    return bool(np.allclose(s, np.round(s), atol=1e-3)) and 0.5 * (len(s) - 1) / float(s[-1] - s[0]) > 0.2
+
+
 def open_plan(path, cap, first: list, claimed: int, say=None) -> "SeekPlan | None":
     """(I383) The seek plan a file needs from the moment it is open, or None (its times tick evenly:
     plain seeks, as before). An MP4 / MOV whose header says every picture lasts the same costs
     nothing more; any other file's packet times are read (no decoding). `cap` = a decoding capture
     of the file (moved by this), `first` = the times of its first pictures read from the start."""
-    if mp4_even(path) is True:
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    if mp4_even(path, fps) is True:
         return None
     if say is not None:
         say("timing")
     s, keys, npk = packet_times(path)
-    if len(s) < 3 or not uneven_times(s):
+    if len(s) < 3 or not uneven_times(s, fps, npk - int(claimed)):
         return None
     plan = SeekPlan(False, None, 0, [], file_identity(path), provisional=True)
     if len(keys) > 1:
@@ -912,6 +1014,7 @@ def check_seeks(path, n_frames: int, should_cancel=lambda: False) -> SeekPlan:
     if not cap.isOpened():
         cap.release()
         return plan
+    fps_cv = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
     try:
         prefix, first = [], []
         for _ in range(m):
@@ -966,7 +1069,9 @@ def check_seeks(path, n_frames: int, should_cancel=lambda: False) -> SeekPlan:
                     plan.wrong.append((t, None))
     finally:
         cap.release()
-    uneven = uneven_times(s)
+    # uneven PICTURES (packets after the last picture, never shown, do not count: see probe_video)
+    shown = shown_times(pmap, n) if pmap is not None else None
+    uneven = uneven_times(shown, fps_cv) if shown is not None else uneven_times(s, fps_cv, npk - n)
     if not plan.wrong and not uneven:
         return plan
     plan.exact = False
@@ -974,7 +1079,7 @@ def check_seeks(path, n_frames: int, should_cancel=lambda: False) -> SeekPlan:
     if uneven:
         # (I383) uneven times: never "exact", whatever the few jumps sampled did (measured: 162 to 418
         # of 600 jumps land elsewhere on the test clips). The same sentence as when the file was opened.
-        plan.gaps = _gaps(s)
+        plan.gaps = _gaps(shown if shown is not None else s)
         plan.note = _uneven_note(path, plan)
         return plan
     t, got = plan.wrong[0]

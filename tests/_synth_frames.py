@@ -90,8 +90,9 @@ def _remux(src: str, dst: str, pre=()) -> None:
     subprocess.run([_ffmpeg(), "-y", "-loglevel", "error", *pre, "-i", src, "-c", "copy", *BITEXACT, dst], check=True)
 
 
-def _gap(expr: str) -> list:
-    return ["-vf", f"setpts={expr}/(30*TB)", "-fps_mode", "passthrough", "-video_track_timescale", "30000"]
+def _gap(expr: str, rate: int = 30) -> list:
+    return ["-vf", f"setpts={expr}/({rate}*TB)", "-fps_mode", "passthrough", "-video_track_timescale",
+            str(rate * 1000)]
 
 
 # name -> (file, uneven timestamps?, what it is)
@@ -108,12 +109,17 @@ KINDS = {
     # edit list hides pictures, and the rate changes far from the start
     "gap_at_5": ("gap_at_5.mp4", True, "timestamps skip 1 frame at frame 5"),
     "dropped_edit": ("dropped_edit.mp4", True, "dropped frames behind an edit list that hides 2 pictures"),
-    "vfr_long": ("vfr_long.mp4", True, "30 fps for 700 frames, then 60 fps (1500 frames)"),
-    "vfr_long_edit": ("vfr_long_edit.mp4", True, "the same behind an edit list that hides 2 pictures"),
+    "vfr_long_edit": ("vfr_long_edit.mp4", True, "30 fps for 700 frames, then 60 fps, behind an edit list "
+                                                 "that hides 2 pictures (1500 frames)"),
     "vfr3_edit": ("vfr3_edit.mp4", True, "30 / 60 / 30 fps behind an edit list that hides 2 pictures"),
+    # (second review) files that look even and are not, for OpenCV's seek
+    "odd_last": ("odd_last.mp4", True, "evenly spaced pictures, the last of another duration: the reported "
+                                       "rate is a little off"),
+    "gap_last": ("gap_last.mp4", True, "the LAST picture one frame late (not visible in the durations table)"),
+    "mkv500_gap": ("mkv500_gap.mkv", True, "500 fps in whole milliseconds, 1 frame skipped at frame 300"),
     "jitter_mov": ("jitter.mov", False, "29.97 fps written in ticks of 1/600 s (20, 21, 20 ...): an even rate"),
 }
-LONG = {"vfr_long", "vfr_long_edit", "vfr3_edit"}       # 1500 frames: the suites ask fewer doors of them
+LONG = {"vfr_long_edit", "vfr3_edit"}       # 1500 frames: the suites ask fewer doors of them
 
 
 def make_clips(folder: str, names=None) -> dict:
@@ -145,15 +151,21 @@ def make_clips(folder: str, names=None) -> dict:
         "vfr3_edit": lambda: _remux(P["vfr3"], P["vfr3_edit"], pre=["-ss", f"{2 / 30:.6f}"]),
         "jitter_mov": lambda: _encode(P["jitter_mov"], 300, _x264(12, 0), ["-video_track_timescale", "600"],
                                       rate="30000/1001"),
+        "odd_last": lambda: _encode(P["odd_last"], 300, _x264(24, 3), _gap("N")),
+        "gap_last": lambda: _encode(P["gap_last"], 300, _x264(24, 3), _gap("(N+gte(N\\,299))")),
+        "mkv500": lambda: _encode(P["mkv500"], 600, _x264(50, 0), _gap("(N+gte(N\\,300))", 500), rate="500"),
+        "mkv500_gap": lambda: _remux(P["mkv500"], P["mkv500_gap"]),
     }
     P["vfr3"] = os.path.join(folder, "vfr3.mp4")
+    P["vfr_long"] = os.path.join(folder, "vfr_long.mp4")
+    P["mkv500"] = os.path.join(folder, "mkv500.mp4")
     order = [k for k in KINDS if names is None or k in names]
-    for dep, need in (("editlist", "bframes"), ("mkv_dropped", "dropped_late"), ("dropped_edit", "dropped_late"),
-                      ("vfr_long_edit", "vfr_long")):
+    for dep, need in (("editlist", "bframes"), ("mkv_dropped", "dropped_late"), ("dropped_edit", "dropped_late")):
         if dep in order and need not in order:
             order.insert(0, need)
-    if "vfr3_edit" in order and not os.path.exists(P["vfr3"]):
-        makers["vfr3"]()
+    for dep, need in (("vfr3_edit", "vfr3"), ("vfr_long_edit", "vfr_long"), ("mkv500_gap", "mkv500")):
+        if dep in order and not os.path.exists(P[need]):
+            makers[need]()                       # a helper clip: made, not in the tested set
     for k in order:
         if not os.path.exists(P[k]) or os.path.getsize(P[k]) == 0:
             makers[k]()

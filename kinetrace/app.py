@@ -4052,7 +4052,7 @@ class MainWindow(QMainWindow):
         if getattr(info, "fps_note", ""):
             # every time, speed and camera-rate number depends on it (I37)
             self.toast.show_message(info.fps_note, "warn", 12000)
-        self._say_seek_note(info.path)       # (I383) frames not evenly spaced in time: said at open
+        self._say_seek_note(info.path, again=True)   # (I383) frames not evenly spaced in time: said at open
         self._frames_check_soon()      # (I266) every camera: its seeks, then its frame fingerprint
         if info.vfr_suspected:
             QMessageBox.warning(
@@ -4228,16 +4228,19 @@ class MainWindow(QMainWindow):
             _retire(th)
             self._fc_job = None
 
-    def _say_seek_note(self, path: str, camera: str = "") -> None:
-        """(I383) Say ONCE what was found about how this file's frames are reached (a camera that
-        dropped frames, a variable rate): at open, when `probe_video` already knows it, else when
-        the background check has found it."""
+    def _say_seek_note(self, path: str, camera: str = "", again: bool = False) -> None:
+        """(I383) Say what was found about how this file's frames are reached (a camera that dropped
+        frames, a variable rate): at open (`again`: every time it is opened), when `probe_video`
+        already knows it; when the background check reports, only what was not said for THIS file
+        (two cameras' files may share a name)."""
+        from kinetrace.paths import path_key
         from kinetrace.video_source import seek_plan
         plan = seek_plan(path)
         note = getattr(plan, "note", "") if plan is not None and not plan.exact else ""
         said = self.__dict__.setdefault("_seek_notes_said", set())
-        if note and note not in said:
-            said.add(note)
+        key = (path_key(path), note)
+        if note and (again or key not in said):
+            said.add(key)
             self.toast.show_message((f"{camera}: " if camera else "") + note, "warn", 20000)
 
     def _fc_seeks(self, rt, plan) -> None:
@@ -4246,6 +4249,11 @@ class MainWindow(QMainWindow):
         rt.seek_plan = plan
         i = self._view_index(rt)
         if i < 0 or plan.exact:
+            return
+        if getattr(plan, "confirmed", False):
+            # (I383) the check found the plan the file has had since it was opened: every picture on
+            # screen and in the cache was already reached that way, nothing to drop or decode again
+            self._say_seek_note(rt.info.path, self.project.name(i))
             return
         restart = i == self.project.active or rt.seek is not None
         rt.stop()                            # FIRST: a read under way would file a picture reached the old

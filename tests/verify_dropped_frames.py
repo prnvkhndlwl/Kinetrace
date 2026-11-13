@@ -7,7 +7,7 @@ doors - `seek_capture` on a fresh capture, one capture jumping about, `VideoSour
 background check) and again after `check_seeks`; the picture must be the one reading forward gives.
 The frame count must be the number of pictures. Clips with even timestamps keep the plain seek.
 
-No GPU, no window. Run: .venv\\Scripts\\python.exe tests\\verify_dropped_frames.py   (about a minute)
+No GPU, no window. Run: .venv\\Scripts\\python.exe tests\\verify_dropped_frames.py   (two to three minutes)
 """
 import os
 import random
@@ -75,19 +75,22 @@ def via_reader(path, frames, ref):
 
 
 def all_doors(name, path, ref, when):
+    """Every frame is asked for at least once in each state: through a fresh capture at open (the
+    state a first click meets), on one capture jumping about after the check; the other doors on a
+    part of the frames (1500-frame clips: a third of them through fresh captures at open, all of
+    them on one capture)."""
     n = len(ref)
     every = list(range(n))
-    w = via_fresh(path, every, ref)
-    check(not w, f"{name} {when}: every frame through a fresh capture is the forward picture ({n} frames)",
-          f"{len(w)} wrong, first (asked, forward, got) {w[:4]}")
     mixed = every[:]
     random.Random(7).shuffle(mixed)
-    if name in sf.LONG:                      # 1500 frames: every frame once more, on one capture, is enough
-        mixed = mixed[:400]
+    fresh = every if (when == "at open" and name not in sf.LONG) else sorted(mixed[:max(120, n // 3)])
+    w = via_fresh(path, fresh, ref)
+    check(not w, f"{name} {when}: {len(fresh)} of {n} frames, each through a fresh capture, are the forward "
+          "picture", f"{len(w)} wrong, first (asked, forward, got) {w[:4]}")
     w = via_one_capture(path, mixed, ref)
     check(not w, f"{name} {when}: every frame on one capture jumping about", f"{len(w)} wrong, first {w[:4]}")
-    w = via_source(path, mixed, ref)
-    check(not w, f"{name} {when}: every frame through VideoSource.get_frame", f"{len(w)} wrong, first {w[:4]}")
+    w = via_source(path, mixed[:300], ref)
+    check(not w, f"{name} {when}: 300 frames through VideoSource.get_frame", f"{len(w)} wrong, first {w[:4]}")
     some = sorted(set(every[::7]) | set(range(max(0, n - 6), n)) | set(range(140, min(n, 160))))
     w = via_reader(path, some, ref)
     check(not w, f"{name} {when}: FrameReader ({len(some)} frames)", f"{len(w)} wrong, first {w[:4]}")
@@ -114,11 +117,14 @@ for name, path in clips.items():
               repr(plan)[:160])
         check(bool(plan is not None and plan.note), f"{name}: ... with a sentence for the user")
         if plan is not None and name.startswith("vfr"):
-            check("variable frame rate" in plan.note and "skip" not in plan.note,
+            check("steady frame rate" in plan.note and "skip" not in plan.note,
                   f"{name}: a variable rate is not called dropped frames", plan.note[:120])
-        if plan is not None and name.startswith(("dropped", "gap", "mkv")):
+        if plan is not None and name.startswith(("dropped", "gap_at", "mkv_")):
             check("dropped" in plan.note and plan.gaps in (1, 3), f"{name}: the sentence says how many frames "
                   "the timestamps skip", f"gaps {plan.gaps}: {plan.note[:100]}")
+        if plan is not None and name == "mkv500_gap":
+            check("dropped" in plan.note or "whole milliseconds" in plan.note,
+                  f"{name}: the sentence says what was found", plan.note[:140])
         all_doors(name, path, ref, "at open")
         checked = vs.check_seeks(path, info.n_frames)
         check(not checked.exact and checked.pts_map is not None,
@@ -144,6 +150,34 @@ for at in (3, 150, 296):
     t[at:] += 1000.0 / 30.0
     check(vs.uneven_times(t), f"one frame's worth of time missing at frame {at} of 300 is uneven")
 check(not vs.uneven_times(np.round(np.arange(600) * (1000.0 / 240.0))), "240 fps in whole milliseconds is even")
+check(vs.uneven_times(np.round(np.arange(600) * 2.0)), "500 fps in whole milliseconds cannot be told: never plain seeks")
+t = np.arange(300) * (1000.0 / 30.0)
+check(not vs.uneven_times(t, 30.0) and vs.uneven_times(t, 30.1),
+      "even times are uneven for a seek that counts with a rate a little off (30.1 for 30)")
+check(vs.uneven_times(np.concatenate([[0.0, 33.3, 66.7], 66.7 + t[1:] + 33.3]), 30.0, hidden=2) is True
+      and not vs.uneven_times(t, 30.0, hidden=2), "pictures hidden by an edit list do not make even times uneven")
+for good in ("plain", "bframes", "editlist"):
+    cap_ = vs.open_capture(clips[good])
+    fps_ = cap_.get(5)
+    cap_.release()
+    check(vs.mp4_even(clips[good], fps_) is True, f"{good}: the header alone proves it even (no read through the file)")
+for bad in ("dropped_late", "gap_last", "odd_last", "vfr", "jitter_mov", "mkv_dropped"):
+    cap_ = vs.open_capture(clips[bad])
+    fps_ = cap_.get(5)
+    cap_.release()
+    check(vs.mp4_even(clips[bad], fps_) is None, f"{bad}: the header does not prove it even (its packets decide)")
+# a trimmed file: packets after its last picture are never shown; an odd step among THEM is not an uneven
+# file (two real clips: 607 packets, 601 pictures). The pictures' own times decide.
+tail = np.concatenate([np.arange(-2, 603) * 40.0, [603 * 40.0 + 80.0, 606 * 40.0]])
+check(vs.uneven_times(tail, 25.0, 0), "(all packets of such a file look uneven)")
+mt = vs.PtsMap(tail, 2, 0.0, 10.0)
+check(not vs.uneven_times(vs.shown_times(mt, 601), 25.0), "... its 601 pictures are even: no plan, the plain seek")
+late = np.arange(601) * 40.0
+late[-1] += 80.0
+check(not vs.uneven_times(late, 25.0), "only the LAST picture late, the rate exact: even (the seek to it still lands on it)")
+late[-2:] += 40.0
+check(vs.uneven_times(late, 25.0), "the last two pictures late: uneven")
+check(vs.uneven_times(np.arange(601) * 40.0, 25.0 * 601 / 603), "a late last picture that skews the stated rate: uneven")
 m = vs.PtsMap(np.array([0.0, 33.3, 66.7, 66.9, 100.0]), 0, 0.0, 5.0)
 check(m.index(33.3) == 1 and m.index(100.0) == 4, "PtsMap names a picture by its time")
 check(m.index(66.8) is None and m.index(66.7) is None,

@@ -321,8 +321,16 @@ def exact_reads(path: str, n_frames: int, should_cancel=lambda: False):
     # a plan made when the file was opened (I383) keeps its frames exact meanwhile; the check
     # still runs once, and the window then says what was found
     if plan is None or plan.file != file_identity(path) or getattr(plan, "provisional", False):
+        old = plan
         plan = check_seeks(path, n_frames, should_cancel)
         if not should_cancel():
+            if old is not None and getattr(old, "provisional", False) and old.file == plan.file:
+                if plan.checked == 0:
+                    return old, False            # the check could not look (the file did not open): keep it
+                a, b = old.pts_map, plan.pts_map
+                # the same map as at open: the window need not drop its pictures and decode again
+                plan.confirmed = (not plan.exact and a is not None and b is not None and a.lead == b.lead
+                                  and abs(a.delta - b.delta) < 1e-6 and len(a.pts) == len(b.pts))
             set_seek_plan(path, plan)
             return plan, True
     return plan, False
