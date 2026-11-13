@@ -109,6 +109,8 @@ def where_to_ask() -> str:
         log = f" and attach {os.path.relpath(LOG, HERE)}" if LOG else ""
     except ValueError:                  # another drive (Windows): the full path then
         log = f" and attach {LOG}"
+    if log:                             # (G245) an issue is public: say what the file holds
+        log += " (it holds folder names from this computer, which can include your user name)"
     return f"If it happens twice, open an issue at {ISSUES}{log}."
 
 

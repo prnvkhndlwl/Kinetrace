@@ -97,6 +97,7 @@ if errorlevel 1 (
     echo ERROR: the installation did not finish. Check your internet connection
     echo and double-click run.bat again ^(it resumes^). If it fails twice, open an issue at
     echo https://github.com/prnvkhndlwl/Kinetrace/issues and attach the newest logs\install-*.log.
+    echo That file holds folder names from this computer, which can include your user name.
     pause
     exit /b 1
 )

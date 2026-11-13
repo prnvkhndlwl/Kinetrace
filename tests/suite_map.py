@@ -15,7 +15,7 @@ GUI = ["verify_gui", "verify_oob", "verify_keys_follow", "verify_timeline_events
        "verify_sweep_fixes", "verify_review_app1", "verify_review_app2", "verify_review_app3", "verify_review_leftovers",
        "verify_review_ui", "verify_camera_views", "verify_tour"]
 SAVE = ["verify_projectfile", "verify_recovery", "verify_loading", "verify_open_replace", "verify_review_persist",
-        "verify_save_during_run", "verify_save_safety"]
+        "verify_save_during_run", "verify_save_safety", "verify_privacy"]
 INSTALL = ["verify_portable", "verify_install_paths", "verify_update", "verify_downloads", "verify_crashlog",
            "verify_welcome", "verify_winapp", "verify_review_infra"]
 FALLBACK = ["verify_core", "verify_stress", "verify_sweep_fixes"]

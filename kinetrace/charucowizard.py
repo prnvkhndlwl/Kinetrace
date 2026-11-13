@@ -77,7 +77,7 @@ def fit_lenses(project, scan: charuco.RigScan, progress=None) -> dict:
             rotation = None
         prof.rotation = rotation
         used = (prof.report or {}).get("views_used", list(range(len(keep))))
-        prof.board = {"video": Path(path).name, "path": os.path.abspath(path), "size": list(scan.sizes[k]),
+        prof.board = {"video": Path(path).name, "size": list(scan.sizes[k]),            # no folder (G243)
                       "rotation": rotation, "frames": [int(fr[keep[i]]) for i in used],
                       "pattern": list(spec.pattern), "square_m": float(spec.square_m),
                       "kind": "charuco", "charuco": spec.to_json()}

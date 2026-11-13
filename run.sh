@@ -199,6 +199,7 @@ if [ ! -f ".venv/kinetrace-install.json" ]; then
             say "ERROR: the installation did not finish. Check your internet connection and run ./run.sh"
             say "again (it resumes). If it fails twice, open an issue at"
             say "https://github.com/prnvkhndlwl/Kinetrace/issues and attach the newest logs/install-*.log."
+            say "That file holds folder names from this computer, which can include your user name."
         fi
         exit 1
     }

@@ -146,7 +146,16 @@ QDialog.exec = _capture
 assert win.act_error_report.isEnabled() and "bug report" in win.act_error_report.toolTip()
 win.act_error_report.trigger()
 rep = SEEN["text"]
-for needle in (str(crashlog.log_path()), "ZeroDivisionError", "KeyError", "---- System check ----",
+# (G245) the text is for a public bug report: the user folder reads ~ in it, also in the log's own path
+assert os.path.expanduser("~").lower() not in rep.lower(), "the user folder is written out in the report"
+_who = crashlog._identity
+from kinetrace.device import cached_device as _cd  # noqa: E402
+_word = "Kinetrace" if _cd() is not None else "PyTorch"       # a word the System Check half surely holds
+crashlog._identity = lambda: ("", _word)
+assert "<user>" in win._error_report_text().split("---- System check ----")[1], \
+    "the System Check half of the report is cleaned too"
+crashlog._identity = _who
+for needle in (crashlog.redact(str(crashlog.log_path())), "ZeroDivisionError", "KeyError", "---- System check ----",
                "Nothing in these files is sent anywhere"):
     assert needle in rep, f"missing from the report: {needle!r}"
 assert "Open the log folder" in SEEN["buttons"]

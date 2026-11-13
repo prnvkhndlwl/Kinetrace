@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,6 +61,38 @@ def hf_kwargs(repo: str) -> dict:
 # Where a SAM 3D Body GitHub checkout goes. `demo.py` there uses pyrootutils to
 # put the repo root on sys.path; we do the same thing explicitly.
 S3DB_REPO = MODELS_DIR / "sam-3d-body"
+DINOV3_HUB = MODELS_DIR / "facebookresearch_dinov3_main"       # where torch.hub keeps the backbone's code
+
+
+@contextmanager
+def local_hub(hub, folder: Path | str | None = None):
+    """(G246) While SAM 3D Body is built: its backbone calls
+    `torch.hub.load("facebookresearch/dinov3", ..., source="github")`, and torch.hub then asks
+    github.com which branch is the default on EVERY load, although the code is already in
+    `folder` (models/facebookresearch_dinov3_main). With that folder present the same call is
+    answered from it (`source="local"`: the same files, the same model, no request). Without it,
+    and for every other repository, the call is passed through untouched. `hub` = `torch.hub`."""
+    folder = Path(folder) if folder is not None else DINOV3_HUB
+    original = hub.load
+
+    def load(repo_or_dir, *args, **kw):
+        try:
+            mine = (str(repo_or_dir).split(":")[0].strip("/").lower() == "facebookresearch/dinov3"
+                    and kw.get("source", "github") == "github" and (folder / "hubconf.py").is_file())
+        except Exception:      # noqa: BLE001 - an argument this does not understand: upstream's own call
+            mine = False
+        if mine:
+            kw = dict(kw, source="local")
+            kw.pop("trust_repo", None)              # a question about a download; nothing is downloaded
+            kw.pop("force_reload", None)
+            return original(str(folder), *args, **kw)
+        return original(repo_or_dir, *args, **kw)
+
+    hub.load = load
+    try:
+        yield
+    finally:
+        hub.load = original
 
 DETECTOR_REPO = "PekingU/rtdetr_v2_r18vd"       # 81 MB, COCO, person = class 0
 DETECTOR_PERSON_CLASS = 0
@@ -505,7 +538,8 @@ class Sam3DBodyEstimator(BodyEstimator):
         torch.hub.set_dir(str(MODELS_DIR))      # nothing outside the tool folder
         from sam_3d_body import load_sam_3d_body, SAM3DBodyEstimator  # noqa: E402
 
-        model, model_cfg = load_sam_3d_body(str(ckpt), device=device, mhr_path=str(mhr))
+        with local_hub(torch.hub):              # (G246) the backbone's code from models/, not github.com
+            model, model_cfg = load_sam_3d_body(str(ckpt), device=device, mhr_path=str(mhr))
         # Meta's own detector is ViTDet through detectron2, which has no wheel
         # and must be built from source. Kinetrace already carries RT-DETR v2
         # for the 2D backend, so both backends share ONE person detector: no

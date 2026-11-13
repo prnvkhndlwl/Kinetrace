@@ -130,7 +130,11 @@ any more.
   (`../cam1.mp4` = beside the project folder, `videos/cam1.mp4` = inside it);
   it is tried first, so a project moved together with its videos opens on any
   computer and operating system. `path` is where the video was when the
-  project was saved. Then the same file name is looked for in the project
+  project was saved (the full path on that computer). It is written only for a
+  video that is NOT inside the project folder (for the one-file form: not in or
+  under the folder the file was written to): there the relative path alone
+  says everything, and a folder handed to someone else then carries no folder
+  names of the computer it was made on. Then the same file name is looked for in the project
   folder, its `videos/` folder and beside it, then Kinetrace asks.
 * `fps` = the rate the camera really recorded at; `file_fps` = the rate its
   file says (they differ for slow-motion files; Frame rate… in the camera panel).
