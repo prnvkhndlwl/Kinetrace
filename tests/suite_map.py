@@ -106,7 +106,7 @@ MAP = [
     # video
     ([K + "video_source.py", K + "framecheck.py", K + "fingerprint.py"],
      ["verify_core", "verify_scrub", "verify_fingerprint", "verify_fingerprint_gui", "verify_decode_identity",
-      "verify_long"]),
+      "verify_long", "verify_dropped_frames"]),
     # cameras, calibration, 3D, body
     ([K + f for f in ("calib.py", "hull.py", "view3d.py", "retrack.py", "kinematics.py", "calibview.py")],
      ["verify_3d", "verify_3d_gui", "verify_retrack", "verify_review_3d", "verify_multicam",

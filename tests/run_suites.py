@@ -103,7 +103,7 @@ CPU = ["verify_portable", "verify_core", "verify_projectfile", "verify_recovery"
        # (I340-I356, G222-G224) calibration, 3D and sync fixes (the 2026-10-25 sweep's PR 3)
        "verify_calib_sync_fixes", "verify_calib_sync_gui",
        # (I266) a video that decodes differently on another computer: the fingerprint, exact seeks
-       "verify_fingerprint", "verify_fingerprint_gui", "verify_decode_identity",
+       "verify_fingerprint", "verify_fingerprint_gui", "verify_decode_identity", "verify_dropped_frames",
        # (I271, I300-I304, G199, G200) camera timing from the wand: refine, checks, pending offsets, the picture
        "verify_wand_sync", "verify_wand_sync_gui",
        # (I320, I316, I317, I319, G217, G218) hand-placed frames are the truth: the rules, imported clicks, Moving

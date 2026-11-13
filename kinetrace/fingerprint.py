@@ -318,7 +318,9 @@ def exact_reads(path: str, n_frames: int, should_cancel=lambda: False):
     own (a test, the CI check) gets it here. Returns (the plan, True when it was checked NOW and kept):
     the frame check shows a fresh one (R29: it repeated this rule)."""
     plan = seek_plan(path)
-    if plan is None or plan.file != file_identity(path):
+    # a plan made when the file was opened (I383) keeps its frames exact meanwhile; the check
+    # still runs once, and the window then says what was found
+    if plan is None or plan.file != file_identity(path) or getattr(plan, "provisional", False):
         plan = check_seeks(path, n_frames, should_cancel)
         if not should_cancel():
             set_seek_plan(path, plan)
