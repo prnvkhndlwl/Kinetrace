@@ -126,6 +126,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data[:200_000])
             self.wfile.flush()
             time.sleep(8)
+        elif path.startswith("/cutapi/git/trees/"):           # (I381) the release's file list: one file
+            body = json.dumps({"tree": [{"path": "x", "type": "blob", "sha": "0" * 40}], "truncated": False}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif path == "/cutapi/releases/latest":               # the release answer ends in the middle
             self.send_response(200)
             self.send_header("Content-Length", "500")

@@ -13,7 +13,12 @@ Installing it depends on how the folder was obtained:
 * a `git clone` -> `git fetch` the release tag and fast-forward to it, refused
   (with the reason) when a tracked file has local changes;
 * a ZIP download -> download the release's ZIP into `update/`, check it really
-  is a Kinetrace release, and write ONLY the files that changed. What each user
+  is a Kinetrace release AND that it holds exactly the files GitHub's API lists
+  for the release tag, each with git's own id of its content (I381: a damaged or
+  swapped archive is refused before anything is written. It guards the download
+  itself, its host and its way here; the release's name and links come from
+  GitHub's API, so it does not guard against GitHub or the account), and write
+  ONLY the files that changed. What each user
   owns is never touched (`PROTECTED`: the environment, models, recovery copies,
   logs, saved skeletons, the tour's demo video, footage). Files the previous release had and this one
   dropped are removed, using the list kept in `MANIFEST`.
@@ -336,6 +341,72 @@ def download(url: str, dest: Path, progress=None, timeout: float = 60) -> Path:
         raise UpdateError(str(e)) from None
 
 
+def git_blob_sha1(data: bytes) -> str:
+    """git's id of a file with this content (what GitHub's tree API lists)."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def _unchecked(tag: str, why: str) -> UpdateError:
+    return UpdateError(f"The update could not be checked against GitHub's list of the files in {tag} ({why}), "
+                       f"so it was not installed. Nothing was changed. Try again later, or download the new "
+                       f"version from {PAGE}.")
+
+
+def release_tree(tag: str, timeout: float = TIMEOUT_S) -> dict[str, str]:
+    """(I381) {path: git id} of every file of the release `tag`, as GitHub's API lists it: what the
+    downloaded archive must hold. One GET; an answer that cannot be read, or that GitHub cut short,
+    is an UpdateError (an unchecked archive is never installed instead)."""
+    from urllib.parse import quote
+    try:
+        r = _open(api_base() + "/git/trees/" + quote(str(tag), safe="") + "?recursive=1", timeout)
+    except _NotFound:
+        raise _unchecked(tag, "GitHub has no such list") from None
+    except UpdateError as e:        # `_open`'s sentences are about LOOKING for a version: say what this was
+        raise _unchecked(tag, "GitHub is limiting how often this internet connection may ask: wait an hour"
+                         if "limiting" in str(e) else "GitHub could not be reached") from None
+    with r:
+        try:
+            data = json.loads(r.read().decode("utf-8"))
+        except (ValueError, OSError, http.client.HTTPException):
+            raise _unchecked(tag, "its answer could not be read") from None
+    rows = data.get("tree") if isinstance(data, dict) else None
+    if not isinstance(rows, list) or data.get("truncated"):
+        raise _unchecked(tag, "the list is incomplete")
+    out = {}
+    for e in rows:
+        if isinstance(e, dict) and e.get("type") == "blob" and isinstance(e.get("path"), str) \
+                and isinstance(e.get("sha"), str):
+            out[e["path"]] = e["sha"].lower()
+    if not out:
+        raise _unchecked(tag, "the list is empty")
+    return out
+
+
+def verify_members(zf: zipfile.ZipFile, members: dict[str, zipfile.ZipInfo], tree: dict[str, str]) -> None:
+    """(I381) Raise an UpdateError unless the archive holds exactly the release's files (`tree`,
+    from `release_tree`), each with the listed content. git's archives convert the line ends of
+    files marked so (.gitattributes: the .bat files leave as CRLF), so a file also passes when
+    its content with CRLF -> LF has the listed id. Reads only; nothing is written."""
+    def refuse(what: str) -> UpdateError:
+        return UpdateError(f"The downloaded update does not match the published version: {what}. Nothing was "
+                           f"changed. Try again; if it happens twice, download the new version from {PAGE}.")
+    extra = sorted(set(members) - set(tree))
+    if extra:
+        raise refuse(f"it holds a file the release does not have ({extra[0]}"
+                     + (f" and {len(extra) - 1} more" if len(extra) > 1 else "") + ")")
+    missing = sorted(set(tree) - set(members))
+    if missing:
+        raise refuse(f"a file of the release is not in it ({missing[0]}"
+                     + (f" and {len(missing) - 1} more" if len(missing) > 1 else "") + ")")
+    for rel, info in members.items():
+        try:
+            data = zf.read(info)
+        except Exception:      # noqa: BLE001 - a damaged member (bad CRC, cut data): not the published file
+            raise refuse(f"{rel} cannot be read from the download") from None
+        if git_blob_sha1(data) != tree[rel] and git_blob_sha1(data.replace(b"\r\n", b"\n")) != tree[rel]:
+            raise refuse(f"{rel} is not the published file")
+
+
 def _release_members(zf: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
     """{path inside the repository: member}. GitHub's archives put everything in
     one top folder (owner-repo-sha/); anything unsafe refuses the whole file."""
@@ -356,9 +427,13 @@ def _release_members(zf: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
     return out
 
 
-def apply_zip(root: Path, zip_path: Path, version: str, tag: str = "") -> ApplyResult:
+def apply_zip(root: Path, zip_path: Path, version: str, tag: str = "",
+              tree: dict[str, str] | None = None) -> ApplyResult:
     """Install the release in `zip_path` over the folder `root` (see the module
-    docstring for what is and is not touched)."""
+    docstring for what is and is not touched). `tree` = the release's file list
+    (`release_tree`): the archive is checked against it before anything is staged
+    (I381). `apply` always passes it; None = NOT checked, for the tests of the
+    writing phase only."""
     root = Path(root)
     res = ApplyResult(version=version, how="zip")
     try:
@@ -368,6 +443,8 @@ def apply_zip(root: Path, zip_path: Path, version: str, tag: str = "") -> ApplyR
     old_manifest = _read_manifest(root)
     with zf:
         members = _release_members(zf)
+        if tree is not None:
+            verify_members(zf, members, tree)
         # (I218) what the installer was last run for: the digests the last COMPLETED update
         # recorded, else what is on disk. A half-failed update replaces install.py /
         # requirements.txt but never reaches the manifest, so a retry still sees the change.
@@ -480,9 +557,12 @@ def apply(release: Release, root: Path = ROOT, progress=None) -> ApplyResult:
         return apply_git(root, release.tag, release.version)
     dest = root / STAGING / f"kinetrace-{release.version}.zip"
     try:
+        # (I381) what the archive must hold, file by file: asked for FIRST (a second; a list that cannot
+        # be had must not cost the whole download)
+        tree = release_tree(release.tag)
         download(release.zip_url, dest, progress)        # an UpdateError about the connection / the disk (G94)
         try:
-            return apply_zip(root, dest, release.version, release.tag)
+            return apply_zip(root, dest, release.version, release.tag, tree)
         except OSError as e:                             # only the WRITING phase says "could not be written"
             raise UpdateError(f"The update could not be written into {root} ({e}). Close any program using "
                               "files in the Kinetrace folder and try again.") from None
